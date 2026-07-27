@@ -1,29 +1,21 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-const api = vi.hoisted(() => ({ get: vi.fn() }))
-vi.mock('../api/client', () => ({ apiClient: api }))
 
 import SystemNav from '../components/SystemNav'
 
 describe('SystemNav', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('stops emphasizing quick start after AI is ready', async () => {
-    api.get.mockResolvedValue({ data: { data: { has_usable_models: true, needs_setup: false } } })
-
+  it('keeps quick start as a first-level entry after AI is ready', () => {
     render(<MemoryRouter initialEntries={['/dashboard']}><SystemNav current="dashboard" /></MemoryRouter>)
 
-    await waitFor(() => expect(api.get).toHaveBeenCalled())
-    expect(screen.queryByRole('button', { name: '快速开始' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '快速开始' })).toBeInTheDocument()
   })
 
-  it('keeps quick start available when no usable model exists', async () => {
-    api.get.mockResolvedValue({ data: { data: { has_usable_models: false, needs_setup: true } } })
-
+  it('marks quick start as the current page', () => {
     render(<MemoryRouter initialEntries={['/dashboard']}><SystemNav current="dashboard" /></MemoryRouter>)
 
-    expect(await screen.findByRole('button', { name: '快速开始' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '作品库' })).toHaveAttribute('aria-current', 'page')
   })
 })

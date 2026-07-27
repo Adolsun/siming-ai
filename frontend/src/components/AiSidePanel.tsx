@@ -14,11 +14,20 @@ interface AiSidePanelProps {
 }
 
 function AiSidePanel({ collapsed, onToggle, width, onResizeHandle, dragging, children }: AiSidePanelProps) {
+  if (collapsed) {
+    return (
+      <aside
+        className="ai-side-panel ai-side-panel-collapsed"
+        style={{ width: 0 }}
+        aria-hidden="true"
+      />
+    )
+  }
+
   return (
     <aside
-      className={`ai-side-panel${collapsed ? ' ai-side-panel-collapsed' : ''}${dragging ? ' ai-side-panel-dragging' : ''}`}
-      style={{ width: collapsed ? 0 : width }}
-      aria-hidden={collapsed}
+      className={`ai-side-panel${dragging ? ' ai-side-panel-dragging' : ''}`}
+      style={{ width }}
       aria-label="项目助手"
     >
       <div className="ai-side-panel-inner" style={{ width }}>

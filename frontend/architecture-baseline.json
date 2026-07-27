@@ -3,7 +3,7 @@
   "legacy_page_use_effect_calls": 49,
   "oversized_pages": {
     "SettingsPage.tsx": 1486,
-    "NovelCreationWizardPage.tsx": 1270,
+    "NovelCreationWizardPage.tsx": 1351,
     "DeconstructPage.tsx": 1271
   }
 }

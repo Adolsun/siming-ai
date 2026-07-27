@@ -73,6 +73,20 @@
   overflow: auto;
 }
 
+.gui-embedded-page {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1280px;
+  min-height: 100%;
+  padding: 24px;
+}
+
+@media (max-width: 760px) {
+  .gui-embedded-page {
+    padding: 16px;
+  }
+}
+
 @media (max-width: 760px) {
   .gui-page-sider {
     max-width: 56px !important;

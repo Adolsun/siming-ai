@@ -81,6 +81,37 @@
   min-width: 0;
 }
 
+.writer-chapter-title {
+  display: -webkit-box;
+  font-weight: 600;
+  line-height: 1.45;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.writer-chapter-meta {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.writer-chapter-facts {
+  align-items: center;
+  color: var(--ant-color-text-tertiary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 5px 10px;
+}
+
+.writer-chapter-facts .ant-tag {
+  font-size: 11px;
+  line-height: 19px;
+  margin: 0;
+}
+
 .writer-chapter-item:hover {
   background: var(--ant-color-bg-text-hover);
   transform: translateX(2px);
@@ -95,6 +126,19 @@
 .writer-editor {
   min-width: 0;
   padding: 20px;
+}
+
+.writer-editor-heading {
+  min-width: 0;
+}
+
+.writer-editor-title.ant-typography {
+  display: -webkit-box;
+  line-height: 1.35;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* Editor form layout */
@@ -116,6 +160,16 @@
 
 .writer-content-input:focus {
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.03);
+}
+
+.writer-summary {
+  background: var(--ant-color-fill-quaternary);
+  border-color: var(--ant-color-border-secondary);
+  margin-bottom: 14px;
+}
+
+.writer-summary .ant-collapse-header {
+  min-height: 42px;
 }
 
 /* ── Version History ── */
@@ -214,6 +268,11 @@
   .writer-diff-columns {
     grid-template-columns: 1fr;
   }
+
+  .writer-chapter-panel {
+    max-height: 280px;
+    position: static;
+  }
 }
 
 @media (max-width: 720px) {
@@ -223,5 +282,14 @@
   .writer-snapshot-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .writer-editor {
+    padding: 14px;
+  }
+
+  .writer-editor-head > .ant-space {
+    align-self: stretch;
+    justify-content: flex-end;
   }
 }

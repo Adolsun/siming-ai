@@ -38,9 +38,8 @@ import {
 import { apiClient } from '../api/client'
 import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
-import { AdaptiveHelp } from '../components/interaction'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
-import { GettingStartedPanel } from './GettingStartedPage'
+import ModelReadinessBanner from '../components/ModelReadinessBanner'
 import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -411,7 +410,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
   const [installingUpdate, setInstallingUpdate] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'guide'>('ai')
+  const [settingsSection, setSettingsSection] = useState<'ai' | 'app'>('ai')
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -940,15 +939,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       <Tabs
         className="settings-tabs"
         activeKey={settingsSection}
-        onChange={(key) => setSettingsSection(key as 'ai' | 'app' | 'guide')}
+        onChange={(key) => setSettingsSection(key as 'ai' | 'app')}
         items={[
           { key: 'ai', label: '模型与 AI' },
           { key: 'app', label: '应用与数据' },
-          { key: 'guide', label: '快速开始' },
         ]}
       />
-
-      {settingsSection === 'guide' && <GettingStartedPanel />}
 
       {settingsSection === 'app' && <>
       <Card className="settings-card" title={<span><DesktopOutlined /> 启动方式</span>} loading={launcherLoading && !launcherSettings}>
@@ -1127,18 +1123,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       </>}
 
       {settingsSection === 'ai' && <>
-      <Alert
-        showIcon
-        type={globalModel.provider ? 'success' : 'warning'}
-        message={globalModel.provider ? 'AI 已准备好' : '还没有可用于创作的模型'}
-        description={globalModel.provider && globalModel.model
+      <ModelReadinessBanner
+        ready={Boolean(globalModel.provider)}
+        detail={globalModel.provider && globalModel.model
           ? `当前默认：${providerLabel(globalModel.provider)} · ${normalizeDefaultModel(globalModel.provider, globalModel.model)}`
-          : '检测到工具并不代表已经登录或有可用额度。请对一个配置执行真实对话测试。'}
-      />
-      <AdaptiveHelp
-        preferenceKey="model-readiness"
-        title="只要一个模型显示“可用”，司命就能开始创作"
-        description="登录方式、协议和输出限制只在排查问题时需要。日常使用只需确认上方显示“AI 已准备好”。"
+          : '请对一个配置执行真实对话测试；仅检测到工具不代表已经登录或有可用额度。'}
       />
 
       <Card
@@ -1161,20 +1150,29 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         />
       </Card>
 
-      <Card className="settings-card" title="检测到但尚未可用">
-        <Paragraph type="secondary">
-          这里的 CLI 或 API 配置尚未验证登录、模型和额度。测试成功前不会出现在助手、新书或写作模型列表中。
-        </Paragraph>
-        <Table
-          dataSource={pendingConfigs}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          pagination={false}
-          locale={{ emptyText: '没有待验证的配置' }}
-          scroll={{ x: 900 }}
-        />
-      </Card>
+      <Collapse
+        className="settings-card settings-pending-models"
+        items={[{
+          key: 'pending-models',
+          label: <Space><Text strong>检测到但尚未可用</Text><Tag>{pendingConfigs.length}</Tag></Space>,
+          children: (
+            <>
+              <Paragraph type="secondary">
+                这里的 CLI 或 API 配置尚未验证登录、模型和额度。测试成功前不会出现在助手、新书或写作模型列表中。
+              </Paragraph>
+              <Table
+                dataSource={pendingConfigs}
+                columns={columns}
+                rowKey="id"
+                loading={loading}
+                pagination={false}
+                locale={{ emptyText: '没有待验证的配置' }}
+                scroll={{ x: 900 }}
+              />
+            </>
+          ),
+        }]}
+      />
 
       <Collapse
         className="settings-card"

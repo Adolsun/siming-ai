@@ -120,6 +120,17 @@ const STATUS_COLOR: Record<string, string> = {
   completed: 'success',
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  pending: '待规划',
+  in_progress: '进行中',
+  completed: '已完成',
+}
+
+export function chapterStatusLabel(status?: string | null) {
+  if (!status) return ''
+  return STATUS_LABEL[status] || '未知状态'
+}
+
 const TRIGGER_LABEL: Record<string, string> = {
   manual_save: '手动保存',
   ai_insert: 'AI 插入',
@@ -395,7 +406,7 @@ function WriterPage({ projectId }: WriterPageProps) {
           <div className="writer-panel-head">
             <Title level={4} style={{ margin: 0 }}><FileTextOutlined /> 章节</Title>
             <Space size={6}>
-              <Button icon={<ReloadOutlined />} onClick={fetchChapters} loading={loading} />
+              <Button aria-label="刷新章节列表" icon={<ReloadOutlined />} onClick={fetchChapters} loading={loading} />
               <Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>新建</Button>
             </Space>
           </div>
@@ -409,16 +420,16 @@ function WriterPage({ projectId }: WriterPageProps) {
                 onClick={() => confirmLeave(() => setSelectedId(chapter.id))}
               >
                 <List.Item.Meta
-                  title={<Text strong ellipsis={{ tooltip: chapter.title }} style={{ maxWidth: '100%' }}>{chapter.title}</Text>}
+                  title={<span className="writer-chapter-title" title={chapter.title}>{chapter.title}</span>}
                   description={
-                    <Space direction="vertical" size={4}>
-                      <Text type="secondary" ellipsis>{chapter.outline_path.length > 0 ? chapter.outline_path.join(' / ') : '未关联大纲'}</Text>
-                      <Space size={6} wrap>
-                        <Tag>{chapter.word_count} 字</Tag>
-                        <Tag>v{chapter.current_version}</Tag>
-                        {chapter.outline_status && <Tag color={STATUS_COLOR[chapter.outline_status] || 'default'}>{chapter.outline_status}</Tag>}
-                      </Space>
-                    </Space>
+                    <div className="writer-chapter-meta">
+                      <Text type="secondary" ellipsis title={chapter.outline_path.join(' / ')}>{chapter.outline_path.length > 0 ? chapter.outline_path.join(' / ') : '未关联大纲'}</Text>
+                      <div className="writer-chapter-facts">
+                        <span>{chapter.word_count} 字</span>
+                        <span>v{chapter.current_version}</span>
+                        {chapter.outline_status && <Tag color={STATUS_COLOR[chapter.outline_status] || 'default'}>{chapterStatusLabel(chapter.outline_status)}</Tag>}
+                      </div>
+                    </div>
                   }
                 />
               </List.Item>
@@ -429,8 +440,8 @@ function WriterPage({ projectId }: WriterPageProps) {
         {/* ── Center: Editor ── */}
         <main className="writer-editor">
           <div className="writer-editor-head">
-            <div>
-              <Title level={4} style={{ margin: 0 }}>{editorTitle}</Title>
+            <div className="writer-editor-heading">
+              <Title level={4} className="writer-editor-title" title={editorTitle}>{editorTitle}</Title>
               {detail && !creating && (
                 <Space size={8} wrap>
                   <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
@@ -469,25 +480,27 @@ function WriterPage({ projectId }: WriterPageProps) {
                 </Form.Item>
               </div>
               {detail?.summary_text && !creating && (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="章节摘要"
-                  description={
-                    <div>
-                      <Paragraph style={{ marginBottom: detail.key_events?.length ? 8 : 0, whiteSpace: 'pre-wrap' }}>
-                        {detail.summary_text}
-                      </Paragraph>
-                      {(detail.key_events || []).length > 0 && (
-                        <Space wrap>
-                          {(detail.key_events || []).slice(0, 8).map((event, index) => (
-                            <Tag key={`${event}-${index}`}>{event}</Tag>
-                          ))}
-                        </Space>
-                      )}
-                    </div>
-                  }
-                  style={{ marginBottom: 12 }}
+                <Collapse
+                  className="writer-summary"
+                  size="small"
+                  items={[{
+                    key: 'summary',
+                    label: <Space size={8}><Text strong>章节摘要</Text><Text type="secondary">{(detail.key_events || []).length} 个关键事件</Text></Space>,
+                    children: (
+                      <div>
+                        <Paragraph style={{ marginBottom: detail.key_events?.length ? 8 : 0, whiteSpace: 'pre-wrap' }}>
+                          {detail.summary_text}
+                        </Paragraph>
+                        {(detail.key_events || []).length > 0 && (
+                          <Space wrap>
+                            {(detail.key_events || []).slice(0, 8).map((event, index) => (
+                              <Tag key={`${event}-${index}`}>{event}</Tag>
+                            ))}
+                          </Space>
+                        )}
+                      </div>
+                    ),
+                  }]}
                 />
               )}
               <Form.Item name="content" label="正文">

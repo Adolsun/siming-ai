@@ -94,6 +94,8 @@ const ROLE_OPTIONS = [
   { value: 'other', label: '其他', desc: '路人、工具人、背景角色等' },
 ]
 
+const roleTypeLabel = (value?: string) => ROLE_OPTIONS.find((option) => option.value === value)?.label || '未分类'
+
 const TONE_OPTIONS = [
   { value: 'neutral', label: '中性' }, { value: 'arrogant', label: '傲慢' },
   { value: 'gentle', label: '温和' }, { value: 'cold', label: '冷酷' },
@@ -441,7 +443,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
                   onClick={() => confirmLeave(() => setSelectedId(item.id))}>
                   <List.Item.Meta title={<span className="characters-name-text" title={item.name}>{item.name}</span>}
                     description={<Space size={6} wrap>
-                      <Tag>{item.role_type || '未分类'}</Tag>
+                      <Tag>{roleTypeLabel(item.role_type)}</Tag>
                       <Text type="secondary">v{item.current_version}</Text>
                       {(item.aliases || []).slice(0, 2).map((alias) => <Tag key={alias} color="blue">{alias}</Tag>)}
                     </Space>} />
@@ -484,6 +486,8 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           </div>
 
           <Form form={form} layout="vertical" onFinish={saveCharacter} onValuesChange={markDirty}>
+            <section className="characters-form-section" aria-labelledby="character-basics-title">
+            <Title level={5} id="character-basics-title">基础信息</Title>
             <div className="characters-two-col">
               <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入角色姓名' }]}>
                 <Input placeholder="角色姓名" maxLength={100} />
@@ -511,11 +515,13 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <Form.Item name="abilities" label="能力">
               <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入能力后回车" />
             </Form.Item>
+            </section>
             <Collapse
+              className="characters-detail-collapse"
               ghost
               items={[{
                 key: 'writing-locks',
-                label: <span style={{ fontWeight: 500 }}>写作锁 <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)', fontWeight: 400 }}>（确保跨章节的人设和声线稳定）</span></span>,
+                label: <span style={{ fontWeight: 500 }}>写作约束 <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)', fontWeight: 400 }}>（确保跨章节的人设和声线稳定）</span></span>,
                 children: (
                   <>
                     <div className="characters-two-col">
@@ -541,14 +547,15 @@ function CharactersPage({ projectId }: CharactersPageProps) {
               }]}
             />
             <Collapse
+              className="characters-detail-collapse"
               ghost
               items={[{
                 key: 'state',
-                label: <span style={{ fontWeight: 500 }}>当前状态 <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)', fontWeight: 400 }}>（可折叠，追踪角色实时变化）</span></span>,
+                label: <span style={{ fontWeight: 500 }}>剧情状态 <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)', fontWeight: 400 }}>（追踪角色实时变化）</span></span>,
                 children: (
                   <>
                     <div className="characters-three-col">
-                      <Form.Item name="life_status" label="生死状态"><Input placeholder="alive / dead / unknown，或中文描述" /></Form.Item>
+                      <Form.Item name="life_status" label="生死状态"><Input placeholder="存活 / 死亡 / 未知，或其他描述" /></Form.Item>
                       <Form.Item name="current_location" label="当前位置"><Input placeholder="角色当前所处地点" /></Form.Item>
                       <Form.Item name="realm_or_level" label="境界/等级"><Input placeholder="修为、等级、身份层级" /></Form.Item>
                     </div>

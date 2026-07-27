@@ -15,7 +15,7 @@ function ThemeSwitcher({ iconOnly }: ThemeSwitcherProps) {
       type="text"
       size="small"
       icon={<BgColorsOutlined />}
-      aria-label={iconOnly ? `切换主题，当前主题：${currentTheme.name}` : undefined}
+      aria-label={`切换主题，当前主题：${currentTheme.name}`}
       style={{ opacity: 0.75, transition: 'opacity 0.2s ease' }}
     >
       {iconOnly ? null : currentTheme.name}

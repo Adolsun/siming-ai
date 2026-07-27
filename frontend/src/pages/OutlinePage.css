@@ -8,7 +8,7 @@
 
 .outline-shell {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: var(--outline-panel-width, 380px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
@@ -30,6 +30,39 @@
   top: 12px;
 }
 
+.outline-shell-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.outline-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  position: absolute;
+  right: -9px;
+  top: 0;
+  width: 17px;
+  z-index: 5;
+}
+
+.outline-resize-handle::after {
+  background: transparent;
+  border-radius: 2px;
+  content: '';
+  height: 52px;
+  position: absolute;
+  right: 7px;
+  top: calc(50% - 26px);
+  transition: background-color 160ms ease;
+  width: 3px;
+}
+
+.outline-resize-handle:hover::after,
+.outline-resize-handle:focus-visible::after,
+.outline-shell-resizing .outline-resize-handle::after {
+  background: var(--ant-color-primary-border);
+}
+
 .outline-panel-head {
   display: flex;
   align-items: center;
@@ -42,6 +75,22 @@
   position: sticky;
   top: 0;
   z-index: 2;
+}
+
+.outline-tree-tools {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.outline-tree-filter-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px 32px;
+}
+
+.outline-tree-filter-row .ant-btn {
+  padding-inline: 0;
 }
 
 /* ── Force Ant Design tree nodes to full width ── */
@@ -87,27 +136,43 @@
   white-space: nowrap;
 }
 
-/* Tags — fixed width so every node aligns the same */
-.outline-tree-tags {
-  display: inline-flex;
-  flex: 0 0 104px;
-  justify-content: flex-end;
+/* Compact metadata keeps titles readable in a dense planning tree. */
+.outline-tree-meta {
   align-items: center;
-  gap: 4px;
+  color: var(--ant-color-text-tertiary);
+  display: inline-flex;
+  flex: 0 0 34px;
+  font-size: 11px;
+  gap: 5px;
+  justify-content: flex-end;
   white-space: nowrap;
 }
 
-.outline-tree-tags .ant-tag {
-  margin-inline-end: 0;
-  font-size: 11px;
-  padding: 0 5px;
-  line-height: 18px;
+.outline-status-dot {
+  background: var(--ant-color-text-quaternary);
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.outline-status-dot-in_progress {
+  background: var(--ant-color-info);
+}
+
+.outline-status-dot-completed {
+  background: var(--ant-color-success);
 }
 
 /* ── Editor ── */
 .outline-editor {
   min-width: 0;
   padding: 20px;
+}
+
+.outline-editor .ant-select-selection-placeholder {
+  color: var(--ant-color-text-secondary) !important;
+  opacity: 1;
 }
 
 .outline-editor-head {
@@ -134,12 +199,16 @@
 /* ── Responsive ── */
 @media (max-width: 1180px) {
   .outline-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr !important;
   }
 
   .outline-tree-panel {
-    max-height: none;
+    max-height: 320px;
     position: static;
+  }
+
+  .outline-resize-handle {
+    display: none;
   }
 
   .outline-grid {

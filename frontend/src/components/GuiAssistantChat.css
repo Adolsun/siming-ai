@@ -176,7 +176,7 @@
   flex: 1;
   overflow-y: auto;
   padding-block: 24px;
-  padding-inline: max(24px, calc((100% - 920px) / 2));
+  padding-inline: max(24px, calc((100% - 1120px) / 2));
 }
 
 .gui-chat-setup-alert {
@@ -213,7 +213,7 @@
 
 .gui-chat-msg {
   margin-bottom: 20px;
-  max-width: min(82%, 720px);
+  max-width: min(86%, 880px);
   animation: siming-slide-up 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -349,7 +349,7 @@
 /* ── Composer ── */
 .gui-chat-composer {
   padding-block: 14px;
-  padding-inline: max(24px, calc((100% - 920px) / 2));
+  padding-inline: max(24px, calc((100% - 1120px) / 2));
   border-top: 1px solid var(--ant-color-border-secondary);
   background: var(--ant-color-bg-container);
   flex-shrink: 0;

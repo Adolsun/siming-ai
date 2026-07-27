@@ -17,7 +17,45 @@ import { RuntimeStatusTags } from '../../../shared/ui/runtime'
 
 const { Paragraph, Text, Title } = Typography
 
-const ACTIVE_STATUSES = new Set(['queued', 'running', 'waiting_user', 'paused'])
+const NON_TERMINAL_STATUSES = new Set<OperationRun['status']>(['queued', 'running', 'waiting_user', 'paused'])
+const COMPUTING_STATUSES = new Set<OperationRun['status']>(['queued', 'running'])
+
+export interface OperationAttemptGroup {
+  latest: OperationRun
+  history: OperationRun[]
+}
+
+function operationTime(operation: OperationRun) {
+  const value = operation.updated_at || operation.created_at
+  const timestamp = value ? new Date(value).getTime() : 0
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function operationGroupKey(operation: OperationRun) {
+  if (!operation.source_id) return `operation:${operation.id}`
+  return [operation.project_id || 'global', operation.source_kind, operation.source_id].join(':')
+}
+
+export function groupOperationAttempts(operations: OperationRun[]): OperationAttemptGroup[] {
+  const groups = new Map<string, OperationRun[]>()
+  operations.forEach((operation) => {
+    const key = operationGroupKey(operation)
+    groups.set(key, [...(groups.get(key) || []), operation])
+  })
+  return Array.from(groups.values())
+    .map((items) => {
+      const sorted = [...items].sort((left, right) => operationTime(right) - operationTime(left))
+      return { latest: sorted[0], history: sorted.slice(1) }
+    })
+    .sort((left, right) => operationTime(right.latest) - operationTime(left.latest))
+}
+
+export function operationNeedsAttention(operation: OperationRun) {
+  return operation.status === 'waiting_user'
+    || operation.health_status === 'stalled'
+    || operation.health_status === 'disconnected'
+    || (operation.status === 'failed' && operation.can_retry)
+}
 function elapsedLabel(seconds = 0) {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -36,15 +74,24 @@ function relativeActivity(value?: string) {
   return `${Math.floor(seconds / 3600)} 小时前`
 }
 
-function OperationItem({ operation, onAction, onOpen }: {
+function hoursSince(value?: string | null) {
+  if (!value) return 0
+  return Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 3_600_000))
+}
+
+function OperationItem({ operation, history, onAction, onOpen }: {
   operation: OperationRun
+  history?: OperationRun[]
   onAction: (operation: OperationRun, action: string) => Promise<void>
   onOpen: (operation: OperationRun) => void
 }) {
-  const active = ACTIVE_STATUSES.has(operation.status)
-  const computing = operation.status === 'queued' || operation.status === 'running'
+  const active = NON_TERMINAL_STATUSES.has(operation.status)
+  const computing = COMPUTING_STATUSES.has(operation.status)
   const progress = operation.progress || { mode: 'indeterminate' }
   const interaction = toInteractionProjection(operation)
+  const waitingHours = operation.status === 'waiting_user'
+    ? hoursSince(operation.last_activity_at || operation.updated_at || operation.created_at)
+    : 0
   return (
     <section className="operation-center-item" aria-label={operation.title}>
       <Flex justify="space-between" align="flex-start" gap={12}>
@@ -81,9 +128,12 @@ function OperationItem({ operation, onAction, onOpen }: {
       <div className="operation-center-facts">
         <span><ClockCircleOutlined /> 已运行 {elapsedLabel(operation.elapsed_seconds)}</span>
         <span>最近活动 {relativeActivity(operation.last_activity_at || undefined)}</span>
-        {operation.phase && <span>阶段 {operation.phase}</span>}
-        {operation.model_source && <span>模型 {operation.model_source}</span>}
       </div>
+      {waitingHours >= 24 && (
+        <Text className="operation-center-stale" type="warning">
+          已等待确认 {waitingHours} 小时，请处理后再继续流程。
+        </Text>
+      )}
       {interaction.outcome && (operation.status === 'waiting_user' || !active) && (
         <PersistentOutcome
           className="operation-center-outcome"
@@ -101,6 +151,29 @@ function OperationItem({ operation, onAction, onOpen }: {
           {operation.can_retry && operation.health_status !== 'active' && <Button size="small" icon={<ReloadOutlined />} onClick={() => void onAction(operation, 'retry-current-unit')}>重试当前单元</Button>}
           {operation.can_cancel && <Button size="small" danger icon={<CloseCircleOutlined />} onClick={() => void onAction(operation, 'cancel')}>取消</Button>}
         </Space>
+      )}
+      {(operation.phase || operation.model_source || operation.source_kind) && (
+        <details className="operation-center-details">
+          <summary>技术详情</summary>
+          <div>
+            {operation.phase && <span>阶段：{operation.phase}</span>}
+            {operation.model_source && <span>模型：{operation.model_source}</span>}
+            <span>来源：{operation.source_kind}</span>
+          </div>
+        </details>
+      )}
+      {history && history.length > 0 && (
+        <details className="operation-center-history">
+          <summary>历史尝试 {history.length}</summary>
+          <div className="operation-center-history-list">
+            {history.map((attempt) => (
+              <div key={attempt.id}>
+                <RuntimeStatusTags operation={attempt} />
+                <Text type="secondary">{relativeActivity(attempt.updated_at || attempt.created_at || undefined)}</Text>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </section>
   )
@@ -141,9 +214,26 @@ export default function GlobalOperationCenter() {
     return () => observer.disconnect()
   }, [location.pathname])
 
-  const activeOperations = useMemo(() => operations.filter((item) => ACTIVE_STATUSES.has(item.status)), [operations])
-  const recentOperations = useMemo(() => operations.filter((item) => !ACTIVE_STATUSES.has(item.status)).slice(0, 10), [operations])
-  const primaryActiveId = activeOperations[0]?.id
+  const groupedOperations = useMemo(() => groupOperationAttempts(operations), [operations])
+  const attentionOperations = useMemo(
+    () => groupedOperations.filter((group) => operationNeedsAttention(group.latest)),
+    [groupedOperations],
+  )
+  const runningOperations = useMemo(
+    () => groupedOperations.filter((group) => COMPUTING_STATUSES.has(group.latest.status) && !operationNeedsAttention(group.latest)),
+    [groupedOperations],
+  )
+  const pausedOperations = useMemo(
+    () => groupedOperations.filter((group) => group.latest.status === 'paused' && !operationNeedsAttention(group.latest)),
+    [groupedOperations],
+  )
+  const recentOperations = useMemo(
+    () => groupedOperations
+      .filter((group) => !NON_TERMINAL_STATUSES.has(group.latest.status) && !operationNeedsAttention(group.latest))
+      .slice(0, 10),
+    [groupedOperations],
+  )
+  const primaryActiveId = runningOperations[0]?.latest.id
 
   useEffect(() => {
     streamRef.current?.close()
@@ -186,16 +276,29 @@ export default function GlobalOperationCenter() {
   }, [navigate])
 
   const trigger = (
-    <Tooltip title="查看正在运行和最近完成的任务">
+    <Tooltip title="查看待处理、运行中和最近任务">
       <Badge
-        count={activeOperations.length}
+        count={attentionOperations.length}
         size="small"
         className={`global-operation-badge${navTarget ? '' : ' global-operation-badge-floating'}`}
       >
-        <Button className="global-operation-trigger" icon={<UnorderedListOutlined />} aria-label={`全局任务中心，${activeOperations.length} 个任务正在进行或等待处理`} onClick={() => setOpen(true)}>任务</Button>
+        <Button
+          className={`global-operation-trigger${runningOperations.length ? ' global-operation-trigger-running' : ''}`}
+          icon={<UnorderedListOutlined />}
+          aria-label={`任务中心，${attentionOperations.length} 项待处理，${runningOperations.length} 项运行中`}
+          onClick={() => setOpen(true)}
+        >
+          任务
+        </Button>
       </Badge>
     </Tooltip>
   )
+
+  const renderGroups = (groups: OperationAttemptGroup[]) => groups.map((group) => (
+    <div key={group.latest.id} aria-busy={actionId === group.latest.id}>
+      <OperationItem operation={group.latest} history={group.history} onAction={runAction} onOpen={openResult} />
+    </div>
+  ))
 
   return (
     <>
@@ -207,12 +310,31 @@ export default function GlobalOperationCenter() {
             <Text>{pollDisconnected ? '正在重新连接司命，后台任务不会因此停止' : '进度流正在重新连接，已改用状态轮询'}</Text>
           </div>
         )}
-        <Title level={5}>正在进行</Title>
-        {activeOperations.length ? activeOperations.map((operation) => (
-          <div key={operation.id} aria-busy={actionId === operation.id}><OperationItem operation={operation} onAction={runAction} onOpen={openResult} /></div>
-        )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有正在运行的任务" />}
-        <Title level={5} className="operation-center-recent-title">最近任务</Title>
-        {recentOperations.length ? recentOperations.map((operation) => <OperationItem key={operation.id} operation={operation} onAction={runAction} onOpen={openResult} />) : <Text type="secondary">尚无任务记录</Text>}
+        {groupedOperations.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚无任务记录" />}
+        {attentionOperations.length > 0 && (
+          <section className="operation-center-section" aria-labelledby="operation-attention-title">
+            <Title level={5} id="operation-attention-title">待你处理 <Badge count={attentionOperations.length} /></Title>
+            {renderGroups(attentionOperations)}
+          </section>
+        )}
+        {runningOperations.length > 0 && (
+          <section className="operation-center-section" aria-labelledby="operation-running-title">
+            <Title level={5} id="operation-running-title">正在运行 <Badge status="processing" /></Title>
+            {renderGroups(runningOperations)}
+          </section>
+        )}
+        {pausedOperations.length > 0 && (
+          <section className="operation-center-section" aria-labelledby="operation-paused-title">
+            <Title level={5} id="operation-paused-title">已暂停</Title>
+            {renderGroups(pausedOperations)}
+          </section>
+        )}
+        {recentOperations.length > 0 && (
+          <section className="operation-center-section operation-center-recent" aria-labelledby="operation-recent-title">
+            <Title level={5} id="operation-recent-title">最近完成</Title>
+            {renderGroups(recentOperations)}
+          </section>
+        )}
       </Drawer>
     </>
   )

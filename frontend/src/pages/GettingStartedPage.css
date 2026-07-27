@@ -140,10 +140,15 @@
 }
 
 .getting-started-first-idea {
-  max-width: 760px;
-  margin: 24px auto 0;
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-left: 4px solid var(--ant-color-success);
+  border-radius: 8px;
   display: grid;
   gap: 16px;
+  margin: 12px auto 0;
+  max-width: 920px;
+  padding: clamp(24px, 4vw, 42px);
   text-align: left;
 }
 
@@ -154,7 +159,7 @@
 
 .getting-started-ready-icon {
   color: var(--ant-color-success);
-  font-size: 40px;
+  font-size: 34px;
 }
 
 @media (max-width: 820px) {

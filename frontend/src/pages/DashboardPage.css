@@ -128,6 +128,11 @@
   padding: 0 18px;
 }
 
+.dashboard-card .ant-card-head .ant-btn {
+  min-height: 40px;
+  min-width: 40px;
+}
+
 .dashboard-card .ant-card-body {
   display: flex;
   flex-direction: column;

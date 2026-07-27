@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   Alert,
   Button,
@@ -10,7 +11,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Tag,
   Tooltip,
   Tree,
   Typography,
@@ -22,9 +22,12 @@ import {
   DeleteOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
+  MinusSquareOutlined,
   PlusOutlined,
+  PlusSquareOutlined,
   ReloadOutlined,
   SaveOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { SaveStatusIndicator } from '../components/interaction'
@@ -118,23 +121,32 @@ const STATUS_OPTIONS: Array<{ value: NodeStatus; label: string }> = [
   { value: 'completed', label: '已完成' },
 ]
 
-const NODE_TYPE_COLOR: Record<NodeType, string> = {
-  volume: 'geekblue',
-  chapter: 'green',
-  section: 'orange',
-}
-
-const STATUS_COLOR: Record<NodeStatus, string> = {
-  pending: 'default',
-  in_progress: 'processing',
-  completed: 'success',
-}
-
 const nodeTypeLabel = (type: NodeType) => NODE_TYPE_OPTIONS.find((item) => item.value === type)?.label || type
 const statusLabel = (status: NodeStatus) => STATUS_OPTIONS.find((item) => item.value === status)?.label || status
 
-function collectTreeKeys(nodes: OutlineNode[]): string[] {
+export function collectTreeKeys(nodes: OutlineNode[]): string[] {
   return nodes.flatMap((node) => [node.id, ...collectTreeKeys(node.children || [])])
+}
+
+export function collectSelectedPath(nodes: OutlineNode[], selectedId?: string | null): string[] {
+  if (!selectedId) return nodes.map((node) => node.id)
+  const visit = (items: OutlineNode[], path: string[]): string[] | null => {
+    for (const node of items) {
+      const nextPath = [...path, node.id]
+      if (node.id === selectedId) return nextPath
+      const nested = visit(node.children || [], nextPath)
+      if (nested) return nested
+    }
+    return null
+  }
+  return visit(nodes, []) || nodes.map((node) => node.id)
+}
+
+function filterOutlineTree(nodes: OutlineNode[], predicate: (node: OutlineNode) => boolean): OutlineNode[] {
+  return nodes.flatMap((node) => {
+    const children = filterOutlineTree(node.children || [], predicate)
+    return predicate(node) || children.length > 0 ? [{ ...node, children }] : []
+  })
 }
 
 function collectDescendantIds(node?: OutlineNode | null): Set<string> {
@@ -189,6 +201,16 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [characters, setCharacters] = useState<CharacterItem[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
+  const [searchKeyword, setSearchKeyword] = useState('')
+  const [typeFilter, setTypeFilter] = useState<NodeType | 'all'>('all')
+  const [statusFilter, setStatusFilter] = useState<NodeStatus | 'all'>('all')
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('siming_outline_panel_width'))
+    return Number.isFinite(stored) && stored >= 320 && stored <= 480 ? stored : 380
+  })
+  const [resizing, setResizing] = useState(false)
+  const resizeStartX = useRef(0)
+  const resizeStartWidth = useRef(panelWidth)
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -208,6 +230,21 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     [flat, selectedId]
   )
   const blockedParentIds = useMemo(() => collectDescendantIds(selectedNode), [selectedNode])
+  const filterActive = Boolean(searchKeyword.trim() || typeFilter !== 'all' || statusFilter !== 'all')
+  const filteredTree = useMemo(() => {
+    const keyword = searchKeyword.trim().toLocaleLowerCase('zh-CN')
+    return filterOutlineTree(tree, (node) => (
+      (!keyword || `${node.title} ${node.summary || ''}`.toLocaleLowerCase('zh-CN').includes(keyword))
+      && (typeFilter === 'all' || node.node_type === typeFilter)
+      && (statusFilter === 'all' || node.status === statusFilter)
+    ))
+  }, [searchKeyword, statusFilter, tree, typeFilter])
+
+  const updatePanelWidth = (nextWidth: number) => {
+    const clampedWidth = Math.min(480, Math.max(320, nextWidth))
+    localStorage.setItem('siming_outline_panel_width', String(clampedWidth))
+    setPanelWidth(clampedWidth)
+  }
 
   const fetchOutline = useCallback(async () => {
     setLoading(true)
@@ -216,13 +253,11 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       const payload = res.data.data
       setTree(payload.items)
       setFlat(payload.flat)
-      setExpandedKeys((keys) => (keys.length > 0 ? keys : collectTreeKeys(payload.items)))
-
-      if (selectedId && !payload.flat.some((node) => node.id === selectedId)) {
-        setSelectedId(payload.flat[0]?.id || null)
-      } else if (!selectedId && !creating && payload.flat.length > 0) {
-        setSelectedId(payload.flat[0].id)
-      }
+      const nextSelectedId = selectedId && payload.flat.some((node) => node.id === selectedId)
+        ? selectedId
+        : (!creating ? payload.flat[0]?.id || null : null)
+      setExpandedKeys((keys) => (keys.length > 0 ? keys : collectSelectedPath(payload.items, nextSelectedId)))
+      if (nextSelectedId !== selectedId) setSelectedId(nextSelectedId)
     } catch (err: any) {
       message.error(err.message || '获取大纲失败')
     } finally {
@@ -306,16 +341,16 @@ function OutlinePage({ projectId }: OutlinePageProps) {
             {node.node_type === 'volume' ? <FolderOpenOutlined /> : <FileTextOutlined />}
             <span title={node.title}>{node.title}</span>
           </span>
-          <span className="outline-tree-tags">
-            <Tag color={NODE_TYPE_COLOR[node.node_type]}>{nodeTypeLabel(node.node_type)}</Tag>
-            <Tag color={STATUS_COLOR[node.status]}>{statusLabel(node.status)}</Tag>
+          <span className="outline-tree-meta" title={`${nodeTypeLabel(node.node_type)} · ${statusLabel(node.status)}`}>
+            <span>{nodeTypeLabel(node.node_type)}</span>
+            <span className={`outline-status-dot outline-status-dot-${node.status}`} aria-label={statusLabel(node.status)} />
           </span>
         </div>
       ),
       children: node.children.map(renderNode),
     })
-    return tree.map(renderNode)
-  }, [tree])
+    return filteredTree.map(renderNode)
+  }, [filteredTree])
 
   const startCreate = (parent?: OutlineNode | null) => {
     confirmLeave(() => {
@@ -460,7 +495,10 @@ function OutlinePage({ projectId }: OutlinePageProps) {
 
   return (
     <div className="outline-page">
-      <div className="outline-shell">
+      <div
+        className={`outline-shell${resizing ? ' outline-shell-resizing' : ''}`}
+        style={{ '--outline-panel-width': `${panelWidth}px` } as CSSProperties}
+      >
         <aside className="outline-tree-panel">
           <div className="outline-panel-head">
             <Title level={4} style={{ margin: 0 }}>
@@ -468,7 +506,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
             </Title>
             <Space size={6}>
               <Tooltip title="刷新">
-                <Button icon={<ReloadOutlined />} onClick={fetchOutline} loading={loading} />
+                <Button aria-label="刷新大纲" icon={<ReloadOutlined />} onClick={fetchOutline} loading={loading} />
               </Tooltip>
               <Tooltip title="新增根节点">
                 <Button icon={<PlusOutlined />} onClick={() => startCreate(null)} />
@@ -479,11 +517,40 @@ function OutlinePage({ projectId }: OutlinePageProps) {
             </Space>
           </div>
 
+          <div className="outline-tree-tools">
+            <Input
+              allowClear
+              aria-label="搜索大纲"
+              prefix={<SearchOutlined />}
+              placeholder="搜索标题或摘要"
+              value={searchKeyword}
+              onChange={(event) => setSearchKeyword(event.target.value)}
+            />
+            <div className="outline-tree-filter-row">
+              <Select
+                aria-label="按节点类型筛选"
+                value={typeFilter}
+                onChange={setTypeFilter}
+                options={[{ value: 'all', label: '全部类型' }, ...NODE_TYPE_OPTIONS]}
+              />
+              <Select
+                aria-label="按节点状态筛选"
+                value={statusFilter}
+                onChange={setStatusFilter}
+                options={[{ value: 'all', label: '全部状态' }, ...STATUS_OPTIONS]}
+              />
+              <Tooltip title="全部展开">
+                <Button aria-label="全部展开" icon={<PlusSquareOutlined />} onClick={() => setExpandedKeys(collectTreeKeys(tree))} />
+              </Tooltip>
+              <Tooltip title="全部折叠">
+                <Button aria-label="全部折叠" icon={<MinusSquareOutlined />} onClick={() => setExpandedKeys([])} />
+              </Tooltip>
+            </div>
+          </div>
+
           {treeData.length === 0 && !loading ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无大纲">
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => startCreate(null)}>
-                新增节点
-              </Button>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={filterActive ? '没有符合条件的大纲节点' : '暂无大纲'}>
+              {!filterActive && <Button type="primary" icon={<PlusOutlined />} onClick={() => startCreate(null)}>新增节点</Button>}
             </Empty>
           ) : (
             <Tree
@@ -491,7 +558,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               draggable
               treeData={treeData}
               selectedKeys={selectedId ? [selectedId] : []}
-              expandedKeys={expandedKeys}
+              expandedKeys={filterActive ? collectTreeKeys(filteredTree) : expandedKeys}
               onExpand={(keys) => setExpandedKeys(keys.map(String))}
               onSelect={(keys) => {
                 confirmLeave(() => {
@@ -502,6 +569,36 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               onDrop={handleDrop}
             />
           )}
+          <div
+            className="outline-resize-handle"
+            role="separator"
+            aria-label="调整大纲导航宽度"
+            aria-orientation="vertical"
+            aria-valuemin={320}
+            aria-valuemax={480}
+            aria-valuenow={panelWidth}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId)
+              resizeStartX.current = event.clientX
+              resizeStartWidth.current = panelWidth
+              setResizing(true)
+            }}
+            onPointerMove={(event) => {
+              if (resizing) updatePanelWidth(resizeStartWidth.current + event.clientX - resizeStartX.current)
+            }}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+              setResizing(false)
+            }}
+            onPointerCancel={() => setResizing(false)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault()
+                updatePanelWidth(panelWidth + (event.key === 'ArrowRight' ? 16 : -16))
+              }
+            }}
+          />
         </aside>
 
         <main className="outline-editor">
@@ -556,10 +653,10 @@ function OutlinePage({ projectId }: OutlinePageProps) {
                     optionFilterProp="label"
                   />
                 </Form.Item>
-                <Form.Item name="node_type" label="节点类型" rules={[{ required: true, message: '请选择节点类型' }]}>
+                <Form.Item name="node_type" label="节点类型">
                   <Select options={NODE_TYPE_OPTIONS} />
                 </Form.Item>
-                <Form.Item name="status" label="状态" rules={[{ required: true, message: '请选择状态' }]}>
+                <Form.Item name="status" label="状态">
                   <Select options={STATUS_OPTIONS} />
                 </Form.Item>
                 <Form.Item name="sort_order" label="排序">

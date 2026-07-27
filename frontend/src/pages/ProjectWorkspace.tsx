@@ -148,7 +148,12 @@ function ProjectWorkspace() {
   }, [searchParams, setSearchParams])
 
   useEffect(() => {
-    if (window.innerWidth < 900) setSidebarCollapsed(true)
+    const collapseForCompactWorkspace = () => {
+      if (window.innerWidth <= 1280) setSidebarCollapsed(true)
+    }
+    collapseForCompactWorkspace()
+    window.addEventListener('resize', collapseForCompactWorkspace)
+    return () => window.removeEventListener('resize', collapseForCompactWorkspace)
   }, [setSidebarCollapsed])
 
   const projectTitle = projectQuery.data?.title || ''
@@ -289,15 +294,17 @@ function ProjectWorkspace() {
               <span>{PAGE_TITLES[activeKey]}</span>
             </div>
             <div className="project-workspace-actions">
+              <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
               <ThemeSwitcher />
               <Tooltip title={aiCollapsed ? '展开 AI 助手' : '收起 AI 助手'}>
                 <Button
                   type={aiCollapsed ? 'default' : 'primary'}
                   size="small"
-                  icon={<RobotOutlined />}
-                  onClick={() => setAiCollapsed(!aiCollapsed)}
-                  aria-expanded={!aiCollapsed}
-                >
+                icon={<RobotOutlined />}
+                onClick={() => setAiCollapsed(!aiCollapsed)}
+                aria-expanded={!aiCollapsed}
+                aria-label={aiCollapsed ? '展开项目助手' : '收起项目助手'}
+              >
                   项目助手
                 </Button>
               </Tooltip>

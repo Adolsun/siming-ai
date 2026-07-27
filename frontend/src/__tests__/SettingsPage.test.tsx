@@ -131,6 +131,7 @@ describe('SettingsPage startup and update controls', () => {
     })
 
     render(<SettingsPage embedded />)
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
     fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
     fireEvent.change(await screen.findByLabelText('API Key'), { target: { value: 'secret-key' } })
     fireEvent.click(screen.getByRole('button', { name: /用当前模型真实测试/ }))

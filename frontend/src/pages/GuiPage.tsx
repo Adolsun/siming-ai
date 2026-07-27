@@ -15,6 +15,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
+  RocketOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
 import SettingsPage from './SettingsPage'
@@ -24,18 +25,22 @@ import TerminalPage from './TerminalPage'
 import ModelCenterPage from './ModelCenterPage'
 import TabCache from '../components/TabCache'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import { GettingStartedPanel } from './GettingStartedPage'
 import './GuiPage.css'
 
 const { Sider, Content } = Layout
 const { Title } = Typography
 
-type GuiTab = 'settings' | 'external-agent' | 'ai-chat' | 'models' | 'terminal'
+type GuiTab = 'settings' | 'external-agent' | 'ai-chat' | 'quick-start' | 'models' | 'terminal'
 
 const MENU_ITEMS = [
   {
     type: 'group' as const,
     label: '创作入口',
-    children: [{ key: 'ai-chat', icon: <RobotOutlined />, label: 'AI 助手' }],
+    children: [
+      { key: 'ai-chat', icon: <RobotOutlined />, label: 'AI 助手' },
+      { key: 'quick-start', icon: <RocketOutlined />, label: '快速开始' },
+    ],
   },
   {
     type: 'group' as const,
@@ -58,6 +63,18 @@ const MENU_ITEMS = [
 const TAB_RENDERERS = {
   models: () => <ModelCenterPage embedded />,
   'ai-chat': () => <GuiAssistantChat />,
+  'quick-start': () => (
+    <div className="gui-embedded-page">
+      <header className="siming-section-header">
+        <div>
+          <span className="siming-section-kicker">免费体验</span>
+          <Title level={3}><RocketOutlined /> 快速开始</Title>
+          <p className="siming-section-description">检查、安装并验证免费写作模型，然后直接开始第一本小说。</p>
+        </div>
+      </header>
+      <GettingStartedPanel />
+    </div>
+  ),
   settings: () => <SettingsPage embedded />,
   'external-agent': () => <ExternalAgentPage embedded />,
   terminal: () => <TerminalPage />,
