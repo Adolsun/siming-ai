@@ -60,7 +60,10 @@ def _validate_writing_result(
 
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if outline_node_id:
-        query = query.filter(Chapter.outline_node_id == outline_node_id)
+        query = query.filter(
+            Chapter.outline_node_id == outline_node_id,
+            (Chapter.created_at >= since) | (Chapter.updated_at >= since),
+        )
     else:
         query = query.filter(
             (Chapter.created_at >= since) | (Chapter.updated_at >= since)

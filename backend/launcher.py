@@ -429,7 +429,11 @@ def _run_mcp_server() -> None:
     from app.database.bootstrap import bootstrap_database
     from app.database.session import SessionLocal, engine
 
-    bootstrap = bootstrap_database(engine)
+    # The desktop server has already migrated the database before it launches
+    # a packaged MCP child. Avoid a redundant metadata write here: it can race
+    # with the active project-assistant transaction and make SQLite report
+    # ``database is locked`` even though the schema is already current.
+    bootstrap = bootstrap_database(engine, refresh_current_metadata=False)
     if bootstrap.read_only:
         raise RuntimeError(
             "MCP cannot start while the database is in read-only recovery mode: "

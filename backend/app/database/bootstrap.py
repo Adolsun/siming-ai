@@ -133,8 +133,15 @@ def bootstrap_database(
     target_engine: Engine = engine,
     *,
     database_url: str | None = None,
+    refresh_current_metadata: bool = True,
 ) -> DatabaseBootstrapResult:
-    """Upgrade a known database to head or return a safe recovery result."""
+    """Upgrade a known database to head or return a safe recovery result.
+
+    ``refresh_current_metadata`` may be disabled by packaged MCP child
+    processes.  The desktop process has already completed the schema bootstrap
+    before it launches those children, so refreshing application-version
+    metadata again only creates an unnecessary competing SQLite writer.
+    """
     settings = get_settings()
     url = database_url or settings.database_url
     config = alembic_config(url)
@@ -153,7 +160,8 @@ def bootstrap_database(
                     read_only=True,
                 )
         if current == head:
-            _record_schema_epoch(target_engine, head)
+            if refresh_current_metadata:
+                _record_schema_epoch(target_engine, head)
             return DatabaseBootstrapResult(
                 mode="ready",
                 schema_revision=head,

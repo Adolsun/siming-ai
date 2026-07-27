@@ -119,6 +119,41 @@ def test_current_database_bootstrap_is_idempotent():
             engine.dispose()
 
 
+def test_current_database_mcp_check_stays_read_only_during_active_writer():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "current-with-writer.db"
+        url = _database_url(database_path)
+        bootstrap_engine = create_engine(url)
+        mcp_engine = create_engine(url)
+        writer = None
+        try:
+            initialized = bootstrap_database(bootstrap_engine, database_url=url)
+            assert initialized.read_only is False
+
+            writer = sqlite3.connect(database_path)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "UPDATE siming_schema_metadata SET value = value "
+                "WHERE key = 'application_version'"
+            )
+
+            checked = bootstrap_database(
+                mcp_engine,
+                database_url=url,
+                refresh_current_metadata=False,
+            )
+
+            assert checked.mode == "ready"
+            assert checked.read_only is False
+            assert checked.schema_revision == initialized.schema_revision
+        finally:
+            if writer is not None:
+                writer.rollback()
+                writer.close()
+            mcp_engine.dispose()
+            bootstrap_engine.dispose()
+
+
 def test_failed_migration_returns_the_verified_backup(monkeypatch):
     with TemporaryDirectory() as temp_dir:
         database_path = Path(temp_dir) / "failed.db"

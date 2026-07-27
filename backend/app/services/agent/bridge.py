@@ -61,32 +61,24 @@ def _resolve_outline_node_id(
 ) -> str:
     """Try to find an outline node ID from chapter number or query text."""
     if chapter_number is not None:
-        node = (
+        nodes = (
             db.query(OutlineNode)
             .filter(
                 OutlineNode.project_id == project_id,
-                OutlineNode.title.contains(str(chapter_number)),
+                OutlineNode.node_type == "chapter",
             )
-            .first()
+            .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
+            .all()
         )
-        if node:
-            return node.id
+        chapter_pattern = re.compile(rf"^\s*第\s*{chapter_number}\s*章(?:\s|$|[^0-9])")
+        for node in nodes:
+            if chapter_pattern.search(node.title or ""):
+                return node.id
 
     # Try matching by keywords from the query
-    import re
     match = re.search(r"第\s*(\d+)\s*章", outline_query or "")
     if match:
-        num = match.group(1)
-        node = (
-            db.query(OutlineNode)
-            .filter(
-                OutlineNode.project_id == project_id,
-                OutlineNode.title.contains(num),
-            )
-            .first()
-        )
-        if node:
-            return node.id
+        return _resolve_outline_node_id(db, project_id, int(match.group(1)), "")
 
     return ""
 

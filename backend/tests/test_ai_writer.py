@@ -37,6 +37,7 @@ from app.database.models import (
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 from app.routers.ai_writer import _execute_workspace_action
+from app.services.agent.bridge import _resolve_outline_node_id
 
 API_PREFIX = "/api/v1"
 
@@ -431,6 +432,37 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             ).one_or_none()
             self.assertIsNotNone(node)
             self.assertIn("抢占网络节点", node.summary)
+        finally:
+            db.close()
+
+    def test_outline_resolution_matches_chapter_prefix_not_incidental_number(self):
+        project_id = self.create_project("Outline Resolution Project")
+        db = SessionLocal()
+        try:
+            first = OutlineNode(
+                project_id=project_id,
+                node_type="chapter",
+                title="第1章 死亡通知写于15:32",
+                sort_order=1,
+            )
+            second = OutlineNode(
+                project_id=project_id,
+                node_type="chapter",
+                title="第2章 记忆税清单",
+                sort_order=2,
+            )
+            section = OutlineNode(
+                project_id=project_id,
+                node_type="section",
+                title="第2章 场景推进",
+                sort_order=1,
+            )
+            db.add_all([first, second, section])
+            db.commit()
+
+            resolved = _resolve_outline_node_id(db, project_id, 2, "写第2章")
+
+            self.assertEqual(resolved, second.id)
         finally:
             db.close()
 

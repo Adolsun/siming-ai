@@ -10,7 +10,9 @@ from __future__ import annotations
 from app.architecture.uow import commit_session
 
 import asyncio
+import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from app.ai.local_cli_adapter import (
     CLIQuotaLimitError,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
+    OPENCODE_FAMILY_PROVIDERS,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
     ensure_opencode_logging_args,
@@ -27,7 +30,7 @@ from app.ai.local_cli_adapter import (
     parse_cli_launch,
     terminate_cli_process_tree,
 )
-from app.database.models import APIConfig, AgentRun, Project
+from app.database.models import APIConfig, AgentRun, Chapter, Project
 from app.database.session import SessionLocal
 from app.services.content_store import ensure_project_folder
 from app.services.external_agent.run_service import add_event, cancel_run, create_run, update_run_status
@@ -36,6 +39,143 @@ from app.services.operation_runtime import register_operation_actions, unregiste
 
 _TASKS: dict[str, asyncio.Task] = {}
 _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
+
+
+_OPENCODE_WRITING_RECOVERY_PROMPT = (
+    "Your previous response produced chapter prose but did not finish the required "
+    "Siming MCP write workflow. Do not rewrite or print the chapter again. Reuse the "
+    "complete chapter text from your immediately preceding response and continue now "
+    "until it is stored in Siming: call prepare_external_writing_context if needed, "
+    "save_external_chapter_draft, record_external_quality_review, create_chapter, "
+    "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
+    "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
+    "attached task. Do not stop before create_chapter succeeds."
+)
+
+
+def _extract_opencode_session_id(output: str) -> str | None:
+    """Return the OpenCode session id emitted by JSON event output."""
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        session_id = event.get("sessionID") if isinstance(event, dict) else None
+        if isinstance(session_id, str) and session_id.strip():
+            return session_id.strip()
+    match = re.search(r'"sessionID"\s*:\s*"([^"\\]+)"', output)
+    return match.group(1) if match else None
+
+
+def _opencode_recovery_args(
+    args: list[str],
+    *,
+    original_prompt: str,
+    session_id: str,
+) -> list[str]:
+    """Continue the same OpenCode session without accidentally retitling it."""
+    recovered = list(args)
+    for option in ("--title", "--session"):
+        while option in recovered:
+            index = recovered.index(option)
+            del recovered[index : min(index + 2, len(recovered))]
+    try:
+        prompt_index = recovered.index(original_prompt)
+        recovered[prompt_index] = _OPENCODE_WRITING_RECOVERY_PROMPT
+    except ValueError:
+        prompt_index = len(recovered)
+        recovered.append(_OPENCODE_WRITING_RECOVERY_PROMPT)
+    recovered[prompt_index:prompt_index] = ["--session", session_id]
+    return recovered
+
+
+def _has_fresh_writing_chapter(db: Session, run_id: str, project_id: str) -> bool:
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if not run:
+        return False
+    since = run.created_at
+    query = db.query(Chapter).filter(Chapter.project_id == project_id)
+    if since is not None:
+        query = query.filter((Chapter.created_at >= since) | (Chapter.updated_at >= since))
+    return query.first() is not None
+
+
+async def _continue_opencode_writing_session(
+    db: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    provider: str,
+    command: str,
+    args: list[str],
+    prompt: str,
+    cwd: str,
+    env: dict[str, str],
+    operation_id: str | None,
+    process: asyncio.subprocess.Process,
+    out_text: str,
+    err_text: str,
+) -> tuple[asyncio.subprocess.Process, str, str]:
+    """Resume OpenCode when it printed prose but skipped the Siming write tools."""
+    if (
+        process.returncode != 0
+        or provider not in OPENCODE_FAMILY_PROVIDERS
+        or _has_fresh_writing_chapter(db, run_id, project_id)
+    ):
+        return process, out_text, err_text
+
+    session_id = _extract_opencode_session_id(out_text)
+    if not session_id:
+        return process, out_text, err_text
+
+    add_event(
+        db,
+        run_id,
+        "recovery_started",
+        message="OpenCode returned chapter prose without creating a chapter; continuing the same session to finish the Siming write workflow",
+        payload_json=json.dumps(
+            {"session_id": session_id, "stdout_tail": out_text[-2000:]},
+            ensure_ascii=False,
+        ),
+        model_source=f"{provider}:local_cli",
+        tool_mode="siming_mcp_session_recovery",
+        storage_target="database_authoritative",
+        next_action="continue_same_opencode_session",
+    )
+    recovery_args = _opencode_recovery_args(
+        args,
+        original_prompt=prompt,
+        session_id=session_id,
+    )
+    recovery_process = await asyncio.create_subprocess_exec(
+        command,
+        *recovery_args,
+        stdin=None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        **hidden_subprocess_kwargs(),
+    )
+    _PROCESSES[run_id] = recovery_process
+    try:
+        recovery_stdout, recovery_stderr = await communicate_with_cli_quota_detection(
+            recovery_process,
+            input_bytes=None,
+            timeout_seconds=None,
+            operation_id=operation_id,
+        )
+    except CLIQuotaLimitError as exc:
+        recovery_stdout = exc.stdout.encode("utf-8")
+        recovery_stderr = exc.stderr.encode("utf-8")
+
+    recovered_out = recovery_stdout.decode("utf-8", errors="replace").strip()
+    recovered_err = recovery_stderr.decode("utf-8", errors="replace").strip()
+    return (
+        recovery_process,
+        "\n".join(value for value in (out_text, recovered_out) if value),
+        "\n".join(value for value in (err_text, recovered_err) if value),
+    )
 
 
 async def _cancel_local_cli_agent(run_id: str) -> None:
@@ -174,6 +314,8 @@ async def _run_cli_process(
     args: list[str],
     stdin_text: str | None,
     cwd: str,
+    task_type: str = "general",
+    prompt: str = "",
 ) -> None:
     db = SessionLocal()
     operation_id: str | None = None
@@ -215,6 +357,22 @@ async def _run_cli_process(
             stderr = exc.stderr.encode("utf-8")
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
+        if task_type == "writing":
+            proc, out_text, err_text = await _continue_opencode_writing_session(
+                db,
+                run_id=run_id,
+                project_id=project_id,
+                provider=provider,
+                command=command,
+                args=args,
+                prompt=prompt,
+                cwd=cwd,
+                env=env,
+                operation_id=operation_id,
+                process=proc,
+                out_text=out_text,
+                err_text=err_text,
+            )
         payload = {
             "returncode": proc.returncode,
             "stdout_tail": out_text[-4000:],
@@ -381,9 +539,24 @@ def start_local_cli_agent_worker(
     )
     commit_session(db)
 
-    launch = parse_cli_launch(cfg.cli_args, provider, _task_prompt(task_file), model)
+    prompt = _task_prompt(task_file)
+    launch = parse_cli_launch(cfg.cli_args, provider, prompt, model)
     args = list(launch.args)
     ensure_opencode_logging_args(provider, args)
+    if provider in OPENCODE_FAMILY_PROVIDERS:
+        # A path mentioned only in the prompt is not reliable enough: models may
+        # fall back to a project glob, which commonly skips the hidden .siming
+        # directory. Attach the exact per-run task file and give every run a
+        # unique title so a later chapter cannot inherit an earlier task session.
+        prompt_index = args.index(prompt) if prompt in args else len(args)
+        options: list[str] = []
+        if "--dir" not in args:
+            options.extend(["--dir", str(Path(project.folder_path or task_file.parent).resolve())])
+        if "--file" not in args:
+            options.extend(["--file", str(task_file.resolve())])
+        if "--title" not in args:
+            options.extend(["--title", f"Siming {task_type} {run.id}"])
+        args[prompt_index:prompt_index] = options
     task = asyncio.create_task(
         _run_cli_process(
             run_id=run.id,
@@ -393,6 +566,8 @@ def start_local_cli_agent_worker(
             args=args,
             stdin_text=launch.stdin_text,
             cwd=str(Path(project.folder_path or task_file.parent).resolve()),
+            task_type=task_type,
+            prompt=prompt,
         )
     )
     _TASKS[run.id] = task

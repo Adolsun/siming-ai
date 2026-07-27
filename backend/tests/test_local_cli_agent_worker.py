@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,7 +17,13 @@ from app.database.models import APIConfig, AgentRun, AgentRunEvent, Base, Chapte
 from app.services.external_agent.run_service import create_run, update_run_status
 from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
-from app.services.local_cli_agent_worker import _run_cli_process, start_local_cli_agent_worker, write_task_file
+from app.services.local_cli_agent_worker import (
+    _extract_opencode_session_id,
+    _opencode_recovery_args,
+    _run_cli_process,
+    start_local_cli_agent_worker,
+    write_task_file,
+)
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.local_cli_agent import wait_local_cli_agent_run
 
@@ -125,6 +132,43 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         orphans = result["data"]["validation"]["orphan_chapter_files"]
         self.assertEqual(orphans[0]["path"], "chapters/0001-orphan.md")
 
+    def test_wait_worker_rejects_preexisting_chapter_for_target_outline(self):
+        project = self._project()
+        old_time = datetime.utcnow() - timedelta(minutes=5)
+        chapter = Chapter(
+            project_id=project.id,
+            outline_node_id="outline-1",
+            title="Existing Chapter",
+            content="existing content",
+            created_at=old_time,
+            updated_at=old_time,
+        )
+        self.db.add(chapter)
+        self.db.commit()
+        run = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="opencode_cli",
+            title="writing",
+        )
+        update_run_status(self.db, run.id, "completed", summary="opencode_cli completed")
+
+        result = asyncio.run(wait_local_cli_agent_run(
+            self.db,
+            project.id,
+            {
+                "run_id": run.id,
+                "task_type": "writing",
+                "outline_node_id": "outline-1",
+                "timeout_seconds": 1,
+                "poll_seconds": 0.01,
+            },
+        ))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["data"]["validation"]["chapters"], [])
+
     def test_start_worker_enables_opencode_warn_logs(self):
         project = self._project()
         self.db.add(APIConfig(
@@ -164,8 +208,94 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         try:
             args = coroutine.cr_frame.f_locals["args"]
             self.assertEqual(args[:4], ["--print-logs", "--log-level", "WARN", "run"])
+            self.assertEqual(args[args.index("--file") + 1], result["data"]["task_file"])
+            self.assertEqual(args[args.index("--dir") + 1], result["data"]["project_folder"])
+            self.assertIn(result["data"]["run_id"], args[args.index("--title") + 1])
         finally:
             coroutine.close()
+
+    def test_opencode_recovery_continues_same_session_without_reusing_title(self):
+        output = '{"type":"text","sessionID":"ses-writing-2","part":{"text":"chapter"}}'
+        self.assertEqual(_extract_opencode_session_id(output), "ses-writing-2")
+
+        args = [
+            "run",
+            "--format",
+            "json",
+            "--file",
+            "task.md",
+            "--title",
+            "Siming writing run-2",
+            "initial prompt",
+        ]
+        recovered = _opencode_recovery_args(
+            args,
+            original_prompt="initial prompt",
+            session_id="ses-writing-2",
+        )
+
+        self.assertEqual(recovered[recovered.index("--session") + 1], "ses-writing-2")
+        self.assertNotIn("--title", recovered)
+        self.assertNotIn("initial prompt", recovered)
+        self.assertIn("create_chapter", recovered[-1])
+
+    def test_worker_auto_continues_opencode_writing_session_without_a_chapter(self):
+        project = self._project()
+        run = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="opencode_cli",
+            title="writing",
+        )
+        self.db.commit()
+
+        class DummyProcess:
+            returncode = 0
+
+        spawn = unittest.mock.AsyncMock(side_effect=[DummyProcess(), DummyProcess()])
+        communicate = unittest.mock.AsyncMock(side_effect=[
+            (b'{"type":"text","sessionID":"ses-writing-2"}', b""),
+            (b'{"type":"step_finish","sessionID":"ses-writing-2"}', b""),
+        ])
+        with (
+            unittest.mock.patch(
+                "app.services.local_cli_agent_worker.SessionLocal",
+                self.Session,
+            ),
+            unittest.mock.patch(
+                "app.services.local_cli_agent_worker.asyncio.create_subprocess_exec",
+                spawn,
+            ),
+            unittest.mock.patch(
+                "app.services.local_cli_agent_worker.communicate_with_cli_quota_detection",
+                communicate,
+            ),
+            unittest.mock.patch(
+                "app.services.local_cli_agent_worker._has_fresh_writing_chapter",
+                return_value=False,
+            ),
+        ):
+            asyncio.run(_run_cli_process(
+                run_id=run.id,
+                project_id=project.id,
+                provider="opencode_cli",
+                command="opencode",
+                args=["run", "--title", "Siming writing run-2", "initial prompt"],
+                stdin_text=None,
+                cwd=self.tmp.name,
+                task_type="writing",
+                prompt="initial prompt",
+            ))
+
+        self.assertEqual(spawn.await_count, 2)
+        recovery_args = list(spawn.await_args_list[1].args[1:])
+        self.assertEqual(recovery_args[recovery_args.index("--session") + 1], "ses-writing-2")
+        self.assertNotIn("--title", recovery_args)
+        self.db.expire_all()
+        refreshed = self.db.query(AgentRun).filter(AgentRun.id == run.id).first()
+        self.assertEqual(refreshed.status, "completed")
+        self.assertTrue(any(event.event_type == "recovery_started" for event in refreshed.events))
 
     def test_cataloging_task_reads_chapter_file_and_writes_through_mcp(self):
         project = self._project()

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -10,7 +12,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, ModelDownloadTask, OperationRun, Project
 from app.services.context_orchestrator import ContextOrchestrator
-from app.services.external_agent.run_service import create_run as create_agent_run
+from app.services.external_agent.run_service import (
+    add_event as add_agent_event,
+    create_run as create_agent_run,
+    update_run_status as update_agent_run_status,
+)
 from app.services.external_agent.write_requests import confirm_write, request_write
 from app.services.local_runtime.model_jobs import _set_task
 from app.services.operation_runtime import (
@@ -238,6 +244,41 @@ def test_external_agent_write_request_projects_waiting_attention_and_clears_it_a
     assert resumed["status"] == "running"
     assert resumed["attention"] is None
     assert resumed["outcome"] is None
+
+
+def test_agent_run_projection_releases_sqlite_writer_lock_before_cli_wait():
+    with TemporaryDirectory() as temp_dir:
+        database_path = os.path.join(temp_dir, "agent-worker.db")
+        engine = create_engine(
+            f"sqlite:///{database_path}",
+            connect_args={"timeout": 0.2, "check_same_thread": False},
+        )
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        worker_db = Session()
+        plan_db = Session()
+        try:
+            project = Project(title="Concurrent writer", description="before")
+            worker_db.add(project)
+            worker_db.commit()
+            run = create_agent_run(worker_db, project.id, title="Local CLI")
+
+            add_agent_event(worker_db, run.id, "cli_started", message="Started opencode")
+
+            concurrent_project = plan_db.query(Project).filter(Project.id == project.id).one()
+            concurrent_project.description = "plan step committed"
+            plan_db.commit()
+
+            update_agent_run_status(worker_db, run.id, "running", current_step="writing")
+            concurrent_project.description = "plan wait committed"
+            plan_db.commit()
+
+            plan_db.refresh(concurrent_project)
+            assert concurrent_project.description == "plan wait committed"
+        finally:
+            plan_db.close()
+            worker_db.close()
+            engine.dispose()
 
 
 def test_download_byte_progress_is_projected_without_fake_percentage():

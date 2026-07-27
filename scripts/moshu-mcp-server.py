@@ -121,7 +121,10 @@ def main() -> None:
     from app.database.bootstrap import bootstrap_database
     from app.database.session import SessionLocal, engine
 
-    bootstrap = bootstrap_database(engine)
+    # An MCP server usually starts beside the desktop process.  When the schema
+    # is already current, keep this check read-only so it cannot contend with
+    # an in-flight desktop write transaction.
+    bootstrap = bootstrap_database(engine, refresh_current_metadata=False)
     if bootstrap.read_only:
         raise RuntimeError(
             "MCP cannot start while the database is in read-only recovery mode: "

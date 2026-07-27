@@ -218,6 +218,11 @@ def update_run_status(
                 message=current_step or summary or "Agent 正在执行",
                 db=db,
             )
+    # Operation projection flushes into the caller-owned session. Commit that
+    # projection before returning so a long-lived CLI worker session does not
+    # keep SQLite's single writer lock for the lifetime of the external process.
+    commit_session(db)
+    db.refresh(run)
     return run
 
 
@@ -329,6 +334,12 @@ def add_event(
                 message=message,
                 db=db,
             )
+    # ``record_operation_signal(..., db=db)`` deliberately only flushes so it
+    # can participate in the caller's transaction. This service previously
+    # committed the Agent event first and then returned with the operation
+    # projection uncommitted, leaving a write lock open while the CLI ran.
+    commit_session(db)
+    db.refresh(event)
     return event
 
 
