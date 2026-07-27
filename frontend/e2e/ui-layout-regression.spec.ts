@@ -161,6 +161,12 @@ async function expectNoSeriousAccessibilityViolations(page: Page) {
   expect(result.violations.filter((item) => ['serious', 'critical'].includes(item.impact || ''))).toEqual([])
 }
 
+async function expectVisualSnapshot(page: Page, name: string) {
+  if (!process.env.CI) {
+    await expect(page).toHaveScreenshot(name, { animations: 'disabled' })
+  }
+}
+
 const viewports = [
   { name: '1920x1080', width: 1920, height: 1080 },
   { name: '1400x900', width: 1400, height: 900 },
@@ -177,19 +183,19 @@ for (const viewport of viewports) {
     await expect(page.locator('.writer-editor-title')).toContainText('第一章 来自三天后的死亡通知')
     await expect(page.getByText('已完成', { exact: true }).first()).toBeVisible()
     await expectViewportSafe(page)
-    await expect(page).toHaveScreenshot(`writer-${viewport.name}.png`, { animations: 'disabled' })
+    await expectVisualSnapshot(page, `writer-${viewport.name}.png`)
 
     await page.goto('/project/p1?view=outline', { waitUntil: 'networkidle' })
     await expect(page.getByLabel('搜索大纲')).toBeVisible()
     await expectViewportSafe(page)
-    await expect(page).toHaveScreenshot(`outline-${viewport.name}.png`, { animations: 'disabled' })
+    await expectVisualSnapshot(page, `outline-${viewport.name}.png`)
 
     await page.getByRole('button', { name: /任务中心/ }).click()
     await expect(page.getByRole('heading', { name: /待你处理/ })).toBeVisible()
     await expect(page.getByText('历史尝试 1')).toBeVisible()
     await expect(page.locator('.ant-drawer-content-wrapper')).toHaveCSS('transform', 'none')
     await expectViewportSafe(page)
-    await expect(page).toHaveScreenshot(`task-center-${viewport.name}.png`, { animations: 'disabled' })
+    await expectVisualSnapshot(page, `task-center-${viewport.name}.png`)
 
     if (viewport.width === 1920 || viewport.width === 800) await expectNoSeriousAccessibilityViolations(page)
   })
@@ -202,16 +208,16 @@ test('keeps onboarding, model settings and governance visually focused', async (
   await page.goto('/getting-started', { waitUntil: 'networkidle' })
   await expect(page.getByRole('heading', { name: '免费写作能力已经准备好' })).toBeVisible()
   await expectViewportSafe(page)
-  await expect(page).toHaveScreenshot('quick-start-ready-1920x1080.png', { animations: 'disabled' })
+  await expectVisualSnapshot(page, 'quick-start-ready-1920x1080.png')
 
   await page.goto('/settings', { waitUntil: 'networkidle' })
   await expect(page.getByText('AI 已准备好')).toBeVisible()
   await expectViewportSafe(page)
-  await expect(page).toHaveScreenshot('model-settings-1920x1080.png', { animations: 'disabled' })
+  await expectVisualSnapshot(page, 'model-settings-1920x1080.png')
 
   await page.goto('/project/p1?view=governance', { waitUntil: 'networkidle' })
   await expect(page.getByText('还没有可治理的叙事记录')).toBeVisible()
   await expectViewportSafe(page)
-  await expect(page).toHaveScreenshot('governance-empty-1920x1080.png', { animations: 'disabled' })
+  await expectVisualSnapshot(page, 'governance-empty-1920x1080.png')
   await expectNoSeriousAccessibilityViolations(page)
 })

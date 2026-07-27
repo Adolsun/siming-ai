@@ -71,7 +71,7 @@ describe('GlobalOperationCenter', () => {
   it('shows real health and avoids a fabricated percentage for indeterminate work', async () => {
     renderCenter()
 
-    const trigger = await screen.findByRole('button', { name: '任务中心，0 项待处理，1 项运行中' })
+    const trigger = await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' })
     fireEvent.click(trigger)
 
     expect(await screen.findByText('疑似停滞')).toBeInTheDocument()
@@ -85,7 +85,7 @@ describe('GlobalOperationCenter', () => {
 
   it('treats an SSE break as reconnection while polling remains active', async () => {
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '任务中心，0 项待处理，1 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' }))
     await waitFor(() => expect(FakeEventSource.last?.url).toBe('/api/v1/operations/operation-1/stream'))
 
     act(() => FakeEventSource.last?.onerror?.(new Event('error')))
@@ -124,7 +124,7 @@ describe('GlobalOperationCenter', () => {
     })
 
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '任务中心，1 项待处理，0 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 项待处理，0 项运行中' }))
 
     expect(await screen.findByRole('heading', { name: /待你处理/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '正在运行' })).not.toBeInTheDocument()
@@ -148,7 +148,7 @@ describe('GlobalOperationCenter', () => {
     })
 
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '任务中心，0 项待处理，1 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' }))
 
     expect(await screen.findAllByText('作品建档 · 第151章')).toHaveLength(1)
     expect(screen.getByText('历史尝试 1')).toBeInTheDocument()

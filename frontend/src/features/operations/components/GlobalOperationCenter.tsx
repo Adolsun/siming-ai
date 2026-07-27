@@ -285,7 +285,7 @@ export default function GlobalOperationCenter() {
         <Button
           className={`global-operation-trigger${runningOperations.length ? ' global-operation-trigger-running' : ''}`}
           icon={<UnorderedListOutlined />}
-          aria-label={`任务中心，${attentionOperations.length} 项待处理，${runningOperations.length} 项运行中`}
+          aria-label={`全局任务中心，${attentionOperations.length} 项待处理，${runningOperations.length} 项运行中`}
           onClick={() => setOpen(true)}
         >
           任务
