@@ -1,0 +1,4 @@
+-keepattributes *Annotation*
+-keep class com.siming.mobile.data.network.** { *; }
+-keepclassmembers class **$$serializer { *; }
+-keep,includedescriptorclasses class com.journeyapps.barcodescanner.** { *; }

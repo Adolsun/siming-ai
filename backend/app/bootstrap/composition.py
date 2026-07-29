@@ -65,6 +65,42 @@ def _configure_assistant_workspace() -> None:
     configure_assistant_workspace(SqlAlchemyAssistantWorkspace)
 
 
+def _configure_model_runtime_services() -> None:
+    from ..core.config import get_settings
+    from ..modules.model_runtime.application.execution import configure_model_executor
+    from ..modules.model_runtime.application.getting_started import (
+        configure_getting_started_configuration,
+    )
+    from ..modules.model_runtime.application.runtime import (
+        ModelRuntime,
+        configure_model_runtime,
+    )
+    from ..modules.model_runtime.application.verification import configure_model_verification
+    from ..modules.model_runtime.infrastructure.configuration import (
+        SqlAlchemyModelConfiguration,
+    )
+    from ..modules.model_runtime.infrastructure.execution import (
+        CloudOnlyGatewayModelExecutor,
+        GatewayModelExecutor,
+    )
+    from ..modules.model_runtime.infrastructure.getting_started import (
+        SqlAlchemyGettingStartedConfiguration,
+    )
+    from ..modules.model_runtime.infrastructure.verification import ProviderModelVerification
+
+    configure_model_runtime(ModelRuntime(SqlAlchemyModelConfiguration()))
+    _configure_model_config_crud()
+    _configure_local_model_store()
+    executor = (
+        CloudOnlyGatewayModelExecutor()
+        if not get_settings().local_runtime_enabled
+        else GatewayModelExecutor()
+    )
+    configure_model_executor(executor)
+    configure_getting_started_configuration(SqlAlchemyGettingStartedConfiguration())
+    configure_model_verification(ProviderModelVerification())
+
+
 def configure_application_services() -> None:
     """Connect application ports to infrastructure implementations."""
     from ..modules.assistant.application.prompt_compiler import PromptCompiler
@@ -92,6 +128,9 @@ def configure_application_services() -> None:
     )
     from ..modules.creation.application.prompting import NovelCreationPromptService
     from ..modules.creation.interfaces.dependencies import configure_creation_prompt_service
+    from ..modules.gateway.infrastructure.change_capture import (
+        configure_gateway_capture_events,
+    )
     from ..modules.integrations.application.mcp_servers import (
         configure_mcp_server_configuration,
     )
@@ -110,23 +149,6 @@ def configure_application_services() -> None:
     from ..modules.integrations.interfaces.prompt_pack_dependencies import (
         configure_prompt_pack_dependencies,
     )
-    from ..modules.model_runtime.application.execution import configure_model_executor
-    from ..modules.model_runtime.application.getting_started import (
-        configure_getting_started_configuration,
-    )
-    from ..modules.model_runtime.application.runtime import (
-        ModelRuntime,
-        configure_model_runtime,
-    )
-    from ..modules.model_runtime.application.verification import configure_model_verification
-    from ..modules.model_runtime.infrastructure.configuration import (
-        SqlAlchemyModelConfiguration,
-    )
-    from ..modules.model_runtime.infrastructure.execution import GatewayModelExecutor
-    from ..modules.model_runtime.infrastructure.getting_started import (
-        SqlAlchemyGettingStartedConfiguration,
-    )
-    from ..modules.model_runtime.infrastructure.verification import ProviderModelVerification
     from ..modules.operations.application.reporting import configure_checkpoint_reporter
     from ..modules.operations.application.scheduled_tasks import configure_scheduled_tasks
     from ..modules.operations.infrastructure.reporting import report_checkpoint
@@ -187,15 +209,10 @@ def configure_application_services() -> None:
     configure_narrative_governance_commands(SqlAlchemyNarrativeGovernanceCommands())
     configure_task_runner(run_workspace_scheduled_task)
     configure_tool_catalog(registry.list_for_frontend)
-    configure_model_runtime(ModelRuntime(SqlAlchemyModelConfiguration()))
-    _configure_model_config_crud()
-    _configure_local_model_store()
+    _configure_model_runtime_services()
     _configure_novel_creation_session_store()
     _configure_character_workspace()
     _configure_assistant_workspace()
-    configure_model_executor(GatewayModelExecutor())
-    configure_getting_started_configuration(SqlAlchemyGettingStartedConfiguration())
-    configure_model_verification(ProviderModelVerification())
     configure_operation_service(SqlAlchemyOperationService())
     configure_checkpoint_reporter(report_checkpoint)
     configure_scheduled_tasks(SqlAlchemyScheduledTasks())
@@ -215,6 +232,7 @@ def configure_application_services() -> None:
     configure_worldbuilding_dependencies(SqlAlchemyWorldbuildingWorkspace)
     configure_content_sync_runtime(SqlAlchemyContentSyncRuntime())
     configure_content_sync_events()
+    configure_gateway_capture_events()
 
 
 __all__ = ["configure_application_services"]

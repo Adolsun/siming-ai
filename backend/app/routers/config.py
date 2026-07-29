@@ -23,18 +23,19 @@ from ..ai.local_cli_adapter import (
     local_cli_model_options,
 )
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
+from ..core.config import get_settings
 from ..core.crypto import decrypt, encrypt
 from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationError
 from ..core.legacy_env import set_compatible_env
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
 from ..database.session import get_db
-from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..modules.model_runtime.application.verification import (
     ModelProbeRequest,
     get_model_verification,
 )
+from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..schemas.config import (
     APIConfigCreate,
     ConnectionTestRequest,
@@ -280,6 +281,17 @@ def _normalize_provider_type(provider: str, provider_type: str | None = None) ->
     return LOCAL_CLI_PROVIDER_TYPE if is_local_cli_provider(provider) else "api"
 
 
+def _require_provider_available(provider: str, provider_type: str | None = None) -> None:
+    if not get_settings().local_runtime_enabled and (
+        provider == "local_llama_cpp"
+        or is_local_cli_provider(provider)
+        or provider_type in {LOCAL_CLI_PROVIDER_TYPE, LOCAL_RUNTIME_PROVIDER_TYPE}
+    ):
+        raise ValidationError(
+            "Docker Gateway 仅支持云端 API 模型；本地模型与 CLI 请在司命桌面端使用。"
+        )
+
+
 def _default_cli_command(provider: str) -> str | None:
     return DEFAULT_CLI_COMMANDS.get(provider) or None
 
@@ -425,6 +437,13 @@ def list_model_configs(db: Session = Depends(get_db)):
         _config_payload(cfg)
         for cfg in configs
         if not local_runtime_disabled(cfg.provider)
+        and (
+            get_settings().local_runtime_enabled
+            or (
+                not is_local_cli_provider(cfg.provider)
+                and cfg.provider != "local_llama_cpp"
+            )
+        )
     ]
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
@@ -434,6 +453,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
     """Add or update an API or local CLI config."""
 
     provider_type = _normalize_provider_type(payload.provider, payload.provider_type)
+    _require_provider_available(payload.provider, provider_type)
     is_cli = provider_type == LOCAL_CLI_PROVIDER_TYPE or is_local_cli_provider(payload.provider)
     is_runtime = provider_type == LOCAL_RUNTIME_PROVIDER_TYPE or payload.provider == "local_llama_cpp"
     if is_runtime and local_runtime_disabled(payload.provider):
@@ -513,6 +533,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
 
 @router.get("/config/models/{provider}")
 def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
+    _require_provider_available(provider)
     if local_runtime_disabled(provider):
         raise ValidationError(local_runtime_disabled_message())
     config = model_config_crud(db).get_provider(provider)
@@ -523,6 +544,7 @@ def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
 
 @router.post("/config/models/list")
 async def list_provider_models(payload: ModelListRequest, db: Session = Depends(get_db)):
+    _require_provider_available(payload.provider)
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     warning = None
@@ -568,6 +590,7 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
 
 @router.post("/config/models/test")
 async def test_connection(payload: ConnectionTestRequest):
+    _require_provider_available(payload.provider)
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     is_cli = is_local_cli_provider(payload.provider)
@@ -611,6 +634,7 @@ async def test_connection(payload: ConnectionTestRequest):
 async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)):
     """Run a real saved-config test and persist whether the model is usable."""
 
+    _require_provider_available(provider)
     if local_runtime_disabled(provider):
         raise ValidationError(local_runtime_disabled_message())
     crud = model_config_crud(db)
@@ -723,7 +747,18 @@ def delete_model_config(provider: str, db: Session = Depends(get_db)):
 @router.get("/config/global-model")
 def get_global_model(db: Session = Depends(get_db)):
     config = model_config_crud(db).get_global()
-    if not config or not is_model_config_usable(config) or local_runtime_disabled(config.provider):
+    if (
+        not config
+        or not is_model_config_usable(config)
+        or local_runtime_disabled(config.provider)
+        or (
+            not get_settings().local_runtime_enabled
+            and (
+                is_local_cli_provider(config.provider)
+                or config.provider == "local_llama_cpp"
+            )
+        )
+    ):
         return ApiResponse.success(data={"provider": None, "model": None}, message="未设置全局默认模型")
     return ApiResponse.success(data={
         "provider": config.provider,
@@ -733,6 +768,7 @@ def get_global_model(db: Session = Depends(get_db)):
 
 @router.put("/config/global-model")
 def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db)):
+    _require_provider_available(payload.provider)
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     crud = model_config_crud(db)

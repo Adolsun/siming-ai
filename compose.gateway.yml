@@ -1,0 +1,26 @@
+services:
+  siming-gateway:
+    image: ghcr.io/teangtang1122/siming-ai-gateway:${SIMING_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SIMING_VERSION: ${SIMING_VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "${SIMING_GATEWAY_PORT:-8000}:8000"
+    environment:
+      SIMING_RUNTIME_PROFILE: gateway
+      SIMING_GATEWAY_HEADLESS: "true"
+      SIMING_GATEWAY_NAME: ${SIMING_GATEWAY_NAME:-司命 Gateway}
+      SIMING_GATEWAY_ADVERTISED_URL: ${SIMING_GATEWAY_ADVERTISED_URL:-}
+      SIMING_GATEWAY_ALLOWED_HOSTS: ${SIMING_GATEWAY_ALLOWED_HOSTS:-localhost,127.0.0.1,*.local,*.ts.net}
+      SIMING_GATEWAY_BOOTSTRAP_KEY: ${SIMING_GATEWAY_BOOTSTRAP_KEY:?请先设置至少 12 位的管理口令}
+      DATABASE_URL: sqlite:////data/siming.db
+      SIMING_HOME: /data
+      SIMING_CONTENT_ROOT: /data/projects
+    volumes:
+      - siming-gateway-data:/data
+
+volumes:
+  siming-gateway-data:

@@ -74,6 +74,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/admin/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login Gateway Admin */
+        post: operations["login_gateway_admin_api_v1_auth_admin_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/admin/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout Gateway Admin */
+        post: operations["logout_gateway_admin_api_v1_auth_admin_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/admin/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Gateway Admin Session
+         * @description Probe the HttpOnly admin cookie without using an expected 401 response.
+         */
+        get: operations["get_gateway_admin_session_api_v1_auth_admin_session_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Tokens */
+        post: operations["refresh_tokens_api_v1_auth_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/completion": {
         parameters: {
             query?: never;
@@ -533,6 +604,57 @@ export interface paths {
         /** Retry Rebuild */
         post: operations["retry_rebuild_api_v1_context_governance_rebuilds__job_id__retry_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Devices */
+        get: operations["list_devices_api_v1_devices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Current Device */
+        delete: operations["revoke_current_device_api_v1_devices_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/{device_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Device */
+        delete: operations["revoke_device_api_v1_devices__device_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1347,6 +1469,74 @@ export interface paths {
         };
         /** Stream Operation */
         get: operations["stream_operation_api_v1_operations__operation_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairing/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Pairing */
+        post: operations["approve_pairing_api_v1_pairing_approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairing/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete Pairing */
+        post: operations["complete_pairing_api_v1_pairing_complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairing/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Pairing */
+        post: operations["start_pairing_api_v1_pairing_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairing/{pairing_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pairing Status */
+        get: operations["get_pairing_status_api_v1_pairing__pairing_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3886,6 +4076,176 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runtime/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Runtime Capabilities */
+        get: operations["runtime_capabilities_api_v1_runtime_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Bootstrap */
+        post: operations["sync_bootstrap_api_v1_sync_bootstrap_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sync Conflicts */
+        get: operations["list_sync_conflicts_api_v1_sync_conflicts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/conflicts/{conflict_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Sync Conflict */
+        post: operations["resolve_sync_conflict_api_v1_sync_conflicts__conflict_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sync Projects */
+        get: operations["list_sync_projects_api_v1_sync_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Disable Project Sync */
+        delete: operations["disable_project_sync_api_v1_sync_projects__project_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/projects/{project_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enable Project Sync */
+        post: operations["enable_project_sync_api_v1_sync_projects__project_id__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Pull */
+        get: operations["sync_pull_api_v1_sync_pull_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Push */
+        post: operations["sync_push_api_v1_sync_push_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Status */
+        get: operations["sync_status_api_v1_sync_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/logs": {
         parameters: {
             query?: never;
@@ -4162,6 +4522,34 @@ export interface components {
              */
             message: string;
         };
+        /** ApiResponse[GatewayAdminSessionStatusView] */
+        ApiResponse_GatewayAdminSessionStatusView_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["GatewayAdminSessionStatusView"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[GatewayAdminSessionView] */
+        ApiResponse_GatewayAdminSessionView_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["GatewayAdminSessionView"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
         /** ApiResponse[GettingStartedStatus] */
         ApiResponse_GettingStartedStatus_: {
             /**
@@ -4219,6 +4607,48 @@ export interface components {
              */
             message: string;
         };
+        /** ApiResponse[PairingCompleteResponse] */
+        ApiResponse_PairingCompleteResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["PairingCompleteResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[PairingStartResponse] */
+        ApiResponse_PairingStartResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["PairingStartResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[PairingStatusResponse] */
+        ApiResponse_PairingStatusResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["PairingStatusResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
         /** ApiResponse[ProjectListData] */
         ApiResponse_ProjectListData_: {
             /**
@@ -4241,6 +4671,163 @@ export interface components {
              */
             code: number;
             data?: components["schemas"]["ProjectResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[RuntimeCapabilities] */
+        ApiResponse_RuntimeCapabilities_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["RuntimeCapabilities"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncBootstrapResponse] */
+        ApiResponse_SyncBootstrapResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncBootstrapResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncConflictView] */
+        ApiResponse_SyncConflictView_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncConflictView"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncProjectView] */
+        ApiResponse_SyncProjectView_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncProjectView"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncPullResponse] */
+        ApiResponse_SyncPullResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncPullResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncPushResponse] */
+        ApiResponse_SyncPushResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncPushResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[SyncStatusResponse] */
+        ApiResponse_SyncStatusResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["SyncStatusResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[TokenPair] */
+        ApiResponse_TokenPair_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["TokenPair"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[list[DeviceView]] */
+        ApiResponse_list_DeviceView__: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            /** Data */
+            data?: components["schemas"]["DeviceView"][] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[list[SyncConflictView]] */
+        ApiResponse_list_SyncConflictView__: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            /** Data */
+            data?: components["schemas"]["SyncConflictView"][] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[list[SyncProjectView]] */
+        ApiResponse_list_SyncProjectView__: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            /** Data */
+            data?: components["schemas"]["SyncProjectView"][] | null;
             /**
              * Message
              * @default success
@@ -4932,6 +5519,76 @@ export interface components {
              */
             title?: string | null;
         };
+        /** DeviceCapabilities */
+        DeviceCapabilities: {
+            /**
+             * Cli Worker
+             * @default false
+             */
+            cli_worker: boolean;
+            /**
+             * Cloud Ai
+             * @default true
+             */
+            cloud_ai: boolean;
+            /**
+             * Local Ai
+             * @default false
+             */
+            local_ai: boolean;
+            /**
+             * Mcp
+             * @default false
+             */
+            mcp: boolean;
+            /**
+             * Offline Read
+             * @default true
+             */
+            offline_read: boolean;
+            /**
+             * Offline Write
+             * @default true
+             */
+            offline_write: boolean;
+            /**
+             * Protocol Version
+             * @default 1
+             */
+            protocol_version: number;
+            /**
+             * Training
+             * @default false
+             */
+            training: boolean;
+        };
+        /** DeviceView */
+        DeviceView: {
+            /** Approved At */
+            approved_at?: unknown;
+            /** Capabilities */
+            capabilities: unknown;
+            /** Created At */
+            created_at: unknown;
+            /** Id */
+            id: unknown;
+            /** Last Seen At */
+            last_seen_at?: unknown;
+            /** Name */
+            name: unknown;
+            /** Platform */
+            platform: unknown;
+            /** Protocol Version */
+            protocol_version: unknown;
+            /** Public Key Fingerprint */
+            public_key_fingerprint?: unknown;
+            /** Revoked At */
+            revoked_at?: unknown;
+            /** Role */
+            role: unknown;
+            /** Status */
+            status: unknown;
+        };
         /**
          * ExportRequest
          * @description Export options accepted by POST /export.
@@ -5034,6 +5691,23 @@ export interface components {
              * @default untested
              */
             test_status: string;
+        };
+        /** GatewayAdminLoginRequest */
+        GatewayAdminLoginRequest: {
+            /** Bootstrap Key */
+            bootstrap_key: string;
+        };
+        /** GatewayAdminSessionStatusView */
+        GatewayAdminSessionStatusView: {
+            /** Authenticated */
+            authenticated: unknown;
+        };
+        /** GatewayAdminSessionView */
+        GatewayAdminSessionView: {
+            /** Device Role */
+            device_role?: unknown;
+            /** Expires At */
+            expires_at: unknown;
         };
         /**
          * GettingStartedStatus
@@ -5224,6 +5898,12 @@ export interface components {
         };
         /** LauncherSettingsUpdateRequest */
         LauncherSettingsUpdateRequest: {
+            /** Gateway Advertised Url */
+            gateway_advertised_url?: string | null;
+            /** Gateway Allowed Hosts */
+            gateway_allowed_hosts?: string | null;
+            /** Gateway Enabled */
+            gateway_enabled?: boolean | null;
             /** Launch Mode */
             launch_mode?: ("desktop" | "browser") | null;
             /** Update Channel */
@@ -5339,6 +6019,21 @@ export interface components {
         ModelRootUpdateRequest: {
             /** Path */
             path: string;
+        };
+        /** MutationResult */
+        MutationResult: {
+            /** Conflict Id */
+            conflict_id?: unknown;
+            /** Message */
+            message?: unknown;
+            /** Mutation Id */
+            mutation_id: unknown;
+            /** Revision */
+            revision?: unknown;
+            /** Server Snapshot */
+            server_snapshot?: unknown;
+            /** Status */
+            status: unknown;
         };
         /** NovelCreationApplyRequest */
         NovelCreationApplyRequest: {
@@ -5952,6 +6647,74 @@ export interface components {
             /** Sort Order */
             sort_order?: string[] | null;
         };
+        /** PairingApproveRequest */
+        PairingApproveRequest: {
+            /** Pairing Id */
+            pairing_id: string;
+        };
+        /** PairingCompleteRequest */
+        PairingCompleteRequest: {
+            capabilities?: components["schemas"]["DeviceCapabilities"];
+            /** Device Name */
+            device_name: string;
+            /** Pairing Id */
+            pairing_id: string;
+            /** Pairing Secret */
+            pairing_secret: string;
+            /**
+             * Platform
+             * @enum {string}
+             */
+            platform: "android" | "windows" | "linux" | "macos" | "ios" | "web" | "node";
+            /** Public Key */
+            public_key?: string | null;
+        };
+        /** PairingCompleteResponse */
+        PairingCompleteResponse: {
+            /** Device Id */
+            device_id?: unknown;
+            /** Device Role */
+            device_role?: unknown;
+            /** Pairing Id */
+            pairing_id: unknown;
+            /** Status */
+            status: unknown;
+            tokens?: unknown;
+        };
+        /** PairingStartResponse */
+        PairingStartResponse: {
+            /** Expires At */
+            expires_at: unknown;
+            /** Gateway Fingerprint */
+            gateway_fingerprint: unknown;
+            /** Gateway Name */
+            gateway_name: unknown;
+            /** Gateway Public Key */
+            gateway_public_key: unknown;
+            /** Gateway Url */
+            gateway_url: unknown;
+            /** Pairing Id */
+            pairing_id: unknown;
+            /** Pairing Secret */
+            pairing_secret: unknown;
+            /** Qr Payload */
+            qr_payload: unknown;
+        };
+        /** PairingStatusResponse */
+        PairingStatusResponse: {
+            /** Device Id */
+            device_id?: unknown;
+            /** Device Name */
+            device_name?: unknown;
+            /** Device Platform */
+            device_platform?: unknown;
+            /** Expires At */
+            expires_at: unknown;
+            /** Pairing Id */
+            pairing_id: unknown;
+            /** Status */
+            status: unknown;
+        };
         /** PlanStreamRequest */
         PlanStreamRequest: {
             /**
@@ -6188,6 +6951,11 @@ export interface components {
              */
             user_brief: string;
         };
+        /** RefreshTokenRequest */
+        RefreshTokenRequest: {
+            /** Refresh Token */
+            refresh_token: string;
+        };
         /**
          * RelationshipInput
          * @description Relationship from the current character to another character.
@@ -6216,6 +6984,33 @@ export interface components {
         RelationshipUpdate: {
             /** Relationships */
             relationships?: components["schemas"]["RelationshipInput"][];
+        };
+        /** RuntimeCapabilities */
+        RuntimeCapabilities: {
+            /** Cli Worker */
+            cli_worker: unknown;
+            /** Gateway Authoritative */
+            gateway_authoritative: unknown;
+            /** Local Ai */
+            local_ai: unknown;
+            /** Mcp */
+            mcp: unknown;
+            /** Minimum Sync Protocol Version */
+            minimum_sync_protocol_version?: unknown;
+            /** Offline Replica Supported */
+            offline_replica_supported?: unknown;
+            /** Pairing Enabled */
+            pairing_enabled: unknown;
+            /** Requires Gateway For Ai */
+            requires_gateway_for_ai: unknown;
+            /** Runtime Profile */
+            runtime_profile: unknown;
+            /** Supported Entity Types */
+            supported_entity_types?: unknown;
+            /** Sync Protocol Version */
+            sync_protocol_version?: unknown;
+            /** Training */
+            training: unknown;
         };
         /** RuntimeStartRequest */
         RuntimeStartRequest: {
@@ -6373,6 +7168,219 @@ export interface components {
             /** Trigger Examples */
             trigger_examples?: string[] | null;
         };
+        /** SyncBootstrapRequest */
+        SyncBootstrapRequest: {
+            /** Project Ids */
+            project_ids: string[];
+            /**
+             * Protocol Version
+             * @default 1
+             */
+            protocol_version: number;
+        };
+        /** SyncBootstrapResponse */
+        SyncBootstrapResponse: {
+            /** Cursor */
+            cursor: unknown;
+            /** Entities */
+            entities: unknown;
+            /** Projects */
+            projects: unknown;
+            /** Protocol Version */
+            protocol_version?: unknown;
+        };
+        /** SyncChangeView */
+        SyncChangeView: {
+            /** Base Revision */
+            base_revision: unknown;
+            /** Changed At */
+            changed_at: unknown;
+            /** Content Hash */
+            content_hash: unknown;
+            /** Entity Id */
+            entity_id: unknown;
+            /** Entity Type */
+            entity_type: unknown;
+            /** Mutation Id */
+            mutation_id: unknown;
+            /** Operation */
+            operation: unknown;
+            /** Payload */
+            payload?: unknown;
+            /** Project Id */
+            project_id: unknown;
+            /** Revision */
+            revision: unknown;
+        };
+        /** SyncConflictResolutionRequest */
+        SyncConflictResolutionRequest: {
+            /**
+             * Choice
+             * @enum {string}
+             */
+            choice: "server" | "client" | "custom";
+            /** Custom Operation */
+            custom_operation?: ("upsert" | "delete") | null;
+            /** Custom Payload */
+            custom_payload?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** SyncConflictView */
+        SyncConflictView: {
+            /** Client Base Revision */
+            client_base_revision: unknown;
+            /** Client Operation */
+            client_operation: unknown;
+            /** Client Payload */
+            client_payload?: unknown;
+            /** Created At */
+            created_at: unknown;
+            /** Device Id */
+            device_id?: unknown;
+            /** Device Name */
+            device_name?: unknown;
+            /** Entity Id */
+            entity_id: unknown;
+            /** Entity Type */
+            entity_type: unknown;
+            /** Id */
+            id: unknown;
+            /** Mutation Id */
+            mutation_id: unknown;
+            /** Project Id */
+            project_id: unknown;
+            /** Project Title */
+            project_title: unknown;
+            /** Resolution */
+            resolution?: unknown;
+            /** Resolved At */
+            resolved_at?: unknown;
+            /** Server Operation */
+            server_operation: unknown;
+            /** Server Payload */
+            server_payload?: unknown;
+            /** Server Revision */
+            server_revision: unknown;
+            /** Status */
+            status: unknown;
+        };
+        /** SyncEntitySnapshot */
+        SyncEntitySnapshot: {
+            /** Content Hash */
+            content_hash: unknown;
+            /** Entity Id */
+            entity_id: unknown;
+            /** Entity Type */
+            entity_type: unknown;
+            /** Operation */
+            operation: unknown;
+            /** Payload */
+            payload?: unknown;
+            /** Project Id */
+            project_id: unknown;
+            /** Revision */
+            revision: unknown;
+            /** Server Modified At */
+            server_modified_at: unknown;
+        };
+        /** SyncMutation */
+        SyncMutation: {
+            /** Base Revision */
+            base_revision: number;
+            /** Client Modified At */
+            client_modified_at?: string | null;
+            /** Entity Id */
+            entity_id: string;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "project" | "chapter" | "chapter_version" | "outline" | "character" | "character_alias" | "character_relation" | "world" | "world_relation" | "summary" | "timeline" | "foreshadowing" | "governance";
+            /** Mutation Id */
+            mutation_id: string;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "upsert" | "delete";
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** Project Id */
+            project_id: string;
+        };
+        /** SyncProjectView */
+        SyncProjectView: {
+            /** Aggregate Hash */
+            aggregate_hash?: unknown;
+            /** Counts */
+            counts?: unknown;
+            /** Enabled At */
+            enabled_at?: unknown;
+            /** Entity Count */
+            entity_count?: unknown;
+            /** Initial Revision */
+            initial_revision?: unknown;
+            /** Last Error */
+            last_error?: unknown;
+            /** Project Id */
+            project_id: unknown;
+            /** Status */
+            status: unknown;
+            /** Title */
+            title: unknown;
+            /** Verified At */
+            verified_at?: unknown;
+        };
+        /** SyncPullResponse */
+        SyncPullResponse: {
+            /** Changes */
+            changes: unknown;
+            /** From Cursor */
+            from_cursor: unknown;
+            /** Has More */
+            has_more: unknown;
+            /** Next Cursor */
+            next_cursor: unknown;
+            /** Protocol Version */
+            protocol_version?: unknown;
+        };
+        /** SyncPushRequest */
+        SyncPushRequest: {
+            /** Mutations */
+            mutations: components["schemas"]["SyncMutation"][];
+            /**
+             * Protocol Version
+             * @default 1
+             */
+            protocol_version: number;
+        };
+        /** SyncPushResponse */
+        SyncPushResponse: {
+            /** Cursor */
+            cursor: unknown;
+            /** Protocol Version */
+            protocol_version?: unknown;
+            /** Results */
+            results: unknown;
+        };
+        /** SyncStatusResponse */
+        SyncStatusResponse: {
+            /** Active Devices */
+            active_devices: unknown;
+            /** Cursor */
+            cursor: unknown;
+            /** Enabled Projects */
+            enabled_projects: unknown;
+            /** Open Conflicts */
+            open_conflicts: unknown;
+            /** Protocol Version */
+            protocol_version?: unknown;
+            /** Tombstone Retention Days */
+            tombstone_retention_days: unknown;
+        };
         /** SystemChatRequest */
         SystemChatRequest: {
             /** Context */
@@ -6418,6 +7426,19 @@ export interface components {
             user_brief?: string | null;
             /** User Content */
             user_content: string;
+        };
+        /** TokenPair */
+        TokenPair: {
+            /** Access Expires At */
+            access_expires_at: unknown;
+            /** Access Token */
+            access_token: unknown;
+            /** Refresh Expires At */
+            refresh_expires_at: unknown;
+            /** Refresh Token */
+            refresh_token: unknown;
+            /** Token Type */
+            token_type?: unknown;
         };
         /** TrainingJobCreateRequest */
         TrainingJobCreateRequest: {
@@ -6752,6 +7773,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_gateway_admin_api_v1_auth_admin_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GatewayAdminLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_GatewayAdminSessionView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_gateway_admin_api_v1_auth_admin_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+        };
+    };
+    get_gateway_admin_session_api_v1_auth_admin_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_GatewayAdminSessionStatusView_"];
+                };
+            };
+        };
+    };
+    refresh_tokens_api_v1_auth_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_TokenPair_"];
                 };
             };
             /** @description Validation Error */
@@ -7694,6 +8821,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_devices_api_v1_devices_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_DeviceView__"];
+                };
+            };
+        };
+    };
+    revoke_current_device_api_v1_devices_me_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+        };
+    };
+    revoke_device_api_v1_devices__device_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */
@@ -9315,6 +10513,123 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_pairing_api_v1_pairing_approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingApproveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_PairingCompleteResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_pairing_api_v1_pairing_complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingCompleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_PairingCompleteResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_pairing_api_v1_pairing_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_PairingStartResponse_"];
+                };
+            };
+        };
+    };
+    get_pairing_status_api_v1_pairing__pairing_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pairing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_PairingStatusResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -14584,6 +15899,296 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_capabilities_api_v1_runtime_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_RuntimeCapabilities_"];
+                };
+            };
+        };
+    };
+    sync_bootstrap_api_v1_sync_bootstrap_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncBootstrapResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sync_conflicts_api_v1_sync_conflicts_get: {
+        parameters: {
+            query?: {
+                status?: "open" | "resolved";
+                project_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_SyncConflictView__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_sync_conflict_api_v1_sync_conflicts__conflict_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conflict_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncConflictResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncConflictView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sync_projects_api_v1_sync_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_SyncProjectView__"];
+                };
+            };
+        };
+    };
+    disable_project_sync_api_v1_sync_projects__project_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_project_sync_api_v1_sync_projects__project_id__enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncProjectView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_pull_api_v1_sync_pull_get: {
+        parameters: {
+            query: {
+                project_id: string[];
+                cursor?: number;
+                limit?: number;
+                protocol_version?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncPullResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_push_api_v1_sync_push_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncPushRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncPushResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_status_api_v1_sync_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SyncStatusResponse_"];
                 };
             };
         };

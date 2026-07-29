@@ -4,6 +4,7 @@ import { Suspense, lazy, useEffect } from 'react'
 import { useAppStore } from './stores'
 import GlobalOperationCenter from './features/operations/components/GlobalOperationCenter'
 import { useGettingStartedSummary } from './features/onboarding'
+import GatewayAdminGate, { useGatewayRuntime } from './features/gateway/GatewayAdminGate'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
@@ -61,14 +62,19 @@ function LoadingScreen() {
 function FirstRunSetupGate() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { headless } = useGatewayRuntime()
   const onLibraryRoute = ['/', '/dashboard'].includes(location.pathname)
-  const { data } = useGettingStartedSummary(onLibraryRoute)
+  const { data } = useGettingStartedSummary(onLibraryRoute && !headless)
 
   useEffect(() => {
     if (!onLibraryRoute) return
+    if (headless) {
+      navigate('/settings', { replace: true })
+      return
+    }
     if (localStorage.getItem('siming_getting_started_deferred') === 'true') return
     if (data?.needs_setup) navigate('/getting-started', { replace: true })
-  }, [data?.needs_setup, navigate, onLibraryRoute])
+  }, [data?.needs_setup, headless, navigate, onLibraryRoute])
 
   return null
 }
@@ -106,26 +112,28 @@ function GlobalErrorBanner() {
 function App() {
   return (
     <Layout style={{ minHeight: '100vh' }} className="siming-grain">
-      <a className="siming-skip-link" href="#main-content">跳到主要内容</a>
-      <GlobalErrorBanner />
-      <GlobalOperationCenter />
-      <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
-        <FirstRunSetupGate />
-        <Suspense fallback={<LoadingScreen />}>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
-            <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/getting-started" element={<GettingStartedPage />} />
-            <Route path="/external-agent" element={<ExternalAgentPage />} />
-            <Route path="/gui" element={<GuiPage />} />
-            <Route path="/models" element={<ModelCenterPage />} />
-            <Route path="*" element={<WildcardRedirect />} />
-          </Routes>
-        </Suspense>
-      </Content>
+      <GatewayAdminGate>
+        <a className="siming-skip-link" href="#main-content">跳到主要内容</a>
+        <GlobalErrorBanner />
+        <GlobalOperationCenter />
+        <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
+          <FirstRunSetupGate />
+          <Suspense fallback={<LoadingScreen />}>
+            <Routes>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
+              <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/getting-started" element={<GettingStartedPage />} />
+              <Route path="/external-agent" element={<ExternalAgentPage />} />
+              <Route path="/gui" element={<GuiPage />} />
+              <Route path="/models" element={<ModelCenterPage />} />
+              <Route path="*" element={<WildcardRedirect />} />
+            </Routes>
+          </Suspense>
+        </Content>
+      </GatewayAdminGate>
     </Layout>
   )
 }

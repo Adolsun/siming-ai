@@ -19,6 +19,9 @@ class ApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response) {
+          if (error.response.status === 401 && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('siming:gateway-unauthorized'))
+          }
           const data = error.response.data as {
             code?: number
             message?: string

@@ -36,9 +36,16 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a2_content_sync"
+            assert result.schema_revision == revision == "300a3_gateway_sync"
             assert epoch == SCHEMA_EPOCH
-            assert {"projects", "chapters", "operation_runs", "content_sync_jobs"} <= tables
+            assert {
+                "projects",
+                "chapters",
+                "operation_runs",
+                "content_sync_jobs",
+                "gateway_devices",
+                "sync_changes",
+            } <= tables
         finally:
             engine.dispose()
 
@@ -72,7 +79,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a2_content_sync"
+            assert revision == "300a3_gateway_sync"
         finally:
             engine.dispose()
 
@@ -133,8 +140,7 @@ def test_current_database_mcp_check_stays_read_only_during_active_writer():
             writer = sqlite3.connect(database_path)
             writer.execute("BEGIN IMMEDIATE")
             writer.execute(
-                "UPDATE siming_schema_metadata SET value = value "
-                "WHERE key = 'application_version'"
+                "UPDATE siming_schema_metadata SET value = value WHERE key = 'application_version'"
             )
 
             checked = bootstrap_database(
@@ -191,7 +197,7 @@ def test_failed_migration_returns_the_verified_backup(monkeypatch):
             engine.dispose()
 
 
-def test_alpha1_database_upgrades_to_content_sync_outbox():
+def test_alpha1_database_upgrades_through_gateway_sync():
     with TemporaryDirectory() as temp_dir:
         database_path = Path(temp_dir) / "alpha1.db"
         url = _database_url(database_path)
@@ -218,8 +224,10 @@ def test_alpha1_database_upgrades_to_content_sync_outbox():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a2_content_sync"
-            assert "content_sync_jobs" in inspect(engine).get_table_names()
+            assert result.schema_revision == "300a3_gateway_sync"
+            assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
+                inspect(engine).get_table_names()
+            )
         finally:
             engine.dispose()
 

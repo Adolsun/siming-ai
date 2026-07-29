@@ -190,6 +190,9 @@ async function mockApi(page: Page, options: {
     if (path === '/api/v1/config/models') {
       return fulfill(route, { code: 0, data: { items: options.models ?? [model], total: (options.models ?? [model]).length } })
     }
+    if (path === '/api/v1/config/launcher') {
+      return fulfill(route, { code: 0, data: { launch_mode: 'desktop', update_channel: 'stable', restart_required: false } })
+    }
     if (path === '/api/v1/config/getting-started') {
       return fulfill(route, {
         code: 0,

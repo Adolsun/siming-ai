@@ -89,6 +89,30 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
 
             self.assertEqual(response.data["update_channel"], "preview")
 
+    def test_gateway_launcher_settings_are_normalized_without_secrets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with patch.dict(os.environ, {"SIMING_HOME": str(home)}, clear=False):
+                response = config.update_launcher_settings(
+                    config.LauncherSettingsUpdateRequest(
+                        gateway_enabled=True,
+                        gateway_advertised_url="https://Siming.Example.ts.net/",
+                        gateway_allowed_hosts="Siming.Example.ts.net, 192.168.1.20",
+                    )
+                )
+
+            self.assertTrue(response.data["gateway_enabled"])
+            self.assertEqual(
+                response.data["gateway_advertised_url"],
+                "https://siming.example.ts.net",
+            )
+            self.assertEqual(
+                response.data["gateway_allowed_hosts"],
+                "siming.example.ts.net,192.168.1.20",
+            )
+            saved = launcher._load_launcher_settings(home)
+            self.assertNotIn("gateway_bootstrap_key", saved)
+
     def test_browser_mode_starts_local_server_without_creating_a_webview_window(self):
         class FakeThread:
             instances = []

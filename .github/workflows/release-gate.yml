@@ -25,6 +25,9 @@ jobs:
       OPENAI_API_KEY: test-placeholder
       ANTHROPIC_API_KEY: test-placeholder
       ARK_API_KEY: test-placeholder
+      SIMING_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIMING_ANDROID_KEYSTORE_PASSWORD }}
+      SIMING_ANDROID_KEY_ALIAS: ${{ secrets.SIMING_ANDROID_KEY_ALIAS }}
+      SIMING_ANDROID_KEY_PASSWORD: ${{ secrets.SIMING_ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +48,18 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        shell: pwsh
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Verify tag matches application version
         shell: pwsh
         run: |
@@ -58,8 +73,10 @@ jobs:
           }
           $frontendVersion = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           $backendVersion = (Select-String -Path backend/app/version.py -Pattern 'APP_VERSION\s*=\s*["'']([^"'']+)' | Select-Object -First 1).Matches.Groups[1].Value
-          if ($tag -ne "v$frontendVersion" -or $frontendVersion -ne $backendVersion) {
-            throw "Tag $tag must match frontend/backend version ($frontendVersion/$backendVersion)."
+          $androidBuild = Get-Content mobile/android/app/build.gradle.kts -Raw
+          $androidVersion = [regex]::Match($androidBuild, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($tag -ne "v$frontendVersion" -or $frontendVersion -ne $backendVersion -or $frontendVersion -ne $androidVersion) {
+            throw "Tag $tag must match frontend/backend/Android version ($frontendVersion/$backendVersion/$androidVersion)."
           }
 
       - name: Install frontend dependencies
@@ -100,12 +117,28 @@ jobs:
         shell: cmd
         run: build-exe.bat
 
+      - name: Prepare Android signing key
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIMING_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) { throw "SIMING_ANDROID_KEYSTORE_BASE64 is not configured." }
+          $path = Join-Path $env:RUNNER_TEMP "siming-android-release.jks"
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          "SIMING_ANDROID_KEYSTORE_FILE=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed Android APK
+        shell: pwsh
+        run: ./scripts/build-android-release.ps1
+
       - name: Verify package assets and run smoke test
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}".TrimStart("v")
           ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
+          ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
           ./scripts/smoke-test-release.ps1 -SkipBuild
 
       - name: Upload verified release assets
@@ -116,6 +149,8 @@ jobs:
             release/Siming.exe
             release/update.json
             release/sha256.txt
+            release/Siming.apk
+            release/Siming-apk-sha256.txt
           if-no-files-found: error
 
       - name: Upload release diagnostics
@@ -135,6 +170,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android verification tools
+        shell: pwsh
+        run: sdkmanager "build-tools;35.0.0"
+
       - name: Download and verify published assets
         shell: pwsh
         env:
@@ -143,7 +189,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}"
           $version = $tag.TrimStart("v")
-          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt")
+          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt", "Siming.apk", "Siming-apk-sha256.txt")
           $verified = $false
           New-Item -ItemType Directory -Force -Path release | Out-Null
           for ($attempt = 1; $attempt -le 18; $attempt++) {
@@ -156,9 +202,10 @@ jobs:
               continue
             }
             try {
-              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -D release --clobber
+              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -p "Siming.apk" -p "Siming-apk-sha256.txt" -D release --clobber
               if ($LASTEXITCODE -ne 0) { throw "gh release download failed with exit code $LASTEXITCODE" }
               ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
+              ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
               $verified = $true
               break
             } catch {

@@ -49,6 +49,7 @@ _SKIP_DIRS = {
     "dist",
     "release",
     "backups",
+    "video",
     ".venv",
     "venv",
 }

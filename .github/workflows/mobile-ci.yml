@@ -1,0 +1,49 @@
+name: Android CI
+
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "backend/app/modules/gateway/**"
+      - "backend/app/routers/gateway.py"
+      - ".github/workflows/mobile-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "backend/app/modules/gateway/**"
+      - "backend/app/routers/gateway.py"
+      - ".github/workflows/mobile-ci.yml"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build APK
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Upload lint report and debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ci-artifacts
+          path: |
+            mobile/android/app/build/reports/lint-results-debug.html
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore

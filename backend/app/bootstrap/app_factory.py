@@ -22,7 +22,12 @@ from ..core.exceptions import (
 )
 from ..version import APP_VERSION
 from .composition import configure_application_services
-from .http_security import LocalOriginGuardMiddleware, SecurityHeadersMiddleware
+from .http_security import (
+    GatewayAuthenticationMiddleware,
+    GatewayRequestLimitMiddleware,
+    LocalOriginGuardMiddleware,
+    SecurityHeadersMiddleware,
+)
 from .lifecycle import RuntimeBootstrapStatus, application_lifespan
 
 
@@ -71,20 +76,14 @@ def _register_routers(app: FastAPI) -> None:
         context_governance,
         deconstruct,
         export,
-        external_agent,
-        external_agent_global,
-        getting_started,
+        gateway,
         importer,
-        local_models,
-        mcp,
         narrative_governance,
         novel_creation,
         operations,
         outline,
         projects,
         prompt_packs,
-        scheduler,
-        skill,
         stats,
         system_assistant,
         tools,
@@ -95,7 +94,7 @@ def _register_routers(app: FastAPI) -> None:
         projects,
         application_updates,
         config,
-        getting_started,
+        gateway,
         worldbuilding,
         characters,
         outline,
@@ -107,20 +106,34 @@ def _register_routers(app: FastAPI) -> None:
         importer,
         cataloging,
         agent,
-        skill,
-        scheduler,
-        mcp,
-        external_agent,
-        external_agent_global,
         tools,
         prompt_packs,
         novel_creation,
         system_assistant,
-        local_models,
         narrative_governance,
         context_governance,
         operations,
     )
+    if get_settings().local_runtime_enabled:
+        from ..routers import (
+            external_agent,
+            external_agent_global,
+            getting_started,
+            local_models,
+            mcp,
+            scheduler,
+            skill,
+        )
+
+        routers += (
+            getting_started,
+            skill,
+            scheduler,
+            mcp,
+            external_agent,
+            external_agent_global,
+            local_models,
+        )
     for router_module in routers:
         app.include_router(router_module.router, prefix="/api/v1")
 
@@ -217,6 +230,9 @@ def create_app(*, run_startup: bool = True) -> FastAPI:
         description="Backend API for the Siming novel-writing tool.",
         version=APP_VERSION,
         lifespan=application_lifespan if run_startup else _no_op_lifespan,
+        docs_url=None if settings.gateway_enabled else "/docs",
+        redoc_url=None if settings.gateway_enabled else "/redoc",
+        openapi_url=None if settings.gateway_enabled else "/openapi.json",
     )
     app.state.runtime_bootstrap = RuntimeBootstrapStatus(status="not_started")
 
@@ -229,16 +245,30 @@ def create_app(*, run_startup: bool = True) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.get_cors_origins(),
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Accept",
+            "Authorization",
+            "Content-Type",
+            "X-Siming-Bootstrap-Key",
+        ],
     )
     app.add_middleware(
         LocalOriginGuardMiddleware,
         allowed_origins=settings.get_cors_origins(),
+        allow_same_host=settings.gateway_enabled,
     )
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["127.0.0.1", "localhost", "testserver"],
+        allowed_hosts=settings.get_trusted_hosts(),
+    )
+    app.add_middleware(
+        GatewayAuthenticationMiddleware,
+        enabled=settings.gateway_enabled,
+    )
+    app.add_middleware(
+        GatewayRequestLimitMiddleware,
+        enabled=settings.gateway_enabled,
     )
     app.add_middleware(SecurityHeadersMiddleware)
 

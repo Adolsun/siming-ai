@@ -2,6 +2,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Button, Space, Tooltip, Typography } from 'antd'
 import { BookOutlined, HomeOutlined, PlusOutlined, RocketOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import { useGatewayRuntime } from './GatewayRuntimeContext'
 
 const { Text } = Typography
 
@@ -17,6 +18,7 @@ interface SystemNavProps {
 function SystemNav({ current }: SystemNavProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { headless } = useGatewayRuntime()
   // Auto-detect current page if not specified
   const active = current || (() => {
     if (location.pathname === '/dashboard' || location.pathname === '/') return 'dashboard'
@@ -33,7 +35,7 @@ function SystemNav({ current }: SystemNavProps) {
     { key: 'creation', label: '新书立项', icon: <PlusOutlined />, path: '/novel-creation' },
     { key: 'assistant', label: 'AI 助手', icon: <RobotOutlined />, path: '/gui' },
     { key: 'getting-started', label: '快速开始', icon: <RocketOutlined />, path: '/getting-started' },
-  ]
+  ].filter((item) => !headless || !['assistant', 'getting-started'].includes(item.key))
 
   return (
     <nav className="system-nav" aria-label="系统导航">

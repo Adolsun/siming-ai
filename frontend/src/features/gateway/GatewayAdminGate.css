@@ -1,0 +1,150 @@
+.gateway-gate {
+  --gate-ink: #20201f;
+  --gate-paper: #fffdf8;
+  --gate-paper-deep: #f1eadf;
+  --gate-cinnabar: #963a36;
+  align-items: center;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(150, 58, 54, 0.08), transparent 30%),
+    linear-gradient(135deg, #f7f3eb, #ebe5da);
+  color: var(--gate-ink);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  overflow-x: clip;
+  padding: 28px;
+  position: relative;
+}
+
+.gateway-gate::before {
+  background: repeating-linear-gradient(90deg, transparent 0 55px, rgba(65, 55, 42, 0.035) 56px);
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.gateway-gate-card {
+  background: rgba(255, 253, 248, 0.98);
+  border: 1px solid #d7cdbf;
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(55, 42, 28, 0.14);
+  display: grid;
+  gap: 26px;
+  max-width: 780px;
+  padding: 42px 46px 34px;
+  position: relative;
+  width: 100%;
+}
+
+.gateway-gate-card::after {
+  border: 1px solid rgba(150, 58, 54, 0.24);
+  border-radius: 50%;
+  content: '';
+  height: 180px;
+  position: absolute;
+  right: -74px;
+  top: -92px;
+  width: 180px;
+}
+
+.gateway-gate-header {
+  align-items: flex-start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: 78px minmax(0, 1fr);
+}
+
+.gateway-gate-seal {
+  align-items: center;
+  background: var(--gate-cinnabar);
+  border: 5px double rgba(255, 253, 248, 0.72);
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(97, 43, 38, 0.22);
+  color: #fff;
+  display: flex;
+  font-size: 28px;
+  height: 68px;
+  justify-content: center;
+  transform: rotate(-2deg);
+  width: 68px;
+}
+
+.gateway-gate-kicker,
+.gateway-gate-wordmark {
+  color: var(--gate-cinnabar);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.gateway-gate-header h2.ant-typography {
+  color: var(--gate-ink);
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', SimSun, serif;
+  font-size: clamp(27px, 4vw, 38px);
+  margin: 4px 0 10px;
+}
+
+.gateway-gate-header .ant-typography {
+  color: #5c5851;
+  line-height: 1.75;
+}
+
+.gateway-gate-form {
+  background: #f7f3eb;
+  border: 1px solid #ded3c3;
+  border-radius: 9px;
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+}
+
+.gateway-gate-form label { font-size: 13px; font-weight: 700; }
+
+.gateway-gate-input-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.gateway-gate-hint { font-size: 12px; line-height: 1.65; }
+
+.gateway-gate-error {
+  background: #fff1ef;
+  border: 1px solid #e3aaa4;
+  border-radius: 6px;
+  color: #8d302c;
+  font-size: 13px;
+  padding: 9px 11px;
+}
+
+.gateway-gate-connect-error { display: grid; gap: 9px; }
+.gateway-gate-connect-error .ant-btn { justify-self: start; }
+
+.gateway-gate-boundary {
+  border-top: 1px solid #e4ddd2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 18px;
+}
+
+.gateway-gate-loading {
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gateway-gate-loading .gateway-gate-wordmark {
+  font-family: 'Noto Serif SC', 'Songti SC', SimSun, serif;
+  font-size: 30px;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 640px) {
+  .gateway-gate { padding: 16px; }
+  .gateway-gate-card { gap: 20px; padding: 28px 20px 24px; }
+  .gateway-gate-header { grid-template-columns: 1fr; }
+  .gateway-gate-seal { height: 56px; width: 56px; }
+  .gateway-gate-input-row { grid-template-columns: 1fr; }
+  .gateway-gate-input-row .ant-btn { width: 100%; }
+}

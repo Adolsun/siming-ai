@@ -40,6 +40,32 @@ import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
 import ModelReadinessBanner from '../components/ModelReadinessBanner'
+import GatewaySettingsPanel from '../features/gateway/GatewaySettingsPanel'
+import type { LauncherGatewaySettings } from '../features/gateway/types'
+import {
+  CUSTOM_PROVIDER_VALUE,
+  DEFAULT_CLI_ARGS,
+  DEFAULT_CLI_COMMANDS,
+  PROVIDER_ID_PATTERN,
+  PROVIDER_OPTIONS,
+  READINESS_LABELS,
+  defaultOutputLimit,
+  defaultSafetyLimits,
+  fallbackModelOptions,
+  isCustomProviderSelection,
+  isDeepSeekModelSupported,
+  isKnownProvider,
+  isLocalCliProvider,
+  normalizeDefaultModel,
+  normalizeProviderModelOptions,
+  providerColor,
+  providerLabel,
+  readinessColor,
+  resolveProviderForSubmit,
+  type ModelDiscoveryState,
+  type ModelOption,
+  type ReadinessStatus,
+} from '../features/localModels/settingsModelOptions'
 import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -49,7 +75,7 @@ interface ModelConfig {
   provider: string
   default_model: string
   is_global_default: boolean
-  readiness_status: 'detected' | 'unverified' | 'testing' | 'ready' | 'auth_required' | 'quota_limited' | 'unavailable'
+  readiness_status: ReadinessStatus
   is_usable: boolean
   readiness_message?: string
   readiness_source?: string | null
@@ -94,181 +120,10 @@ interface ContentRootSettings {
   }
 }
 
-interface ModelOption {
-  id: string
-  display_name?: string
-}
-
-type ModelDiscoveryState = {
-  status: 'idle' | 'success' | 'manual'
-  message?: string
-}
-
-const PROVIDER_OPTIONS = [
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'anthropic', label: 'Anthropic Claude' },
-  { value: 'deepseek', label: 'DeepSeek（v4-pro / v4-flash）' },
-  { value: 'qwen', label: '通义千问' },
-  { value: 'gemini', label: 'Google Gemini' },
-  { value: 'claude_cli', label: 'Claude Code CLI（本机）' },
-  { value: 'codex_cli', label: 'Codex CLI（本机）' },
-  { value: 'opencode_cli', label: 'opencode CLI（本机）' },
-  { value: 'mimocode_cli', label: 'MiMo Code CLI（本机）' },
-  { value: 'cursor_cli', label: 'Cursor Agent CLI（本机）' },
-  { value: 'kilocode_cli', label: 'Kilo Code CLI（本机）' },
-  { value: 'qwen_code_cli', label: 'Qwen Code CLI（本机）' },
-  { value: 'hermes_cli', label: 'Hermes Agent CLI（本机）' },
-  { value: 'openclaw_cli', label: 'OpenClaw CLI（本机）' },
-  { value: 'custom_cli', label: '自定义本机 CLI' },
-  { value: '__custom_openai_compatible__', label: '自定义 OpenAI 兼容' },
-]
-
-const CUSTOM_PROVIDER_VALUE = '__custom_openai_compatible__'
-const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]+$/
-
-const PROVIDER_LABEL_MAP: Record<string, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic Claude',
-  deepseek: 'DeepSeek',
-  qwen: '通义千问',
-  gemini: 'Google Gemini',
-  local_llama_cpp: '司命本地 AI',
-  claude_cli: 'Claude Code CLI',
-  codex_cli: 'Codex CLI',
-  opencode_cli: 'opencode CLI',
-  mimocode_cli: 'MiMo Code CLI',
-  cursor_cli: 'Cursor Agent CLI',
-  kilocode_cli: 'Kilo Code CLI',
-  qwen_code_cli: 'Qwen Code CLI',
-  hermes_cli: 'Hermes Agent CLI',
-  openclaw_cli: 'OpenClaw CLI',
-  custom_cli: '自定义本机 CLI',
-}
-
-const PROVIDER_COLOR_MAP: Record<string, string> = {
-  openai: 'green',
-  anthropic: 'purple',
-  deepseek: 'blue',
-  qwen: 'orange',
-  gemini: 'cyan',
-  local_llama_cpp: 'green',
-  claude_cli: 'purple',
-  codex_cli: 'geekblue',
-  opencode_cli: 'magenta',
-  mimocode_cli: 'gold',
-  cursor_cli: 'blue',
-  kilocode_cli: 'volcano',
-  qwen_code_cli: 'cyan',
-  hermes_cli: 'purple',
-  openclaw_cli: 'green',
-  custom_cli: 'default',
-}
-
-const providerLabel = (provider?: string | null) => {
-  if (!provider) return ''
-  return PROVIDER_LABEL_MAP[provider] || provider
-}
-
-const providerColor = (provider?: string | null) => {
-  if (!provider) return 'default'
-  return PROVIDER_COLOR_MAP[provider] || 'default'
-}
-
-const isCustomProviderSelection = (provider?: string) => provider === CUSTOM_PROVIDER_VALUE
-const LOCAL_CLI_PROVIDERS = [
-  'claude_cli',
-  'codex_cli',
-  'opencode_cli',
-  'mimocode_cli',
-  'cursor_cli',
-  'kilocode_cli',
-  'qwen_code_cli',
-  'hermes_cli',
-  'openclaw_cli',
-  'custom_cli',
-]
-const isLocalCliProvider = (provider?: string) => Boolean(provider && LOCAL_CLI_PROVIDERS.includes(provider))
-
-const resolveProviderForSubmit = (values: any) => (
-  isCustomProviderSelection(values.provider)
-    ? String(values.custom_provider || '').trim()
-    : values.provider
-)
-
-const DEEPSEEK_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'deepseek-v4-pro', display_name: 'deepseek-v4-pro' },
-  { id: 'deepseek-v4-flash', display_name: 'deepseek-v4-flash' },
-]
-
-const GEMINI_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'gemini-3-pro-preview', display_name: 'gemini-3-pro-preview' },
-  { id: 'gemini-3-flash-preview', display_name: 'gemini-3-flash-preview' },
-  { id: 'gemini-2.5-pro', display_name: 'gemini-2.5-pro' },
-  { id: 'gemini-2.5-flash', display_name: 'gemini-2.5-flash' },
-  { id: 'gemini-2.5-flash-lite', display_name: 'gemini-2.5-flash-lite' },
-]
-
-const LOCAL_CLI_MODEL_OPTIONS: Record<string, ModelOption[]> = {
-  claude_cli: [{ id: 'claude-code', display_name: 'claude-code' }],
-  codex_cli: [{ id: 'codex-cli', display_name: 'codex-cli' }],
-  opencode_cli: [{ id: 'opencode-cli', display_name: 'opencode-cli' }],
-  mimocode_cli: [{ id: 'xiaomi/mimo-v2.5-pro', display_name: 'xiaomi/mimo-v2.5-pro' }],
-  cursor_cli: [{ id: 'cursor-agent', display_name: 'cursor-agent' }],
-  kilocode_cli: [{ id: 'kilocode-cli', display_name: 'kilocode-cli' }],
-  qwen_code_cli: [{ id: 'qwen-code-cli', display_name: 'qwen-code-cli' }],
-  hermes_cli: [{ id: 'hermes-agent', display_name: 'hermes-agent' }],
-  openclaw_cli: [{ id: 'openclaw-agent', display_name: 'openclaw-agent' }],
-  custom_cli: [{ id: 'custom-cli', display_name: 'custom-cli' }],
-}
-
-const DEFAULT_CLI_COMMANDS: Record<string, string> = {
-  claude_cli: 'claude',
-  codex_cli: 'codex',
-  opencode_cli: 'opencode',
-  mimocode_cli: 'mimo',
-  cursor_cli: 'agent',
-  kilocode_cli: 'kilo',
-  qwen_code_cli: 'qwen',
-  hermes_cli: 'hermes',
-  openclaw_cli: 'openclaw',
-  custom_cli: '',
-}
-
-const DEFAULT_CLI_ARGS: Record<string, string> = {
-  claude_cli: '["--permission-mode","bypassPermissions","-p","{prompt}"]',
-  codex_cli: '["exec","--dangerously-bypass-approvals-and-sandbox","{prompt}"]',
-  opencode_cli: '["run","--dangerously-skip-permissions","{prompt}"]',
-  mimocode_cli: '["run","--dangerously-skip-permissions","{prompt}"]',
-  cursor_cli: '["-p","--force","--approve-mcps","--trust","--output-format","text","{prompt}"]',
-  kilocode_cli: '["run","--auto","{prompt}"]',
-  qwen_code_cli: '["--approval-mode","yolo","--output-format","text","{prompt}"]',
-  hermes_cli: '["--yolo","--oneshot","{prompt}"]',
-  openclaw_cli: '["agent","--local","--json","--session-key","agent:siming:local-cli","--message","{prompt}"]',
-  custom_cli: '["{prompt}"]',
-}
-
-const READINESS_LABELS: Record<ModelConfig['readiness_status'], string> = {
-  detected: '已检测，待验证',
-  unverified: '待验证',
-  testing: '正在测试',
-  ready: '可用',
-  auth_required: '需要登录',
-  quota_limited: '额度受限',
-  unavailable: '暂不可用',
-}
-
-const readinessColor = (status: ModelConfig['readiness_status']) => {
-  if (status === 'ready') return 'success'
-  if (status === 'testing') return 'processing'
-  if (status === 'auth_required' || status === 'quota_limited') return 'warning'
-  if (status === 'unavailable') return 'error'
-  return 'default'
-}
-
 type LaunchMode = 'desktop' | 'browser'
 type UpdateChannel = 'stable' | 'preview'
 
-interface LauncherSettings {
+interface LauncherSettings extends LauncherGatewaySettings {
   launch_mode: LaunchMode
   update_channel: UpdateChannel
   restart_required: boolean
@@ -308,83 +163,6 @@ interface UpdateStatus {
   downloaded?: boolean
 }
 
-const FALLBACK_OUTPUT_LIMIT = 16000
-const MODEL_OUTPUT_LIMITS: Record<string, number> = {
-  'deepseek:deepseek-v4-pro': 384000,
-  'deepseek:deepseek-v4-flash': 384000,
-  'gemini:gemini-3-pro-preview': 65536,
-  'gemini:gemini-3-flash-preview': 65536,
-  'gemini:gemini-2.5-pro': 65536,
-  'gemini:gemini-2.5-flash': 65536,
-  'gemini:gemini-2.5-flash-lite': 65536,
-}
-const PROVIDER_OUTPUT_LIMITS: Record<string, number> = {
-  deepseek: 384000,
-  gemini: 65536,
-}
-
-const fallbackModelOptions = (provider?: string): ModelOption[] => {
-  if (provider === 'deepseek') return DEEPSEEK_MODEL_OPTIONS
-  if (provider === 'gemini') return GEMINI_MODEL_OPTIONS
-  if (provider && LOCAL_CLI_MODEL_OPTIONS[provider]) return LOCAL_CLI_MODEL_OPTIONS[provider]
-  return []
-}
-
-const normalizeDefaultModel = (provider: string, model: string) => {
-  if (provider === 'deepseek' && model === 'deepseek-v3') {
-    return 'deepseek-v4-flash'
-  }
-  if (provider === 'gemini' && model.startsWith('models/')) {
-    return model.slice('models/'.length)
-  }
-  if (isLocalCliProvider(provider)) {
-    return model || LOCAL_CLI_MODEL_OPTIONS[provider]?.[0]?.id || `${provider}-default`
-  }
-  return model
-}
-
-const isDeepSeekModelSupported = (model: string) => (
-  DEEPSEEK_MODEL_OPTIONS.some((option) => option.id === model)
-)
-
-const normalizeProviderModelOptions = (provider: string, options: ModelOption[]) => {
-  if (provider === 'gemini') {
-    const normalized = options.map((option) => {
-      const id = normalizeDefaultModel(provider, option.id)
-      return {
-        id,
-        display_name: normalizeDefaultModel(provider, option.display_name || id),
-      }
-    })
-    const unique = Array.from(new Map(normalized.map((option) => [option.id, option])).values())
-    return unique.length > 0 ? unique : GEMINI_MODEL_OPTIONS
-  }
-  if (provider !== 'deepseek') return options
-  const normalized = options
-    .map((option) => ({
-      id: normalizeDefaultModel(provider, option.id),
-      display_name: normalizeDefaultModel(provider, option.display_name || option.id),
-    }))
-    .filter((option) => isDeepSeekModelSupported(option.id))
-  const unique = Array.from(new Map(normalized.map((option) => [option.id, option])).values())
-  return unique.length > 0 ? unique : DEEPSEEK_MODEL_OPTIONS
-}
-
-const defaultOutputLimit = (provider?: string, model?: string) => {
-  if (!provider) return FALLBACK_OUTPUT_LIMIT
-  const key = `${provider}:${model || ''}`
-  return MODEL_OUTPUT_LIMITS[key] || PROVIDER_OUTPUT_LIMITS[provider] || FALLBACK_OUTPUT_LIMIT
-}
-
-const defaultSafetyLimits = (provider?: string, model?: string) => {
-  const limit = defaultOutputLimit(provider, model)
-  return {
-    max_output_tokens: limit,
-    deconstruct_input_char_limit: limit,
-    deconstruct_item_char_limit: limit,
-  }
-}
-
 interface SettingsPageProps {
   embedded?: boolean
 }
@@ -416,7 +194,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
   const [installingUpdate, setInstallingUpdate] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<'ai' | 'app'>('ai')
+  const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'gateway'>('ai')
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -459,12 +237,13 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       setLauncherSettings(res.data.data)
       setLaunchMode(res.data.data.launch_mode)
       setUpdateChannel(res.data.data.update_channel || 'stable')
+      if (res.data.data.gateway_headless && !embedded) setSettingsSection('gateway')
     } catch (err: any) {
       message.error(err.message || '获取启动方式失败')
     } finally {
       setLauncherLoading(false)
     }
-  }, [])
+  }, [embedded])
 
   useEffect(() => {
     fetchConfigs()
@@ -501,6 +280,19 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       message.error(err.message || '保存更新通道失败')
     } finally {
       setLauncherLoading(false)
+    }
+  }
+
+  const saveGatewaySettings = async (values: Partial<LauncherGatewaySettings>) => {
+    try {
+      const res = await apiClient.put<{ code: number; data: LauncherSettings }>('/config/launcher', values)
+      setLauncherSettings(res.data.data)
+      message.success(values.gateway_enabled === false
+        ? 'Gateway 关闭设置已保存，重启后生效'
+        : 'Gateway 设置已保存，重启后生效')
+    } catch (err: any) {
+      message.error(err.message || '保存 Gateway 设置失败')
+      throw err
     }
   }
 
@@ -625,16 +417,16 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       if (cfg) {
         setEditingProvider(provider)
         const defaultModel = normalizeDefaultModel(cfg.provider, cfg.default_model)
-        const isKnownProvider = Boolean(PROVIDER_LABEL_MAP[cfg.provider])
-        setModelOptions(isKnownProvider
+        const knownProvider = isKnownProvider(cfg.provider)
+        setModelOptions(knownProvider
           ? fallbackModelOptions(cfg.provider)
           : [{ id: defaultModel, display_name: defaultModel }])
-        if (!isKnownProvider) {
+        if (!knownProvider) {
           setModelDiscovery({ status: 'success', message: '已保留当前模型；输入 API Key 后会自动刷新模型列表。' })
         }
         form.setFieldsValue({
-          provider: isKnownProvider ? cfg.provider : CUSTOM_PROVIDER_VALUE,
-          custom_provider: isKnownProvider ? undefined : cfg.provider,
+          provider: knownProvider ? cfg.provider : CUSTOM_PROVIDER_VALUE,
+          custom_provider: knownProvider ? undefined : cfg.provider,
           default_model: defaultModel,
           base_url_override: cfg.base_url_override || '',
           api_protocol: cfg.api_protocol || 'auto',
@@ -818,7 +610,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       return
     }
     const baseUrl = form.getFieldValue('base_url_override') || undefined
-    if (!isCli && !PROVIDER_LABEL_MAP[provider] && !baseUrl) {
+    if (!isCli && !isKnownProvider(provider) && !baseUrl) {
       message.warning('自定义 OpenAI 兼容提供商必须填写 API 端点')
       return
     }
@@ -971,6 +763,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
   const customModelSelection = isCustomProviderSelection(modalProvider)
   const customManualEntry = customModelSelection && modelDiscovery.status === 'manual'
+  const providerOptions = launcherSettings?.gateway_headless
+    ? PROVIDER_OPTIONS.filter((option) => !isLocalCliProvider(option.value))
+    : PROVIDER_OPTIONS
 
   return (
     <div className="settings-page">
@@ -985,12 +780,21 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       <Tabs
         className="settings-tabs"
         activeKey={settingsSection}
-        onChange={(key) => setSettingsSection(key as 'ai' | 'app')}
+        onChange={(key) => setSettingsSection(key as 'ai' | 'app' | 'gateway')}
         items={[
           { key: 'ai', label: '模型与 AI' },
+          { key: 'gateway', label: '跨设备 Gateway' },
           { key: 'app', label: '应用与数据' },
-        ]}
+        ].filter((item) => !launcherSettings?.gateway_headless || item.key !== 'app')}
       />
+
+      {settingsSection === 'gateway' && (
+        <GatewaySettingsPanel
+          settings={launcherSettings}
+          launcherLoading={launcherLoading}
+          onSave={saveGatewaySettings}
+        />
+      )}
 
       {settingsSection === 'app' && <>
       <Card className="settings-card" title={<span><DesktopOutlined /> 启动方式</span>} loading={launcherLoading && !launcherSettings}>
@@ -1169,6 +973,15 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       </>}
 
       {settingsSection === 'ai' && <>
+      {launcherSettings?.gateway_headless && (
+        <Alert
+          showIcon
+          type="info"
+          message="Docker Gateway 只运行云端模型"
+          description="本地模型、OpenCode 等本机 CLI、MCP 与训练能力仍留在桌面端；容器中只保存你主动配置的云端 API。"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <ModelReadinessBanner
         ready={Boolean(globalModel.provider)}
         detail={globalModel.provider && globalModel.model
@@ -1271,7 +1084,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   void fetchModels(provider)
                 }
               }}
-              options={PROVIDER_OPTIONS}
+              options={providerOptions}
             />
           </Form.Item>
 

@@ -8,7 +8,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..core.exceptions import ValidationError
 from ..core.response import ApiResponse
@@ -16,6 +16,8 @@ from ..services.application_settings import (
     app_home,
     launcher_settings_payload,
     load_launcher_settings,
+    normalize_gateway_advertised_url,
+    normalize_gateway_allowed_hosts,
     save_launcher_settings,
 )
 from ..updater import (
@@ -28,8 +30,33 @@ router = APIRouter(tags=["config"])
 
 
 class LauncherSettingsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     launch_mode: Literal["desktop", "browser"] | None = None
     update_channel: Literal["stable", "preview"] | None = None
+    gateway_enabled: bool | None = None
+    gateway_advertised_url: str | None = Field(default=None, max_length=2048)
+    gateway_allowed_hosts: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("gateway_advertised_url")
+    @classmethod
+    def validate_advertised_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return normalize_gateway_advertised_url(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("gateway_allowed_hosts")
+    @classmethod
+    def validate_allowed_hosts(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return normalize_gateway_allowed_hosts(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 def _exit_after_update_install() -> None:
@@ -52,6 +79,12 @@ def update_launcher_settings(payload: LauncherSettingsUpdateRequest):
         settings["launch_mode"] = payload.launch_mode
     if payload.update_channel is not None:
         settings["update_channel"] = payload.update_channel
+    if payload.gateway_enabled is not None:
+        settings["gateway_enabled"] = payload.gateway_enabled
+    if payload.gateway_advertised_url is not None:
+        settings["gateway_advertised_url"] = payload.gateway_advertised_url
+    if payload.gateway_allowed_hosts is not None:
+        settings["gateway_allowed_hosts"] = payload.gateway_allowed_hosts
     save_launcher_settings(settings)
     return ApiResponse.success(
         data=launcher_settings_payload(),

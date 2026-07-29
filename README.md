@@ -2,15 +2,17 @@
 
 **长篇小说的命运织机。**
 
-Siming is a local-first AI workspace for planning, writing, archiving, and maintaining continuity in long-form fiction.
+Siming is a free and open-source, local-first AI workspace for planning, writing, archiving, and maintaining continuity in long-form fiction.
 
 [![Latest Release](https://img.shields.io/github/v/release/teangtang1122/siming-ai?display_name=tag&sort=semver)](https://github.com/teangtang1122/siming-ai/releases/latest)
 ![Windows x64](https://img.shields.io/badge/Windows-x64-2979ff?logo=windows11&logoColor=white)
+![Android 8+](https://img.shields.io/badge/Android-8%2B-3c7a57?logo=android&logoColor=white)
+![Gateway](https://img.shields.io/badge/Gateway-amd64%20%7C%20arm64-963a36?logo=docker&logoColor=white)
 [![Backend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml)
 [![Frontend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
-[下载最新版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [查看文档](docs/) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
+[下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [下载 Android 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.apk) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
 > 💬 **用户交流 QQ 群：814283606**  
 > 欢迎交流使用体验、小说创作方法与功能建议。为确保安全，请仅从本仓库的官方 Releases 下载 `Siming.exe`。
@@ -19,7 +21,7 @@ Siming is a local-first AI workspace for planning, writing, archiving, and maint
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **2.9.1** 修复新书立项“文风与世界观”待确认内容显示为 `[object Object]` 的问题。旧草稿中的结构化字段会直接展开为可读内容，新生成结果会在入库前归一化校验，移动端也会自动改为单列展示。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **3.0.14** 新增用户自有 Gateway 与 Android 客户端：电脑和手机可同步正文、章节、大纲、角色、世界观、伏笔与叙事治理数据；手机离线可读写，联网后按修订号合并。Gateway 由你部署，司命官方不托管小说正文。此版本同时包含 3.0.12/3.0.13 的模型兼容与上游重试修复。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 
@@ -31,6 +33,8 @@ Siming is a local-first AI workspace for planning, writing, archiving, and maint
 - API、Claude Code、Codex、OpenCode 等入口的能力和错误提示不一致，长任务也很难判断是在计算还是真的卡住。
 
 司命把正文、大纲、角色状态、世界观、叙事账本和 AI 工作流放在同一个本地项目中。数据库是权威写入源，Markdown/JSON 文件作为可阅读镜像；修改通过司命工具落库，让前端、索引、版本历史和文件保持一致。
+
+项目采用 Apache 2.0 许可证，软件本身永久免费、源码公开。你可以从一句创意建立新小说，也可以导入已有 TXT 小说完成建档后续写或二创。写作时会按章节选取角色当前状态、世界规则、时间线、伏笔和未解决动作，并在写后更新叙事账本，尽量减少人物失真和 OOC；模型生成仍建议由作者最终审阅。
 
 ## 3 分钟开始
 
@@ -79,6 +83,26 @@ opencode_cli:opencode/deepseek-v4-flash-free
 | 叙事账本 | 跟踪已完成节拍、已揭露线索、读者承诺和故事线状态，写后归档并为下一章注入关键事实。 |
 | 版本与回退 | 每次写章前后保留快照；对新章不满意时，可查看差异并恢复旧版，同步回退相关档案和文件镜像。 |
 | 长任务运行 | 展示阶段、最近活动、模型和健康度；支持暂停、继续、取消和重试当前单元，已完成章节不会因后续失败而丢失。 |
+| 跨设备创作 | Android 保留可写离线副本；Gateway 按有序修订同步并在分岔时保留双方版本，不静默覆盖。 |
+
+## Android 与自己的 Gateway
+
+司命没有官方小说数据服务器。Android 客户端连接的是你在桌面端启用或用 Docker 部署的 Gateway：
+
+- 桌面内置 Gateway：适合电脑开机时同步，仍可使用桌面本地模型、OpenCode、CLI 和 MCP。
+- Docker Gateway：适合 NAS、家中常开主机或云主机，提供同步和云端 API 写作；镜像不启用本地模型、OpenCode、CLI、MCP 或训练能力。
+- 手机端：可新建或导入 TXT，编辑章节、大纲、角色、世界观、伏笔与治理资料；离线照常写，联网后先上传再拉取。
+
+局域网可以直接连接；跨网络推荐 [Tailscale](https://tailscale.com/) 或自己配置 HTTPS。只有已显式加入同步的作品才会进入 Gateway，首次建档前会自动备份并核对数量与摘要哈希。完整部署、配对、备份和恢复步骤见 [Android 与 Gateway 指南](docs/gateway-mobile.md)，安全边界见 [Gateway 威胁模型](docs/security/gateway-threat-model.md)。
+
+最小 Docker 启动示例：
+
+```powershell
+$env:SIMING_GATEWAY_BOOTSTRAP_KEY = "请换成至少12位的随机管理口令"
+docker compose -f compose.gateway.yml up -d
+```
+
+管理页默认位于 `http://你的设备地址:8000`。口令只用于换取当前浏览器的 HttpOnly 管理会话，不写入浏览器存储。
 
 ## 模型与隐私
 
@@ -101,7 +125,7 @@ opencode_cli:opencode/deepseek-v4-flash-free
 2. 下载同一版本的 `sha256.txt`，用 `certutil -hashfile Siming.exe SHA256` 计算文件哈希并与其对照。
 3. 不要使用网盘、聊天群或第三方网站二次分发的 EXE。
 
-发行页会同时提供 `Siming.exe`、`update.json` 和 `sha256.txt`，三者在发布前会进行版本、下载地址和 SHA256 一致性校验。
+发行页会同时提供 `Siming.exe`、`update.json`、`sha256.txt`、签名的 `Siming.apk` 和 `Siming-apk-sha256.txt`。桌面三件套会校验版本、下载地址和 SHA256；APK 还会校验签名、对齐、包名和版本号。
 
 ## 外部 Agent 与提示词投稿
 
@@ -143,9 +167,11 @@ npm --prefix frontend test
 npm --prefix frontend run build
 npm --prefix frontend run test:e2e
 npm --prefix frontend run screenshots:readme
+cd mobile\android
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
 ```
 
-本地打包使用 `.\build-exe.bat`，产物为 `release\Siming.exe`、`release\update.json` 和 `release\sha256.txt`。提交代码、文档、可复现问题或者通过 GUI 生成的提示词投稿都很欢迎。
+本地桌面打包使用 `.\build-exe.bat`；签名 APK 使用 `.\scripts\build-android-release.ps1`（签名凭据只通过环境变量提供）。提交代码、文档、可复现问题或者通过 GUI 生成的提示词投稿都很欢迎。
 
 ## 路线图与许可证
 

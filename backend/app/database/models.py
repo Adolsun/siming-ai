@@ -63,6 +63,19 @@ from app.modules.integrations.infrastructure.models import (
     default_external_agent_enabled_packs,
     default_trusted_local_clients,
 )
+from app.modules.gateway.infrastructure.models import (
+    GatewayAccessToken,
+    GatewayDevice,
+    GatewayIdentity,
+    GatewayPairingSession,
+    GatewayRefreshToken,
+    SyncChange,
+    SyncCaptureJob,
+    SyncConflict,
+    SyncEntityState,
+    SyncProject,
+    SyncTombstone,
+)
 from app.modules.model_runtime.infrastructure.legacy_models import (
     LocalModel,
     LocalRuntimeInstallation,
@@ -180,4 +193,15 @@ __all__ = [
     "OperationEvent",
     "OperationRun",
     "ContentSyncJob",
+    "GatewayIdentity",
+    "GatewayDevice",
+    "GatewayPairingSession",
+    "GatewayAccessToken",
+    "GatewayRefreshToken",
+    "SyncProject",
+    "SyncEntityState",
+    "SyncChange",
+    "SyncCaptureJob",
+    "SyncConflict",
+    "SyncTombstone",
 ]

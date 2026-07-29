@@ -14,9 +14,11 @@ build-exe.bat
 release\Siming.exe
 release\update.json
 release\sha256.txt
+release\Siming.apk
+release\Siming-apk-sha256.txt
 ```
 
-`Siming.exe` 是唯一正式分发文件。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
+`Siming.exe` 是 Windows 正式分发文件，`Siming.apk` 是 Android 正式分发文件。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
 
 ## 给普通用户运行
 
@@ -70,6 +72,8 @@ teangtang1122/siming-ai
 Siming.exe
 sha256.txt
 update.json
+Siming.apk
+Siming-apk-sha256.txt
 ```
 
 `sha256.txt` 只包含：
@@ -79,6 +83,42 @@ update.json
 ```
 
 更新器只下载 `Siming.exe`。Release 中不要上传旧 exe 名资产。
+
+## Android APK
+
+Android Release 必须使用同一把长期保存的发布密钥签名；丢失密钥后，已安装用户无法原位升级。密钥和口令不得写入仓库、构建日志或 Release 资产。
+
+构建机通过以下环境变量提供签名信息：
+
+```text
+SIMING_ANDROID_KEYSTORE_FILE
+SIMING_ANDROID_KEYSTORE_PASSWORD
+SIMING_ANDROID_KEY_ALIAS
+SIMING_ANDROID_KEY_PASSWORD
+ANDROID_SDK_ROOT
+JAVA_HOME
+```
+
+然后运行：
+
+```powershell
+.\scripts\build-android-release.ps1
+.\scripts\verify-android-release.ps1 -ExpectedVersion 3.0.14
+```
+
+验证脚本会检查 APK SHA-256、zip 对齐、签名证书、包名 `com.siming.mobile` 与版本号。GitHub Actions 使用同一发布密钥的加密 Secrets，不为每次构建临时生成新密钥。
+
+## Gateway 容器
+
+正式版本同时发布：
+
+```text
+ghcr.io/teangtang1122/siming-ai-gateway:<version>
+ghcr.io/teangtang1122/siming-ai-gateway:<major.minor>
+ghcr.io/teangtang1122/siming-ai-gateway:latest
+```
+
+镜像必须包含 `linux/amd64` 与 `linux/arm64`，以 UID 10001 非 root 运行；`/data` 可写而 `/app` 不可写。发布前运行容器健康检查并验证 Docker Gateway 不暴露本地模型、CLI、MCP 与训练能力。
 
 可用环境变量覆盖更新源：
 

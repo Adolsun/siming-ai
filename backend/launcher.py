@@ -303,6 +303,18 @@ def _prepare_data_environment() -> Path:
 
 def _prepare_environment(port: int) -> Path:
     home = _prepare_data_environment()
+    launcher_settings = _load_launcher_settings(home)
+    gateway_enabled = bool(launcher_settings.get("gateway_enabled"))
+    os.environ.setdefault(
+        "SIMING_RUNTIME_PROFILE",
+        "gateway" if gateway_enabled else "desktop-standalone",
+    )
+    advertised_url = str(launcher_settings.get("gateway_advertised_url") or "").strip()
+    if advertised_url:
+        os.environ.setdefault("SIMING_GATEWAY_ADVERTISED_URL", advertised_url)
+    allowed_hosts = str(launcher_settings.get("gateway_allowed_hosts") or "").strip()
+    if allowed_hosts:
+        os.environ.setdefault("SIMING_GATEWAY_ALLOWED_HOSTS", allowed_hosts)
     os.environ["CORS_ORIGINS"] = ",".join([
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
@@ -497,14 +509,31 @@ def main() -> None:
     port = _find_free_port()
     home = _prepare_environment(port)
     use_browser = _use_browser_mode(home, force_browser=force_browser, force_desktop=force_desktop)
+    server_host = (
+        "0.0.0.0"
+        if os.environ.get("SIMING_RUNTIME_PROFILE") == "gateway"
+        else "127.0.0.1"
+    )
 
     gui_url = f"http://127.0.0.1:{port}/gui"
-    _log(f"Port: {port}; Data: {home}; Launch mode: {'browser' if use_browser else 'desktop'}")
+    _log(
+        f"Port: {port}; Data: {home}; Launch mode: "
+        f"{'browser' if use_browser else 'desktop'}; Gateway: {server_host == '0.0.0.0'}"
+    )
 
     if use_browser:
         # Browser mode: need server first
         from app.main import app
-        threading.Thread(target=lambda: uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", access_log=False), daemon=True).start()
+        threading.Thread(
+            target=lambda: uvicorn.run(
+                app,
+                host=server_host,
+                port=port,
+                log_level="info",
+                access_log=False,
+            ),
+            daemon=True,
+        ).start()
         if not _wait_for_server("127.0.0.1", port, timeout=30):
             _show_error(f"{APP_NAME} 启动失败", f"后端超时。\n日志：{_launcher_log_path()}")
             return
@@ -542,7 +571,13 @@ def main() -> None:
 
             # Start uvicorn.
             threading.Thread(
-                target=lambda: uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", access_log=False),
+                target=lambda: uvicorn.run(
+                    app,
+                    host=server_host,
+                    port=port,
+                    log_level="info",
+                    access_log=False,
+                ),
                 daemon=True,
             ).start()
 

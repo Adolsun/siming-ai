@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from fastapi import FastAPI
 
 from ..architecture.uow import SqlAlchemyUnitOfWork
+from ..core.config import get_settings
 from ..database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ def _run_legacy_startup_recovery() -> None:
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
     recover_content_sync_queue()
+    if get_settings().gateway_enabled:
+        from ..modules.gateway.infrastructure.change_capture import (
+            recover_sync_capture_queue,
+        )
+
+        recover_sync_capture_queue()
     with SqlAlchemyUnitOfWork(SessionLocal) as uow:
         mark_interrupted_assistant_runs(uow.session)
         mark_interrupted_operations(uow.session)
@@ -132,10 +139,13 @@ async def _bootstrap_runtime(app: FastAPI) -> RuntimeBootstrapStatus:
 
     await asyncio.to_thread(_run_legacy_startup_recovery)
     await asyncio.to_thread(_start_scheduler)
-    await asyncio.to_thread(_resume_local_runtime_jobs)
+    settings = get_settings()
+    if not settings.gateway_enabled:
+        await asyncio.to_thread(_resume_local_runtime_jobs)
     if "pytest" not in sys.modules:
         _schedule_context_rebuild()
-        asyncio.create_task(_configure_external_agents())
+        if not settings.gateway_enabled:
+            asyncio.create_task(_configure_external_agents())
     return RuntimeBootstrapStatus(
         status="ready",
         database_mode=result.mode,

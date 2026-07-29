@@ -1,0 +1,102 @@
+name: Gateway Container
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "Dockerfile"
+      - "compose.gateway.yml"
+      - ".dockerignore"
+      - ".github/workflows/gateway-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "Dockerfile"
+      - "compose.gateway.yml"
+      - ".dockerignore"
+      - ".github/workflows/gateway-image.yml"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'release'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/siming-ai-gateway"
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            version="${{ github.event.release.tag_name }}"
+            version="${version#v}"
+            major_minor="${version%.*}"
+            {
+              echo "tags<<EOF"
+              echo "${image}:${version}"
+              echo "${image}:${major_minor}"
+              echo "${image}:latest"
+              echo "EOF"
+              echo "version=${version}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${image}:ci-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "version=ci-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build amd64 smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: siming-gateway:smoke
+          build-args: SIMING_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Smoke test non-root runtime and persistent data
+        shell: bash
+        run: |
+          docker run -d --rm --name siming-gateway-smoke \
+            -e SIMING_GATEWAY_BOOTSTRAP_KEY=ci-bootstrap-key-12345 \
+            -p 18000:8000 siming-gateway:smoke
+          trap 'docker rm -f siming-gateway-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18000/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:18000/health
+          test "$(docker exec siming-gateway-smoke id -u)" = "10001"
+          docker exec siming-gateway-smoke sh -c 'touch /data/ci-write-test && test ! -w /app'
+
+      - name: Build and publish multi-architecture image
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: SIMING_VERSION=${{ steps.meta.outputs.version }}
+          provenance: mode=max
+          sbom: true
