@@ -99,6 +99,11 @@ interface ModelOption {
   display_name?: string
 }
 
+type ModelDiscoveryState = {
+  status: 'idle' | 'success' | 'manual'
+  message?: string
+}
+
 const PROVIDER_OPTIONS = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic Claude' },
@@ -395,6 +400,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const modalProvider = Form.useWatch('provider', form)
 
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [modelDiscovery, setModelDiscovery] = useState<ModelDiscoveryState>({ status: 'idle' })
   const [modelsLoading, setModelsLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [verifyingProvider, setVerifyingProvider] = useState<string>()
@@ -613,13 +619,19 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
   const handleAddOrEdit = (provider?: string) => {
     setConnectionTestResult(null)
+    setModelDiscovery({ status: 'idle' })
     if (provider) {
       const cfg = configs.find((c) => c.provider === provider)
       if (cfg) {
         setEditingProvider(provider)
         const defaultModel = normalizeDefaultModel(cfg.provider, cfg.default_model)
         const isKnownProvider = Boolean(PROVIDER_LABEL_MAP[cfg.provider])
-        setModelOptions(fallbackModelOptions(cfg.provider))
+        setModelOptions(isKnownProvider
+          ? fallbackModelOptions(cfg.provider)
+          : [{ id: defaultModel, display_name: defaultModel }])
+        if (!isKnownProvider) {
+          setModelDiscovery({ status: 'success', message: '已保留当前模型；输入 API Key 后会自动刷新模型列表。' })
+        }
         form.setFieldsValue({
           provider: isKnownProvider ? cfg.provider : CUSTOM_PROVIDER_VALUE,
           custom_provider: isKnownProvider ? undefined : cfg.provider,
@@ -638,6 +650,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     } else {
       setEditingProvider(null)
       setModelOptions([])
+      setModelDiscovery({ status: 'idle' })
       form.resetFields()
     }
     setModalOpen(true)
@@ -710,11 +723,15 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     })
   }
 
-  const fetchModels = async () => {
-    const provider = resolveProviderForSubmit(form.getFieldsValue())
+  const fetchModels = async (providerOverride?: string) => {
+    const values = form.getFieldsValue()
+    const provider = providerOverride
+      ? (isCustomProviderSelection(providerOverride) ? String(values.custom_provider || '').trim() : providerOverride)
+      : resolveProviderForSubmit(values)
     const apiKey = form.getFieldValue('api_key')
     if (!provider) return
     const isCli = isLocalCliProvider(provider)
+    const isCustom = isCustomProviderSelection(form.getFieldValue('provider'))
     const baseUrl = form.getFieldValue('base_url_override') || undefined
     if (isCli) {
       setModelsLoading(true)
@@ -736,19 +753,29 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       }
       return
     }
-    if (!PROVIDER_LABEL_MAP[provider] && !baseUrl) {
+    if (isCustom && !baseUrl) {
       setModelOptions([])
+      setModelDiscovery({ status: 'idle', message: '填写 API 端点和 API Key 后，将自动拉取模型列表。' })
       return
     }
     if (!apiKey) {
       setModelOptions(fallbackModelOptions(provider))
+      if (isCustom) {
+        setModelDiscovery({ status: 'idle', message: '填写 API 端点和 API Key 后，将自动拉取模型列表。' })
+      }
       return
     }
 
     setModelsLoading(true)
     setModelOptions(fallbackModelOptions(provider))
+    if (isCustom) {
+      setModelDiscovery({ status: 'idle', message: '正在自动拉取模型列表…' })
+    }
     try {
-      const res = await apiClient.post<{ code: number; data: { models: ModelOption[] } }>(
+      const res = await apiClient.post<{
+        code: number
+        data: { models: ModelOption[]; manual_entry_required?: boolean; warning?: string | null }
+      }>(
         '/config/models/list',
         {
           provider,
@@ -756,9 +783,26 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           base_url_override: baseUrl,
         }
       )
-      setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
+      const options = normalizeProviderModelOptions(provider, res.data.data.models || [])
+      setModelOptions(options)
+      if (isCustom) {
+        if (res.data.data.manual_entry_required || options.length === 0) {
+          setModelDiscovery({
+            status: 'manual',
+            message: res.data.data.warning || '服务商未返回模型列表，请手动填写支持的模型名。',
+          })
+        } else {
+          setModelDiscovery({ status: 'success', message: `已自动拉取 ${options.length} 个模型，请选择默认模型。` })
+        }
+      }
     } catch (err: any) {
       setModelOptions(fallbackModelOptions(provider))
+      if (isCustom) {
+        setModelDiscovery({
+          status: 'manual',
+          message: `自动拉取模型失败：${err.message || '服务暂时不可用'}。你仍可手动填写模型名。`,
+        })
+      }
     } finally {
       setModelsLoading(false)
     }
@@ -925,6 +969,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const pendingConfigs = configs.filter((config) => !config.is_usable)
 
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
+  const customModelSelection = isCustomProviderSelection(modalProvider)
+  const customManualEntry = customModelSelection && modelDiscovery.status === 'manual'
 
   return (
     <div className="settings-page">
@@ -1208,6 +1254,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               onChange={(provider) => {
                 const fallback = fallbackModelOptions(provider)
                 setModelOptions(fallback)
+                setModelDiscovery({ status: 'idle' })
                 setConnectionTestResult(null)
                 const nextModel = isCustomProviderSelection(provider) ? undefined : fallback[0]?.id
                 form.setFieldValue('default_model', nextModel)
@@ -1221,7 +1268,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   api_protocol: isLocalCliProvider(provider) ? 'chat_completions' : 'auto',
                 })
                 if (isLocalCliProvider(provider) || form.getFieldValue('api_key')) {
-                  fetchModels()
+                  void fetchModels(provider)
                 }
               }}
               options={PROVIDER_OPTIONS}
@@ -1268,6 +1315,57 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               }}
             />
           </Form.Item>
+          )}
+
+          {!isLocalCliProvider(modalProvider) && (
+          <>
+          <Form.Item
+            name="base_url_override"
+            label={customModelSelection ? 'API 端点' : '自定义 API 端点（可选）'}
+            rules={[
+              {
+                required: customModelSelection,
+                message: '自定义 OpenAI 兼容提供商必须填写 API 端点',
+              },
+            ]}
+          >
+            <Input
+              placeholder="https://api.example.com/v1"
+              onBlur={() => {
+                if (customModelSelection && form.getFieldValue('api_key')) {
+                  void fetchModels()
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            name="api_protocol"
+            label="API 协议"
+            initialValue="auto"
+            extra="推荐自动识别。若服务商文档写有 wire_api = responses、Responses API 或 Codex API，可直接选择 Responses API。"
+          >
+            <Select
+              options={[
+                { value: 'auto', label: '自动识别（推荐）' },
+                { value: 'chat_completions', label: 'Chat Completions' },
+                { value: 'responses', label: 'Responses API' },
+              ]}
+            />
+          </Form.Item>
+          {customModelSelection && (
+            <Alert
+              showIcon
+              type={modelDiscovery.status === 'manual' ? 'warning' : modelDiscovery.status === 'success' ? 'success' : 'info'}
+              message={modelsLoading ? '正在自动拉取模型列表…' : modelDiscovery.message || '填写 API 端点和 API Key 后，将自动拉取模型列表。'}
+              action={modelDiscovery.status === 'manual' ? (
+                <Button size="small" icon={<ReloadOutlined />} onClick={() => void fetchModels()}>
+                  重新拉取
+                </Button>
+              ) : undefined}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          </>
           )}
 
           {isLocalCliProvider(modalProvider) && (
@@ -1336,7 +1434,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   form.setFieldsValue(defaultSafetyLimits(provider, modelName))
                 }}
               />
-            ) : isCustomProviderSelection(modalProvider) && defaultModelOptions.length === 0 ? (
+            ) : customManualEntry ? (
               <Input
                 placeholder="例如 openai/gpt-4o-mini 或 vendor-model-name"
                 onChange={(event) => {
@@ -1348,9 +1446,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               <Select
                 showSearch
                 loading={modelsLoading}
+                disabled={customModelSelection && modelDiscovery.status === 'idle' && defaultModelOptions.length === 0}
                 placeholder={
                   modelsLoading
                     ? '正在获取模型列表...'
+                    : customModelSelection && modelDiscovery.status === 'idle'
+                    ? '填写 API 端点和 API Key 后自动拉取'
                     : defaultModelOptions.length > 0
                     ? '选择模型名'
                     : '请先输入 API Key 以获取模型列表'
@@ -1418,39 +1519,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
           {!isLocalCliProvider(modalProvider) && (
           <>
-          <Form.Item
-            name="base_url_override"
-            label={isCustomProviderSelection(modalProvider) ? 'API 端点' : '自定义 API 端点（可选）'}
-            rules={[
-              {
-                required: isCustomProviderSelection(modalProvider),
-                message: '自定义 OpenAI 兼容提供商必须填写 API 端点',
-              },
-            ]}
-          >
-            <Input
-              placeholder="https://api.example.com/v1"
-              onBlur={() => {
-                if (isCustomProviderSelection(form.getFieldValue('provider')) && form.getFieldValue('api_key')) {
-                  fetchModels()
-                }
-              }}
-            />
-          </Form.Item>
-          <Form.Item
-            name="api_protocol"
-            label="API 协议"
-            initialValue="auto"
-            extra="推荐自动识别。若服务商文档写有 wire_api = responses、Responses API 或 Codex API，可直接选择 Responses API。"
-          >
-            <Select
-              options={[
-                { value: 'auto', label: '自动识别（推荐）' },
-                { value: 'chat_completions', label: 'Chat Completions' },
-                { value: 'responses', label: 'Responses API' },
-              ]}
-            />
-          </Form.Item>
           <Button
             type="default"
             icon={<ReloadOutlined spin={testingConnection} />}

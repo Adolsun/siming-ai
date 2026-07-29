@@ -12,7 +12,7 @@ from openai import NotFoundError
 from app.ai.openai_adapter import OpenAIAdapter
 from app.core.exceptions import LLMError
 from app.modules.model_runtime.application.verification import ModelProbeRequest
-from app.modules.model_runtime.infrastructure.verification import _probe_openai
+from app.modules.model_runtime.infrastructure.verification import _list_openai, _openai_client, _probe_openai
 from app.routers.config import list_provider_models
 from app.schemas.config import ModelListRequest
 
@@ -79,6 +79,63 @@ def test_custom_model_catalog_404_allows_manual_model_entry():
     assert response.data["models"] == []
     assert response.data["manual_entry_required"] is True
     assert "手动填写" in response.data["warning"]
+
+
+def test_custom_model_catalog_empty_result_allows_manual_model_entry():
+    payload = ModelListRequest(
+        provider="custom_proxy",
+        api_key="secret",
+        base_url_override="https://proxy.example/codex",
+    )
+    verification = MagicMock()
+    verification.list_models = AsyncMock(return_value=[])
+    with patch("app.routers.config.get_model_verification", return_value=verification):
+        response = asyncio.run(list_provider_models(payload))
+
+    assert response.data["models"] == []
+    assert response.data["manual_entry_required"] is True
+    assert "空模型列表" in response.data["warning"]
+
+
+def test_custom_model_catalog_retries_with_v1_suffix():
+    first_client = MagicMock()
+    first_client.models.list = AsyncMock(
+        side_effect=_not_found("https://proxy.example/codex/models")
+    )
+    first_client.close = AsyncMock()
+    second_client = MagicMock()
+    second_client.models.list = AsyncMock(
+        return_value=SimpleNamespace(data=[SimpleNamespace(id="gpt-test")])
+    )
+    second_client.close = AsyncMock()
+
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.AsyncOpenAI",
+        side_effect=[first_client, second_client],
+    ) as client_factory:
+        models = asyncio.run(_list_openai(ModelProbeRequest(
+            provider="custom_proxy",
+            api_key="secret",
+            base_url="https://proxy.example/codex",
+        )))
+
+    assert models == [{"id": "gpt-test", "display_name": "gpt-test"}]
+    assert client_factory.call_args_list[0].kwargs["base_url"] == "https://proxy.example/codex"
+    assert client_factory.call_args_list[1].kwargs["base_url"] == "https://proxy.example/codex/v1"
+
+
+def test_loopback_model_probe_bypasses_system_proxy():
+    client = MagicMock()
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.AsyncOpenAI",
+        return_value=client,
+    ) as client_factory:
+        assert _openai_client(api_key="secret", base_url="http://127.0.0.1:1234/v1") is client
+
+    http_client = client_factory.call_args.kwargs["http_client"]
+    assert isinstance(http_client, httpx.AsyncClient)
+    assert http_client.trust_env is False
+    asyncio.run(http_client.aclose())
 
 
 def test_responses_adapter_converts_tools_and_preserves_reasoning_state():
@@ -186,3 +243,49 @@ def test_responses_stream_maps_text_tool_calls_and_done_metadata():
     done = next(chunk for chunk in chunks if chunk.get("type") == "done")
     assert done["usage"]["total_tokens"] == 11
     assert done["provider_state"][0]["encrypted_content"] == "encrypted-state"
+
+
+def test_chat_streams_ignore_empty_choice_chunks_and_keep_usage():
+    usage = SimpleNamespace(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+
+    async def text_events():
+        yield SimpleNamespace(choices=[])
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hello"))])
+
+    async def tool_events():
+        yield SimpleNamespace(choices=[], usage=usage)
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="done", tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+    text_client = MagicMock()
+    text_client.chat.completions.create = AsyncMock(return_value=text_events())
+    tool_client = MagicMock()
+    tool_client.chat.completions.create = AsyncMock(return_value=tool_events())
+
+    async def collect_text():
+        adapter = OpenAIAdapter(api_key="secret")
+        return [chunk async for chunk in adapter.stream_chat_completion(
+            messages=[{"role": "user", "content": "work"}],
+            model="gpt-test",
+        )]
+
+    async def collect_tools():
+        adapter = OpenAIAdapter(api_key="secret")
+        return [chunk async for chunk in adapter.stream_chat_completion_with_tools(
+            messages=[{"role": "user", "content": "work"}],
+            model="gpt-test",
+        )]
+
+    with patch("app.ai.openai_adapter.AsyncOpenAI", return_value=text_client):
+        assert asyncio.run(collect_text()) == ["hello"]
+    with patch("app.ai.openai_adapter.AsyncOpenAI", return_value=tool_client):
+        chunks = asyncio.run(collect_tools())
+
+    assert chunks[0] == {"type": "content_delta", "delta": "done"}
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["usage"]["total_tokens"] == 5

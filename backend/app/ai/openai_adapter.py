@@ -492,7 +492,10 @@ class OpenAIAdapter(BaseAdapter):
                 kwargs["extra_body"] = provider_body
             stream = await client.chat.completions.create(**kwargs)
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(getattr(choices[0], "delta", None), "content", None)
                 if delta:
                     yield delta
         except AuthenticationError as e:
@@ -552,9 +555,6 @@ class OpenAIAdapter(BaseAdapter):
             usage = None
 
             async for chunk in stream:
-                delta = chunk.choices[0].delta
-                finish_reason = chunk.choices[0].finish_reason or finish_reason
-
                 # Track usage from final chunk
                 if getattr(chunk, 'usage', None):
                     u = chunk.usage
@@ -571,13 +571,27 @@ class OpenAIAdapter(BaseAdapter):
                             "total_tokens": getattr(u, 'total_tokens', 0),
                         }
 
+                # OpenAI-compatible providers may emit usage-only or heartbeat
+                # chunks with an empty choices list. They are valid stream
+                # events and must not terminate the user's generation.
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+                if delta is None:
+                    continue
+
                 # Text content delta
-                if delta.content:
-                    yield {"type": "content_delta", "delta": delta.content}
+                content = getattr(delta, "content", None)
+                if content:
+                    yield {"type": "content_delta", "delta": content}
 
                 # Tool call deltas
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
                         idx = tc.index
                         if idx not in tool_call_buffers:
                             tool_call_buffers[idx] = {"id": tc.id or "", "name": "", "arguments": ""}

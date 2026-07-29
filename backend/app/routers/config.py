@@ -551,6 +551,10 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
         else:
             raise
 
+    if _is_custom_api_provider(payload.provider) and not models and not manual_entry_required:
+        manual_entry_required = True
+        warning = "该接口返回了空模型列表，请手动填写服务商支持的模型名"
+
     models = _normalize_model_list_for_provider(payload.provider, models, db)
     return ApiResponse.success(
         data={

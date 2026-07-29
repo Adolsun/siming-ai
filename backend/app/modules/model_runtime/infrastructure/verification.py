@@ -98,6 +98,13 @@ def _error_status(error: BaseException) -> int | None:
         return None
 
 
+def _openai_client(*, api_key: str, base_url: str) -> AsyncOpenAI:
+    kwargs: dict[str, object] = {"api_key": api_key, "base_url": base_url}
+    if urlsplit(base_url).hostname in {"127.0.0.1", "localhost", "::1"}:
+        kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
+    return AsyncOpenAI(**kwargs)
+
+
 async def _probe_openai(request: ModelProbeRequest) -> dict:
     attempts: list[str] = []
     for base_url in _base_url_candidates(
@@ -105,7 +112,7 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
         allow_v1_fallback=_is_custom(request.provider),
     ):
         for protocol in _protocol_candidates(request.api_protocol):
-            client = AsyncOpenAI(api_key=request.api_key, base_url=base_url)
+            client = _openai_client(api_key=request.api_key, base_url=base_url)
             try:
                 if protocol == API_PROTOCOL_RESPONSES:
                     response = await asyncio.wait_for(
@@ -139,7 +146,7 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
             except OpenAIAuthError as exc:
                 raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
             except OpenAIConnectionError as exc:
-                raise LLMError(f"Cannot connect to {_provider_label(request.provider)}") from exc
+                raise LLMError(f"无法连接到 {_provider_label(request.provider)}") from exc
             except (TimeoutError, OpenAITimeoutError) as exc:
                 raise LLMError(f"{_provider_label(request.provider)} request timed out") from exc
             except OpenAIAPIError as exc:
@@ -163,21 +170,32 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
 
 
 async def _list_openai(request: ModelProbeRequest) -> list[dict]:
-    client = AsyncOpenAI(api_key=request.api_key, base_url=request.base_url)
-    try:
-        result = await asyncio.wait_for(client.models.list(), timeout=20)
-        models = sorted({item.id for item in result.data})
-        return [{"id": model, "display_name": model} for model in models[:100]]
-    except OpenAIAuthError as exc:
-        raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
-    except OpenAIConnectionError as exc:
-        raise LLMError(f"Cannot connect to {_provider_label(request.provider)}") from exc
-    except OpenAIAPIError as exc:
-        raise LLMError(f"{_provider_label(request.provider)} API error: {exc}") from exc
-    except TimeoutError as exc:
-        raise LLMError("Request timed out") from exc
-    finally:
-        await client.close()
+    attempts: list[str] = []
+    for base_url in _base_url_candidates(
+        request.base_url,
+        allow_v1_fallback=_is_custom(request.provider),
+    ):
+        client = _openai_client(api_key=request.api_key, base_url=base_url)
+        try:
+            result = await asyncio.wait_for(client.models.list(), timeout=20)
+            models = sorted({item.id for item in result.data})
+            return [{"id": model, "display_name": model} for model in models[:100]]
+        except OpenAIAuthError as exc:
+            raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
+        except OpenAIConnectionError as exc:
+            raise LLMError(f"无法连接到 {_provider_label(request.provider)}") from exc
+        except OpenAIAPIError as exc:
+            status = _error_status(exc)
+            if _is_custom(request.provider) and status in {404, 405}:
+                attempts.append(f"HTTP {status} @ {base_url}")
+                continue
+            raise LLMError(f"{_provider_label(request.provider)} API error: {exc}") from exc
+        except (TimeoutError, OpenAITimeoutError) as exc:
+            raise LLMError("Request timed out") from exc
+        finally:
+            await client.close()
+    detail = "; ".join(attempts) or "no compatible model endpoint responded"
+    raise LLMError(f"{_provider_label(request.provider)} API error: {detail}")
 
 
 async def _list_anthropic(request: ModelProbeRequest) -> list[dict]:

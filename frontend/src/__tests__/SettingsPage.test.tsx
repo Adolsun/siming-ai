@@ -38,6 +38,30 @@ function mockInitialLoads() {
   })
 }
 
+function mockCustomModelConfig() {
+  api.get.mockImplementation((url: string) => {
+    if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+      id: 'vendor-config',
+      provider: 'vendor',
+      default_model: 'legacy-model',
+      base_url_override: 'https://api.vendor.example',
+      api_protocol: 'auto',
+      provider_type: 'api',
+      readiness_status: 'unverified',
+      readiness_message: '待验证',
+      is_usable: false,
+      is_global_default: false,
+    }] } } })
+    if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
+    if (url === '/config/content-root') return Promise.resolve({ data: { data: {
+      current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true,
+      exists: true, is_empty: true,
+    } } })
+    if (url === '/config/launcher') return Promise.resolve({ data: { data: launcherSettings } })
+    return Promise.resolve({ data: { data: {} } })
+  })
+}
+
 describe('SettingsPage startup and update controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -144,5 +168,55 @@ describe('SettingsPage startup and update controls', () => {
       model: 'gpt-5.6-sol',
     })))
     expect(await screen.findByText('模型真实回复成功（Responses API）')).toBeInTheDocument()
+  })
+
+  it('automatically discovers models for a custom provider after credentials are complete', async () => {
+    mockCustomModelConfig()
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') {
+        return Promise.resolve({ data: { data: {
+          models: [{ id: 'vendor-model', display_name: 'Vendor Model' }],
+          manual_entry_required: false,
+          warning: null,
+        } } })
+      }
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    render(<SettingsPage embedded />)
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    const apiKey = await screen.findByLabelText('API Key')
+    fireEvent.change(apiKey, { target: { value: 'secret-key' } })
+    fireEvent.blur(apiKey)
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/list', {
+      provider: 'vendor',
+      api_key: 'secret-key',
+      base_url_override: 'https://api.vendor.example',
+    }))
+    expect(await screen.findByText('已自动拉取 1 个模型，请选择默认模型。')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByLabelText('默认模型'))
+    expect(await screen.findByText('Vendor Model')).toBeInTheDocument()
+  })
+
+  it('allows manual custom model entry only after automatic discovery fails', async () => {
+    mockCustomModelConfig()
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') return Promise.reject(new Error('HTTP 404'))
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    render(<SettingsPage embedded />)
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    expect(screen.queryByPlaceholderText('例如 openai/gpt-4o-mini 或 vendor-model-name')).not.toBeInTheDocument()
+    const apiKey = await screen.findByLabelText('API Key')
+    fireEvent.change(apiKey, { target: { value: 'secret-key' } })
+    fireEvent.blur(apiKey)
+
+    expect(await screen.findByText(/自动拉取模型失败：HTTP 404/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('例如 openai/gpt-4o-mini 或 vendor-model-name')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重新拉取/ })).toBeInTheDocument()
   })
 })
