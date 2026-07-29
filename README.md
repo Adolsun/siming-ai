@@ -12,6 +12,9 @@ Siming is a local-first AI workspace for planning, writing, archiving, and maint
 
 [下载最新版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [查看文档](docs/) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
+> 💬 **用户交流 QQ 群：814283606**  
+> 欢迎交流使用体验、小说创作方法与功能建议。为确保安全，请仅从本仓库的官方 Releases 下载 `Siming.exe`。
+
 [![司命新书立项工作台，展示《雾海拾光》的三套轻量创意方向](docs/images/readme/novel-creation.png)](docs/images/readme/novel-creation.png)
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
