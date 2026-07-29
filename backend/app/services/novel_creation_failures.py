@@ -22,6 +22,7 @@ def build_stage_failure(
         "quota_or_rate_limit": "切换可用模型或等待额度恢复后重试本阶段",
         "auth": "在系统设置中重新填写凭据并测试连接",
         "timeout": "重试本阶段，或切换响应更快的模型",
+        "network": "中转站上游暂时不可用；系统已自动重试，请稍后重试本阶段或切换模型",
         "empty_response": "重试本阶段；若持续发生，请测试模型的结构化输出",
         "invalid_response": f"草稿已保留，请重试“{failed_stage_label}”；若仍失败可切换模型",
         "tool_unavailable": "改用已启用司命工具的 CLI，或切换 API 模型",

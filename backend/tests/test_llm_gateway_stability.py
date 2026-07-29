@@ -4,6 +4,7 @@ import asyncio
 import os
 import unittest
 from typing import Optional
+from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
@@ -20,6 +21,8 @@ from app.database.session import Base, SessionLocal, engine
 class FakeAdapter(BaseAdapter):
     last_tool_choice = object()
     calls = 0
+    stream_calls = 0
+    stream_errors: list[Exception] = []
     error: Exception | None = None
 
     @property
@@ -43,6 +46,9 @@ class FakeAdapter(BaseAdapter):
         return {"content": "ok", "model": model, "usage": {}, "tool_calls": None}
 
     async def stream_chat_completion(self, *args, **kwargs):
+        FakeAdapter.stream_calls += 1
+        if FakeAdapter.stream_errors:
+            raise FakeAdapter.stream_errors.pop(0)
         yield "ok"
 
     async def stream_chat_completion_with_tools(self, *args, **kwargs):
@@ -79,6 +85,8 @@ class GatewayStabilityTestCase(unittest.TestCase):
         finally:
             db.close()
         FakeAdapter.calls = 0
+        FakeAdapter.stream_calls = 0
+        FakeAdapter.stream_errors = []
         FakeAdapter.last_tool_choice = object()
         FakeAdapter.error = None
         self._old_adapter = ADAPTER_MAP.get("gemini")
@@ -116,6 +124,28 @@ class GatewayStabilityTestCase(unittest.TestCase):
             ))
 
         self.assertEqual(FakeAdapter.calls, 1)
+
+    def test_stream_retries_upstream_502_before_first_output(self):
+        FakeAdapter.stream_errors = [
+            LLMError("OpenAI API 错误: Error code: 502 - upstream request failed"),
+            LLMError("OpenAI API 错误: Error code: 502 - upstream request failed"),
+        ]
+
+        async def collect():
+            return [chunk async for chunk in LLMGateway.stream_chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gemini:gemini-2.5-flash",
+                retry=3,
+            )]
+
+        with patch(
+            "app.modules.model_runtime.infrastructure.gateway.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            result = asyncio.run(collect())
+
+        self.assertEqual(result, ["ok"])
+        self.assertEqual(FakeAdapter.stream_calls, 3)
 
 
     def test_local_cli_timeout_is_owned_by_adapter_before_gateway_wait(self):

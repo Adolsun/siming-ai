@@ -9,6 +9,9 @@ def test_classify_quota_error_from_cli_text():
 
 def test_classify_network_unavailability():
     assert classify_failure("Cannot connect to OpenAI") == "network"
+    assert classify_failure(
+        "Error code: 502 - {'error': {'message': 'Upstream request failed', 'type': 'upstream_error'}}"
+    ) == "network"
 
 
 def test_classify_empty_and_invalid_model_responses():

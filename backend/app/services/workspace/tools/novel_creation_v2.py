@@ -413,7 +413,12 @@ async def _stream_model_text(
         temperature=temperature,
         max_tokens=max_tokens,
         timeout=0,
-        retry=0,
+        # Custom OpenAI-compatible gateways can briefly return a 5xx before
+        # producing the first stream event even though the same request works
+        # moments later. Gateway retries are safe here because they stop as
+        # soon as any output has been emitted, so partial generations are
+        # never duplicated.
+        retry=3,
         extra_body=extra_body,
     )
     async for chunk in generator:

@@ -20,7 +20,8 @@ def classify_failure(message: str | None) -> str | None:
     if "timeout" in lower or "超时" in text:
         return "timeout"
     if re.search(
-        r"cannot connect|connection (?:failed|refused|reset)|network error|网络连接|无法连接",
+        r"cannot connect|connection (?:failed|refused|reset)|network error|网络连接|无法连接|"
+        r"upstream[_\s]+(?:request\s+)?failed|upstream_error|(?:http|error code:)\s*50[0234]",
         lower + " " + text,
     ):
         return "network"

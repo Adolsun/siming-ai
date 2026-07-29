@@ -221,7 +221,7 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
 
     assert result["status"] == "ok"
     assert completion.call_args.kwargs["max_tokens"] == 3200
-    assert completion.call_args.kwargs["retry"] == 0
+    assert completion.call_args.kwargs["retry"] == 3
     assert session.blueprint_json is None
     assert len(session.draft_json["concepts"]) == 3
     assert len(session.draft_json["concept_seeds"]) == 3
