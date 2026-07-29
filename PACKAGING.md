@@ -103,7 +103,7 @@ JAVA_HOME
 
 ```powershell
 .\scripts\build-android-release.ps1
-.\scripts\verify-android-release.ps1 -ExpectedVersion 3.0.14
+.\scripts\verify-android-release.ps1 -ExpectedVersion 3.0.15
 ```
 
 验证脚本会检查 APK SHA-256、zip 对齐、签名证书、包名 `com.siming.mobile` 与版本号。GitHub Actions 使用同一发布密钥的加密 Secrets，不为每次构建临时生成新密钥。

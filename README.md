@@ -21,7 +21,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **3.0.14** 新增用户自有 Gateway 与 Android 客户端：电脑和手机可同步正文、章节、大纲、角色、世界观、伏笔与叙事治理数据；手机离线可读写，联网后按修订号合并。Gateway 由你部署，司命官方不托管小说正文。此版本同时包含 3.0.12/3.0.13 的模型兼容与上游重试修复。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **3.0.15** 新增 Android 手机独立 API 模式：无需连接或开启电脑，即可使用 OpenAI 兼容的 Responses API / Chat Completions 完成项目创作。手机会先自动获取模型，失败后允许手动填写；API Key 仅由 Android Keystore 加密保存在本机。跨设备同步仍可按需连接用户自有 Gateway。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 

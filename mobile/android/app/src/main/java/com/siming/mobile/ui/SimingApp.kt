@@ -46,11 +46,13 @@ import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
@@ -100,12 +102,15 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.BuildConfig
 import java.text.DateFormat
 import java.util.Date
@@ -114,7 +119,7 @@ import kotlinx.serialization.json.JsonObject
 private enum class RootTab(val label: String, val icon: ImageVector) {
     Library("作品", Icons.AutoMirrored.Outlined.LibraryBooks),
     Sync("同步", Icons.Outlined.Sync),
-    Settings("关于", Icons.Outlined.Settings),
+    Settings("设置", Icons.Outlined.Settings),
 }
 
 private data class EditorTarget(val entityType: String, val record: ReplicaEntity?)
@@ -147,6 +152,7 @@ fun SimingApp(
     val snackbar = remember { SnackbarHostState() }
     var rootTab by rememberSaveable { mutableStateOf(RootTab.Library) }
     var selectedProjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showDirectApiSetup by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(ui.notice, ui.error) {
         val message = ui.error ?: ui.notice ?: return@LaunchedEffect
@@ -154,13 +160,25 @@ fun SimingApp(
         viewModel.clearNotice()
     }
 
-    val pairingRequired = connection == null && projects.isEmpty()
+    if (showDirectApiSetup) {
+        DirectApiSetupScreen(
+            viewModel = viewModel,
+            existing = ui.directApi,
+            onBack = { showDirectApiSetup = false },
+            onConfigured = { showDirectApiSetup = false },
+            snackbar = snackbar,
+        )
+        return
+    }
+
+    val pairingRequired = connection == null && projects.isEmpty() && ui.directApi == null
     if (pairingRequired || ui.pairing != null) {
         PairingScreen(
             viewModel = viewModel,
             allowBack = !pairingRequired,
             onBack = viewModel::cancelPairing,
             onScanQr = onScanQr,
+            onConfigureApi = { showDirectApiSetup = true },
             snackbar = snackbar,
         )
         return
@@ -182,7 +200,7 @@ fun SimingApp(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             Column {
-                SimingTopBar(connection)
+                SimingTopBar(connection, ui.directApi)
                 if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
@@ -208,6 +226,7 @@ fun SimingApp(
                 modifier = Modifier.padding(padding),
                 projects = projects,
                 connection = connection,
+                directApi = ui.directApi,
                 viewModel = viewModel,
                 onOpenProject = { selectedProjectId = it },
                 onScanQr = onScanQr,
@@ -222,6 +241,9 @@ fun SimingApp(
             RootTab.Settings -> AboutScreen(
                 modifier = Modifier.padding(padding),
                 connection = connection,
+                directApi = ui.directApi,
+                viewModel = viewModel,
+                onConfigureApi = { showDirectApiSetup = true },
             )
         }
     }
@@ -229,13 +251,17 @@ fun SimingApp(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SimingTopBar(connection: GatewayConnection?) {
+private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSummary?) {
     CenterAlignedTopAppBar(
         title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("司命", fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp)
                 Text(
-                    if (connection == null) "离线创作" else "自己的 Gateway · 跨设备创作",
+                    when {
+                        connection != null -> "自己的 Gateway · 跨设备创作"
+                        directApi != null -> "手机独立 · ${directApi.model}"
+                        else -> "离线创作"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -254,9 +280,17 @@ private fun SimingTopBar(connection: GatewayConnection?) {
         },
         actions = {
             Icon(
-                if (connection == null) Icons.Outlined.CloudOff else Icons.Outlined.CloudQueue,
-                contentDescription = if (connection == null) "未连接 Gateway" else "已连接 Gateway",
-                tint = if (connection == null) MaterialTheme.colorScheme.onSurfaceVariant else SimingGreen,
+                when {
+                    connection != null -> Icons.Outlined.CloudQueue
+                    directApi != null -> Icons.Outlined.AutoAwesome
+                    else -> Icons.Outlined.CloudOff
+                },
+                contentDescription = when {
+                    connection != null -> "已连接 Gateway"
+                    directApi != null -> "手机独立 API 可用"
+                    else -> "未连接 Gateway"
+                },
+                tint = if (connection != null || directApi != null) SimingGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 16.dp),
             )
         },
@@ -269,6 +303,7 @@ private fun LibraryScreen(
     modifier: Modifier,
     projects: List<ReplicaEntity>,
     connection: GatewayConnection?,
+    directApi: DirectApiSummary?,
     viewModel: MainViewModel,
     onOpenProject: (String) -> Unit,
     onScanQr: () -> Unit,
@@ -278,12 +313,16 @@ private fun LibraryScreen(
     Column(modifier.fillMaxSize()) {
         if (connection == null) {
             StatusBanner(
-                icon = Icons.Outlined.CloudOff,
-                title = "当前离线，仍可继续写作",
-                detail = "修改已进入本机队列；重新连接自己的 Gateway 后再同步。",
+                icon = if (directApi == null) Icons.Outlined.CloudOff else Icons.Outlined.PhoneAndroid,
+                title = if (directApi == null) "当前离线，仍可继续写作" else "手机独立模式",
+                detail = if (directApi == null) {
+                    "修改已保存到手机；配置 API 后无需电脑也能使用 AI。"
+                } else {
+                    "${directApi.displayName} · ${directApi.model} 可直接使用；作品保存在本机。"
+                },
                 action = "连接",
                 onAction = onScanQr,
-                warning = true,
+                warning = directApi == null,
             )
         }
         LazyColumn(
@@ -328,7 +367,11 @@ private fun LibraryScreen(
                 }
             } else {
                 items(projects, key = { it.key }) { project ->
-                    ProjectCard(project, onClick = { onOpenProject(project.projectId) })
+                    ProjectCard(
+                        project,
+                        localOnly = connection == null,
+                        onClick = { onOpenProject(project.projectId) },
+                    )
                 }
             }
         }
@@ -345,7 +388,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun ProjectCard(project: ReplicaEntity, onClick: () -> Unit) {
+private fun ProjectCard(project: ReplicaEntity, localOnly: Boolean, onClick: () -> Unit) {
     val title = project.text("title").ifBlank { "未命名作品" }
     val description = project.text("description")
     OutlinedCard(
@@ -385,7 +428,7 @@ private fun ProjectCard(project: ReplicaEntity, onClick: () -> Unit) {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (project.dirty) MicroTag("待同步", SimingBlue)
+                    if (project.dirty) MicroTag(if (localOnly) "仅本机" else "待同步", SimingBlue)
                     if (project.conflicted) MicroTag("有分岔", MaterialTheme.colorScheme.error)
                     if (!project.dirty && !project.conflicted) MicroTag("已落库", SimingGreen)
                 }
@@ -405,7 +448,7 @@ private fun ProjectScreen(
 ) {
     var section by rememberSaveable(project.projectId) { mutableStateOf(entitySections.first().type) }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
-    val currentSection = entitySections.first { it.type == section }
+    val currentSection = entitySections.firstOrNull { it.type == section }
     val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
     val ui by viewModel.uiState
 
@@ -448,7 +491,7 @@ private fun ProjectScreen(
         floatingActionButton = {
             if (section != "assistant") {
                 FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
-                    Icon(Icons.Outlined.Add, "新建${currentSection.label}")
+                    Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
                 }
             }
         },
@@ -490,7 +533,7 @@ private fun ProjectScreen(
                 AssistantScreen(project.projectId, viewModel)
             } else {
                 RecordList(
-                    section = currentSection,
+                    section = requireNotNull(currentSection),
                     records = records,
                     onOpen = { editor = EditorTarget(section, it) },
                 )
@@ -793,65 +836,117 @@ private fun AssistantScreen(projectId: String, viewModel: MainViewModel) {
     var scope by rememberSaveable { mutableStateOf("project") }
     val ui by viewModel.uiState
     val connection by viewModel.connection.collectAsStateWithLifecycle()
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+    val directApi = ui.directApi
+    val usesDirectApi = directApi != null
+    val canUseAi = connection != null || directApi != null
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ScreenHeading(
-            kicker = "CLOUD AI VIA YOUR GATEWAY",
-            title = "项目助手",
-            detail = "手机不内置模型、CLI 或 MCP。请求只发给你自己的 Gateway，再由它使用已配置的云模型。",
-        )
-        if (connection == null) {
-            StatusBanner(
-                Icons.Outlined.CloudOff,
-                "当前处于离线创作",
-                "项目资料仍可编辑；连接自己的 Gateway 后才能调用云端 AI。",
-                warning = true,
+        item {
+            ScreenHeading(
+                kicker = if (usesDirectApi) "DIRECT CLOUD API" else "CLOUD AI VIA YOUR GATEWAY",
+                title = "项目助手",
+                detail = if (usesDirectApi) {
+                    "手机直接调用你配置的 OpenAI 兼容 API；不需要电脑开机，API Key 只在本机加密保存。"
+                } else {
+                    "请求发给你自己的 Gateway，并使用 Gateway 已配置的模型与项目工具。"
+                },
             )
         }
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf("project" to "全书", "outline" to "大纲", "characters" to "角色", "worldbuilding" to "世界观").forEach { (value, label) ->
-                AssistChip(
-                    onClick = { scope = value },
-                    label = { Text(label) },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (scope == value) MaterialTheme.colorScheme.primaryContainer else Color.White,
-                    ),
+        if (!canUseAi) {
+            item {
+                StatusBanner(
+                    Icons.Outlined.CloudOff,
+                    "尚未配置 AI",
+                    "项目资料仍可离线编辑；请在“设置”中配置手机直连 API，或连接自己的 Gateway。",
+                    warning = true,
+                )
+            }
+        } else if (usesDirectApi) {
+            item {
+                StatusBanner(
+                    Icons.Outlined.PhoneAndroid,
+                    "手机独立调用 ${directApi?.model.orEmpty()}",
+                    "会发送当前任务和必要的本地项目资料；返回内容不会自动覆盖正文。",
                 )
             }
         }
-        OutlinedTextField(
-            value = prompt,
-            onValueChange = { prompt = it },
-            label = { Text("告诉项目助手要做什么") },
-            placeholder = { Text("例如：用质量模式续写下一章，保持林岚的动机与记忆分配规则，并留下章末钩子") },
-            minLines = 4,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Button(
-            onClick = { viewModel.runAssistant(projectId, scope, prompt) },
-            enabled = connection != null && prompt.isNotBlank() && !ui.assistantRunning,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (ui.assistantRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Outlined.AutoAwesome, null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (ui.assistantRunning) "质量模式执行中…" else "交给自己的 Gateway")
+        item {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("project" to "全书", "outline" to "大纲", "characters" to "角色", "worldbuilding" to "世界观").forEach { (value, label) ->
+                    AssistChip(
+                        onClick = { scope = value },
+                        label = { Text(label) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (scope == value) MaterialTheme.colorScheme.primaryContainer else Color.White,
+                        ),
+                    )
+                }
+            }
         }
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        ) {
-            SelectionContainer {
+        item {
+            OutlinedTextField(
+                value = prompt,
+                onValueChange = { prompt = it },
+                label = { Text("告诉项目助手要做什么") },
+                placeholder = { Text("例如：用质量模式续写下一章，保持林岚的动机与记忆分配规则，并留下章末钩子") },
+                minLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Button(
+                onClick = { viewModel.runAssistant(projectId, scope, prompt) },
+                enabled = canUseAi && prompt.isNotBlank() && !ui.assistantRunning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (ui.assistantRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Outlined.AutoAwesome, null)
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    ui.assistantOutput.ifBlank { "AI 回复与工具执行过程会显示在这里。电脑关闭时，必须有另一台常开设备在运行 Gateway。" },
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
-                    color = if (ui.assistantOutput.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    when {
+                        ui.assistantRunning -> "正在生成…"
+                        usesDirectApi -> "手机直接调用 API"
+                        else -> "交给自己的 Gateway"
+                    },
                 )
+            }
+        }
+        if (usesDirectApi && ui.assistantOutput.isNotBlank() && !ui.assistantRunning) {
+            item {
+                OutlinedButton(
+                    onClick = { viewModel.saveAssistantAsChapter(projectId) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.Save, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("保存为本机新章节")
+                }
+            }
+        }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth().height(240.dp),
+            ) {
+                SelectionContainer {
+                    Text(
+                        ui.assistantOutput.ifBlank {
+                            if (usesDirectApi) {
+                                "AI 生成内容会显示在这里。完成后可复制，或保存为本机新章节。"
+                            } else {
+                                "AI 回复与工具执行过程会显示在这里。"
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
+                        color = if (ui.assistantOutput.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
         }
     }
@@ -883,7 +978,15 @@ private fun SyncScreen(
         }
         item {
             if (connection == null) {
-                EmptyPanel(Icons.Outlined.CloudOff, "当前没有 Gateway 授权", "离线副本仍可编辑；扫码后恢复同步。")
+                EmptyPanel(
+                    Icons.Outlined.CloudOff,
+                    "当前没有 Gateway 授权",
+                    if (ui.directApi == null) {
+                        "本机资料仍可编辑；配置直连 API 后可独立使用 AI。"
+                    } else {
+                        "手机直连 API 不受影响；跨设备同步仍需 Gateway。"
+                    },
+                )
                 Button(onClick = onScanQr, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.QrCodeScanner, null)
                     Spacer(Modifier.width(8.dp))
@@ -1029,8 +1132,15 @@ private fun SnapshotBox(label: String, raw: String?) {
 }
 
 @Composable
-private fun AboutScreen(modifier: Modifier, connection: GatewayConnection?) {
+private fun AboutScreen(
+    modifier: Modifier,
+    connection: GatewayConnection?,
+    directApi: DirectApiSummary?,
+    viewModel: MainViewModel,
+    onConfigureApi: () -> Unit,
+) {
     val uriHandler = LocalUriHandler.current
+    var clearApiDialog by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 96.dp),
@@ -1039,14 +1149,50 @@ private fun AboutScreen(modifier: Modifier, connection: GatewayConnection?) {
         item {
             ScreenHeading(
                 kicker = "OPEN SOURCE · FREE",
-                title = "开源、免费、数据归你",
-                detail = "司命手机版没有本地模型、CLI、MCP 或训练模块；它专注于离线创作与连接自己的 Gateway。",
+                title = "设置与数据边界",
+                detail = "手机可以直接连接云端 API，也可以连接自己的 Gateway；作品正文始终保存在你的设备。",
             )
+        }
+        item {
+            Text("手机直连 API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        }
+        item {
+            OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    if (directApi == null) {
+                        Text("尚未配置", fontWeight = FontWeight.SemiBold)
+                        Text("配置后无需电脑开机即可使用项目助手。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(onClick = onConfigureApi, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.Key, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("配置云端 API")
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.CheckCircle, null, tint = SimingGreen)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(directApi.displayName, fontWeight = FontWeight.SemiBold)
+                                Text(directApi.model, style = MaterialTheme.typography.bodySmall)
+                            }
+                            MicroTag("可用", SimingGreen)
+                        }
+                        Text(directApi.baseUrl, maxLines = 2, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = viewModel::testDirectApi, modifier = Modifier.weight(1f)) { Text("重新测试") }
+                            OutlinedButton(onClick = onConfigureApi, modifier = Modifier.weight(1f)) { Text("编辑") }
+                        }
+                        TextButton(onClick = { clearApiDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("清除本机 API 配置", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = SimingPaperWarm)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
-                    AboutRow(Icons.Outlined.Lock, "官方不转接正文", "设备只连接你配置的 Gateway")
+                    AboutRow(Icons.Outlined.Lock, "官方不转接正文", "设备只连接你配置的 API 或 Gateway")
                     AboutRow(Icons.AutoMirrored.Outlined.LibraryBooks, "新作与二创", "从零建书，或导入已有 TXT 继续创作")
                     AboutRow(Icons.Outlined.Person, "连续性资料", "角色目标、冲突和世界规则独立同步，帮助减少 OOC")
                     AboutRow(Icons.Outlined.CloudOff, "离线仍可写", "Room 本地库 + WorkManager 可靠队列")
@@ -1066,11 +1212,28 @@ private fun AboutScreen(modifier: Modifier, connection: GatewayConnection?) {
         item {
             Text("版本 ${BuildConfig.VERSION_NAME} · 同步协议 v${BuildConfig.SYNC_PROTOCOL_VERSION}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                if (connection == null) "当前未连接 Gateway" else "当前连接：${connection.gatewayName}",
+                when {
+                    connection != null -> "当前连接：${connection.gatewayName}"
+                    directApi != null -> "当前模式：手机独立 API"
+                    else -> "当前为纯离线模式"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+    if (clearApiDialog) {
+        AlertDialog(
+            onDismissRequest = { clearApiDialog = false },
+            title = { Text("清除手机直连 API？") },
+            text = { Text("将删除 Android Keystore 加密的 API 配置；本机作品和 Gateway 配对不会受影响。") },
+            confirmButton = {
+                TextButton(onClick = { clearApiDialog = false; viewModel.clearDirectApi() }) {
+                    Text("确认清除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { clearApiDialog = false }) { Text("取消") } },
+        )
     }
 }
 
@@ -1092,6 +1255,7 @@ private fun PairingScreen(
     allowBack: Boolean,
     onBack: () -> Unit,
     onScanQr: () -> Unit,
+    onConfigureApi: () -> Unit,
     snackbar: SnackbarHostState,
 ) {
     val ui by viewModel.uiState
@@ -1124,16 +1288,35 @@ private fun PairingScreen(
                 }
             }
             Spacer(Modifier.height(18.dp))
-            Text("连接自己的 Gateway", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text("让手机独立工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "没有司命官方数据服务器。请在电脑或常开设备上启用 Gateway，再用手机完成一次性配对。",
+                "直接配置云端 API 后，无需连接电脑即可建书、编辑和使用 AI。需要跨设备同步时，再连接自己的 Gateway。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
             Spacer(Modifier.height(22.dp))
             if (ui.pairing == null) {
-                Button(onClick = onScanQr, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                Button(onClick = onConfigureApi, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                    Icon(Icons.Outlined.Key, null)
+                    Spacer(Modifier.width(9.dp))
+                    Text("配置云端 API（推荐）")
+                }
+                Text(
+                    "API Key 仅由 Android Keystore 加密保存在本机，不会同步到 Gateway。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                ) {
+                    HorizontalDivider(Modifier.weight(1f))
+                    Text("  或连接自己的 Gateway  ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(Modifier.weight(1f))
+                }
+                OutlinedButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth().height(50.dp)) {
                     Icon(Icons.Outlined.QrCodeScanner, null)
                     Spacer(Modifier.width(9.dp))
                     Text("扫描电脑上的二维码")
@@ -1200,8 +1383,194 @@ private fun PairingScreen(
             StatusBanner(
                 Icons.Outlined.Info,
                 "开源免费，不托管正文",
-                "配对密钥只存在于本页内存且十分钟失效；访问令牌由 Android Keystore 加密。",
+                "直连模式只把当前请求所需资料发给你选择的 API；配对令牌和 API Key 均由 Android Keystore 加密。",
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun DirectApiSetupScreen(
+    viewModel: MainViewModel,
+    existing: DirectApiSummary?,
+    onBack: () -> Unit,
+    onConfigured: () -> Unit,
+    snackbar: SnackbarHostState,
+) {
+    val ui by viewModel.uiState
+    var displayName by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf(existing?.displayName ?: "自定义 API")
+    }
+    var baseUrl by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf(existing?.baseUrl ?: "https://api.openai.com/v1")
+    }
+    var apiKey by rememberSaveable(existing?.baseUrl) { mutableStateOf("") }
+    var model by rememberSaveable(existing?.baseUrl) { mutableStateOf(existing?.model.orEmpty()) }
+    var protocol by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf(existing?.protocol ?: DirectApiConfig.PROTOCOL_AUTO)
+    }
+
+    LaunchedEffect(ui.discoveredModels) {
+        if (model.isBlank()) model = ui.discoveredModels.firstOrNull().orEmpty()
+    }
+
+    Scaffold(
+        containerColor = SimingPaper,
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            Column {
+                CenterAlignedTopAppBar(
+                    title = { Text(if (existing == null) "配置手机直连 API" else "编辑手机直连 API") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack, enabled = !ui.busy) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回")
+                        }
+                    },
+                )
+                if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            ScreenHeading(
+                kicker = "STANDALONE · OPENAI COMPATIBLE",
+                title = "不连接电脑，也能使用 AI",
+                detail = "支持 Responses API 与 Chat Completions。先尝试自动获取模型；失败后仍可手动填写。",
+            )
+            StatusBanner(
+                Icons.Outlined.Lock,
+                "凭据只保存在这台手机",
+                "API Key 使用 Android Keystore 加密，不进入作品数据库、同步队列或日志。直连地址必须使用 HTTPS。",
+            )
+            OutlinedTextField(
+                value = displayName,
+                onValueChange = { displayName = it.take(80) },
+                label = { Text("服务名称") },
+                placeholder = { Text("例如 OpenAI、硅基流动、自建中转") },
+                singleLine = true,
+                enabled = !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = baseUrl,
+                onValueChange = { baseUrl = it.take(2_000) },
+                label = { Text("API 请求地址") },
+                placeholder = { Text("https://api.example.com/v1") },
+                supportingText = { Text("可填写带或不带 /v1 的 OpenAI 兼容根地址") },
+                singleLine = true,
+                enabled = !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it.take(10_000) },
+                label = { Text(if (existing == null) "API Key" else "API Key（留空保留原密钥）") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                enabled = !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text("API 协议", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    DirectApiConfig.PROTOCOL_AUTO to "自动识别（推荐）",
+                    DirectApiConfig.PROTOCOL_RESPONSES to "Responses",
+                    DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS to "Chat Completions",
+                ).forEach { (value, label) ->
+                    AssistChip(
+                        onClick = { protocol = value },
+                        label = { Text(label) },
+                        enabled = !ui.busy,
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (protocol == value) MaterialTheme.colorScheme.primaryContainer else Color.White,
+                            labelColor = if (protocol == value) SimingCinnabar else MaterialTheme.colorScheme.onSurface,
+                        ),
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = model,
+                onValueChange = { model = it.take(300) },
+                label = { Text("模型名") },
+                placeholder = { Text("例如 gpt-4.1-mini 或服务商模型名") },
+                supportingText = { Text("自动获取失败时可直接手动填写") },
+                singleLine = true,
+                enabled = !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                onClick = { viewModel.discoverDirectModels(baseUrl, apiKey) },
+                enabled = baseUrl.isNotBlank() && (apiKey.isNotBlank() || existing != null) && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Outlined.Refresh, null)
+                Spacer(Modifier.width(8.dp))
+                Text("自动获取模型")
+            }
+            if (ui.discoveredModels.isNotEmpty()) {
+                Text("选择已发现模型", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    ui.discoveredModels.take(8).forEach { discovered ->
+                        AssistChip(
+                            onClick = { model = discovered },
+                            label = { Text(discovered, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = if (model == discovered) MaterialTheme.colorScheme.primaryContainer else Color.White,
+                            ),
+                        )
+                    }
+                }
+                if (ui.discoveredModels.size > 8) {
+                    Text(
+                        "另有 ${ui.discoveredModels.size - 8} 个模型，可继续手动输入精确名称。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Button(
+                onClick = {
+                    viewModel.configureDirectApi(
+                        displayName,
+                        baseUrl,
+                        apiKey,
+                        model,
+                        protocol,
+                        onConfigured,
+                    )
+                },
+                enabled = baseUrl.isNotBlank() &&
+                    (apiKey.isNotBlank() || existing != null) && !ui.busy,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                if (ui.busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Outlined.CheckCircle, null)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (ui.busy) {
+                        ui.activity.ifBlank { "正在测试…" }
+                    } else if (model.isBlank()) {
+                        "自动获取模型、测试并保存"
+                    } else {
+                        "真实对话测试并保存"
+                    },
+                )
+            }
+            Text(
+                "独立模式只提供云端模型能力，不包含桌面端的本地模型、CLI、MCP 或训练运行时。以后仍可选择连接 Gateway 进行跨设备同步。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(28.dp))
         }
     }
 }
@@ -1218,7 +1587,7 @@ private fun CreateProjectDialog(onDismiss: () -> Unit, onCreate: (String, String
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(title, { title = it.take(200) }, label = { Text("作品名") }, singleLine = true)
                 OutlinedTextField(description, { description = it }, label = { Text("一句话创意（可选）") }, minLines = 3)
-                Text("无需联网即可建档；首次同步时 Gateway 会把这部作品显式加入同步。", style = MaterialTheme.typography.bodySmall)
+                Text("作品立即保存在手机；以后连接 Gateway 时再加入跨设备同步。", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = { TextButton(onClick = { onCreate(title, description) }, enabled = title.isNotBlank()) { Text("创建") } },

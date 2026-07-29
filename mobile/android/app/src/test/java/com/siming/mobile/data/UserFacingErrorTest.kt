@@ -11,15 +11,15 @@ class UserFacingErrorTest {
     @Test
     fun `connection failures become actionable Chinese messages`() {
         assertEquals(
-            "无法连接 Gateway，请确认网络和 Gateway 运行状态后重试",
+            "无法连接服务器，请确认网络和服务运行状态后重试",
             ConnectException("Failed to connect to /192.168.1.2:8000").toUserFacingMessage(),
         )
         assertEquals(
-            "找不到 Gateway，请检查地址或网络后重试",
+            "找不到服务器，请检查 API 或 Gateway 地址后重试",
             UnknownHostException("example.invalid").toUserFacingMessage(),
         )
         assertEquals(
-            "连接 Gateway 超时，请检查网络后重试",
+            "连接服务器超时，请检查网络后重试",
             SocketTimeoutException("timeout").toUserFacingMessage(),
         )
     }

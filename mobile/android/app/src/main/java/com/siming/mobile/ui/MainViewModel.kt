@@ -4,10 +4,13 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.siming.mobile.data.SimingRepository
+import com.siming.mobile.data.AssistantRoute
 import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.security.VerifiedPairing
+import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.delay
@@ -34,6 +37,8 @@ data class MobileUiState(
     val pairingStatus: String? = null,
     val assistantOutput: String = "",
     val assistantRunning: Boolean = false,
+    val directApi: DirectApiSummary? = null,
+    val discoveredModels: List<String> = emptyList(),
 )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -67,7 +72,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         emptyList(),
     )
 
-    var uiState = androidx.compose.runtime.mutableStateOf(MobileUiState())
+    var uiState = androidx.compose.runtime.mutableStateOf(
+        MobileUiState(directApi = repository.directApiSummary()),
+    )
         private set
 
     fun entities(projectId: String, entityType: String) =
@@ -87,6 +94,107 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelPairing() {
         uiState.value = uiState.value.copy(pairing = null, pairingStatus = null, error = null)
+    }
+
+    fun discoverDirectModels(baseUrl: String, apiKey: String) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在安全获取模型列表…",
+                error = null,
+                discoveredModels = emptyList(),
+            )
+            try {
+                val models = repository.discoverDirectModels(baseUrl, apiKey)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    discoveredModels = models,
+                    notice = if (models.isEmpty()) {
+                        "接口返回了空模型列表，请手动填写模型名"
+                    } else {
+                        "已获取 ${models.size} 个模型"
+                    },
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    discoveredModels = emptyList(),
+                    error = "自动获取模型失败：${error.toUserFacingMessage()}；仍可手动填写模型名",
+                )
+            }
+        }
+    }
+
+    fun configureDirectApi(
+        displayName: String,
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        protocol: String,
+        onConfigured: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在用当前模型进行真实对话测试…",
+                error = null,
+            )
+            try {
+                val effectiveModel = model.trim().ifBlank {
+                    val models = repository.discoverDirectModels(baseUrl, apiKey)
+                    uiState.value = uiState.value.copy(discoveredModels = models)
+                    models.firstOrNull()
+                        ?: error("接口没有返回可用模型，请手动填写模型名后重试")
+                }
+                val summary = repository.configureDirectApi(
+                    displayName,
+                    baseUrl,
+                    apiKey,
+                    effectiveModel,
+                    protocol,
+                )
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    directApi = summary,
+                    discoveredModels = emptyList(),
+                    notice = "API 已加密保存，手机独立模式可以使用",
+                )
+                onConfigured()
+            } catch (error: Exception) {
+                val message = error.toUserFacingMessage()
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    error = if (model.isBlank() && !message.contains("手动填写")) {
+                        "$message；自动获取模型失败，请手动填写模型名后重试"
+                    } else {
+                        message
+                    },
+                )
+            }
+        }
+    }
+
+    fun testDirectApi() = launchActivity("正在测试手机直连 API…") {
+        val summary = repository.testDirectApi()
+        uiState.value = uiState.value.copy(directApi = summary)
+        "${summary.displayName} · ${summary.model} 真实对话成功"
+    }
+
+    fun clearDirectApi() {
+        runCatching { repository.clearDirectApi() }
+            .onSuccess {
+                uiState.value = uiState.value.copy(
+                    directApi = null,
+                    discoveredModels = emptyList(),
+                    assistantOutput = "",
+                    notice = "已清除手机直连 API 配置",
+                )
+            }
+            .onFailure(::showError)
     }
 
     fun connectPairing(deviceName: String) {
@@ -273,17 +381,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 error = null,
             )
             try {
-                repository.runAssistant(projectId, scope, prompt) { event ->
+                val route = repository.runAssistant(projectId, scope, prompt) { event ->
                     uiState.value = uiState.value.copy(
                         assistantOutput = uiState.value.assistantOutput + parseAssistantEvent(event),
                     )
                 }
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
-                    notice = "AI 任务完成，相关修改已同步到离线库",
+                    notice = if (route == AssistantRoute.Gateway) {
+                        "AI 任务完成，相关修改已同步到离线库"
+                    } else {
+                        "AI 生成完成；结果尚未写入正文，可复制或保存为新章节"
+                    },
                 )
             } catch (error: Exception) {
                 uiState.value = uiState.value.copy(assistantRunning = false)
+                showError(error)
+            }
+        }
+    }
+
+    fun saveAssistantAsChapter(projectId: String, onSaved: () -> Unit = {}) {
+        val content = uiState.value.assistantOutput.trim()
+        if (content.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val stamp = Instant.now().toString().take(16).replace('T', ' ')
+                saveRecordInternal(
+                    projectId,
+                    "chapter",
+                    null,
+                    mapOf(
+                        "title" to "AI 生成 $stamp",
+                        "content" to content,
+                        "word_count" to content.count { !it.isWhitespace() },
+                        "current_version" to 1,
+                    ),
+                )
+                uiState.value = uiState.value.copy(notice = "AI 结果已保存为本机新章节")
+                onSaved()
+            } catch (error: Exception) {
                 showError(error)
             }
         }
