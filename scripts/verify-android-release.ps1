@@ -46,7 +46,7 @@ $signatureOutput = (& $apksigner verify --verbose --print-certs $apkPath 2>&1) -
 if ($LASTEXITCODE -ne 0) { throw "Siming.apk signature verification failed.`n$signatureOutput" }
 $certificateMatch = [regex]::Match(
     $signatureOutput,
-    "(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$"
+    "(?im)Signer\s*#\s*1\s+certificate\s+SHA-256\s+digest:\s*([0-9a-f:]+)"
 )
 if (-not $certificateMatch.Success) {
     throw "Unable to read the APK signing certificate SHA-256 fingerprint."
