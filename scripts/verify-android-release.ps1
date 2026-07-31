@@ -44,6 +44,7 @@ foreach ($tool in @($apksigner, $aapt, $zipalign)) {
 if ($LASTEXITCODE -ne 0) { throw "Siming.apk is not zip-aligned." }
 $signatureOutput = (& $apksigner verify --verbose --print-certs $apkPath 2>&1) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw "Siming.apk signature verification failed.`n$signatureOutput" }
+# Match apksigner's "certificate SHA-256 digest" label across spacing variants.
 $certificateMatch = [regex]::Match(
     $signatureOutput,
     "(?im)Signer\s*#\s*1\s+certificate\s+SHA-256\s+digest:\s*([0-9a-f:]+)"
