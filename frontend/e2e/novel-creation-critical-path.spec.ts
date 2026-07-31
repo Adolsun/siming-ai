@@ -269,6 +269,7 @@ test('allows a no-model author to save and restore a creation draft', async ({ p
 
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
   await expect(page.getByText(zh.noModel)).toBeVisible()
+  await page.getByRole('button', { name: /按我的设定立项/ }).click()
   await page.locator('textarea').first().fill(baseForm.brief)
   await expect(page.getByRole('button', { name: zh.saveDraft })).toBeEnabled()
   await page.getByRole('button', { name: zh.saveDraft }).click()
@@ -289,6 +290,7 @@ test('does not treat a detected Claude CLI as a usable writing model', async ({ 
   await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText(zh.noModel)).toBeVisible()
+  await page.getByRole('button', { name: /帮我探索创意/ }).click()
   await expect(page.getByRole('combobox', { name: '\u9009\u62e9\u672c\u9636\u6bb5\u6a21\u578b' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f/ })).toBeDisabled()
 })

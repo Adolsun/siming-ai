@@ -98,9 +98,27 @@ def _ready_session(db) -> NovelCreationSession:
 
 def test_presets_share_editable_taxonomy_contract():
     payload = get_presets()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert len(payload["categories"]) >= 10
     assert all(item["themes"] and item["defaults"]["avoid"] for item in payload["categories"])
+
+
+def test_v2_draft_migrates_to_v3_as_exploration_without_losing_content():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="旧版悬疑草稿", schema_version=2)
+    session.draft_json = {
+        "schema_version": 2,
+        "form": {"brief": "旧版悬疑草稿", "target_words": 600000, "target_chapters": 240},
+        "concepts": [],
+        "stages": {},
+    }
+    db.add(session)
+
+    draft = initialize_session_draft(session)
+
+    assert draft["schema_version"] == 3
+    assert draft["creation_mode"] == "explore"
+    assert draft["form"]["brief"] == "旧版悬疑草稿"
 
 
 def test_opening_outline_has_fifteen_chapters_and_two_to_six_sections_each():

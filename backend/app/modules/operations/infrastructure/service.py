@@ -120,6 +120,14 @@ class SqlAlchemyOperationService(OperationServicePort):
             )
             if not operation:
                 return "not_found", None
+            # An async action handler may finish or cancel the producer while
+            # this request is waiting. Never overwrite that authoritative
+            # terminal projection with a stale action decision.
+            if operation.status in TERMINAL_STATUSES:
+                payload = serialize_operation(operation, include_events=True)
+                if action == "cancel" and operation.status == "cancelled":
+                    return "ok", payload
+                return "unsupported", payload
             self._project_action(uow.session, operation, action)
             uow.commit()
             return "ok", serialize_operation(operation, include_events=True)

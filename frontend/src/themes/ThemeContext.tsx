@@ -22,6 +22,12 @@ export function useTheme() {
   return useContext(ThemeContext)
 }
 
+function prefersReducedMotion() {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [themeKey, setThemeKey] = useState<string>(() => {
     try {
@@ -40,10 +46,35 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const [reduceMotion, setReduceMotion] = useState(prefersReducedMotion)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const syncPreference = () => setReduceMotion(media.matches)
+
+    syncPreference()
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', syncPreference)
+      return () => media.removeEventListener('change', syncPreference)
+    }
+
+    // Older WebView2 builds only expose the legacy MediaQueryList listener API.
+    media.addListener(syncPreference)
+    return () => media.removeListener(syncPreference)
+  }, [])
+
   const currentTheme = getThemeByKey(themeKey)
 
-  // Apply dark algorithm for night theme
-  const themeConfig = { ...currentTheme.config }
+  // Let Ant Design disable its own motion through the supported token. Applying
+  // a global 0.01ms CSS duration breaks popup placement in reduced-motion mode.
+  const themeConfig = {
+    ...currentTheme.config,
+    token: {
+      ...currentTheme.config.token,
+      motion: !reduceMotion,
+    },
+  }
   if (themeKey === 'yedu') {
     themeConfig.algorithm = antdTheme.darkAlgorithm
   }

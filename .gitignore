@@ -35,6 +35,21 @@ mobile/android/*.keystore
 android-signing.properties
 .secrets/
 
+# Local user material and unsanitized diagnostics
+# Keep these root/runtime paths private without ignoring source modules whose
+# names may include words such as "logging" or "feedback".
+/feedback/
+/user-feedback/
+/logs/
+/private-captures/
+/user-data/
+/backups/
+/backend/backups/
+/backend/logs/
+/frontend/private-captures/
+/mobile/android/private-captures/
+*.log
+
 # Python
 __pycache__/
 *.py[cod]
@@ -55,6 +70,10 @@ Thumbs.db
 # Local browser automation and UX audit evidence
 .playwright-cli/
 output/
+*.rp
+
+# Local-only Axure reconstruction workspace and analysis evidence
+local-prototype/
 
 # Video production runtime, private captures, and large deliverables
 video/

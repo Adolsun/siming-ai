@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Modal, Space, Tag, Typography, message } from 'antd'
+import { Button, Modal, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
 import {
   DeleteOutlined,
   InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import AgentPlanView, { type AgentPlanViewState, type AgentPlanStepView } from './AgentPlanView'
@@ -17,6 +18,7 @@ import {
   type WorkspaceAssistantResponse,
   type WorkspaceAssistantRun,
   type WorkspaceAssistantRunDetail,
+  type WorkspaceAssistantRunStatus,
   type WorkspacePersistedMessage,
   type WorkspaceRunLog,
   type WorkspaceToolLog,
@@ -32,10 +34,91 @@ import {
   Composer,
   StepDetailModal,
 } from './assistant'
+import { motionAwareScrollBehavior } from '../utils/motion'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
+
+const TERMINAL_RUN_STATUSES = new Set<WorkspaceAssistantRunStatus>([
+  'completed',
+  'error',
+  'aborted',
+  'cancelled',
+  'interrupted',
+])
+const RUN_STATUS_LABELS: Record<WorkspaceAssistantRunStatus, string> = {
+  queued: '排队中',
+  running: '执行中',
+  completed: '已完成',
+  error: '失败',
+  aborted: '已中止',
+  cancelled: '已取消',
+  interrupted: '已中断',
+}
+const MAX_RUN_POLL_FAILURES = 5
+
+interface ActiveAssistantExecution {
+  token: number
+  controller: AbortController
+  userMessageId: string
+  assistantMessageId: string
+  conversationId: string | null
+  run: WorkspaceAssistantRun | null
+  terminalHandled: boolean
+}
+
+class AssistantRunRequestError extends Error {
+  status?: number
+
+  constructor(message: string, status?: number) {
+    super(message)
+    this.name = 'AssistantRunRequestError'
+    this.status = status
+  }
+}
+
+const isAbortError = (error: unknown) => (
+  error instanceof DOMException
+    ? error.name === 'AbortError'
+    : Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
+)
+
+const abortableDelay = (milliseconds: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal.aborted) {
+    reject(new DOMException('请求已取消', 'AbortError'))
+    return
+  }
+  const timer = window.setTimeout(() => {
+    signal.removeEventListener('abort', onAbort)
+    resolve()
+  }, milliseconds)
+  const onAbort = () => {
+    window.clearTimeout(timer)
+    reject(new DOMException('请求已取消', 'AbortError'))
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+})
+
+async function fetchAssistantRunDetail(
+  projectId: string,
+  runId: string,
+  signal: AbortSignal,
+): Promise<WorkspaceAssistantRunDetail> {
+  const response = await fetch(`/api/v1/projects/${projectId}/ai/assistant/runs/${runId}`, { signal })
+  if (!response.ok) {
+    let detail = `恢复任务状态失败（${response.status}）`
+    try {
+      const payload = await response.json() as { detail?: string; message?: string }
+      detail = payload.detail || payload.message || detail
+    } catch {
+      // Keep the status-based message when the server did not return JSON.
+    }
+    throw new AssistantRunRequestError(detail, response.status)
+  }
+  const payload = await response.json() as ApiResponse<WorkspaceAssistantRunDetail>
+  return payload.data
+}
 
 function WorkspaceAssistantChat({
   projectId,
@@ -45,6 +128,10 @@ function WorkspaceAssistantChat({
   selectedText,
   selectedTextChapterId,
   defaultModel,
+  modelOptions = [],
+  modelsLoading = false,
+  onGlobalModelChange,
+  onManageModels,
   onApplied,
 }: WorkspaceAssistantChatProps) {
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
@@ -69,7 +156,50 @@ function WorkspaceAssistantChat({
   const [showScrollBottom, setShowScrollBottom] = useState(false)
   const [matchedSkills, setMatchedSkills] = useState<SkillMatch[]>([])
   const abortRef = useRef<AbortController | null>(null)
+  const cancelRequestedRef = useRef(false)
+  const cancelInFlightRef = useRef<Promise<boolean> | null>(null)
+  const executionSequenceRef = useRef(0)
+  const activeExecutionRef = useRef<ActiveAssistantExecution | null>(null)
+  const resumePersistedRunRef = useRef<(
+    detail: WorkspaceAssistantRunDetail,
+    conversationId: string,
+    assistantMessageId: string,
+  ) => void>(() => undefined)
+  const mountedRef = useRef(false)
   const [memoryModalOpen, setMemoryModalOpen] = useState(false)
+  const [modelChanging, setModelChanging] = useState(false)
+  const [canceling, setCanceling] = useState(false)
+  const [cancelPending, setCancelPending] = useState(false)
+  const [runtimeAnnouncement, setRuntimeAnnouncement] = useState('')
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      // This only closes the browser subscriber. The detached backend task is
+      // deliberately left running and remains available from the task centre.
+      activeExecutionRef.current?.controller.abort()
+      activeExecutionRef.current = null
+      abortRef.current = null
+      cancelRequestedRef.current = false
+      cancelInFlightRef.current = null
+    }
+  }, [])
+
+  const changeGlobalModel = async (nextModel: string) => {
+    if (!onGlobalModelChange || nextModel === defaultModel) return
+    setModelChanging(true)
+    try {
+      await onGlobalModelChange(nextModel)
+      message.success(generating
+        ? '已设为全局默认；当前任务继续使用启动时的模型，下个任务生效'
+        : '已设为全局默认，对所有项目生效')
+    } catch (err: any) {
+      message.error(err.message || '切换全局模型失败，仍保留原模型')
+    } finally {
+      setModelChanging(false)
+    }
+  }
 
   const handleMessagesScroll = useCallback(() => {
     const el = messagesRef.current
@@ -79,7 +209,10 @@ function WorkspaceAssistantChat({
   }, [])
 
   const scrollToBottom = () => {
-    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+    messagesRef.current?.scrollTo({
+      top: messagesRef.current.scrollHeight,
+      behavior: motionAwareScrollBehavior(),
+    })
   }
 
   const conversationScope = 'project'
@@ -112,6 +245,23 @@ function WorkspaceAssistantChat({
     return detail
   }, [projectId])
 
+  const isCurrentExecution = (execution: ActiveAssistantExecution) => (
+    mountedRef.current && activeExecutionRef.current?.token === execution.token
+  )
+
+  const updateAssistantById = (
+    assistantMessageId: string,
+    updater: (message: WorkspaceAssistantMessage) => WorkspaceAssistantMessage,
+  ) => {
+    setMessages((prev) => {
+      const next = [...prev]
+      const index = next.findIndex((item) => item.role === 'assistant' && item.id === assistantMessageId)
+      if (index < 0) return prev
+      next[index] = updater(next[index])
+      return next
+    })
+  }
+
   const updateLatestAssistant = (updater: (message: WorkspaceAssistantMessage) => WorkspaceAssistantMessage) => {
     setMessages((prev) => {
       const next = [...prev]
@@ -123,8 +273,8 @@ function WorkspaceAssistantChat({
     })
   }
 
-  const appendToolLog = (log: WorkspaceToolLog, content?: string) => {
-    updateLatestAssistant((item) => {
+  const appendToolLog = (log: WorkspaceToolLog, content?: string, assistantMessageId?: string) => {
+    const updater = (item: WorkspaceAssistantMessage) => {
       const data = item.data || createEmptyWorkspaceResponse()
       const shouldExposeAction =
         log.status === 'ok'
@@ -144,7 +294,9 @@ function WorkspaceAssistantChat({
             : data.applied_actions,
         },
       }
-    })
+    }
+    if (assistantMessageId) updateAssistantById(assistantMessageId, updater)
+    else updateLatestAssistant(updater)
   }
 
   const fetchConversations = useCallback(async () => {
@@ -172,13 +324,31 @@ function WorkspaceAssistantChat({
       // Re-sorting here can scramble older rows that share the same timestamp.
       const loadedMessages = (res.data.data.messages || []).map(toWorkspaceMessage)
       setMessages(loadedMessages)
-      const lastRun = [...loadedMessages].reverse().find((item) => item.role === 'assistant' && item.data?.run)?.data?.run || null
+      const lastRunMessage = [...loadedMessages]
+        .reverse()
+        .find((item) => item.role === 'assistant' && item.data?.run)
+      const lastRun = lastRunMessage?.data?.run || null
       upsertConversation(res.data.data.conversation)
       setInput('')
       setRunLogs([])
       setShowAllRunLogs(false)
       if (lastRun) {
-        await refreshRunLogs(lastRun.id)
+        const detail = await refreshRunLogs(lastRun.id)
+        if (detail.assistant_message && TERMINAL_RUN_STATUSES.has(detail.run.status)) {
+          const persistedMessage = toWorkspaceMessage(detail.assistant_message)
+          setMessages((current) => current.map((item) => (
+            item.id === lastRunMessage?.id ? persistedMessage : item
+          )))
+        } else if (
+          (detail.run.status === 'queued' || detail.run.status === 'running')
+          && lastRunMessage?.id
+        ) {
+          resumePersistedRunRef.current(
+            detail,
+            res.data.data.conversation.id,
+            lastRunMessage.id,
+          )
+        }
       } else {
         setCurrentRun(null)
       }
@@ -203,8 +373,10 @@ function WorkspaceAssistantChat({
   }, [fetchConversations, loadConversation])
 
   const startNewConversation = () => {
-    abortRef.current?.abort()
-    setGenerating(false)
+    if (generating) {
+      message.info('请先停止或等待当前任务完成，再新建对话')
+      return
+    }
     setActiveConversationId(null)
     setMessages([])
     setInput('')
@@ -215,6 +387,10 @@ function WorkspaceAssistantChat({
   }
 
   const deleteConversation = (conversationId: string) => {
+    if (generating) {
+      message.info('请先停止或等待当前任务完成，再删除对话')
+      return
+    }
     Modal.confirm({
       title: '删除对话',
       content: '确定要删除这条对话记录吗？删除后无法恢复。',
@@ -237,15 +413,93 @@ function WorkspaceAssistantChat({
     })
   }
 
+  const cancelAssistantRun = (
+    run: WorkspaceAssistantRun,
+    execution: ActiveAssistantExecution,
+  ): Promise<boolean> => {
+    if (!run.operation_id || !isCurrentExecution(execution)) return Promise.resolve(false)
+    if (cancelInFlightRef.current) return cancelInFlightRef.current
+
+    const request = (async () => {
+      setCanceling(true)
+      setCancelPending(true)
+      setRuntimeAnnouncement('正在取消任务')
+      try {
+        await apiClient.post(`/operations/${run.operation_id}/cancel`)
+        if (!isCurrentExecution(execution)) return true
+        cancelRequestedRef.current = false
+        const cancelledRun: WorkspaceAssistantRun = { ...run, status: 'cancelled', phase: 'cancelled' }
+        execution.run = cancelledRun
+        execution.terminalHandled = true
+        setCurrentRun(cancelledRun)
+        setCurrentPlan(null)
+        setGenerating(false)
+        const cancelledMessage = '已停止后续执行；取消前已完成的内容会保留。'
+        addRunLog({ tool: scope, status: 'cancelled', message: cancelledMessage })
+        updateAssistantById(execution.assistantMessageId, (item) => ({
+          ...item,
+          content: item.content && item.content !== '正在分析需求...'
+            ? `${item.content}\n\n（${cancelledMessage}）`
+            : cancelledMessage,
+          status: 'aborted',
+        }))
+        setRuntimeAnnouncement(cancelledMessage)
+        message.success(cancelledMessage)
+        execution.controller.abort()
+        return true
+      } catch (error: any) {
+        if (!isCurrentExecution(execution)) return false
+        const status = error?.response?.status
+        if (status === 409) {
+          try {
+            const detail = await fetchAssistantRunDetail(projectId, run.id, execution.controller.signal)
+            const terminal = await applyRecoveredRunDetail(detail, execution)
+            cancelRequestedRef.current = false
+            if (terminal) {
+              setGenerating(false)
+              setRuntimeAnnouncement('任务已结束，已恢复服务器中的实际结果')
+              message.info('任务已结束，已显示实际结果')
+              execution.controller.abort()
+              return true
+            }
+            message.warning('服务器仍显示任务在执行，可在任务中心再次取消')
+          } catch (reconcileError) {
+            if (!isAbortError(reconcileError)) {
+              message.error('无法确认任务状态，请在任务中心查看')
+            }
+          }
+        } else {
+          const failureMessage = error?.message || '取消任务失败，请在任务中心重试'
+          message.error(failureMessage)
+          addRunLog({ tool: scope, status: 'error', message: failureMessage })
+        }
+        cancelRequestedRef.current = false
+        return false
+      } finally {
+        cancelInFlightRef.current = null
+        if (isCurrentExecution(execution)) {
+          setCanceling(false)
+          setCancelPending(false)
+        }
+      }
+    })()
+    cancelInFlightRef.current = request
+    return request
+  }
+
   const stopGeneration = () => {
-    abortRef.current?.abort()
-    setGenerating(false)
-    addRunLog({ tool: scope, status: 'skipped', message: '已停止当前AI任务' })
-    updateLatestAssistant((item) => ({
-      ...item,
-      content: item.content ? item.content + '\n\n（已停止生成）' : '已停止生成。',
-      status: 'aborted',
-    }))
+    if (cancelRequestedRef.current || cancelInFlightRef.current) return
+    const execution = activeExecutionRef.current
+    if (!execution) return
+    cancelRequestedRef.current = true
+    setCancelPending(true)
+    setRuntimeAnnouncement('正在等待任务编号并取消')
+    if (execution.run?.operation_id) {
+      void cancelAssistantRun(execution.run, execution)
+      return
+    }
+    addRunLog({ tool: scope, status: 'running', message: '正在取得任务编号，随后立即取消' })
+    message.info('任务正在建立，取得任务编号后会立即取消')
   }
 
   const retryStep = async (stepId: string, tool: string) => {
@@ -561,7 +815,174 @@ function WorkspaceAssistantChat({
     }
   }
 
+  const applyRecoveredRunDetail = async (
+    detail: WorkspaceAssistantRunDetail,
+    execution: ActiveAssistantExecution,
+  ) => {
+    if (!isCurrentExecution(execution)) return false
+    const run = detail.run
+    execution.run = run
+    setCurrentRun(run)
+    if (detail.steps?.length) {
+      setRunLogs(detail.steps.map(runStepToLog))
+    }
+    const terminal = TERMINAL_RUN_STATUSES.has(run.status)
+    if (!terminal) return false
+
+    if (detail.assistant_message) {
+      const persistedMessage = toWorkspaceMessage(detail.assistant_message)
+      updateAssistantById(execution.assistantMessageId, () => persistedMessage)
+      execution.assistantMessageId = detail.assistant_message.id
+    } else if (run.error) {
+      updateAssistantById(execution.assistantMessageId, (item) => ({
+        ...item,
+        content: run.error || item.content,
+        status: 'error',
+      }))
+    }
+
+    if (!execution.terminalHandled) {
+      execution.terminalHandled = true
+      const ok = run.status === 'completed'
+      const terminalMessage = ok
+        ? '后台任务已完成并恢复结果'
+        : run.status === 'interrupted'
+          ? '后台任务已中断，可安全重试'
+          : `后台任务${RUN_STATUS_LABELS[run.status]}`
+      addRunLog({ tool: scope, status: ok ? 'ok' : run.status, message: terminalMessage })
+      setRuntimeAnnouncement(terminalMessage)
+      setCurrentPlan((previous) => previous
+        ? { ...previous, status: ok ? 'completed' : 'error' }
+        : null)
+      await fetchConversations()
+      if (ok) await Promise.resolve(onApplied?.())
+    }
+    return true
+  }
+
+  async function reconcileDetachedRun(
+    initialRun: WorkspaceAssistantRun | null,
+    execution: ActiveAssistantExecution,
+    announce = true,
+  ) {
+    if (!isCurrentExecution(execution)) return false
+    if (!initialRun) {
+      const missingRunMessage = '连接在任务编号返回前中断，无法自动恢复。请在任务中心查看执行结果。'
+      addRunLog({ tool: scope, status: 'error', message: missingRunMessage })
+      setRuntimeAnnouncement(missingRunMessage)
+      updateAssistantById(execution.assistantMessageId, (item) => ({
+        ...item,
+        content: item.content && item.content !== '正在分析需求...'
+          ? `${item.content}\n\n${missingRunMessage}`
+          : missingRunMessage,
+        status: 'error',
+      }))
+      return false
+    }
+
+    if (announce) {
+      const reconnectingMessage = '连接中断，任务仍在后台执行。正在恢复状态…'
+      addRunLog({ tool: scope, status: 'running', message: reconnectingMessage })
+      setRuntimeAnnouncement(reconnectingMessage)
+      updateAssistantById(execution.assistantMessageId, (item) => ({
+        ...item,
+        content: item.content || reconnectingMessage,
+        status: 'running',
+      }))
+    }
+
+    let run = initialRun
+    let consecutiveFailures = 0
+    while (isCurrentExecution(execution) && !execution.controller.signal.aborted) {
+      try {
+        const detail = await fetchAssistantRunDetail(projectId, run.id, execution.controller.signal)
+        consecutiveFailures = 0
+        run = detail.run
+        if (await applyRecoveredRunDetail(detail, execution)) return true
+      } catch (error) {
+        if (isAbortError(error) || !isCurrentExecution(execution)) return false
+        consecutiveFailures += 1
+        const status = error instanceof AssistantRunRequestError ? error.status : undefined
+        const fatal = status !== undefined && status >= 400 && status < 500
+        if (fatal || consecutiveFailures >= MAX_RUN_POLL_FAILURES) {
+          const recoveryMessage = fatal
+            ? `${error instanceof Error ? error.message : '恢复任务状态失败'}。请在任务中心查看结果。`
+            : '多次恢复连接失败，已停止本页轮询。后台任务不受影响，请在任务中心查看。'
+          addRunLog({ tool: scope, status: 'error', message: recoveryMessage })
+          setRuntimeAnnouncement(recoveryMessage)
+          updateAssistantById(execution.assistantMessageId, (item) => ({
+            ...item,
+            content: item.content.includes(recoveryMessage)
+              ? item.content
+              : `${item.content}\n\n${recoveryMessage}`.trim(),
+            status: 'error',
+          }))
+          return false
+        }
+      }
+
+      try {
+        await abortableDelay(Math.min(4000, 750 * (2 ** consecutiveFailures)), execution.controller.signal)
+      } catch (error) {
+        if (isAbortError(error)) return false
+        throw error
+      }
+    }
+    return false
+  }
+
+  function resumePersistedRun(
+    detail: WorkspaceAssistantRunDetail,
+    conversationId: string,
+    assistantMessageId: string,
+  ) {
+    const existingExecution = activeExecutionRef.current
+    if (existingExecution?.run?.id === detail.run.id) return
+
+    existingExecution?.controller.abort()
+    const controller = new AbortController()
+    const execution: ActiveAssistantExecution = {
+      token: ++executionSequenceRef.current,
+      controller,
+      userMessageId: '',
+      assistantMessageId,
+      conversationId,
+      run: detail.run,
+      terminalHandled: false,
+    }
+    activeExecutionRef.current = execution
+    abortRef.current = controller
+    cancelRequestedRef.current = false
+    setCancelPending(false)
+    setCanceling(false)
+    setGenerating(true)
+    setRuntimeAnnouncement('已恢复正在后台执行的任务，可继续等待或取消')
+
+    void (async () => {
+      try {
+        const terminal = await applyRecoveredRunDetail(detail, execution)
+        if (!terminal) {
+          await reconcileDetachedRun(detail.run, execution, false)
+        }
+      } finally {
+        if (isCurrentExecution(execution)) {
+          setGenerating(false)
+          setCanceling(false)
+          setCancelPending(false)
+          cancelRequestedRef.current = false
+          activeExecutionRef.current = null
+          if (abortRef.current === controller) abortRef.current = null
+        }
+      }
+    })()
+  }
+  resumePersistedRunRef.current = resumePersistedRun
+
   const sendMessage = async () => {
+    if (generating || historyLoading) {
+      message.info(generating ? '当前任务仍在执行' : '正在加载对话，请稍候')
+      return
+    }
     const userText = input.trim()
     if (!userText) {
       message.warning('请输入要发送给AI的内容')
@@ -569,17 +990,30 @@ function WorkspaceAssistantChat({
     }
 
     setGenerating(true)
+    cancelRequestedRef.current = false
     setRunLogs([{ key: `${Date.now()}-start`, tool: scope, status: 'running', message: '正在提交给AI助手' }])
     setCurrentRun(null)
     setCurrentPlan(null)
     setShowAllRunLogs(false)
     setMatchedSkills([])
     const controller = new AbortController()
+    const token = ++executionSequenceRef.current
+    const execution: ActiveAssistantExecution = {
+      token,
+      controller,
+      userMessageId: `pending-user-${token}`,
+      assistantMessageId: `pending-assistant-${token}`,
+      conversationId: activeConversationId,
+      run: null,
+      terminalHandled: false,
+    }
+    activeExecutionRef.current = execution
     abortRef.current = controller
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: userText, status: 'completed' },
+      { id: execution.userMessageId, role: 'user', content: userText, status: 'completed' },
       {
+        id: execution.assistantMessageId,
         role: 'assistant',
         content: '正在分析需求...',
         status: 'running',
@@ -620,7 +1054,6 @@ function WorkspaceAssistantChat({
       const decoder = new TextDecoder()
       let buffer = ''
       let completed = false
-
       const handleFrame = (frame: string) => {
         const data = frame
           .split(/\r?\n/)
@@ -634,38 +1067,51 @@ function WorkspaceAssistantChat({
         } catch {
           return // skip malformed SSE frames
         }
+        if (!isCurrentExecution(execution)) return
         if (event.type === 'conversation') {
           const conversation = event.conversation as WorkspaceAssistantConversation
           const persistedUser = event.user_message as WorkspacePersistedMessage
           const persistedAssistant = event.assistant_message as WorkspacePersistedMessage
+          const pendingUserId = execution.userMessageId
+          const pendingAssistantId = execution.assistantMessageId
+          execution.conversationId = conversation.id
+          execution.userMessageId = persistedUser.id
+          execution.assistantMessageId = persistedAssistant.id
           setActiveConversationId(conversation.id)
           upsertConversation(conversation)
           setMessages((prev) => {
-            const next = [...prev]
-            const assistantIndex = [...next].reverse().findIndex((item) => item.role === 'assistant')
-            const realAssistantIndex = assistantIndex >= 0 ? next.length - 1 - assistantIndex : -1
-            if (realAssistantIndex >= 1 && !next[realAssistantIndex].id && !next[realAssistantIndex - 1].id) {
-              next.splice(realAssistantIndex - 1, 2, toWorkspaceMessage(persistedUser), toWorkspaceMessage(persistedAssistant))
-              return sortWorkspaceMessages(next)
-            }
-            return sortWorkspaceMessages([...prev, toWorkspaceMessage(persistedUser), toWorkspaceMessage(persistedAssistant)])
+            const withoutPendingOrDuplicate = prev.filter((item) => (
+              item.id !== pendingUserId
+              && item.id !== pendingAssistantId
+              && item.id !== persistedUser.id
+              && item.id !== persistedAssistant.id
+            ))
+            return sortWorkspaceMessages([
+              ...withoutPendingOrDuplicate,
+              toWorkspaceMessage(persistedUser),
+              toWorkspaceMessage(persistedAssistant),
+            ])
           })
         } else if (event.type === 'run') {
           const run = event.run as WorkspaceAssistantRun
+          execution.run = run
           setCurrentRun(run)
           addRunLog({ tool: 'run', status: run.status || 'running', message: `任务已创建：${run.id.slice(0, 8)}` })
+          if (cancelRequestedRef.current && run.operation_id) {
+            void cancelAssistantRun(run, execution)
+          }
         } else if (event.type === 'status') {
           const detail = event.message || '正在执行'
           const log = { tool: event.tool || scope, status: 'running', detail, stepId: event.step_id }
           addRunLog({ tool: log.tool, status: log.status, message: detail, stepId: event.step_id })
-          appendToolLog(log, `正在执行：${detail}`)
+          appendToolLog(log, `正在执行：${detail}`, execution.assistantMessageId)
         } else if (event.type === 'tool') {
           const detail = event.detail || event.message || event.tool
           const log = { tool: event.tool || 'tool', status: event.status || 'ok', detail, stepId: event.step_id }
           if (log.tool !== 'planner') {
             addRunLog({ tool: log.tool, status: log.status, message: `${log.tool}: ${detail}`, stepId: event.step_id })
           }
-          appendToolLog(log)
+          appendToolLog(log, undefined, execution.assistantMessageId)
         } else if (event.type === 'iteration_start') {
           // silently track iteration progress
         } else if (event.type === 'iteration_end') {
@@ -679,7 +1125,7 @@ function WorkspaceAssistantChat({
           const detail = ev.result?.detail || '搜索完成'
           const status = ev.result?.status || 'ok'
           addRunLog({ tool: ev.tool, status, message: detail, stepId: ev.step_id })
-          appendToolLog({ tool: ev.tool, status, detail, stepId: ev.step_id })
+          appendToolLog({ tool: ev.tool, status, detail, stepId: ev.step_id }, undefined, execution.assistantMessageId)
         } else if (event.type === 'plan_created') {
           const ev = event as { plan_id: string; plan_name: string; steps: Array<{ step_key: string; tool: string; status: string; label?: string }> }
           setCurrentPlan({
@@ -724,7 +1170,7 @@ function WorkspaceAssistantChat({
             }
           })
           addRunLog({ tool: ev.tool, status: ev.status, message: ev.detail || (ev.status === 'ok' ? '完成' : '失败') })
-          appendToolLog({ tool: ev.tool, status: ev.status, detail: ev.detail, data: ev.data })
+          appendToolLog({ tool: ev.tool, status: ev.status, detail: ev.detail, data: ev.data }, undefined, execution.assistantMessageId)
         } else if (event.type === 'step_skip') {
           const ev = event as { step_key: string; tool: string; status: string }
           setCurrentPlan((prev) => {
@@ -767,55 +1213,40 @@ function WorkspaceAssistantChat({
           setMatchedSkills(ev.skills || [])
         } else if (event.type === 'thinking_delta') {
           const ev = event as { delta: string }
-          setMessages((prev) => {
-            const next = [...prev]
-            const aiIdx = [...next].reverse().findIndex((item) => item.role === 'assistant')
-            if (aiIdx < 0) return prev
-            const realIdx = next.length - 1 - aiIdx
-            next[realIdx] = {
-              ...next[realIdx],
-              content: next[realIdx].content === '正在分析需求...'
+          updateAssistantById(execution.assistantMessageId, (item) => ({
+              ...item,
+              content: item.content === '正在分析需求...'
                 ? ev.delta
-                : next[realIdx].content + ev.delta,
-            }
-            return next
-          })
+                : item.content + ev.delta,
+            }))
         } else if (event.type === 'thinking') {
           const ev = event as { content: string; iteration: number }
-          setMessages((prev) => {
-            const next = [...prev]
-            const aiIdx = [...next].reverse().findIndex((item) => item.role === 'assistant')
-            if (aiIdx < 0) return prev
-            const realIdx = next.length - 1 - aiIdx
-            // Replace raw streaming JSON with clean parsed reply
-            next[realIdx] = { ...next[realIdx], content: ev.content }
-            return next
-          })
+          updateAssistantById(execution.assistantMessageId, (item) => ({ ...item, content: ev.content }))
         } else if (event.type === 'complete') {
           const payload = event.data as WorkspaceAssistantResponse
           const reply = payload.reply?.trim() || EMPTY_ASSISTANT_REPLY
           completed = true
-          if (payload.run) setCurrentRun(payload.run)
+          execution.terminalHandled = true
+          if (payload.run) {
+            execution.run = payload.run
+            setCurrentRun(payload.run)
+          }
           upsertConversation(payload.conversation)
-          setMessages((prev) => {
-            const next = [...prev]
-            const index = [...next].reverse().findIndex((item) => item.role === 'assistant')
-            if (index < 0) return [...prev, { role: 'assistant', content: reply, data: payload }]
-            const realIndex = next.length - 1 - index
-            next[realIndex] = {
-              id: payload.message?.id || next[realIndex].id,
-              conversation_id: payload.message?.conversation_id || next[realIndex].conversation_id,
+          const assistantMessageId = execution.assistantMessageId
+          updateAssistantById(assistantMessageId, (item) => ({
+              id: payload.message?.id || item.id,
+              conversation_id: payload.message?.conversation_id || item.conversation_id,
               role: 'assistant',
               content: reply,
               status: payload.message?.status || 'completed',
-              created_at: payload.message?.created_at || next[realIndex].created_at,
-              updated_at: payload.message?.updated_at || next[realIndex].updated_at,
+              created_at: payload.message?.created_at || item.created_at,
+              updated_at: payload.message?.updated_at || item.updated_at,
               data: payload,
-            }
-            return next
-          })
+            }))
+          if (payload.message?.id) execution.assistantMessageId = payload.message.id
           addRunLog(assistantOutcomeToRunLog(payload, scope))
-          fetchConversations()
+          setRuntimeAnnouncement('任务已完成')
+          void fetchConversations()
           Promise.resolve(onApplied?.()).catch(() => undefined)
         } else if (event.type === 'error') {
           throw new Error(event.message || 'AI助手执行失败')
@@ -835,56 +1266,116 @@ function WorkspaceAssistantChat({
       buffer += decoder.decode()
       if (buffer.trim()) handleFrame(buffer)
       if (!completed && !controller.signal.aborted) {
-        // Treat incomplete stream as partial result rather than hard error
-        updateLatestAssistant((item) => ({
-          ...item,
-          status: 'done',
-        }))
-        addRunLog({ tool: scope, status: 'skipped', message: '流式输出中断，已保留已收到内容' })
+        await reconcileDetachedRun(execution.run, execution)
       }
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        message.error(err.message || 'AI助手执行失败')
-        addRunLog({ tool: scope, status: 'error', message: err.message || 'AI助手执行失败' })
-        updateLatestAssistant((item) => ({ ...item, content: err.message || 'AI助手执行失败', status: 'error' }))
+      if (!isAbortError(err)) {
+        if (execution.run) {
+          await reconcileDetachedRun(execution.run, execution)
+        } else {
+          const failureMessage = err.message || 'AI助手执行失败'
+          message.error(failureMessage)
+          addRunLog({ tool: scope, status: 'error', message: failureMessage })
+          setRuntimeAnnouncement(failureMessage)
+          updateAssistantById(execution.assistantMessageId, (item) => ({ ...item, content: failureMessage, status: 'error' }))
+        }
       }
     } finally {
-      setGenerating(false)
-      abortRef.current = null
+      if (isCurrentExecution(execution)) {
+        setGenerating(false)
+        setCanceling(false)
+        setCancelPending(false)
+        cancelRequestedRef.current = false
+        activeExecutionRef.current = null
+        if (abortRef.current === controller) abortRef.current = null
+      }
     }
   }
 
   return (
     <section className="workspace-assistant-chat" data-testid={`${scope}-ai-chat`}>
+      <div className="workspace-assistant-sr-status" role="status" aria-live="polite" aria-atomic="true">
+        {runtimeAnnouncement}
+      </div>
       <div className="workspace-assistant-head">
-        <Text strong>{scopeLabel}</Text>
-        <Space size={4}>
-          <Button size="small" onClick={() => setMemoryModalOpen(true)}>记忆</Button>
-          <Button size="small" icon={<ReloadOutlined />} loading={historyLoading} onClick={fetchConversations} />
-          <Button size="small" type="primary" icon={<PlusOutlined />} onClick={startNewConversation}>新对话</Button>
-        </Space>
+        <div className="workspace-assistant-head-primary">
+          <Text strong>{scopeLabel}</Text>
+          <Space size={4}>
+            <Button size="small" onClick={() => setMemoryModalOpen(true)}>记忆</Button>
+            <Button
+              aria-label="刷新对话"
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={historyLoading}
+              disabled={generating}
+              onClick={fetchConversations}
+            />
+            <Button
+              size="small"
+              type="primary"
+              icon={<PlusOutlined />}
+              disabled={generating}
+              onClick={startNewConversation}
+            >新对话</Button>
+          </Space>
+        </div>
+        <div className="workspace-assistant-model-row">
+          <Tooltip title="这是所有项目共用的默认模型。切换不会改变已经启动的任务。">
+            <span className="workspace-assistant-model-label">
+              全局模型 <InfoCircleOutlined aria-hidden="true" />
+            </span>
+          </Tooltip>
+          <Select
+            aria-label="全局模型"
+            className="workspace-assistant-model-select"
+            size="small"
+            value={defaultModel}
+            options={modelOptions}
+            loading={modelsLoading || modelChanging}
+            disabled={modelOptions.length === 0 || modelChanging}
+            placeholder={modelsLoading ? '正在读取可用模型' : '暂无可用模型'}
+            popupMatchSelectWidth={false}
+            onChange={(value) => { void changeGlobalModel(value) }}
+          />
+          <Tooltip title={modelOptions.length === 0 ? '前往设置并完成模型真实对话测试' : '管理模型配置'}>
+            <Button
+              aria-label="管理模型"
+              size="small"
+              type={modelOptions.length === 0 ? 'link' : 'text'}
+              icon={<SettingOutlined />}
+              onClick={onManageModels}
+            >
+              {modelOptions.length === 0 ? '去设置' : null}
+            </Button>
+          </Tooltip>
+        </div>
       </div>
 
       <div className="workspace-assistant-history">
         {conversations.length > 0 ? conversations.map((conversation) => (
-          <button
-            type="button"
+          <div
             key={conversation.id}
             className={`workspace-assistant-history-item${conversation.id === activeConversationId ? ' workspace-assistant-history-item-active' : ''}`}
-            onClick={() => loadConversation(conversation.id)}
           >
-            <span title={conversation.title}>{conversation.title}</span>
+            <button
+              aria-current={conversation.id === activeConversationId ? 'true' : undefined}
+              className="workspace-assistant-history-select"
+              disabled={generating}
+              type="button"
+              onClick={() => loadConversation(conversation.id)}
+            >
+              <span title={conversation.title}>{conversation.title}</span>
+            </button>
             <Button
+              aria-label={`删除对话：${conversation.title}`}
               type="text"
               size="small"
               danger
+              disabled={generating}
               icon={<DeleteOutlined />}
-              onClick={(event) => {
-                event.stopPropagation()
-                deleteConversation(conversation.id)
-              }}
+              onClick={() => deleteConversation(conversation.id)}
             />
-          </button>
+          </div>
         )) : (
           <Text type="secondary" style={{ fontSize: 12 }}>还没有历史对话。</Text>
         )}
@@ -908,8 +1399,13 @@ function WorkspaceAssistantChat({
             <Space size={6}>
               <Text type="secondary" style={{ fontSize: 12 }}>运行过程</Text>
               {currentRun && (
-                <Tag color={currentRun.status === 'completed' ? 'green' : currentRun.status === 'error' ? 'red' : 'blue'}>
-                  {currentRun.status} #{currentRun.id.slice(0, 8)}
+                <Tag color={
+                  currentRun.status === 'completed' ? 'green'
+                    : currentRun.status === 'error' || currentRun.status === 'interrupted' ? 'red'
+                      : currentRun.status === 'cancelled' || currentRun.status === 'aborted' ? 'default'
+                        : 'blue'
+                }>
+                  {RUN_STATUS_LABELS[currentRun.status]} #{currentRun.id.slice(0, 8)}
                 </Tag>
               )}
               {runLogs.some((l) => l.status === 'error' && !l.resolvedStepId) && (
@@ -999,6 +1495,7 @@ function WorkspaceAssistantChat({
       <Composer
         input={input}
         generating={generating}
+        cancelPending={cancelPending || canceling}
         selectedText={selectedText}
         showSelectionTag={showSelectionTag}
         messageCount={messages.length}

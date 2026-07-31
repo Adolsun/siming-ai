@@ -72,10 +72,12 @@ from ..services.workspace.run_log import (
     create_assistant_run,
     finish_run_step,
     mark_assistant_run,
+    resolve_assistant_model,
     run_payload,
     start_run_step,
     step_payload,
 )
+from ..services.workspace.assistant_stream_runtime import assistant_cancel_was_explicit, detached_assistant_stream
 from ..services.workspace.run_recovery import (
     generate_idempotency_key,
     retry_step,
@@ -84,7 +86,8 @@ from ..services.workspace.run_recovery import (
 )
 from ..services.operation_runtime import record_operation_signal
 from ..services.agent.bridge import detect_and_stream_plan
-from ..schemas.ai_writer import WorkspaceAssistantRequest
+from ..services.agent.chapter_intent import has_strong_chapter_writing_intent
+from ..schemas.ai_writer import WorkspaceAssistantRequest, WorkspaceAssistantRunDetailResponse, WorkspaceAssistantRunListResponse
 
 router = APIRouter(tags=["ai-writer"])
 
@@ -965,7 +968,7 @@ def _maybe_json(text: Optional[str]):
         return text
 
 
-@router.get("/projects/{project_id}/ai/assistant/runs")
+@router.get("/projects/{project_id}/ai/assistant/runs", response_model=ApiResponse[WorkspaceAssistantRunListResponse])
 async def list_assistant_runs(
     project_id: str,
     conversation_id: Optional[str] = None,
@@ -986,7 +989,7 @@ async def list_assistant_runs(
     })
 
 
-@router.get("/projects/{project_id}/ai/assistant/runs/{run_id}")
+@router.get("/projects/{project_id}/ai/assistant/runs/{run_id}", response_model=ApiResponse[WorkspaceAssistantRunDetailResponse])
 async def get_assistant_run(
     project_id: str,
     run_id: str,
@@ -998,8 +1001,10 @@ async def get_assistant_run(
     if not run:
         raise NotFoundError("助手任务不存在")
     steps = workspace.run_steps(run.id)
+    assistant_message = workspace.message(run.assistant_message_id) if run.assistant_message_id else None
     return ApiResponse.success(data={
         "run": run_payload(run),
+        "assistant_message": _assistant_message_to_dict(assistant_message) if assistant_message else None,
         "steps": [
             {
                 **step_payload(step),
@@ -1123,8 +1128,13 @@ async def workspace_assistant_stream(
 ):
     """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     get_project_or_404(db, project_id)
+    # Pin the selected default at submission time. This makes the initial SSE
+    # event/query expose the real model and prevents a global-model change from
+    # switching a task between iterations.
+    payload.model = resolve_assistant_model(payload.model)
 
-    async def event_generator():
+    async def event_generator(run_db: Session):
+        db = run_db
         # --- Plan path: detect intent and delegate to plan orchestrator ---
         plan_gen = await detect_and_stream_plan(
             db, project_id,
@@ -1134,7 +1144,30 @@ async def workspace_assistant_stream(
             model=payload.model,
             assistant_mode=payload.assistant_mode,
             outline_batch_count=payload.outline_batch_count,
+            selected_outline_node_id=payload.selected_outline_node_id,
         )
+        if plan_gen is None and has_strong_chapter_writing_intent(payload.message):
+            notice = "模型没有执行写章工具，本轮未创建章节。正在切换到确定性写章流程。"
+            yield _sse_event({"type": "status", "message": notice, "tool": "deterministic_chapter_fallback"})
+            plan_gen = await detect_and_stream_plan(
+                db,
+                project_id,
+                message=payload.message,
+                conversation_id=payload.conversation_id,
+                scope=payload.scope,
+                model=payload.model,
+                assistant_mode=payload.assistant_mode,
+                outline_batch_count=payload.outline_batch_count,
+                selected_outline_node_id=payload.selected_outline_node_id,
+                force_chapter_writing=True,
+            )
+            if plan_gen is None:
+                yield _sse_event({
+                    "type": "error",
+                    "message": "未找到可用于写作的章节大纲。请先选择一个章节大纲，或创建后再试。",
+                })
+                yield _sse_event("[DONE]")
+                return
         if plan_gen is not None:
             async for event in plan_gen:
                 yield event
@@ -2098,45 +2131,13 @@ async def workspace_assistant_stream(
             yield _sse_event({"type": "complete", "data": response_payload})
             yield _sse_event("[DONE]")
         except (GeneratorExit, asyncio.CancelledError):
-            # Client disconnected during streaming — finish critical work silently
-            if all_actions and payload.auto_apply:
-                for action in all_actions[:12]:
-                    tool = str(action.get("tool") or "tool")
-                    try:
-                        action_result = await _execute_workspace_action(
-                            db, project_id, action, assistant_mode=payload.assistant_mode, model=payload.model
-                        )
-                    except Exception:
-                        action_result = {"tool": tool, "status": "error", "detail": "后台执行失败"}
-                    applied_actions.append(action_result)
-                commit_session(db)
+            # Only an explicit Operation cancellation closes this producer.
+            # Never execute deferred writes while unwinding a cancelled stream.
+            if not assistant_cancel_was_explicit():
+                raise
             if assistant_msg_db:
-                reply = _build_workspace_final_reply(
-                    final_reply or str(parsed_fallback.get("reply") or ""),
-                    all_actions=all_actions,
-                    applied_actions=applied_actions,
-                    tool_logs=tool_logs,
-                    searched_context=searched_context,
-                )
-                assistant_msg_db.content = reply
-                assistant_msg_db.payload_json = json.dumps({
-                    "reply": reply,
-                    "outcome": _workspace_outcome(
-                        final_reply or str(parsed_fallback.get("reply") or ""),
-                        all_actions=all_actions,
-                        applied_actions=applied_actions,
-                        tool_logs=tool_logs,
-                        searched_context=searched_context,
-                    ),
-                    "actions": all_actions,
-                    "applied_actions": applied_actions,
-                    "tool_logs": tool_logs,
-                    "searched_context": searched_context,
-                    "scope": payload.scope,
-                    "model": final_model,
-                    "usage": final_usage,
-                }, ensure_ascii=False)
-                assistant_msg_db.status = "completed"
+                assistant_msg_db.content = "任务已取消，本轮不会再写入章节。"
+                assistant_msg_db.status = "aborted"
                 assistant_msg_db.updated_at = datetime.utcnow()
                 if conversation:
                     conversation.updated_at = datetime.utcnow()
@@ -2144,16 +2145,12 @@ async def workspace_assistant_stream(
             mark_assistant_run(
                 db,
                 assistant_run,
-                status="completed",
-                phase="client_disconnected",
-                final_reply=_build_workspace_final_reply(
-                    final_reply or str(parsed_fallback.get("reply") or ""),
-                    all_actions=all_actions,
-                    applied_actions=applied_actions,
-                    tool_logs=tool_logs,
-                    searched_context=searched_context,
-                ),
+                status="cancelled",
+                phase="cancelled",
+                error="用户取消了任务",
+                final_reply="任务已取消，本轮不会再写入章节。",
             )
+            raise
         except LLMError as exc:
             if assistant_msg_db:
                 assistant_msg_db.content = str(exc)
@@ -2174,7 +2171,7 @@ async def workspace_assistant_stream(
             yield _sse_event("[DONE]")
 
     return StreamingResponse(
-        event_generator(),
+        detached_assistant_stream(event_generator),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

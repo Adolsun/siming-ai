@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -8,10 +10,7 @@ const api = vi.hoisted(() => ({
   delete: vi.fn(),
 }))
 
-const invalidateQueries = vi.fn()
-
 vi.mock('../api/client', () => ({ apiClient: api }))
-vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }))
 vi.mock('../components/ContextGovernanceSettingsPanel', () => ({ default: () => null }))
 
 import SettingsPage from '../pages/SettingsPage'
@@ -21,6 +20,18 @@ const launcherSettings = {
   update_channel: 'stable' as const,
   restart_required: true,
   browser_mode_description: 'Use the default browser.',
+}
+
+function renderSettings(extra?: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <SettingsPage embedded />
+      {extra}
+    </QueryClientProvider>,
+  )
 }
 
 function mockInitialLoads() {
@@ -80,7 +91,7 @@ describe('SettingsPage startup and update controls', () => {
   })
 
   it('does not check or download updates during initial load', async () => {
-    render(<SettingsPage embedded />)
+    renderSettings()
 
     expect(await screen.findByText('可用模型')).toBeInTheDocument()
     expect(screen.getByText('检测到但尚未可用')).toBeInTheDocument()
@@ -91,7 +102,7 @@ describe('SettingsPage startup and update controls', () => {
   })
 
   it('saves browser mode for the next launch', async () => {
-    render(<SettingsPage embedded />)
+    renderSettings()
 
     fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
     const browserRadio = await screen.findByLabelText(/浏览器模式/)
@@ -102,7 +113,7 @@ describe('SettingsPage startup and update controls', () => {
   })
 
   it('checks for an update only after the user clicks the button', async () => {
-    render(<SettingsPage embedded />)
+    renderSettings()
 
     fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
     await screen.findByText('安全更新')
@@ -114,7 +125,7 @@ describe('SettingsPage startup and update controls', () => {
   })
 
   it('saves the preview channel explicitly', async () => {
-    render(<SettingsPage embedded />)
+    renderSettings()
 
     fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
     fireEvent.click(await screen.findByLabelText(/预览通道/))
@@ -154,7 +165,7 @@ describe('SettingsPage startup and update controls', () => {
       return Promise.resolve({ data: { data: {} } })
     })
 
-    render(<SettingsPage embedded />)
+    renderSettings()
     fireEvent.click(await screen.findByText('检测到但尚未可用'))
     fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
     fireEvent.change(await screen.findByLabelText('API Key'), { target: { value: 'secret-key' } })
@@ -183,7 +194,7 @@ describe('SettingsPage startup and update controls', () => {
       return Promise.resolve({ data: { data: {} } })
     })
 
-    render(<SettingsPage embedded />)
+    renderSettings()
     fireEvent.click(await screen.findByText('检测到但尚未可用'))
     fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
     const apiKey = await screen.findByLabelText('API Key')
@@ -207,7 +218,7 @@ describe('SettingsPage startup and update controls', () => {
       return Promise.resolve({ data: { data: {} } })
     })
 
-    render(<SettingsPage embedded />)
+    renderSettings()
     fireEvent.click(await screen.findByText('检测到但尚未可用'))
     fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
     expect(screen.queryByPlaceholderText('例如 openai/gpt-4o-mini 或 vendor-model-name')).not.toBeInTheDocument()

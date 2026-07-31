@@ -23,6 +23,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../../api/client'
+import { useGlobalModelActions } from '../../shared/query/modelConfigs'
 import type { CatalogResponse, DownloadTask, HardwareProfile, LocalModel } from './types'
 
 const { Text } = Typography
@@ -49,6 +50,7 @@ interface Props {
 
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
+  const { setGlobalModel } = useGlobalModelActions()
   const usageEnabled = catalog?.usage_enabled !== false
   const usageDisabledReason = catalog?.usage_disabled_reason || '本地 AI 模型暂时已停用，请使用 API 或本机 CLI 模型。'
 
@@ -108,10 +110,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
   }
 
   const makeDefault = async (model: LocalModel) => {
-    await apiClient.put('/config/global-model', {
-      provider: 'local_llama_cpp',
-      model: model.model_key,
-    })
+    await setGlobalModel('local_llama_cpp', model.model_key)
     message.success('已设为全局默认离线模型')
   }
 

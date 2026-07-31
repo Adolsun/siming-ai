@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.architecture.uow import commit_session
 
+import asyncio
 import json
 import re
 import time
@@ -15,8 +16,22 @@ from sqlalchemy.orm import Session
 from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object
-from ....database.models import NovelCreationSession, NovelCreationStageRun
+from ....database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
+from ....services.novel_creation_authoring import (
+    AuthorLockViolation,
+    _WORLD_STYLE_TEXT_FIELDS,
+    _author_context,
+    _author_text,
+    _dedupe_dicts,
+    _dict_rows,
+    _looks_like_cli_metadata,
+    _safe_compact_concepts,
+    _stage_contract,
+    _validate_author_requirements,
+    _validate_compact_concepts,
+    _validate_stage,
+)
 from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
@@ -28,6 +43,7 @@ from ...novel_creation_workspace import (
     derive_stage,
     fail_run,
     patch_session,
+    _requested_volume_count,
     save_compact_concepts,
     save_stage,
     serialize_run,
@@ -39,97 +55,56 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
-_WORLD_STYLE_TEXT_FIELDS = ("writing_style", "world_tone", "story_structure", "pacing")
-_AUTHOR_FIELD_LABELS = {
-    "writing_style": "正文风格",
-    "world_tone": "世界基调",
-    "story_structure": "剧情结构",
-    "pacing": "叙事节奏",
-    "core_tone": "核心基调",
-    "atmosphere": "氛围",
-    "emotional_color": "情绪色彩",
-    "reader_experience": "读者感受",
-    "narrative_perspective": "叙事视角",
-    "perspective": "叙事视角",
-    "sentence_rhythm": "句式节奏",
-    "language_style": "语言风格",
-    "main_line": "主线结构",
-    "stages": "阶段安排",
-    "opening": "开篇节奏",
-    "middle": "中段节奏",
-    "climax": "高潮节奏",
-    "summary": "摘要",
-    "description": "说明",
-    "content": "内容",
-}
+class StageModelResponseError(RuntimeError):
+    """Carries model-attempt metadata into the deterministic fallback path."""
+
+    def __init__(self, message: str, *, attempt: int = 1) -> None:
+        super().__init__(message)
+        self.attempt = max(1, int(attempt))
 
 
-def _author_field_label(key: Any) -> str:
-    text = _text(key)
-    return _AUTHOR_FIELD_LABELS.get(text, text.replace("_", " "))
+def _raise_if_task_cancelled() -> None:
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError
 
 
-def _author_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "是" if value else "否"
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        return "；".join(item for item in (_author_text(entry) for entry in value) if item)
-    if isinstance(value, dict):
-        parts = []
-        for key, child in value.items():
-            child_text = _author_text(child)
-            if child_text:
-                parts.append(f"{_author_field_label(key)}：{child_text}")
-        return "；".join(parts)
-    return _text(value)
+def _ensure_stage_not_cancelled(
+    db: Session,
+    run: NovelCreationStageRun | None,
+) -> None:
+    """Fence every model/save boundary against both task and durable cancellation."""
+    _raise_if_task_cancelled()
+    if run is None:
+        return
+    db.refresh(run)
+    if run.status == "cancelled":
+        raise asyncio.CancelledError
+    if run.operation_id:
+        operation = (
+            db.query(OperationRun)
+            .filter(OperationRun.id == run.operation_id)
+            .populate_existing()
+            .first()
+        )
+        if operation is not None and operation.status == "cancelled":
+            raise asyncio.CancelledError
 
 
-def _dict_rows(value: Any, *, name_field: str = "name") -> list[dict[str, Any]]:
-    if isinstance(value, list):
-        return [deepcopy(item) for item in value if isinstance(item, dict)]
-    if isinstance(value, dict):
-        rows: list[dict[str, Any]] = []
-        for key, child in value.items():
-            if not isinstance(child, dict):
-                continue
-            item = deepcopy(child)
-            item.setdefault(name_field, _text(key))
-            rows.append(item)
-        return rows
-    return []
-
-
-def _dedupe_dicts(rows: list[dict[str, Any]], key_builder: Any) -> list[dict[str, Any]]:
-    unique: list[dict[str, Any]] = []
-    seen: dict[Any, int] = {}
-    for row in rows:
-        key = key_builder(row)
-        if not key:
-            unique.append(deepcopy(row))
-            continue
-        if key in seen:
-            existing = unique[seen[key]]
-            for field, value in row.items():
-                if existing.get(field) in (None, "", [], {}):
-                    existing[field] = deepcopy(value)
-            continue
-        seen[key] = len(unique)
-        unique.append(deepcopy(row))
-    return unique
-
-
-def _looks_like_cli_metadata(data: dict[str, Any]) -> bool:
-    event_type = _text(data.get("type")).lower().replace("-", "_")
-    part = data.get("part") if isinstance(data.get("part"), dict) else {}
-    part_type = _text(part.get("type")).lower().replace("-", "_")
-    metadata_types = {"step_start", "step_finish", "message_start", "message_finish", "tool_start", "tool_finish"}
-    return event_type in metadata_types or part_type in metadata_types
+def _is_transient_transport_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    failure_class = classify_failure(message)
+    if failure_class in {"auth", "quota_or_rate_limit"}:
+        return False
+    return failure_class in {"network", "timeout"} or any(token in message for token in (
+        "incomplete chunked read",
+        "peer closed connection",
+        "connection closed",
+        "connection reset",
+        "remote protocol error",
+        "server disconnected",
+        "unexpected eof",
+    ))
 
 
 def _normalize_worldbuilding(value: Any) -> list[dict[str, Any]]:
@@ -231,6 +206,11 @@ def _normalize_macro_outline(data: dict[str, Any], baseline: dict[str, Any]) -> 
     base_volumes = _dict_rows(baseline.get("volumes"), name_field="title")
     if not source_volumes:
         source_volumes = deepcopy(base_volumes)
+    requested_count = int(baseline.get("requested_volume_count") or 0)
+    if requested_count:
+        source_volumes = source_volumes[:requested_count]
+        if len(source_volumes) < requested_count:
+            source_volumes.extend(deepcopy(base_volumes[len(source_volumes):requested_count]))
     volumes: list[dict[str, Any]] = []
     for index, source in enumerate(source_volumes):
         base = base_volumes[index] if index < len(base_volumes) else {}
@@ -379,20 +359,10 @@ def _session(db: Session, session_id: str) -> NovelCreationSession | None:
 
 
 def _free_opencode_candidates(model: str) -> list[str]:
-    if not model.startswith("opencode_cli:"):
-        return [model]
-    try:
-        from ....services.opencode_onboarding import inspect_opencode
-
-        inspected = inspect_opencode()
-        discovered = [
-            f"opencode_cli:{item['id']}"
-            for item in inspected.get("free_models", [])
-            if item.get("id")
-        ]
-    except Exception:
-        discovered = []
-    return [model, *[candidate for candidate in discovered if candidate != model]]
+    # A stage run is pinned to the model selected when it was submitted.
+    # Never turn an availability, quota, or configuration failure into an
+    # implicit model choice on the author's behalf.
+    return [model]
 
 
 async def _stream_model_text(
@@ -402,38 +372,54 @@ async def _stream_model_text(
     temperature: float,
     max_tokens: int,
     extra_body: dict[str, Any] | None,
-) -> str:
-    chunks: list[str] = []
-    emitted_chars = 0
-    last_report_at = 0.0
+) -> tuple[str, int]:
     operation_id = current_operation_id()
-    generator = LLMGateway.stream_chat_completion(
-        messages=messages,
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=0,
-        # Custom OpenAI-compatible gateways can briefly return a 5xx before
-        # producing the first stream event even though the same request works
-        # moments later. Gateway retries are safe here because they stop as
-        # soon as any output has been emitted, so partial generations are
-        # never duplicated.
-        retry=3,
-        extra_body=extra_body,
-    )
-    async for chunk in generator:
-        chunks.append(chunk)
-        emitted_chars += len(chunk)
-        now = time.monotonic()
-        if operation_id and now - last_report_at >= 2:
-            last_report_at = now
-            record_operation_signal(
-                operation_id,
-                "output",
-                {"output_chars": emitted_chars},
-                message="模型正在生成并校验立项内容",
+    for attempt in (1, 2):
+        _raise_if_task_cancelled()
+        chunks: list[str] = []
+        emitted_chars = 0
+        last_report_at = 0.0
+        try:
+            generator = LLMGateway.stream_chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=0,
+                # The gateway handles pre-output failures. This outer attempt
+                # additionally restarts a whole request after a partial stream
+                # was closed, which is safe because stage data is not persisted
+                # until it has passed contract validation.
+                retry=0,
+                extra_body=extra_body,
             )
-    return "".join(chunks)
+            async for chunk in generator:
+                _raise_if_task_cancelled()
+                chunks.append(chunk)
+                emitted_chars += len(chunk)
+                now = time.monotonic()
+                if operation_id and now - last_report_at >= 2:
+                    last_report_at = now
+                    record_operation_signal(
+                        operation_id,
+                        "output",
+                        {"output_chars": emitted_chars, "attempt": attempt},
+                        message="模型正在生成并校验立项内容",
+                    )
+            _raise_if_task_cancelled()
+            return "".join(chunks), attempt
+        except Exception as exc:
+            if attempt == 1 and _is_transient_transport_error(exc):
+                if operation_id:
+                    record_operation_signal(
+                        operation_id,
+                        "retry",
+                        {"attempt": 2, "failure_class": classify_failure(str(exc)) or "network"},
+                        message="模型连接中断，正在使用同一模型完整重试一次",
+                    )
+                continue
+            raise
+    raise RuntimeError("模型流式调用未完成")
 
 
 async def _generate_compact_concepts_with_fallback(
@@ -443,169 +429,45 @@ async def _generate_compact_concepts_with_fallback(
     context_manifest: Any,
     on_fallback: Any,
     input_snapshot: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    last_error: Exception | None = None
-    candidates = _free_opencode_candidates(model)
-    for index, candidate in enumerate(candidates):
-        try:
-            return await _generate_compact_concepts(
-                session,
-                candidate,
-                context_manifest=context_manifest,
-                input_snapshot=input_snapshot,
-            )
-        except Exception as exc:
-            last_error = exc
-            failure = classify_failure(str(exc))
-            retryable = failure == "quota_or_rate_limit" or any(
-                token in str(exc).lower() for token in ("model not found", "unavailable", "overloaded")
-            )
-            if not retryable or index == len(candidates) - 1:
-                raise
-            on_fallback(candidate, candidates[index + 1], str(exc))
-    if last_error:
-        raise last_error
-    raise ValueError("当前没有可用的免费模型")
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    del on_fallback  # Compatibility with the existing call site/event contract.
+    return await _generate_compact_concepts(
+        session,
+        model,
+        context_manifest=context_manifest,
+        input_snapshot=input_snapshot,
+    )
 
 
-def _stage_contract(stage: str) -> str:
-    contracts = {
-        "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
-        "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
-        "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。关系必须含 source_title、target_title、relation_type、description、metadata。",
-        "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
-        "opening_outline": "顶层恰好返回 chapters 数组和 sections 数组：chapters 恰好15章且每章保留 client_id；每章对应2至6个 sections，所有 section 只能放在顶层 sections 数组并通过 parent_client_id 关联章节，不得嵌套在 chapter 内。section 必须含 client_id、parent_client_id 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions。",
-        "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。",
-    }
-    return contracts.get(stage, "保持输入结构，只提高具体性、一致性和可执行性。")
-
-
-def _validate_stage(stage: str, data: dict[str, Any]) -> None:
-    if not isinstance(data, dict) or not data:
-        raise ValueError("模型没有返回可用的阶段对象")
-    if _looks_like_cli_metadata(data):
-        raise ValueError("模型只返回了运行状态，没有返回可用的阶段正文")
-    if stage == "world_style":
-        invalid = [
-            _AUTHOR_FIELD_LABELS[field]
-            for field in _WORLD_STYLE_TEXT_FIELDS
-            if not isinstance(data.get(field), str) or not data[field].strip()
-        ]
-        if invalid:
-            raise ValueError("文风与世界观缺少可读文本：" + "、".join(invalid))
-        if not isinstance(data.get("worldbuilding"), list) or not data["worldbuilding"]:
-            raise ValueError("文风与世界观缺少可用的世界设定条目")
-    if stage == "characters":
-        characters = data.get("characters") if isinstance(data.get("characters"), list) else []
-        if not characters:
-            raise ValueError("角色与关系阶段没有返回角色数组")
-        invalid = [
-            _text(item.get("name")) or f"第{index + 1}个角色"
-            for index, item in enumerate(characters)
-            if not isinstance(item, dict) or not _text(item.get("role_type")) or not _text(item.get("goal") or item.get("current_goal"))
-        ]
-        if invalid:
-            raise ValueError("以下角色缺少角色类型或当前目标：" + "、".join(invalid[:5]))
-    if stage == "locations":
-        entries = data.get("entries") if isinstance(data.get("entries"), list) else []
-        relations = data.get("relations") if isinstance(data.get("relations"), list) else []
-        if not entries:
-            raise ValueError("地点与势力阶段没有返回实体数组")
-        titles = {_text(item.get("title")).casefold() for item in entries if isinstance(item, dict) and _text(item.get("title"))}
-        invalid_relations = [
-            f"{_text(item.get('source_title')) or '未知起点'} → {_text(item.get('target_title')) or '未知终点'}"
-            for item in relations
-            if (
-                not isinstance(item, dict)
-                or not _text(item.get("source_title"))
-                or not _text(item.get("target_title"))
-                or not _text(item.get("relation_type"))
-                or _text(item.get("source_title")).casefold() not in titles
-                or _text(item.get("target_title")).casefold() not in titles
-            )
-        ]
-        if invalid_relations:
-            raise ValueError("以下地点关系缺少端点、类型或引用了不存在的实体：" + "、".join(invalid_relations[:5]))
-    if stage == "macro_outline":
-        missing = [field for field in ("story_overview", "core_conflict", "ending_direction") if not _text(data.get(field))]
-        volumes = data.get("volumes") if isinstance(data.get("volumes"), list) else []
-        if missing:
-            raise ValueError("全书主线与卷纲缺少：" + "、".join(missing))
-        if not volumes:
-            raise ValueError("全书主线与卷纲没有返回分卷规划")
-        invalid_volumes = [
-            _text(item.get("title")) or f"第{index + 1}卷"
-            for index, item in enumerate(volumes)
-            if (
-                not isinstance(item, dict)
-                or not _text(item.get("summary"))
-                or int(item.get("start_chapter") or 0) <= 0
-                or int(item.get("end_chapter") or 0) < int(item.get("start_chapter") or 0)
-            )
-        ]
-        if invalid_volumes:
-            raise ValueError("以下分卷缺少有效章节范围或摘要：" + "、".join(invalid_volumes[:5]))
-    if stage == "opening_outline":
-        chapters = data.get("chapters") if isinstance(data.get("chapters"), list) else []
-        sections = data.get("sections") if isinstance(data.get("sections"), list) else []
-        if len(chapters) != 15:
-            raise ValueError(f"前15章细纲必须恰好包含15章，当前为{len(chapters)}章")
-        counts: dict[str, int] = {}
-        for section in sections:
-            if isinstance(section, dict):
-                parent = _text(section.get("parent_client_id"))
-                counts[parent] = counts.get(parent, 0) + 1
-        invalid = [
-            _text(chapter.get("title") or chapter.get("chapter_number") or chapter.get("client_id"))
-            or f"第{index + 1}章"
-            for index, chapter in enumerate(chapters)
-            if counts.get(_text(chapter.get("client_id")), 0) not in range(2, 7)
-        ]
-        if invalid:
-            raise ValueError("以下章节的场景数量不在2至6个之间：" + "、".join(invalid[:5]))
-        required_metadata = {
-            "scene_number", "purpose", "location", "timeline", "pov_character",
-            "characters", "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
-        }
-        invalid_sections = [
-            _text(section.get("title") or section.get("client_id")) or f"第{index + 1}个场景"
-            for index, section in enumerate(sections)
-            if (
-                not isinstance(section, dict)
-                or not _text(section.get("client_id"))
-                or not _text(section.get("parent_client_id"))
-                or not required_metadata.issubset(set(section.get("metadata") or {}))
-            )
-        ]
-        if invalid_sections:
-            raise ValueError("以下场景缺少结构化信息：" + "、".join(invalid_sections[:5]))
-
-
-def _validate_compact_concepts(concepts: Any) -> list[dict[str, Any]]:
-    if not isinstance(concepts, list) or len(concepts) != 3:
-        raise ValueError("模型必须一次返回恰好三张轻量创意卡")
-    required = ("title", "logline", "world_hook", "core_conflict", "opening_hook")
-    cards: list[dict[str, Any]] = []
-    titles: set[str] = set()
-    for index, raw in enumerate(concepts):
-        if not isinstance(raw, dict):
-            raise ValueError(f"第{index + 1}张创意卡不是对象")
-        missing = [field for field in required if not _text(raw.get(field))]
-        protagonist = raw.get("protagonist_seed")
-        if not isinstance(protagonist, dict):
-            missing.append("protagonist_seed")
-        else:
-            for field in ("identity", "goal", "lack"):
-                if not _text(protagonist.get(field)):
-                    missing.append(f"protagonist_seed.{field}")
-        if missing:
-            raise ValueError(f"第{index + 1}张创意卡缺少：{'、'.join(missing)}")
-        title = _text(raw.get("title"))
-        if title in titles:
-            raise ValueError("三张轻量创意卡必须具有不同标题")
-        titles.add(title)
-        cards.append(raw)
-    return cards
+async def _repair_json_with_model(
+    *,
+    raw: str,
+    error: Exception,
+    model: str,
+    contract: str,
+    max_tokens: int,
+    extra_body: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, int]:
+    _raise_if_task_cancelled()
+    system = (
+        "你是司命的阶段结构修复器。只修复 JSON 语法和结构契约，不改写作者事实、专名、"
+        "已确认内容或创作方向。只输出一个 JSON 对象，不要解释。"
+    )
+    user = (
+        f"结构契约：{contract}\n"
+        f"校验错误：{str(error)[:1000]}\n"
+        "请把下面的模型原始输出修复为合法结构；无法确定的内容保持原样，不要另写故事。\n"
+        f"原始输出：{raw[:120_000]}"
+    )
+    repaired, attempt = await _stream_model_text(
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        model=model,
+        temperature=0,
+        max_tokens=max_tokens,
+        extra_body=extra_body,
+    )
+    _raise_if_task_cancelled()
+    return parse_json_object(repaired), attempt
 
 
 async def _generate_compact_concepts(
@@ -614,23 +476,32 @@ async def _generate_compact_concepts(
     *,
     context_manifest: Any | None = None,
     input_snapshot: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Generate decision-ready concepts, never a complete project blueprint."""
     draft = deepcopy(input_snapshot) if isinstance(input_snapshot, dict) else (session.draft_json if isinstance(session.draft_json, dict) else {})
     interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
+    author = _author_context(draft)
+    author_led = author["creation_mode"] == "author_led"
+    expected_count = 1 if author_led else 3
+    instruction = _text(draft.get("_refinement_instruction"))
     context = {
         "brief": _text(session.user_brief),
         "form": draft.get("form") or {},
+        "author_source": author,
+        "current_stage_data": ((draft.get("stages") or {}).get("concepts") or {}).get("data"),
         "interview_history": interview.get("history") or [],
         "interview_reason": _text(interview.get("reason")),
+        "refinement_instruction": instruction,
     }
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
     system = render_creation_prompt(
-        task_kind="生成三套轻量创意方向",
+        task_kind="整理作者方案" if author_led else "生成三套轻量创意方向",
         task_rules=(
-            "只生成恰好三张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。"
-            "三张卡必须遵守作者约束，并在故事发动机、冲突结构和开篇压力上有实质差异。"
+            ("只生成恰好一张作者方案卡，不生成替代故事。作者原文、专名、因果、结局方向和锁定要求都是不可改写的事实；只补全空白。"
+             if author_led else
+             "只生成恰好三张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。三张卡必须遵守作者约束，并在故事发动机、冲突结构和开篇压力上有实质差异。")
+            + "如果提供了调整要求，只调整当前创意阶段，不影响其他阶段。"
         ),
     )
     shape = {
@@ -648,15 +519,16 @@ async def _generate_compact_concepts(
         }]
     }
     user = (
-        "请严格返回恰好三张创意卡，字段必须与下列 JSON 结构一致。"
-        "每张卡应在数百字内可读完，三张卡不得只是改标题。\n"
-        f"输出结构：{json.dumps(shape, ensure_ascii=False)}\n"
+        f"请严格返回恰好{expected_count}张{'作者方案卡' if author_led else '创意卡'}，字段必须与下列 JSON 结构一致。"
+        + ("方案必须忠实整理作者已经想好的内容，不得随机替换故事。\n" if author_led else "每张卡应在数百字内可读完，三张卡不得只是改标题。\n")
+        + f"输出结构：{json.dumps(shape, ensure_ascii=False)}\n"
         f"作者上下文：{json.dumps(context, ensure_ascii=False)}"
     )
     from ....services.content_store import content_root
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
-        raw = await _stream_model_text(
+        _raise_if_task_cancelled()
+        raw, attempt = await _stream_model_text(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=model,
             temperature=0.8,
@@ -667,13 +539,51 @@ async def _generate_compact_concepts(
                 base={"moshu_task_type": "planning", "storage_target": "session_draft"},
             ),
         )
-    if not raw:
-        raise RuntimeError("模型没有返回轻量创意卡")
-    parsed = parse_json_object(raw)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("模型返回的轻量创意卡不是有效 JSON")
-    payload = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
-    return _validate_compact_concepts(payload.get("concepts"))
+    _raise_if_task_cancelled()
+    try:
+        if not raw:
+            raise ValueError("模型没有返回轻量创意卡")
+        parsed = parse_json_object(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("模型返回的轻量创意卡不是有效 JSON")
+        payload = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+        cards = _validate_compact_concepts(payload.get("concepts"), expected_count=expected_count)
+        _validate_author_requirements("concepts", {"options": cards}, {}, draft)
+        return cards, {
+            "attempt": attempt,
+            "result_mode": "model",
+            "warning": None,
+        }
+    except Exception as parse_error:
+        try:
+            repaired, repair_attempt = await _repair_json_with_model(
+                raw=raw,
+                error=parse_error,
+                model=model,
+                contract=f"顶层 concepts 数组必须恰好包含 {expected_count} 张卡，字段与示例完全一致",
+                max_tokens=3200,
+                extra_body=LLMGateway.local_cli_extra_body(
+                    model,
+                    cwd=str(content_root()),
+                    base={"moshu_task_type": "planning", "storage_target": "session_draft"},
+                ),
+            )
+            if not isinstance(repaired, dict):
+                raise ValueError("结构修复没有返回 JSON 对象")
+            payload = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
+            cards = _validate_compact_concepts(payload.get("concepts"), expected_count=expected_count)
+            _raise_if_task_cancelled()
+            _validate_author_requirements("concepts", {"options": cards}, {}, draft)
+            return cards, {
+                "attempt": attempt + repair_attempt,
+                "result_mode": "repaired",
+                "warning": "模型原始回复格式不合法，已使用同一模型完成一次结构修复",
+            }
+        except Exception as repair_error:
+            raise StageModelResponseError(
+                f"{parse_error}；同模型结构修复失败：{repair_error}",
+                attempt=attempt + 1,
+            ) from repair_error
 
 
 async def _enhance_with_model(
@@ -684,17 +594,21 @@ async def _enhance_with_model(
     *,
     context_manifest: Any | None = None,
     input_snapshot: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     draft = deepcopy(input_snapshot) if isinstance(input_snapshot, dict) else (session.draft_json if isinstance(session.draft_json, dict) else {})
+    instruction = _text(draft.get("_refinement_instruction"))
     context = {
         "form": draft.get("form"),
+        "author_source": _author_context(draft),
         "selected_concept_id": draft.get("selected_concept_id"),
+        "current_stage_data": ((draft.get("stages") or {}).get(stage) or {}).get("data"),
         "confirmed_stages": {
             name: value.get("data")
             for name, value in (draft.get("stages") or {}).items()
             if isinstance(value, dict) and value.get("status") == "confirmed"
         },
         "baseline": baseline,
+        "refinement_instruction": instruction,
     }
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
@@ -702,19 +616,22 @@ async def _enhance_with_model(
         task_kind=f"深化阶段：{STAGE_LABELS.get(stage, stage)}",
         task_rules=(
             "只深化当前阶段的 baseline，顶层只返回 data 字段；"
-            "保留作者约束、已确认事实和专名，不提前生成下游阶段。"
+            "保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。"
+            "调整要求只作用于当前阶段；没有明确授权时不得改动其他内容。"
         ),
     )
     user = (
         f"当前阶段：{STAGE_LABELS.get(stage, stage)}\n"
         f"结构契约：{_stage_contract(stage)}\n"
         "请在保留作者约束和已确认事实的前提下，深化 baseline；不要改变已经确认的专名。\n"
-        f"上下文：{json.dumps(context, ensure_ascii=False)}"
+        + (f"作者本次调整要求：{instruction}\n" if instruction else "")
+        + f"上下文：{json.dumps(context, ensure_ascii=False)}"
     )
     from ....services.content_store import content_root
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
-        raw = await _stream_model_text(
+        _raise_if_task_cancelled()
+        raw, attempt = await _stream_model_text(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=model,
             temperature=0.65,
@@ -725,15 +642,51 @@ async def _enhance_with_model(
                 base={"moshu_task_type": "planning", "storage_target": "session_draft"},
             ),
         )
-    if not raw:
-        raise RuntimeError("没有收到模型的文字回复")
-    parsed = parse_json_object(raw)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("模型返回的阶段 JSON 格式不合法")
-    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
-    data = _normalize_stage_data(stage, data, baseline)
-    _validate_stage(stage, data)
-    return data
+    _raise_if_task_cancelled()
+    try:
+        if not raw:
+            raise ValueError("没有收到模型的文字回复")
+        parsed = parse_json_object(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("模型返回的阶段 JSON 格式不合法")
+        data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+        _validate_author_requirements(stage, data, baseline, draft)
+        data = _normalize_stage_data(stage, data, baseline)
+        _validate_stage(stage, data)
+        _validate_author_requirements(stage, data, baseline, draft)
+        return data, {"attempt": attempt, "result_mode": "model", "warning": None}
+    except Exception as parse_error:
+        try:
+            repaired, repair_attempt = await _repair_json_with_model(
+                raw=raw,
+                error=parse_error,
+                model=model,
+                contract=_stage_contract(stage),
+                max_tokens=12000 if stage == "opening_outline" else 6000,
+                extra_body=LLMGateway.local_cli_extra_body(
+                    model,
+                    cwd=str(content_root()),
+                    base={"moshu_task_type": "planning", "storage_target": "session_draft"},
+                ),
+            )
+            if not isinstance(repaired, dict):
+                raise ValueError("结构修复没有返回 JSON 对象")
+            data = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
+            _raise_if_task_cancelled()
+            _validate_author_requirements(stage, data, baseline, draft)
+            data = _normalize_stage_data(stage, data, baseline)
+            _validate_stage(stage, data)
+            _validate_author_requirements(stage, data, baseline, draft)
+            return data, {
+                "attempt": attempt + repair_attempt,
+                "result_mode": "repaired",
+                "warning": "模型原始回复格式不合法，已使用同一模型完成一次结构修复",
+            }
+        except Exception as repair_error:
+            raise StageModelResponseError(
+                f"{parse_error}；同模型结构修复失败：{repair_error}",
+                attempt=attempt + 1,
+            ) from repair_error
 
 
 async def get_novel_creation_session(db: Session, project_id: str, args: dict[str, Any]) -> dict:
@@ -750,186 +703,18 @@ async def get_novel_creation_session(db: Session, project_id: str, args: dict[st
 
 
 async def generate_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:
-    session_id = _text(args.get("session_id"))
-    stage = _text(args.get("stage"))
-    session = _session(db, session_id)
-    if not session:
-        return {"tool": "generate_novel_creation_stage", "status": "skipped", "detail": "Session not found", "data": None}
-    if stage not in {*STAGE_ORDER, "all"}:
-        return {"tool": "generate_novel_creation_stage", "status": "skipped", "detail": "Unknown stage", "data": None}
+    from ....services.novel_creation_stage_execution import execute_novel_creation_stage
 
-    if isinstance(args.get("session_patch"), dict):
-        patch_session(session, args["session_patch"])
-    model = _text(args.get("model"))
-    use_model = bool(args.get("use_model", bool(model)))
-    auto_confirm = bool(args.get("auto_confirm", stage == "all"))
-    existing_run_id = _text(args.get("_run_id"))
-    run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == existing_run_id).first() if existing_run_id else None
-    run_request = run.request_json if run and isinstance(run.request_json, dict) else {}
-    current_draft = session.draft_json if isinstance(session.draft_json, dict) else {}
-    working_draft = deepcopy(run_request.get("input_snapshot")) if isinstance(run_request.get("input_snapshot"), dict) else deepcopy(current_draft)
-    orchestrator = ContextOrchestrator(db)
-    manifest_id = _text(args.get("context_manifest_id")) or _text(getattr(run, "context_manifest_id", ""))
-    manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
-    if manifest is None:
-        draft = working_draft
-        manifest = orchestrator.prepare(
-            project_id=None,
-            task_type="new_project",
-            model=model or None,
-            execution_route="novel_creation",
-            session_id=session.id,
-            arguments={
-                "session_id": session.id,
-                "session": {"brief": session.user_brief, "draft": draft},
-                "answers": ((draft.get("interview") or {}).get("history") if isinstance(draft.get("interview"), dict) else []),
-                "confirmed_stages": draft.get("stages") or {},
-                "author_constraints": session.user_brief or "",
-                "stage": stage,
-            },
-        )
-    usable, context_detail = orchestrator.validate(manifest)
-    governed_args = {**args, "context_manifest_id": manifest.id}
-    if run is None:
-        run = create_run(db, session, stage, governed_args)
-        commit_session(db)
-    elif not run.context_manifest_id:
-        run.context_manifest_id = manifest.id
-        commit_session(db)
-    if not usable:
-        run.status = manifest.status
-        run.current_message = context_detail
-        run.next_action = "Review or override the context manifest, then retry this stage."
-        commit_session(db)
-        return {
-            "tool": "generate_novel_creation_stage",
-            "status": manifest.status,
-            "detail": context_detail,
-            "data": {"run": serialize_run(run), "session": serialize_session(session)},
-        }
-
-    active_stage = stage
-    try:
-        generated: dict[str, Any] = {}
-        if stage == "concepts":
-            add_run_event(
-                db,
-                run,
-                "stage_progress",
-                "running",
-                "正在生成三套轻量创意",
-                {"stage": "concepts", "model_source": model or "none", "storage_target": "session_draft"},
-            )
-            run.current_message = "正在生成三套轻量创意"
-            commit_session(db)
-            if not use_model or not model:
-                raise ValueError("轻量创意需要选择可用模型后才能生成")
-            def record_fallback(previous: str, following: str, reason: str) -> None:
-                add_run_event(
-                    db,
-                    run,
-                    "model_fallback",
-                    "running",
-                    f"免费模型 {previous} 暂时不可用，已明确切换为 {following}",
-                    {
-                        "previous_model": previous,
-                        "model_source": following,
-                        "failure_class": classify_failure(reason),
-                    },
-                )
-                commit_session(db)
-
-            concepts = await _generate_compact_concepts_with_fallback(
-                session,
-                model,
-                context_manifest=manifest,
-                on_fallback=record_fallback,
-                input_snapshot=working_draft,
-            )
-            concept_stage = save_compact_concepts(session, concepts)
-            generated["concepts"] = deepcopy(concept_stage.get("data") or {})
-            add_run_event(
-                db,
-                run,
-                "stage_completed",
-                "ok",
-                "三套轻量创意已保存",
-                {"stage": "concepts", "storage_target": "session_draft"},
-            )
-            commit_session(db)
-        else:
-            stages = [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}] if stage == "all" else [stage]
-            for name in stages:
-                active_stage = name
-                add_run_event(
-                    db,
-                    run,
-                    "stage_progress",
-                    "running",
-                    f"正在生成{STAGE_LABELS.get(name, name)}",
-                    {"stage": name, "model_source": model or "contract", "storage_target": "session_draft"},
-                )
-                run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
-                commit_session(db)
-                baseline = derive_stage(session, name, working_draft)
-                data, source = await stage_data_with_fallback(
-                    db,
-                    run,
-                    session,
-                    stage=name,
-                    baseline=baseline,
-                    model=model,
-                    use_model=use_model,
-                    quick_run=stage == "all",
-                    manifest=manifest,
-                    working_draft=working_draft,
-                    enhance=_enhance_with_model,
-                )
-                data = _normalize_stage_data(name, data, baseline)
-                _validate_stage(name, data)
-                save_stage(session, name, data, confirm=auto_confirm, source=source)
-                working_draft.setdefault("stages", {})[name] = {
-                    "status": "confirmed" if auto_confirm else "generated",
-                    "data": deepcopy(data),
-                    "source": source,
-                }
-                generated[name] = deepcopy(data)
-                add_run_event(
-                    db,
-                    run,
-                    "stage_completed",
-                    "ok",
-                    f"{STAGE_LABELS.get(name, name)}已保存",
-                    {"stage": name, "storage_target": "session_draft"},
-                )
-                commit_session(db)
-        if stage == "all":
-            final = derive_stage(session, "final_review", working_draft)
-            save_stage(session, "final_review", final, confirm=False, source="contract")
-            generated["final_review"] = final
-            add_run_event(
-                db,
-                run,
-                "stage_completed",
-                "ok" if final.get("ready") else "warning",
-                "最终审阅已完成",
-                {"stage": "final_review", "ready": bool(final.get("ready")), "storage_target": "session_draft"},
-            )
-            commit_session(db)
-        complete_run(db, run, {"stages": generated})
-        orchestrator.mark_consumed(manifest)
-        commit_session(db)
-        db.refresh(run)
-        return stage_tool_result("ok", "Novel creation stage generated", run, session)
-    except Exception as exc:
-        db.rollback()
-        session = _session(db, session_id)
-        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run.id).first()
-        if run and session:
-            fail_run(db, run, exc, failed_stage=active_stage)
-            commit_session(db)
-            return stage_tool_result("error", str(exc), run, session)
-        return {"tool": "generate_novel_creation_stage", "status": "error", "detail": str(exc), "data": None}
+    return await execute_novel_creation_stage(
+        db,
+        project_id,
+        args,
+        ensure_not_cancelled=_ensure_stage_not_cancelled,
+        generate_concepts=_generate_compact_concepts_with_fallback,
+        normalize_stage=_normalize_stage_data,
+        enhance_with_model=_enhance_with_model,
+        model_response_error=StageModelResponseError,
+    )
 
 
 async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:

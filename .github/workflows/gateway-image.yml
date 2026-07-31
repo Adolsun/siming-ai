@@ -71,23 +71,52 @@ jobs:
           context: .
           load: true
           platforms: linux/amd64
-          tags: siming-gateway:smoke
+          tags: siming-gateway:smoke-amd64
           build-args: SIMING_VERSION=${{ steps.meta.outputs.version }}
 
-      - name: Smoke test non-root runtime and persistent data
+      - name: Build arm64 smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: siming-gateway:smoke-arm64
+          build-args: SIMING_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Smoke test every supported architecture
         shell: bash
         run: |
-          docker run -d --rm --name siming-gateway-smoke \
-            -e SIMING_GATEWAY_BOOTSTRAP_KEY=ci-bootstrap-key-12345 \
-            -p 18000:8000 siming-gateway:smoke
-          trap 'docker rm -f siming-gateway-smoke >/dev/null 2>&1 || true' EXIT
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:18000/health >/dev/null; then break; fi
-            sleep 2
-          done
-          curl --fail --silent http://127.0.0.1:18000/health
-          test "$(docker exec siming-gateway-smoke id -u)" = "10001"
-          docker exec siming-gateway-smoke sh -c 'touch /data/ci-write-test && test ! -w /app'
+          set -euo pipefail
+          containers=()
+          cleanup() {
+            for container in "${containers[@]}"; do
+              docker rm -f "$container" >/dev/null 2>&1 || true
+            done
+          }
+          trap cleanup EXIT
+
+          smoke_arch() {
+            local arch="$1"
+            local port="$2"
+            local image="siming-gateway:smoke-${arch}"
+            local container="siming-gateway-smoke-${arch}"
+            test "$(docker image inspect --format '{{.Architecture}}' "$image")" = "$arch"
+            docker run -d --rm --platform "linux/${arch}" --name "$container" \
+              -e SIMING_GATEWAY_BOOTSTRAP_KEY=ci-bootstrap-key-12345 \
+              -p "${port}:8000" "$image"
+            containers+=("$container")
+            for attempt in {1..30}; do
+              if curl --fail --silent "http://127.0.0.1:${port}/health" >/dev/null; then break; fi
+              sleep 2
+            done
+            curl --fail --silent "http://127.0.0.1:${port}/health"
+            test "$(docker exec "$container" id -u)" = "10001"
+            docker exec "$container" sh -c 'touch /data/ci-write-test && test ! -w /app'
+            docker rm -f "$container" >/dev/null
+          }
+
+          smoke_arch amd64 18000
+          smoke_arch arm64 18001
 
       - name: Build and publish multi-architecture image
         if: github.event_name == 'release'

@@ -7,11 +7,16 @@ on:
       - "scripts/publish-github.ps1"
       - "scripts/smoke-test-release.ps1"
       - "scripts/verify-release-assets.ps1"
+      - "scripts/build-android-release.ps1"
+      - "scripts/verify-android-release.ps1"
       - "scripts/check-architecture.py"
       - "backend/app/version.py"
       - "backend/requirements-dev.txt"
       - "frontend/package.json"
       - "frontend/package-lock.json"
+      - "mobile/android/app/build.gradle.kts"
+      - ".github/workflows/release-gate.yml"
+      - ".github/workflows/gateway-image.yml"
       - ".github/workflows/release-preflight.yml"
   push:
     tags: ["v*"]
@@ -36,6 +41,8 @@ jobs:
           Test-PowerShellSyntax scripts\publish-github.ps1
           Test-PowerShellSyntax scripts\smoke-test-release.ps1
           Test-PowerShellSyntax scripts\verify-release-assets.ps1
+          Test-PowerShellSyntax scripts\build-android-release.ps1
+          Test-PowerShellSyntax scripts\verify-android-release.ps1
 
       - name: Publish dry run
         shell: pwsh

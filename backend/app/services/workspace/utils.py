@@ -121,7 +121,13 @@ def normalize_outline_lookup(value: object) -> str:
     return re.sub(r"[\s:：,，.。;；!！?？()（）【】\[\]《》<>\"'“”‘’_-]+", "", text)
 
 
-def find_outline_by_title_or_id(db: Session, project_id: str, value: object) -> Optional[OutlineNode]:
+def find_outline_by_title_or_id(
+    db: Session,
+    project_id: str,
+    value: object,
+    *,
+    node_type: str | None = None,
+) -> Optional[OutlineNode]:
     text = str(value or "").strip()
     if not text:
         return None
@@ -130,6 +136,8 @@ def find_outline_by_title_or_id(db: Session, project_id: str, value: object) -> 
         .options(selectinload(OutlineNode.linked_characters).selectinload(OutlineNodeCharacter.character))
         .filter(OutlineNode.project_id == project_id)
     )
+    if node_type:
+        base_query = base_query.filter(OutlineNode.node_type == node_type)
     exact = (
         base_query
         .filter((OutlineNode.id == text) | (OutlineNode.title == text))

@@ -23,6 +23,10 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "string",
                 "description": "Writing target outline node for the governed baseline",
             },
+            "rewrite": {
+                "type": "boolean",
+                "description": "True only when replacing an existing chapter through its version flow",
+            },
             "chapter_id": {
                 "type": "string",
                 "description": "Cataloging/review target chapter for the governed baseline",

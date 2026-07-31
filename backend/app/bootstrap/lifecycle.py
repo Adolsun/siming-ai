@@ -38,6 +38,7 @@ def _run_legacy_startup_recovery() -> None:
         recover_content_sync_queue,
     )
     from ..services.operation_runtime import mark_interrupted_operations
+    from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
     recover_content_sync_queue()
@@ -50,6 +51,7 @@ def _run_legacy_startup_recovery() -> None:
     with SqlAlchemyUnitOfWork(SessionLocal) as uow:
         mark_interrupted_assistant_runs(uow.session)
         mark_interrupted_operations(uow.session)
+        mark_interrupted_novel_creation_runs(uow.session)
         uow.commit()
 
 

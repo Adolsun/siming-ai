@@ -155,12 +155,21 @@ class WorkspaceSystemToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search_result["data"], [])
 
     async def test_agent_can_list_and_restore_chapter_versions(self):
+        outline = OutlineNode(
+            project_id=self.project.id,
+            title="第1章",
+            node_type="chapter",
+        )
+        self.db.add(outline)
+        self.db.commit()
+        self.db.refresh(outline)
         create_result = await execute_workspace_action(
             self.db,
             self.project.id,
             {
                 "tool": "create_chapter",
                 "arguments": {
+                    "outline_node_id": outline.id,
                     "title": "第1章",
                     "content": "第一版正文",
                     "skip_style_repair": True,

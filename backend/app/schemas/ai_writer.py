@@ -1,5 +1,6 @@
 """Pydantic schemas for AI writing engine endpoints."""
-from typing import Literal, Optional
+from datetime import datetime
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -20,3 +21,58 @@ class WorkspaceAssistantRequest(BaseModel):
     outline_batch_count: int = Field(3, ge=1, le=12, description="Preferred number of consecutive outline chapters to plan")
     auto_apply: bool = Field(True, description="Apply tool actions proposed by the model")
     history: list[dict] = Field(default_factory=list)
+
+
+class WorkspaceAssistantRunResponse(BaseModel):
+    """Stable public contract for one durable workspace-assistant run."""
+
+    run_id: str
+    operation_id: Optional[str] = None
+    actual_model: Optional[str] = None
+    status: str
+
+    # Compatibility aliases retained for pre-3.1 clients.
+    id: str
+    model: Optional[str] = None
+
+    project_id: str
+    conversation_id: Optional[str] = None
+    assistant_message_id: Optional[str] = None
+    phase: Optional[str] = None
+    scope: Optional[str] = None
+    assistant_mode: Optional[str] = None
+    current_iteration: int = 0
+    error: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class WorkspaceAssistantRunStepResponse(BaseModel):
+    id: str
+    run_id: str
+    step_type: str
+    tool: Optional[str] = None
+    status: str
+    iteration: int = 0
+    detail: Optional[str] = None
+    error: Optional[str] = None
+    attempt_no: int = 1
+    retry_of_step_id: Optional[str] = None
+    resolved_step_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    request: Any = None
+    result: Any = None
+
+
+class WorkspaceAssistantRunListResponse(BaseModel):
+    items: list[WorkspaceAssistantRunResponse]
+    total: int
+
+
+class WorkspaceAssistantRunDetailResponse(BaseModel):
+    run: WorkspaceAssistantRunResponse
+    assistant_message: Optional[dict[str, Any]] = None
+    steps: list[WorkspaceAssistantRunStepResponse]

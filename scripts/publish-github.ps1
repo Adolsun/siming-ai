@@ -16,11 +16,21 @@ $AppName = "Siming"
 $ExePath = Join-Path $Root "release\$AppName.exe"
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
+$ApkPath = Join-Path $Root "release\$AppName.apk"
+$ApkShaPath = Join-Path $Root "release\$AppName-apk-sha256.txt"
+$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath, $ApkPath, $ApkShaPath)
 
 function Require-Command {
   param([string]$Name, [string]$Hint)
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw $Hint
+  }
+}
+
+function Assert-NativeSuccess {
+  param([string]$Action)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Action failed with exit code $LASTEXITCODE."
   }
 }
 
@@ -46,12 +56,14 @@ try {
   if (-not (Test-Path ".git")) {
     if ($DryRun) { throw "Dry run requires an existing git repository." }
     git init -b main
+    Assert-NativeSuccess "git init"
   }
 
   $remote = git remote get-url origin 2>$null
   if (-not $remote) {
     if ($DryRun) { throw "Dry run requires an origin remote." }
     git remote add origin "https://github.com/$Repo.git"
+    Assert-NativeSuccess "git remote add origin"
   }
 
   if (-not $DryRun) {
@@ -70,11 +82,13 @@ try {
     & (Join-Path $Root "scripts\build-exe.ps1")
   }
 
-  if (-not (Test-Path $ExePath)) {
+  $MissingReleaseAssets = @($ReleaseAssets | Where-Object { -not (Test-Path -LiteralPath $_) })
+  if ($MissingReleaseAssets.Count -gt 0) {
+    $MissingAssetList = ($MissingReleaseAssets | ForEach-Object { Split-Path -Leaf $_ }) -join ", "
     if ($DryRun) {
-      Write-Host "[dry-run] Release executable missing: $ExePath" -ForegroundColor Yellow
+      Write-Host "[dry-run] Required release assets missing: $MissingAssetList" -ForegroundColor Yellow
     } else {
-    throw "Release executable not found. Run build-exe.bat or publish without -SkipBuild."
+      throw "Required release assets are missing: $MissingAssetList. Build and verify both the Windows and Android distributions before publishing."
     }
   }
 
@@ -103,24 +117,33 @@ try {
       [System.IO.File]::WriteAllText($ManifestPath, $manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
       [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
       & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version
+      & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
     }
   }
 
   $status = git status --porcelain
   if ($status) {
     if (-not $CommitDirtyChanges) {
-      throw "Working tree has uncommitted changes. Commit intentionally first, or pass -CommitDirtyChanges with -CommitMessage."
+      throw "Working tree has uncommitted changes. Commit intentionally first, or explicitly stage reviewed files and pass -CommitDirtyChanges with -CommitMessage."
     }
     if (-not $CommitMessage) {
       throw "-CommitDirtyChanges requires an explicit -CommitMessage."
     }
+    $UnstagedChanges = @(git diff --name-only)
+    $UntrackedChanges = @(git ls-files --others --exclude-standard)
+    $StagedChanges = @(git diff --cached --name-only)
+    if ($UnstagedChanges.Count -gt 0 -or $UntrackedChanges.Count -gt 0) {
+      throw "Automatic staging is disabled for releases. Review the working tree, explicitly stage only approved files, and rerun with -CommitDirtyChanges."
+    }
+    if ($StagedChanges.Count -eq 0) {
+      throw "-CommitDirtyChanges requires explicitly staged, reviewed changes."
+    }
     if ($DryRun) {
-      Write-Host "[dry-run] Would commit dirty changes with message: $CommitMessage" -ForegroundColor Cyan
-      git status --short
+      Write-Host "[dry-run] Would commit explicitly staged changes with message: $CommitMessage" -ForegroundColor Cyan
+      git diff --cached --name-only
     } else {
-      git add -u
-      git add .github scripts backend frontend docs README.md
       git commit -m $CommitMessage
+      Assert-NativeSuccess "git commit"
     }
   }
 
@@ -128,13 +151,14 @@ try {
     Write-Host "[dry-run] Tag: $Tag" -ForegroundColor Cyan
     Write-Host "[dry-run] Repo: $Repo" -ForegroundColor Cyan
     Write-Host "[dry-run] Assets:" -ForegroundColor Cyan
-    foreach ($Asset in @($ExePath, $ShaPath, $ManifestPath)) {
+    foreach ($Asset in $ReleaseAssets) {
       Write-Host "  $Asset exists=$(Test-Path -LiteralPath $Asset)"
     }
     return
   }
 
   $CurrentBranch = (git branch --show-current).Trim()
+  Assert-NativeSuccess "git branch --show-current"
   if (-not $CurrentBranch) {
     throw "Release publishing requires a named branch, not detached HEAD."
   }
@@ -149,45 +173,88 @@ try {
     $ExistingTagCommit = ($ExistingTagCommit | Select-Object -First 1).Trim()
   }
   $HeadCommit = (git rev-parse HEAD).Trim()
+  Assert-NativeSuccess "git rev-parse HEAD"
   if ($ExistingTagCommit -and $ExistingTagCommit -ne $HeadCommit) {
     throw "Tag $Tag already points to $ExistingTagCommit, not HEAD $HeadCommit."
   }
   if (-not $ExistingTagCommit) {
     git tag -a $Tag -m "Siming $Tag"
+    Assert-NativeSuccess "git tag $Tag"
   }
   git push -u origin $CurrentBranch
+  Assert-NativeSuccess "git push branch $CurrentBranch"
   git push origin $Tag
+  Assert-NativeSuccess "git push tag $Tag"
 
   $PreviousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   gh release view $Tag -R $Repo *>$null
   $ReleaseExists = $LASTEXITCODE -eq 0
   $ErrorActionPreference = $PreviousErrorActionPreference
+  $ReleaseWasDraft = $false
   if (-not $ReleaseExists) {
+    $Version = $Tag.TrimStart("v")
+    $NotesPath = Join-Path $Root "docs\release-notes-$Version.md"
     $ReleaseArgs = @(
       "release", "create", $Tag,
       "-R", $Repo,
       "--title", $Tag,
-      "--notes", "Siming $Tag"
+      "--draft"
     )
+    if (Test-Path -LiteralPath $NotesPath) {
+      $ReleaseArgs += @("--notes-file", $NotesPath)
+    } else {
+      $ReleaseArgs += @("--notes", "Siming $Tag")
+    }
     if ($Tag.Contains("-")) {
       $ReleaseArgs += "--prerelease"
     }
     gh @ReleaseArgs
-  } elseif ($Tag.Contains("-")) {
-    gh release edit $Tag -R $Repo --prerelease
+    Assert-NativeSuccess "create draft release $Tag"
+    $ReleaseWasDraft = $true
+  } else {
+    $ReleaseState = gh release view $Tag -R $Repo --json isDraft | ConvertFrom-Json
+    Assert-NativeSuccess "read release state for $Tag"
+    $ReleaseWasDraft = [bool]$ReleaseState.isDraft
+    if ($Tag.Contains("-")) {
+      gh release edit $Tag -R $Repo --prerelease
+      Assert-NativeSuccess "mark release $Tag as prerelease"
+    }
   }
   $ExistingRelease = gh release view $Tag -R $Repo --json assets | ConvertFrom-Json
+  Assert-NativeSuccess "read release assets for $Tag"
   $ExistingAssetNames = @($ExistingRelease.assets | ForEach-Object { $_.name })
   foreach ($LegacyAssetName in @("Moshu.exe", "NovelWritingAgent.exe")) {
     if ($ExistingAssetNames -contains $LegacyAssetName) {
       gh release delete-asset $Tag $LegacyAssetName -R $Repo -y
+      Assert-NativeSuccess "delete legacy release asset $LegacyAssetName"
     }
   }
-  $assets = @($ExePath, $ShaPath, $ManifestPath)
-  gh release upload $Tag -R $Repo @assets --clobber
+  gh release upload $Tag -R $Repo @ReleaseAssets --clobber
+  Assert-NativeSuccess "upload release assets for $Tag"
+
+  $UploadedRelease = gh release view $Tag -R $Repo --json assets,isDraft | ConvertFrom-Json
+  Assert-NativeSuccess "verify uploaded release assets for $Tag"
+  $UploadedAssetNames = @($UploadedRelease.assets | ForEach-Object { $_.name })
+  $ExpectedAssetNames = @($ReleaseAssets | ForEach-Object { Split-Path -Leaf $_ })
+  $MissingUploadedAssets = @($ExpectedAssetNames | Where-Object { $_ -notin $UploadedAssetNames })
+  if ($MissingUploadedAssets.Count -gt 0) {
+    throw "Release remains unpublished because uploaded assets are incomplete: $($MissingUploadedAssets -join ', ')."
+  }
+
+  if ($ReleaseWasDraft) {
+    gh release edit $Tag -R $Repo --draft=false
+    Assert-NativeSuccess "publish verified release $Tag"
+  }
+
+  $PublishedRelease = gh release view $Tag -R $Repo --json isDraft,url | ConvertFrom-Json
+  Assert-NativeSuccess "verify published release $Tag"
+  if ($PublishedRelease.isDraft) {
+    throw "Release $Tag is still a draft after verified asset upload."
+  }
+  $PublishedUrl = $PublishedRelease.url
 } finally {
   Pop-Location
 }
 
-Write-Host "Published: https://github.com/$Repo/releases/tag/$Tag"
+Write-Host "Published: $PublishedUrl"

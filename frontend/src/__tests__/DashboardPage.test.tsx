@@ -126,9 +126,9 @@ function makeProject(overrides: Record<string, unknown> = {}) {
 // ---------------------------------------------------------------------------
 // Render helper with router
 // ---------------------------------------------------------------------------
-function renderDashboard() {
+function renderDashboard(path = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <DashboardPage />
     </MemoryRouter>
   )
@@ -150,6 +150,13 @@ describe('DashboardPage', () => {
       }
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
+  })
+
+  it('opens the existing import flow when routed from the creation chooser', async () => {
+    renderDashboard('/dashboard?create=import')
+
+    expect(await screen.findByRole('dialog', { name: '创建作品' })).toBeInTheDocument()
+    expect(screen.getByText('导入已有小说（可选）')).toBeInTheDocument()
   })
 
   // ------------------------------------------------------------------

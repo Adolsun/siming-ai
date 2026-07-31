@@ -3,13 +3,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..database.models import CatalogingFact, Chapter, ChapterCharacter, Character, ChapterWorldbuilding, OutlineNode
-
+from ..core.numbers import (
+    extract_chapter_number as extract_shared_chapter_number,
+)
+from ..database.models import (
+    CatalogingFact,
+    Chapter,
+    ChapterCharacter,
+    ChapterWorldbuilding,
+    Character,
+    OutlineNode,
+)
 
 CHARACTER_STATE_FIELDS: tuple[str, ...] = (
     "appearance",
@@ -98,9 +108,6 @@ PLOTPILOT_NARRATIVE_ALIASES: dict[str, tuple[str, ...]] = {
     "relationship_changes": ("relationship_changes",),
 }
 
-_CHAPTER_NUMBER_RE = re.compile(r"(?:第\s*)?(\d{1,5})\s*章")
-
-
 @dataclass(frozen=True)
 class CandidateCoverage:
     total: int
@@ -156,10 +163,13 @@ class CandidateCoverage:
 
 def extract_chapter_number(*texts: Any) -> int | None:
     for text in texts:
-        value = str(text or "")
-        match = _CHAPTER_NUMBER_RE.search(value)
-        if match:
-            return int(match.group(1))
+        chapter_number = extract_shared_chapter_number(
+            str(text or ""),
+            allow_bare=True,
+            allow_unmarked=True,
+        )
+        if chapter_number is not None:
+            return chapter_number
     return None
 
 
@@ -173,7 +183,7 @@ def normalize_node_type(value: Any) -> str:
 def title_has_chapter_number(title: Any, chapter_number: int | None) -> bool:
     if not chapter_number:
         return True
-    return bool(re.search(rf"(第\s*{chapter_number}\s*章|chapter\s*{chapter_number}|{chapter_number}\s*章)", str(title or ""), re.I))
+    return extract_chapter_number(title) == chapter_number
 
 
 def normalize_outline_payload(
@@ -463,11 +473,18 @@ def chapter_outline_node(db: Session, project_id: str, chapter: Chapter) -> Outl
             return parent
     chapter_number = extract_chapter_number(chapter.title)
     if chapter_number:
-        return db.query(OutlineNode).filter(
+        candidates = db.query(OutlineNode).filter(
             OutlineNode.project_id == project_id,
             OutlineNode.node_type == "chapter",
-            OutlineNode.title.contains(str(chapter_number)),
-        ).order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc()).first()
+        ).order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc()).all()
+        return next(
+            (
+                candidate
+                for candidate in candidates
+                if extract_chapter_number(candidate.title) == chapter_number
+            ),
+            None,
+        )
     return None
 
 

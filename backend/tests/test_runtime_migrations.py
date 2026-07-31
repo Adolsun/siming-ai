@@ -2,6 +2,7 @@
 
 import sqlite3
 import unittest
+import json
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,10 +14,15 @@ from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_
 from app.database.models import (  # noqa: F401 - importing models populates metadata
     AgentPlan,
     AgentPlanStep,
+    AssistantConversation,
+    AssistantMessage,
     AssistantRun,
+    AssistantRunStep,
     Base,
+    ChapterWriteClaim,
+    OperationRun,
 )
-from app.services.workspace.run_log import mark_interrupted_assistant_runs
+from app.services.workspace.run_log import create_assistant_run, mark_interrupted_assistant_runs
 
 
 class RuntimeMigrationTestCase(unittest.TestCase):
@@ -310,13 +316,108 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         Session = sessionmaker(bind=engine)
         db = Session()
         try:
-            db.add(AssistantRun(project_id="p1", status="running", phase="write"))
+            conversation = AssistantConversation(project_id="p1", title="恢复测试")
+            db.add(conversation)
+            db.flush()
+            message = AssistantMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="正在写作",
+                status="running",
+            )
+            db.add(message)
+            db.flush()
+            run = AssistantRun(
+                project_id="p1",
+                conversation_id=conversation.id,
+                assistant_message_id=message.id,
+                status="running",
+                phase="write",
+            )
+            db.add(run)
+            db.flush()
+            run_step = AssistantRunStep(
+                run_id=run.id,
+                project_id="p1",
+                step_type="write",
+                status="running",
+            )
+            plan = AgentPlan(
+                project_id="p1",
+                assistant_run_id=run.id,
+                name="fast_chapter",
+                status="running",
+                graph_json='{"name":"fast_chapter","steps":{}}',
+            )
+            db.add_all([run_step, plan])
+            db.flush()
+            plan_step = AgentPlanStep(
+                plan_id=plan.id,
+                project_id="p1",
+                step_key="write",
+                tool="chapter_writer",
+                status="running",
+            )
+            db.add(plan_step)
+            db.add(ChapterWriteClaim(
+                project_id="p1",
+                target_key="outline:outline-1",
+                idempotency_key="create_chapter:p1:outline-1",
+                status="running",
+            ))
             db.commit()
             changed = mark_interrupted_assistant_runs(db)
             self.assertEqual(changed, 1)
             run = db.query(AssistantRun).first()
             self.assertEqual(run.status, "interrupted")
             self.assertIn("服务重启", run.error)
+            self.assertEqual(db.get(AssistantRunStep, run_step.id).status, "interrupted")
+            self.assertEqual(db.get(AgentPlan, plan.id).status, "interrupted")
+            self.assertEqual(db.get(AgentPlanStep, plan_step.id).status, "interrupted")
+            recovered_message = db.get(AssistantMessage, message.id)
+            self.assertEqual(recovered_message.status, "error")
+            self.assertEqual(json.loads(recovered_message.payload_json)["run"]["status"], "interrupted")
+            claim = db.query(ChapterWriteClaim).first()
+            self.assertEqual(claim.status, "failed")
+            self.assertIn("安全重试", claim.error)
+        finally:
+            db.close()
+
+    def test_create_assistant_run_is_immediately_recoverable_from_message_payload(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        from sqlalchemy.orm import sessionmaker
+
+        Session = sessionmaker(bind=engine)
+        db = Session()
+        try:
+            conversation = AssistantConversation(project_id="p1", title="持久化任务")
+            db.add(conversation)
+            db.flush()
+            message = AssistantMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="正在分析需求...",
+                status="running",
+            )
+            db.add(message)
+            db.commit()
+
+            run = create_assistant_run(
+                db,
+                project_id="p1",
+                conversation_id=conversation.id,
+                user_message_id=None,
+                assistant_message_id=message.id,
+                scope="project",
+                assistant_mode="fast",
+                model="test-model",
+            )
+
+            payload = json.loads(db.get(AssistantMessage, message.id).payload_json)
+            self.assertEqual(payload["run"]["id"], run.id)
+            self.assertEqual(payload["run"]["operation_id"], run.operation_id)
+            self.assertFalse(db.get(OperationRun, run.operation_id).can_retry)
         finally:
             db.close()
 

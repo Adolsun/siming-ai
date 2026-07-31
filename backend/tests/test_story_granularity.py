@@ -11,8 +11,22 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database.models import Base, CatalogingFact, Chapter, ChapterSummary, Character, OutlineNode, Project  # noqa: E402
-from app.services.story_granularity import inspect_candidate_coverage_items, inspect_chapter_granularity, normalize_outline_batch  # noqa: E402
+from app.database.models import (  # noqa: E402
+    Base,
+    CatalogingFact,
+    Chapter,
+    ChapterSummary,
+    Character,
+    OutlineNode,
+    Project,
+)
+from app.services.story_granularity import (  # noqa: E402
+    chapter_outline_node,
+    inspect_candidate_coverage_items,
+    inspect_chapter_granularity,
+    normalize_outline_batch,
+    title_has_chapter_number,
+)
 
 
 def _run(coro):
@@ -35,6 +49,26 @@ class StoryGranularityContractTest(unittest.TestCase):
         self.assertEqual(nodes[1]["parent_title"], "第151章 抢网")
         self.assertTrue(nodes[1]["title"].startswith("第151章 抢网 / "))
         self.assertEqual(nodes[1]["actual_summary"], "进入中继站。")
+
+    def test_outline_batch_preserves_equivalent_chinese_chapter_number(self):
+        nodes = normalize_outline_batch([
+            {"title": "第一百五十一章 抢网", "node_type": "chapter"},
+            {
+                "title": "第一百五十一章 抢网 / 突入中继站",
+                "node_type": "section",
+                "parent_title": "第一百五十一章 抢网",
+            },
+        ], chapter_number=151)
+
+        self.assertEqual(nodes[0]["title"], "第一百五十一章 抢网")
+        self.assertEqual(nodes[1]["parent_title"], "第一百五十一章 抢网")
+        self.assertEqual(nodes[1]["title"], "第一百五十一章 抢网 / 突入中继站")
+
+    def test_title_number_check_uses_shared_chinese_parser(self):
+        for title in ("第二十五章 风暴", "第〇二五章 风暴", "第 二 十 五 章 风暴"):
+            with self.subTest(title=title):
+                self.assertTrue(title_has_chapter_number(title, 25))
+        self.assertFalse(title_has_chapter_number("第二十六章 风暴", 25))
 
     def test_candidate_coverage_warns_when_multiscene_has_no_sections(self):
         coverage = inspect_candidate_coverage_items([
@@ -99,6 +133,33 @@ class ArchiveChapterAfterWriteTest(unittest.TestCase):
     def tearDown(self):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
+
+    def test_chapter_outline_lookup_matches_legacy_chinese_number_titles(self):
+        db = self.Session()
+        db.add_all([
+            Project(id="legacy-cn", title="Legacy Chinese Novel"),
+            OutlineNode(
+                id="legacy-cn-outline",
+                project_id="legacy-cn",
+                node_type="chapter",
+                title="第一百零三章 被删去的火灾",
+                sort_order=103,
+            ),
+            Chapter(
+                id="legacy-cn-chapter",
+                project_id="legacy-cn",
+                title="第一〇三章 火灾余烬",
+                content="旧正文。",
+            ),
+        ])
+        db.commit()
+
+        chapter = db.query(Chapter).filter(Chapter.id == "legacy-cn-chapter").one()
+        outline = chapter_outline_node(db, "legacy-cn", chapter)
+
+        self.assertIsNotNone(outline)
+        self.assertEqual(outline.id, "legacy-cn-outline")
+        db.close()
 
     def test_archive_auto_applies_summary_outline_and_character_state(self):
         from app.services.workspace.tools.story_granularity import archive_chapter_after_write

@@ -40,6 +40,11 @@ import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
 import ModelReadinessBanner from '../components/ModelReadinessBanner'
+import {
+  type SharedModelConfig,
+  useGlobalModelActions,
+  useSharedModelConfigs,
+} from '../shared/query/modelConfigs'
 import GatewaySettingsPanel from '../features/gateway/GatewaySettingsPanel'
 import type { LauncherGatewaySettings } from '../features/gateway/types'
 import {
@@ -64,43 +69,12 @@ import {
   resolveProviderForSubmit,
   type ModelDiscoveryState,
   type ModelOption,
-  type ReadinessStatus,
 } from '../features/localModels/settingsModelOptions'
 import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
 
-interface ModelConfig {
-  id: string
-  provider: string
-  default_model: string
-  is_global_default: boolean
-  readiness_status: ReadinessStatus
-  is_usable: boolean
-  readiness_message?: string
-  readiness_source?: string | null
-  failure_class?: string | null
-  last_tested_at?: string | null
-  base_url_override?: string
-  api_protocol?: 'auto' | 'chat_completions' | 'responses'
-  provider_type?: string
-  cli_command?: string
-  cli_args?: string
-  max_output_tokens?: number | null
-  effective_max_output_tokens?: number
-  deconstruct_input_char_limit?: number | null
-  effective_deconstruct_input_char_limit?: number
-  deconstruct_item_char_limit?: number | null
-  effective_deconstruct_item_char_limit?: number
-  api_key_masked?: string
-  created_at?: string
-  updated_at?: string
-}
-
-interface GlobalModel {
-  provider: string | null
-  model: string | null
-}
+type ModelConfig = SharedModelConfig
 
 interface ContentRootSettings {
   current_path: string
@@ -169,9 +143,15 @@ interface SettingsPageProps {
 
 function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const queryClient = useQueryClient()
-  const [configs, setConfigs] = useState<ModelConfig[]>([])
-  const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
-  const [loading, setLoading] = useState(false)
+  const modelConfigsQuery = useSharedModelConfigs()
+  const { setGlobalModel: persistGlobalModel } = useGlobalModelActions()
+  const configs = modelConfigsQuery.data?.items || []
+  const loading = modelConfigsQuery.isLoading || modelConfigsQuery.isFetching
+  const globalConfig = configs.find((config) => config.is_global_default && config.is_usable)
+  const globalModel = {
+    provider: globalConfig?.provider || null,
+    model: globalConfig?.default_model || null,
+  }
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
@@ -197,25 +177,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'gateway'>('ai')
 
   const fetchConfigs = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await apiClient.get<{ code: number; data: { items: ModelConfig[] } }>('/config/models')
-      setConfigs(res.data.data.items)
-    } catch (err: any) {
-      message.error(err.message || '获取模型配置失败')
-    } finally {
-      setLoading(false)
+    const result = await modelConfigsQuery.refetch()
+    if (result.error) {
+      message.error(result.error instanceof Error ? result.error.message : '获取模型配置失败')
     }
-  }, [])
-
-  const fetchGlobalModel = useCallback(async () => {
-    try {
-      const res = await apiClient.get<{ code: number; data: GlobalModel }>('/config/global-model')
-      setGlobalModel(res.data.data)
-    } catch (err: any) {
-      // ignore if not set
-    }
-  }, [])
+  }, [modelConfigsQuery])
 
   const fetchContentRoot = useCallback(async () => {
     setContentRootLoading(true)
@@ -246,11 +212,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   }, [embedded])
 
   useEffect(() => {
-    fetchConfigs()
-    fetchGlobalModel()
     fetchContentRoot()
     fetchLauncherSettings()
-  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings])
+  }, [fetchContentRoot, fetchLauncherSettings])
 
   const saveLaunchMode = async () => {
     setLauncherLoading(true)
@@ -507,7 +471,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           await apiClient.delete(`/config/models/${provider}`)
           message.success('配置已删除')
           fetchConfigs()
-          fetchGlobalModel()
         } catch (err: any) {
           message.error(err.message || '删除配置失败')
         }
@@ -654,7 +617,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         `/config/models/${provider}/verify`,
       )
       message.success(response.data.message || '模型已经通过真实对话测试')
-      await Promise.all([fetchConfigs(), fetchGlobalModel()])
+      await fetchConfigs()
     } catch (err: any) {
       message.error(err.message || '真实对话测试失败')
       await fetchConfigs()
@@ -667,13 +630,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     const config = configs.find((item) => item.provider === provider)
     if (!config) return
     try {
-      await apiClient.put('/config/global-model', {
-        provider,
-        model: normalizeDefaultModel(provider, config.default_model),
-      })
+      const model = normalizeDefaultModel(provider, config.default_model)
+      await persistGlobalModel(provider, model)
       message.success('全局默认模型已设置')
-      fetchGlobalModel()
-      fetchConfigs()
     } catch (err: any) {
       message.error(err.message || '设置全局默认模型失败')
     }
@@ -716,8 +675,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       title: '全局默认',
       dataIndex: 'is_global_default',
       key: 'is_global_default',
-      render: (v: boolean) =>
-        v ? <Tag icon={<CheckCircleOutlined />} color="success">是</Tag> : <span>—</span>,
+      render: (_v: boolean, record: ModelConfig) =>
+        globalModel.provider === record.provider
+          ? <Tag icon={<CheckCircleOutlined />} color="success">是</Tag>
+          : <span>—</span>,
     },
     {
       title: '操作',
@@ -734,7 +695,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               测试并启用
             </Button>
           )}
-          {record.is_usable && !record.is_global_default && (
+          {record.is_usable && globalModel.provider !== record.provider && (
             <Button onClick={() => void handleSetGlobal(record.provider)}>设为默认</Button>
           )}
           <Button

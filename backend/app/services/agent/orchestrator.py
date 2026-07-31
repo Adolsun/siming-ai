@@ -1,26 +1,45 @@
 """Plan orchestrator — executes a PlanGraph against the database with recovery support."""
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any, AsyncGenerator
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 
-from ...database.models import AgentPlan, AgentPlanStep
+from ...database.models import (
+    AgentPlan,
+    AgentPlanStep,
+    AgentRun,
+    AssistantRun,
+    ChapterWriteClaim,
+    OperationRun,
+)
+from ..operation_runtime import current_operation_id, invoke_operation_action
 from ..workspace.executor import execute_workspace_action
-from ..workspace.idempotency import check_idempotency, generate_idempotency_key
+from ..workspace.idempotency import (
+    acquire_chapter_write_claim,
+    chapter_write_target_key,
+    check_idempotency,
+    fail_chapter_write_claim,
+    generate_idempotency_key,
+    validate_chapter_write_claim,
+)
 from ..workspace.registry import registry
 from .plan_graph import PlanGraph, StepDef
 from .step_args import resolve_step_args
 
 _EXECUTABLE_STATUSES = {"pending", "blocked", "error"}
-_SKIP_STATUSES = {"running", "ok", "skipped"}
+_SKIP_STATUSES = {"ok", "skipped"}
 
 # Cataloging tools — handled by the cataloging service, not the workspace registry.
 _CATALOGING_TOOLS = {"extract_facts", "resolve_targets", "apply_candidates"}
+_FORMAL_CHAPTER_WRITE_TOOLS = {"create_chapter", "update_chapter"}
+_LOCAL_CLI_WRITING_TOOLS = {"start_local_cli_agent_run", "wait_local_cli_agent_run"}
 
 
 def _safe_json(data: Any, *, max_chars: int = 80_000) -> str:
@@ -117,10 +136,6 @@ class PlanOrchestrator:
         self.db = db
         self.project_id = project_id
 
-    # ------------------------------------------------------------------
-    # Create plan (does NOT execute)
-    # ------------------------------------------------------------------
-
     def create_plan(
         self,
         graph: PlanGraph,
@@ -180,97 +195,152 @@ class PlanOrchestrator:
         self.db.refresh(plan)
         return plan
 
-    # ------------------------------------------------------------------
-    # Execute plan
-    # ------------------------------------------------------------------
-
     async def execute_plan(self, plan_id: str) -> AsyncGenerator[dict, None]:
         plan = self._get_plan(plan_id)
+        if not self._claim_plan_execution(plan):
+            yield {
+                "type": "plan_already_running",
+                "plan_id": plan.id,
+                "status": "running",
+                "detail": "该计划已在运行，未重复启动写章任务。",
+            }
+            return
         graph = self._reconstruct_graph(plan)
         order = graph.topological_order()
 
-        plan.status = "running"
-        plan.updated_at = datetime.utcnow()
+        for step in plan.steps:
+            if step.status in {"running", "interrupted", "cancelled"}:
+                step.status = "pending"
+                step.error = None
+                step.completed_at = None
+
         commit_session(self.db)
+        try:
+            yield {"type": "plan_start", "plan_id": plan.id, "name": plan.name, "status": "running"}
 
-        yield {"type": "plan_start", "plan_id": plan.id, "name": plan.name, "status": "running"}
+            completed_keys: set[str] = set()
+            collected_outputs: dict[str, dict] = self._collect_existing_outputs(plan)
 
-        completed_keys: set[str] = set()
-        collected_outputs: dict[str, dict] = self._collect_existing_outputs(plan)
+            for step_key in order:
+                step_row = self._get_step(plan.id, step_key)
+                if not step_row:
+                    continue
 
-        for step_key in order:
-            step_row = self._get_step(plan.id, step_key)
-            if not step_row:
-                continue
-
-            if step_row.status in _SKIP_STATUSES:
-                completed_keys.add(step_key)
-                yield {"type": "step_skip", "step_key": step_key, "tool": step_row.tool, "status": step_row.status}
-                continue
-
-            # Check if dependencies are met
-            deps = json.loads(step_row.depends_on_json) if step_row.depends_on_json else []
-            deps_met = all(d in completed_keys for d in deps)
-            if not deps_met:
-                if step_row.status != "blocked":
-                    step_row.status = "blocked"
-                    step_row.detail = f"等待依赖步骤: {', '.join(d for d in deps if d not in completed_keys)}"
-                    step_row.updated_at = datetime.utcnow()
-                commit_session(self.db)
-                yield {"type": "step_blocked", "step_key": step_key, "tool": step_row.tool, "detail": step_row.detail}
-                continue
-
-            # Execute the step
-            async for event in self._execute_step(plan, step_row, graph.steps[step_key], collected_outputs):
-                yield event
-                if event.get("type") == "step_result" and event.get("status") == "ok":
+                if step_row.status in _SKIP_STATUSES:
                     completed_keys.add(step_key)
-                    # Re-queue blocked steps whose deps are now met
-                    self._unblock_ready_steps(plan, completed_keys)
+                    yield {"type": "step_skip", "step_key": step_key, "tool": step_row.tool, "status": step_row.status}
+                    continue
 
-        # Determine final plan status
-        all_steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
-        has_error = any(s.status == "error" for s in all_steps)
-        has_blocked = any(s.status == "blocked" for s in all_steps)
+                deps = json.loads(step_row.depends_on_json) if step_row.depends_on_json else []
+                deps_met = all(d in completed_keys for d in deps)
+                if not deps_met:
+                    if step_row.status != "blocked":
+                        step_row.status = "blocked"
+                        step_row.detail = f"等待依赖步骤: {', '.join(d for d in deps if d not in completed_keys)}"
+                        step_row.updated_at = datetime.utcnow()
+                    commit_session(self.db)
+                    yield {"type": "step_blocked", "step_key": step_key, "tool": step_row.tool, "detail": step_row.detail}
+                    continue
 
-        if has_error:
-            plan.status = "error"
-            plan.error = "部分步骤执行失败"
-        elif has_blocked:
-            plan.status = "error"
-            plan.error = "部分步骤被阻塞"
-        else:
-            plan.status = "completed"
+                async for event in self._execute_step(
+                    plan,
+                    step_row,
+                    graph.steps[step_key],
+                    collected_outputs,
+                ):
+                    yield event
+                    if event.get("type") == "step_result" and event.get("status") == "ok":
+                        completed_keys.add(step_key)
+                        self._unblock_ready_steps(plan, completed_keys)
 
-        now = datetime.utcnow()
-        plan.updated_at = now
-        plan.completed_at = now
-        commit_session(self.db)
+            all_steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
+            has_error = any(s.status == "error" for s in all_steps)
+            has_blocked = any(s.status == "blocked" for s in all_steps)
+            has_cancelled = any(s.status == "cancelled" for s in all_steps)
 
-        yield {"type": "plan_end", "plan_id": plan.id, "status": plan.status, "error": plan.error}
+            if has_cancelled:
+                plan.status = "cancelled"
+                plan.error = "写章任务已取消"
+            elif has_error:
+                plan.status = "error"
+                plan.error = "部分步骤执行失败"
+            elif has_blocked:
+                plan.status = "error"
+                plan.error = "部分步骤被阻塞"
+            else:
+                plan.status = "completed"
 
-    # ------------------------------------------------------------------
-    # Resume plan (retry all error/blocked steps)
-    # ------------------------------------------------------------------
+            if plan.status == "error":
+                self._release_plan_chapter_write(plan, error=plan.error or "章节写作计划未完成")
+
+            now = datetime.utcnow()
+            plan.updated_at = now
+            plan.completed_at = now
+            commit_session(self.db)
+
+            yield {"type": "plan_end", "plan_id": plan.id, "status": plan.status, "error": plan.error}
+        except asyncio.CancelledError:
+            await self._cancel_local_cli_children(plan)
+            self.mark_plan_cancelled(plan.id)
+            raise
+        finally:
+            if plan.status not in {"completed", "error", "cancelled"}:
+                await self._cancel_local_cli_children(plan)
+            self._finalize_unfinished_plan(plan, detail="计划执行流提前关闭，已释放章节写作占用")
 
     async def resume_plan(self, plan_id: str) -> AsyncGenerator[dict, None]:
+        plan: AgentPlan | None = None
+        owns_execution = False
+        try:
+            plan = self._get_plan(plan_id)
+            owns_execution = self._claim_plan_execution(plan)
+            if not owns_execution:
+                yield {
+                    "type": "plan_already_running",
+                    "plan_id": plan.id,
+                    "status": "running",
+                    "detail": "该计划已在运行，未重复恢复写章任务。",
+                }
+                return
+            async for event in self._resume_plan_impl(plan_id):
+                yield event
+        except asyncio.CancelledError:
+            if plan is not None and owns_execution:
+                await self._cancel_local_cli_children(plan)
+                self.mark_plan_cancelled(plan_id)
+            raise
+        finally:
+            if plan is not None and owns_execution:
+                if plan.status not in {"completed", "error", "cancelled"}:
+                    await self._cancel_local_cli_children(plan)
+                self._finalize_unfinished_plan(
+                    plan,
+                    detail="计划恢复流提前关闭，已释放章节写作占用",
+                )
+
+    async def _resume_plan_impl(self, plan_id: str) -> AsyncGenerator[dict, None]:
         plan = self._get_plan(plan_id)
         graph = self._reconstruct_graph(plan)
         order = graph.topological_order()
 
-        plan.status = "running"
         plan.error = None
         plan.updated_at = datetime.utcnow()
         commit_session(self.db)
 
-        # Reset blocked steps to pending
-        blocked_steps = (
+        # A prior process or explicit cancellation can leave a durable step
+        # non-terminal. Resuming owns those steps again from their checkpoint.
+        recoverable_steps = (
             self.db.query(AgentPlanStep)
-            .filter(AgentPlanStep.plan_id == plan.id, AgentPlanStep.status == "blocked")
+            .filter(
+                AgentPlanStep.plan_id == plan.id,
+                AgentPlanStep.status.in_(["blocked", "interrupted", "cancelled", "running"]),
+            )
             .all()
         )
-        for s in blocked_steps:
+        for s in recoverable_steps:
             s.status = "pending"
+            s.error = None
+            s.completed_at = None
             s.updated_at = datetime.utcnow()
         commit_session(self.db)
 
@@ -308,8 +378,12 @@ class PlanOrchestrator:
         all_steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
         has_error = any(s.status == "error" for s in all_steps)
         has_blocked = any(s.status == "blocked" for s in all_steps)
+        has_cancelled = any(s.status == "cancelled" for s in all_steps)
 
-        if has_error:
+        if has_cancelled:
+            plan.status = "cancelled"
+            plan.error = "写章任务已取消"
+        elif has_error:
             plan.status = "error"
             plan.error = "部分步骤执行失败"
         elif has_blocked:
@@ -317,6 +391,9 @@ class PlanOrchestrator:
             plan.error = "部分步骤被阻塞"
         else:
             plan.status = "completed"
+
+        if plan.status == "error":
+            self._release_plan_chapter_write(plan, error=plan.error or "章节写作计划未完成")
 
         now = datetime.utcnow()
         plan.updated_at = now
@@ -330,6 +407,40 @@ class PlanOrchestrator:
     # ------------------------------------------------------------------
 
     async def resume_from_step(self, plan_id: str, step_key: str) -> AsyncGenerator[dict, None]:
+        plan: AgentPlan | None = None
+        owns_execution = False
+        try:
+            plan = self._get_plan(plan_id)
+            owns_execution = self._claim_plan_execution(plan)
+            if not owns_execution:
+                yield {
+                    "type": "plan_already_running",
+                    "plan_id": plan.id,
+                    "status": "running",
+                    "detail": "该计划已在运行，未重复恢复写章任务。",
+                }
+                return
+            async for event in self._resume_from_step_impl(plan_id, step_key):
+                yield event
+        except asyncio.CancelledError:
+            if plan is not None and owns_execution:
+                await self._cancel_local_cli_children(plan)
+                self.mark_plan_cancelled(plan_id)
+            raise
+        finally:
+            if plan is not None and owns_execution:
+                if plan.status not in {"completed", "error", "cancelled"}:
+                    await self._cancel_local_cli_children(plan)
+                self._finalize_unfinished_plan(
+                    plan,
+                    detail="计划分步恢复流提前关闭，已释放章节写作占用",
+                )
+
+    async def _resume_from_step_impl(
+        self,
+        plan_id: str,
+        step_key: str,
+    ) -> AsyncGenerator[dict, None]:
         plan = self._get_plan(plan_id)
         graph = self._reconstruct_graph(plan)
         order = graph.topological_order()
@@ -357,9 +468,10 @@ class PlanOrchestrator:
             .all()
         )
         for s in scope_steps:
-            if s.status in {"error", "blocked", "ok"}:
+            if s.status in {"error", "blocked", "ok", "interrupted", "cancelled", "running"}:
                 s.status = "pending"
                 s.error = None
+                s.completed_at = None
                 s.updated_at = datetime.utcnow()
         commit_session(self.db)
 
@@ -404,8 +516,12 @@ class PlanOrchestrator:
         all_steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
         has_error = any(s.status == "error" for s in all_steps)
         has_blocked = any(s.status == "blocked" for s in all_steps)
+        has_cancelled = any(s.status == "cancelled" for s in all_steps)
 
-        if has_error:
+        if has_cancelled:
+            plan.status = "cancelled"
+            plan.error = "写章任务已取消"
+        elif has_error:
             plan.status = "error"
             plan.error = "部分步骤执行失败"
         elif has_blocked:
@@ -413,6 +529,9 @@ class PlanOrchestrator:
             plan.error = "部分步骤被阻塞"
         else:
             plan.status = "completed"
+
+        if plan.status == "error":
+            self._release_plan_chapter_write(plan, error=plan.error or "章节写作计划未完成")
 
         now = datetime.utcnow()
         plan.updated_at = now
@@ -432,8 +551,8 @@ class PlanOrchestrator:
         step_row = self._get_step(plan.id, step_key)
         if not step_row:
             raise ValueError(f"步骤 {step_key} 不存在")
-        if step_row.status not in {"error", "blocked"}:
-            raise ValueError(f"只能重试失败或阻塞的步骤，当前状态: {step_row.status}")
+        if step_row.status not in {"error", "blocked", "interrupted"}:
+            raise ValueError(f"只能重试失败、阻塞或已中断的步骤，当前状态: {step_row.status}")
 
         step_def = graph.steps.get(step_key)
         if not step_def:
@@ -450,8 +569,19 @@ class PlanOrchestrator:
 
         # Execute
         events = []
-        async for event in self._execute_step(plan, step_row, step_def, collected_outputs):
-            events.append(event)
+        try:
+            async for event in self._execute_step(plan, step_row, step_def, collected_outputs):
+                events.append(event)
+        except asyncio.CancelledError:
+            await self._cancel_local_cli_children(plan)
+            self.mark_plan_cancelled(plan.id)
+            raise
+        finally:
+            if step_row.status not in {"ok", "error", "blocked"}:
+                self._release_plan_chapter_write(
+                    plan,
+                    error="步骤重试提前关闭，已释放章节写作占用",
+                )
 
         return _serialize_step(step_row)
 
@@ -462,6 +592,50 @@ class PlanOrchestrator:
     def get_plan(self, plan_id: str) -> AgentPlan:
         """Return one project-owned plan for HTTP and other application callers."""
         return self._get_plan(plan_id)
+
+    def _claim_plan_execution(self, plan: AgentPlan) -> bool:
+        """Atomically ensure only one execute/resume invocation owns a plan."""
+        now = datetime.utcnow()
+        claimed = self.db.execute(
+            update(AgentPlan)
+            .where(
+                AgentPlan.id == plan.id,
+                AgentPlan.project_id == self.project_id,
+                AgentPlan.status != "running",
+            )
+            .values(
+                status="running",
+                error=None,
+                completed_at=None,
+                updated_at=now,
+            ),
+            execution_options={"synchronize_session": False},
+        )
+        commit_session(self.db)
+        self.db.refresh(plan)
+        return claimed.rowcount == 1
+
+    def mark_plan_cancelled(self, plan_id: str, detail: str = "用户取消了任务") -> None:
+        """Project an interrupted coroutine into durable plan and step state."""
+        plan = self._get_plan(plan_id)
+        now = datetime.utcnow()
+        plan.status = "cancelled"
+        plan.error = detail
+        plan.updated_at = now
+        plan.completed_at = now
+        for step in plan.steps:
+            if step.status == "running":
+                step.status = "cancelled"
+                step.error = detail
+                step.detail = step.detail or detail
+                step.updated_at = now
+                step.completed_at = now
+        self._release_plan_chapter_write(
+            plan,
+            status="cancelled",
+            error=detail,
+        )
+        commit_session(self.db)
 
     def _get_plan(self, plan_id: str) -> AgentPlan:
         plan = self.db.query(AgentPlan).filter(
@@ -541,51 +715,49 @@ class PlanOrchestrator:
 
         # Handle cataloging tools via the cataloging service
         if step_row.tool in _CATALOGING_TOOLS:
-            step_row.status = "running"
-            step_row.started_at = now
-            step_row.updated_at = now
-            commit_session(self.db)
-            yield {
-                "type": "step_start",
-                "step_key": step_row.step_key,
-                "tool": step_row.tool,
-                "label": step_row.detail or step_row.tool,
-            }
-            try:
-                from ..cataloging.orchestrator import create_cataloging_job, stream_cataloging_job
-                chapter_ids = step_row.args_json and json.loads(step_row.args_json).get("chapter_ids")
-                job = create_cataloging_job(
-                    self.db, self.project_id,
-                    execution_mode="auto",
-                    model=plan.model,
-                    chapter_ids=chapter_ids if isinstance(chapter_ids, list) else None,
-                )
-                # Stream the cataloging job to completion
-                async for _event_str in stream_cataloging_job(self.project_id, job.id):
-                    pass  # cataloging events are consumed internally
-                step_row.status = "ok"
-                step_row.detail = f"建档完成，共 {job.total_chapters} 章"
-                step_row.result_json = _safe_json({
-                    "tool": step_row.tool, "status": "ok", "detail": step_row.detail,
-                    "data": {"job_id": job.id, "total_chapters": job.total_chapters},
-                })
-            except Exception as exc:
-                step_row.status = "error"
-                step_row.error = str(exc)[:2000]
-                step_row.detail = f"建档失败: {exc}"
-            step_row.completed_at = datetime.utcnow()
-            step_row.updated_at = datetime.utcnow()
-            commit_session(self.db)
-            yield {
-                "type": "step_result",
-                "step_key": step_row.step_key,
-                "tool": step_row.tool,
-                "status": step_row.status,
-                "detail": step_row.detail or "",
-                "error": step_row.error,
-                "data": json.loads(step_row.result_json).get("data", {}) if step_row.result_json else {},
-            }
+            async for event in self._execute_cataloging_step(plan, step_row, now):
+                yield event
             return
+
+        # Resolve before changing durable state so a chapter target can be
+        # fenced before the costly writer call begins.
+        raw_args = json.loads(step_row.args_json) if step_row.args_json else {}
+        resolved_args = resolve_step_args(raw_args, collected_outputs)
+        resolved_args = _inject_plan_runtime_args(step_row.tool, resolved_args, plan)
+
+        if self._step_requires_chapter_reservation(plan, step_row, resolved_args):
+            reservation_event = self._project_chapter_reservation(
+                plan,
+                step_row,
+                resolved_args,
+                collected_outputs,
+                now,
+            )
+            if reservation_event is not None:
+                yield reservation_event
+                return
+
+        if self._step_requires_resumed_chapter_claim(plan, step_row):
+            writer_step = next(
+                (candidate for candidate in plan.steps if candidate.tool == "chapter_writer"),
+                None,
+            )
+            writer_args = (
+                json.loads(writer_step.args_json)
+                if writer_step and writer_step.args_json
+                else {}
+            )
+            writer_args = resolve_step_args(writer_args, collected_outputs)
+            reservation_event = self._project_chapter_reservation(
+                plan,
+                step_row,
+                writer_args,
+                collected_outputs,
+                now,
+            )
+            if reservation_event is not None:
+                yield reservation_event
+                return
 
         # Mark as running
         step_row.status = "running"
@@ -599,11 +771,6 @@ class PlanOrchestrator:
             "tool": step_row.tool,
             "attempt_no": step_row.attempt_no,
         }
-
-        # Resolve args
-        raw_args = json.loads(step_row.args_json) if step_row.args_json else {}
-        resolved_args = resolve_step_args(raw_args, collected_outputs)
-        resolved_args = _inject_plan_runtime_args(step_row.tool, resolved_args, plan)
 
         # Check idempotency
         idem_key = step_row.idempotency_key
@@ -639,10 +806,40 @@ class PlanOrchestrator:
         action = {"tool": step_row.tool, "arguments": resolved_args}
         try:
             result = await execute_workspace_action(self.db, self.project_id, action)
+        except asyncio.CancelledError:
+            step_row.status = "cancelled"
+            step_row.error = "用户取消了任务"
+            step_row.detail = step_row.detail or step_row.error
+            step_row.completed_at = datetime.utcnow()
+            step_row.updated_at = datetime.utcnow()
+            commit_session(self.db)
+            raise
         except Exception as exc:
             result = {"tool": step_row.tool, "status": "error", "detail": str(exc)}
 
         result_status = str(result.get("status") or "ok")
+        if result_status == "ok" and step_row.tool in _FORMAL_CHAPTER_WRITE_TOOLS:
+            cancelled_detail = self._formal_write_fence_error(plan)
+            if cancelled_detail:
+                self.db.rollback()
+                self.db.expire_all()
+                result_status = "cancelled"
+                result = {
+                    "tool": step_row.tool,
+                    "status": "cancelled",
+                    "detail": cancelled_detail,
+                    "data": {},
+                }
+        if result_status in {"needs_confirmation", "blocked_rebuild", "stale", "interrupted"}:
+            result_status = "blocked"
+            result["status"] = "blocked"
+        if result_status == "skipped" and (
+            step_row.tool in _FORMAL_CHAPTER_WRITE_TOOLS
+            or (plan.name == "local_cli_writing" and step_row.tool in _LOCAL_CLI_WRITING_TOOLS)
+        ):
+            result_status = "error"
+            result["status"] = "error"
+            result["detail"] = str(result.get("detail") or "正式写章步骤未执行，本轮未创建或修改章节")
         result_detail = str(result.get("detail") or "")
 
         step_row.result_json = _safe_json(result)
@@ -651,9 +848,9 @@ class PlanOrchestrator:
         step_row.completed_at = datetime.utcnow()
         step_row.updated_at = datetime.utcnow()
 
-        if result_status == "error":
-            step_row.status = "error"
-            step_row.error = result_detail
+        if result_status in {"error", "blocked", "cancelled"}:
+            step_row.status = result_status
+            step_row.error = result_detail if result_status in {"error", "cancelled"} else None
 
             # Block downstream steps
             downstream = self._get_step_keys_after(plan.id, step_row.step_key)
@@ -664,12 +861,17 @@ class PlanOrchestrator:
                     ds_step.detail = f"上游步骤 {step_row.step_key} 失败"
                     ds_step.updated_at = datetime.utcnow()
             commit_session(self.db)
+            self._release_plan_chapter_write(
+                plan,
+                status="cancelled" if result_status == "cancelled" else "failed",
+                error=result_detail or "章节写作计划未完成",
+            )
 
             yield {
                 "type": "step_result",
                 "step_key": step_row.step_key,
                 "tool": step_row.tool,
-                "status": "error",
+                "status": result_status,
                 "detail": result_detail,
                 "data": result.get("data", {}),
             }
@@ -689,6 +891,433 @@ class PlanOrchestrator:
                 "data": result.get("data", {}),
             }
 
+    async def _execute_cataloging_step(
+        self,
+        plan: AgentPlan,
+        step_row: AgentPlanStep,
+        started_at: datetime,
+    ) -> AsyncGenerator[dict, None]:
+        """Execute a cataloging step while keeping the generic executor compact."""
+        step_row.status = "running"
+        step_row.started_at = started_at
+        step_row.updated_at = started_at
+        commit_session(self.db)
+        yield {
+            "type": "step_start",
+            "step_key": step_row.step_key,
+            "tool": step_row.tool,
+            "label": step_row.detail or step_row.tool,
+        }
+        try:
+            from ..cataloging.orchestrator import create_cataloging_job, stream_cataloging_job
+
+            chapter_ids = step_row.args_json and json.loads(step_row.args_json).get("chapter_ids")
+            job = create_cataloging_job(
+                self.db,
+                self.project_id,
+                execution_mode="auto",
+                model=plan.model,
+                chapter_ids=chapter_ids if isinstance(chapter_ids, list) else None,
+            )
+            async for _event_str in stream_cataloging_job(self.project_id, job.id):
+                pass
+            step_row.status = "ok"
+            step_row.detail = f"建档完成，共 {job.total_chapters} 章"
+            step_row.result_json = _safe_json({
+                "tool": step_row.tool,
+                "status": "ok",
+                "detail": step_row.detail,
+                "data": {"job_id": job.id, "total_chapters": job.total_chapters},
+            })
+        except Exception as exc:
+            step_row.status = "error"
+            step_row.error = str(exc)[:2000]
+            step_row.detail = f"建档失败: {exc}"
+        step_row.completed_at = datetime.utcnow()
+        step_row.updated_at = datetime.utcnow()
+        commit_session(self.db)
+        yield {
+            "type": "step_result",
+            "step_key": step_row.step_key,
+            "tool": step_row.tool,
+            "status": step_row.status,
+            "detail": step_row.detail or "",
+            "error": step_row.error,
+            "data": json.loads(step_row.result_json).get("data", {}) if step_row.result_json else {},
+        }
+
+    def _chapter_save_step(self, plan: AgentPlan) -> AgentPlanStep | None:
+        return next(
+            (
+                step
+                for step in plan.steps
+                if step.step_key == "create_chapter"
+                and step.tool in {"create_chapter", "update_chapter"}
+            ),
+            None,
+        )
+
+    def _local_cli_start_step(self, plan: AgentPlan) -> AgentPlanStep | None:
+        if plan.name != "local_cli_writing":
+            return None
+        return next(
+            (step for step in plan.steps if step.tool == "start_local_cli_agent_run"),
+            None,
+        )
+
+    def _chapter_claim_step(self, plan: AgentPlan) -> AgentPlanStep | None:
+        """Return the durable step that carries this plan's chapter claim."""
+        return self._chapter_save_step(plan) or self._local_cli_start_step(plan)
+
+    def _step_requires_chapter_reservation(
+        self,
+        plan: AgentPlan,
+        step_row: AgentPlanStep,
+        resolved_args: dict[str, Any],
+    ) -> bool:
+        if step_row.tool == "chapter_writer":
+            return self._chapter_save_step(plan) is not None
+        return bool(
+            plan.name == "local_cli_writing"
+            and step_row.tool == "start_local_cli_agent_run"
+            and str(resolved_args.get("task_type") or "").strip().lower() == "writing"
+        )
+
+    def _step_requires_resumed_chapter_claim(
+        self,
+        plan: AgentPlan,
+        step_row: AgentPlanStep,
+    ) -> bool:
+        """Re-fence a saved writer draft before resuming evaluation/persistence."""
+        if step_row.tool not in {"evaluate_chapter", "create_chapter", "update_chapter"}:
+            return False
+        writer_step = next(
+            (candidate for candidate in plan.steps if candidate.tool == "chapter_writer"),
+            None,
+        )
+        if not writer_step or writer_step.status != "ok":
+            return False
+        claim_step = self._chapter_claim_step(plan)
+        # Only bridge-generated managed chapter plans carry a canonical claim
+        # step. Keep legacy/custom plans executable instead of inventing a
+        # target after their writer has already completed.
+        if not claim_step:
+            return False
+        if not claim_step.args_json:
+            return True
+        try:
+            claim_args = json.loads(claim_step.args_json)
+        except Exception:
+            return True
+        return not validate_chapter_write_claim(
+            self.db,
+            project_id=self.project_id,
+            target_key=str(claim_args.get("_chapter_target_key") or ""),
+            idempotency_key=str(claim_args.get("_chapter_idempotency_key") or ""),
+            claim_id=str(claim_args.get("_chapter_claim_id") or "") or None,
+            claim_token=str(claim_args.get("_chapter_claim_token") or "") or None,
+        )
+
+    def _formal_write_fence_error(self, plan: AgentPlan) -> str | None:
+        """Re-check durable cancellation state after a save handler returns."""
+        assistant_run = (
+            self.db.query(AssistantRun)
+            .filter(AssistantRun.id == plan.assistant_run_id)
+            .first()
+            if plan.assistant_run_id
+            else None
+        )
+        operation_id = getattr(assistant_run, "operation_id", None) or current_operation_id()
+        operation = (
+            self.db.query(OperationRun).filter(OperationRun.id == operation_id).first()
+            if operation_id
+            else None
+        )
+        if operation and operation.status in {"cancelled", "interrupted"}:
+            return "写章任务已取消或中断，保存结果未被标记为成功。"
+
+        claim_step = self._chapter_claim_step(plan)
+        if not claim_step or not claim_step.args_json:
+            return None
+        try:
+            claim_args = json.loads(claim_step.args_json)
+        except Exception:
+            return "章节写作占用信息损坏，保存结果未被标记为成功。"
+        claim_id = str(claim_args.get("_chapter_claim_id") or "").strip()
+        claim_token = str(claim_args.get("_chapter_claim_token") or "").strip()
+        if not claim_id or not claim_token:
+            return "章节写作占用缺失，保存结果未被标记为成功。"
+        claim = (
+            self.db.query(ChapterWriteClaim)
+            .filter(
+                ChapterWriteClaim.id == claim_id,
+                ChapterWriteClaim.project_id == self.project_id,
+                ChapterWriteClaim.claim_token == claim_token,
+            )
+            .first()
+        )
+        if not claim or claim.status in {"failed", "cancelled"}:
+            return "章节写作占用已取消或失效，保存结果未被标记为成功。"
+        return None
+
+    def _project_chapter_reservation(
+        self,
+        plan: AgentPlan,
+        step_row: AgentPlanStep,
+        resolved_args: dict[str, Any],
+        collected_outputs: dict[str, dict],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        reservation = self._reserve_plan_chapter_write(plan, resolved_args)
+        state = str(reservation.get("state") or "")
+        if state == "acquired":
+            return None
+        result = reservation.get("result") or {
+            "tool": step_row.tool,
+            "status": "blocked",
+            "detail": "同一章节已有写作任务，未重复启动。",
+            "data": {},
+        }
+        if state == "completed":
+            save_step = self._chapter_save_step(plan)
+            is_local_cli = step_row.tool == "start_local_cli_agent_run"
+            step_row.status = "ok" if is_local_cli else "skipped"
+            step_row.result_json = _safe_json(result)
+            step_row.output_refs = json.dumps(_extract_output_refs(result), ensure_ascii=False)
+            step_row.detail = str(result.get("detail") or "章节已经完成")
+            step_row.completed_at = now
+            step_row.updated_at = now
+            if is_local_cli:
+                collected_outputs[step_row.step_key] = result
+                for downstream_key in self._get_step_keys_after(plan.id, step_row.step_key):
+                    downstream = self._get_step(plan.id, downstream_key)
+                    if downstream and downstream.status == "pending":
+                        downstream.status = "skipped"
+                        downstream.result_json = _safe_json(result)
+                        downstream.output_refs = json.dumps(
+                            _extract_output_refs(result), ensure_ascii=False
+                        )
+                        downstream.detail = "章节已存在，未重复启动本机 CLI"
+                        downstream.completed_at = now
+                        downstream.updated_at = now
+            elif save_step:
+                for candidate in plan.steps:
+                    if candidate.step_key == "evaluate_chapter":
+                        candidate.status = "skipped"
+                        candidate.detail = "章节已存在，跳过重复评估"
+                        candidate.completed_at = now
+                        candidate.updated_at = now
+                save_step.status = "ok"
+                save_step.result_json = _safe_json(result)
+                save_step.output_refs = json.dumps(_extract_output_refs(result), ensure_ascii=False)
+                save_step.detail = str(result.get("detail") or "已打开现有章节")
+                save_step.completed_at = now
+                save_step.updated_at = now
+                collected_outputs[save_step.step_key] = result
+            commit_session(self.db)
+            return {
+                "type": "step_result",
+                "step_key": step_row.step_key,
+                "tool": step_row.tool,
+                "status": "ok",
+                "detail": step_row.detail,
+                "data": result.get("data", {}),
+            }
+
+        result_status = "error" if state == "invalid" else "blocked"
+        result["status"] = result_status
+        step_row.status = result_status
+        step_row.result_json = _safe_json(result)
+        step_row.output_refs = json.dumps(_extract_output_refs(result), ensure_ascii=False)
+        step_row.detail = str(result.get("detail") or "同一章节已有写作任务")
+        step_row.error = step_row.detail if result_status == "error" else None
+        step_row.completed_at = now
+        step_row.updated_at = now
+        for downstream_key in self._get_step_keys_after(plan.id, step_row.step_key):
+            downstream = self._get_step(plan.id, downstream_key)
+            if downstream and downstream.status == "pending":
+                downstream.status = "blocked"
+                downstream.detail = f"上游步骤 {step_row.step_key} 未执行"
+                downstream.updated_at = now
+        commit_session(self.db)
+        return {
+            "type": "step_result",
+            "step_key": step_row.step_key,
+            "tool": step_row.tool,
+            "status": result_status,
+            "detail": step_row.detail,
+            "data": result.get("data", {}),
+        }
+
+    def _reserve_plan_chapter_write(
+        self,
+        plan: AgentPlan,
+        writer_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Fence one chapter target before the costly writer is called."""
+        claim_step = self._chapter_claim_step(plan)
+        outline_node_id = str(writer_args.get("outline_node_id") or "").strip()
+        if not claim_step or not outline_node_id:
+            return {
+                "state": "invalid",
+                "result": {
+                    "tool": claim_step.tool if claim_step else "chapter_writer",
+                    "status": "error",
+                    "detail": "写章计划缺少当前作品中的章节大纲，本轮未生成正文。",
+                    "data": {},
+                },
+            }
+
+        from ..workspace.utils import find_outline_by_title_or_id
+
+        outline = find_outline_by_title_or_id(
+            self.db,
+            self.project_id,
+            outline_node_id,
+            node_type="chapter",
+        )
+        if not outline:
+            return {
+                "state": "invalid",
+                "result": {
+                    "tool": claim_step.tool,
+                    "status": "error",
+                    "detail": "未找到当前作品中的章节大纲，本轮未生成正文。请重新选择章节大纲。",
+                    "data": {},
+                },
+            }
+
+        target_key = chapter_write_target_key(
+            self.project_id,
+            outline_node_id=outline.id,
+        )
+        claim_args = json.loads(claim_step.args_json) if claim_step.args_json else {}
+        rewrite = claim_step.tool == "update_chapter" or bool(
+            writer_args.get("rewrite") or claim_args.get("rewrite")
+        )
+        idempotency_key = (
+            f"rewrite_chapter:{self.project_id}:{outline.id}:{plan.id}"
+            if rewrite
+            else f"create_chapter:{self.project_id}:{outline.id}"
+        )
+        reservation = acquire_chapter_write_claim(
+            self.db,
+            project_id=self.project_id,
+            target_key=target_key or "",
+            idempotency_key=idempotency_key,
+        )
+        if reservation.get("state") == "acquired":
+            assistant_run = (
+                self.db.query(AssistantRun)
+                .filter(AssistantRun.id == plan.assistant_run_id)
+                .first()
+                if plan.assistant_run_id
+                else None
+            )
+            claim_metadata = {
+                "_chapter_target_key": target_key,
+                "_chapter_idempotency_key": idempotency_key,
+                "_chapter_claim_id": reservation.get("claim_id"),
+                "_chapter_claim_token": reservation.get("claim_token"),
+                "parent_plan_id": plan.id,
+                "parent_operation_id": getattr(assistant_run, "operation_id", None),
+            }
+            claim_args.update(claim_metadata)
+            if rewrite:
+                claim_args["rewrite"] = True
+                claim_args["rewrite_request_id"] = plan.id
+            claim_step.args_json = _safe_json(claim_args)
+            claim_step.idempotency_key = idempotency_key
+            claim_step.updated_at = datetime.utcnow()
+            if claim_step.tool == "start_local_cli_agent_run":
+                writer_args.update(claim_metadata)
+                writer_args["rewrite"] = rewrite
+            commit_session(self.db)
+        return reservation
+
+    def _release_plan_chapter_write(
+        self,
+        plan: AgentPlan,
+        *,
+        status: str = "failed",
+        error: str,
+    ) -> None:
+        claim_step = self._chapter_claim_step(plan)
+        if not claim_step or not claim_step.args_json:
+            return
+        try:
+            claim_args = json.loads(claim_step.args_json)
+        except Exception:
+            return
+        fail_chapter_write_claim(
+            self.db,
+            str(claim_args.get("_chapter_claim_id") or "") or None,
+            str(claim_args.get("_chapter_claim_token") or "") or None,
+            status=status,
+            error=error,
+        )
+
+    def _finalize_unfinished_plan(self, plan: AgentPlan, *, detail: str) -> None:
+        """Release a running chapter claim on every non-completed exit path."""
+        if plan.status == "completed":
+            return
+        now = datetime.utcnow()
+        if plan.status in {"pending", "running"}:
+            plan.status = "interrupted"
+            plan.error = detail
+            plan.updated_at = now
+            plan.completed_at = now
+            for step in plan.steps:
+                if step.status == "running":
+                    step.status = "interrupted"
+                    step.error = detail
+                    step.detail = step.detail or detail
+                    step.updated_at = now
+                    step.completed_at = now
+        self._release_plan_chapter_write(
+            plan,
+            status="cancelled" if plan.status == "cancelled" else "failed",
+            error=plan.error or detail,
+        )
+        commit_session(self.db)
+
+    def _local_cli_child_run_ids(self, plan: AgentPlan) -> list[str]:
+        run_ids: list[str] = []
+        for step in plan.steps:
+            if step.tool != "start_local_cli_agent_run" or not step.result_json:
+                continue
+            try:
+                result = json.loads(step.result_json)
+            except Exception:
+                continue
+            data = result.get("data") if isinstance(result, dict) else None
+            run_id = str((data or {}).get("run_id") or "").strip() if isinstance(data, dict) else ""
+            if run_id and run_id not in run_ids:
+                run_ids.append(run_id)
+        return run_ids
+
+    async def _cancel_local_cli_children(self, plan: AgentPlan) -> None:
+        """Cascade a parent plan cancellation to managed local CLI operations."""
+        for run_id in self._local_cli_child_run_ids(plan):
+            run = (
+                self.db.query(AgentRun)
+                .filter(AgentRun.id == run_id, AgentRun.project_id == self.project_id)
+                .first()
+            )
+            if not run or run.status in {"completed", "failed", "cancelled"}:
+                continue
+            invoked = False
+            if run.operation_id:
+                try:
+                    invoked = await invoke_operation_action(run.operation_id, "cancel")
+                except Exception:
+                    invoked = False
+            if not invoked:
+                from ..external_agent.run_service import cancel_run
+
+                cancel_run(self.db, run.id)
+            self.db.expire_all()
+
     def _get_step_keys_after(self, plan_id: str, step_key: str) -> list[str]:
         """Get step keys that depend (transitively) on the given step."""
         all_steps = (
@@ -696,9 +1325,6 @@ class PlanOrchestrator:
             .filter(AgentPlanStep.plan_id == plan_id)
             .all()
         )
-        step_map = {s.step_key: s for s in all_steps}
-
-        # BFS to find all downstream
         downstream: list[str] = []
         queue = [step_key]
         visited = {step_key}

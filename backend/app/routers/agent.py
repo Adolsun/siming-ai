@@ -13,15 +13,16 @@ from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
+from ..modules.operations.application.context import activate_operation
 from ..services.agent.bridge import detect_and_stream_plan
 from ..services.agent.orchestrator import PlanOrchestrator, _serialize_step
 from ..services.agent.planner import (
-    build_plan_from_intent,
-    detect_intent,
-    plan_cataloging_init,
     plan_fast_chapter,
     plan_quality_chapter,
 )
+from ..services.workspace.assistant_stream_runtime import detached_assistant_stream
+from ..services.workspace.run_log import resolve_assistant_model
 
 router = APIRouter()
 
@@ -70,6 +71,23 @@ def _sse_event(payload: Any) -> str:
     return f"data: {data}\n\n"
 
 
+def _plan_runtime_identity(
+    orchestrator: PlanOrchestrator,
+    plan_id: str,
+) -> tuple[str | None, str | None]:
+    plan = orchestrator.get_plan(plan_id)
+    run = getattr(plan, "assistant_run", None)
+    if run is not None and run.project_id != plan.project_id:
+        raise ValueError("计划关联的作品助手运行不属于当前作品")
+    operation_id = str(getattr(run, "operation_id", "") or "").strip() or None
+    run_id = str(getattr(run, "id", "") or "").strip() or None
+    return operation_id, run_id
+
+
+def _plan_operation_id(orchestrator: PlanOrchestrator, plan_id: str) -> str | None:
+    return _plan_runtime_identity(orchestrator, plan_id)[0]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -82,6 +100,11 @@ async def create_plan(
 ) -> ApiResponse:
     """Create an execution plan without running it."""
     get_project_or_404(db, project_id)
+
+    if body.assistant_run_id:
+        owned_run = assistant_workspace(db).run(project_id, body.assistant_run_id)
+        if not owned_run:
+            raise ValidationError("作品助手运行不存在或不属于当前作品")
 
     if body.mode == "fast":
         graph = plan_fast_chapter(
@@ -122,7 +145,7 @@ async def get_plan(
     try:
         plan = PlanOrchestrator(db, project_id).get_plan(plan_id)
     except ValueError:
-        raise NotFoundError("计划不存在")
+        raise NotFoundError("计划不存在") from None
 
     return ApiResponse.success(data=_plan_payload(plan))
 
@@ -135,12 +158,14 @@ async def execute_plan_stream(
 ) -> StreamingResponse:
     """Execute a plan with SSE progress events."""
     get_project_or_404(db, project_id)
+    operation_id, run_id = _plan_runtime_identity(PlanOrchestrator(db, project_id), plan_id)
 
-    async def event_generator():
-        orchestrator = PlanOrchestrator(db, project_id)
+    async def event_generator(source_db: Session):
+        orchestrator = PlanOrchestrator(source_db, project_id)
         try:
-            async for event in orchestrator.execute_plan(plan_id):
-                yield _sse_event(event)
+            with activate_operation(operation_id):
+                async for event in orchestrator.execute_plan(plan_id):
+                    yield _sse_event(event)
         except ValueError as exc:
             yield _sse_event({"type": "error", "detail": str(exc)})
         except Exception as exc:
@@ -148,7 +173,14 @@ async def execute_plan_stream(
         finally:
             yield _sse_event("[DONE]")
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        detached_assistant_stream(
+            event_generator,
+            operation_id_hint=operation_id,
+            run_id_hint=run_id,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/projects/{project_id}/ai/agent/plans/{plan_id}/resume/stream")
@@ -159,12 +191,14 @@ async def resume_plan_stream(
 ) -> StreamingResponse:
     """Resume all failed/blocked steps with SSE progress events."""
     get_project_or_404(db, project_id)
+    operation_id, run_id = _plan_runtime_identity(PlanOrchestrator(db, project_id), plan_id)
 
-    async def event_generator():
-        orchestrator = PlanOrchestrator(db, project_id)
+    async def event_generator(source_db: Session):
+        orchestrator = PlanOrchestrator(source_db, project_id)
         try:
-            async for event in orchestrator.resume_plan(plan_id):
-                yield _sse_event(event)
+            with activate_operation(operation_id):
+                async for event in orchestrator.resume_plan(plan_id):
+                    yield _sse_event(event)
         except ValueError as exc:
             yield _sse_event({"type": "error", "detail": str(exc)})
         except Exception as exc:
@@ -172,7 +206,14 @@ async def resume_plan_stream(
         finally:
             yield _sse_event("[DONE]")
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        detached_assistant_stream(
+            event_generator,
+            operation_id_hint=operation_id,
+            run_id_hint=run_id,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/projects/{project_id}/ai/agent/plans/{plan_id}/steps/{step_key}/retry")
@@ -187,9 +228,10 @@ async def retry_step(
 
     orchestrator = PlanOrchestrator(db, project_id)
     try:
-        result = await orchestrator.retry_step(plan_id, step_key)
+        with activate_operation(_plan_operation_id(orchestrator, plan_id)):
+            result = await orchestrator.retry_step(plan_id, step_key)
     except ValueError as exc:
-        raise ValidationError(str(exc))
+        raise ValidationError(str(exc)) from exc
 
     return ApiResponse.success(data=result)
 
@@ -203,12 +245,14 @@ async def resume_from_step_stream(
 ) -> StreamingResponse:
     """Resume execution from a specific step with SSE progress events."""
     get_project_or_404(db, project_id)
+    operation_id, run_id = _plan_runtime_identity(PlanOrchestrator(db, project_id), plan_id)
 
-    async def event_generator():
-        orchestrator = PlanOrchestrator(db, project_id)
+    async def event_generator(source_db: Session):
+        orchestrator = PlanOrchestrator(source_db, project_id)
         try:
-            async for event in orchestrator.resume_from_step(plan_id, step_key):
-                yield _sse_event(event)
+            with activate_operation(operation_id):
+                async for event in orchestrator.resume_from_step(plan_id, step_key):
+                    yield _sse_event(event)
         except ValueError as exc:
             yield _sse_event({"type": "error", "detail": str(exc)})
         except Exception as exc:
@@ -216,7 +260,14 @@ async def resume_from_step_stream(
         finally:
             yield _sse_event("[DONE]")
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        detached_assistant_stream(
+            event_generator,
+            operation_id_hint=operation_id,
+            run_id_hint=run_id,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +280,7 @@ class PlanStreamRequest(BaseModel):
     scope: str = "project"
     model: str | None = None
     assistant_mode: str = "fast"
+    selected_outline_node_id: str | None = None
 
 
 @router.post("/projects/{project_id}/ai/agent/plan-stream")
@@ -242,15 +294,17 @@ async def plan_stream(
     Falls back to returning an error event if no plan intent is detected.
     """
     get_project_or_404(db, project_id)
+    body.model = resolve_assistant_model(body.model)
 
-    async def event_generator():
+    async def event_generator(source_db: Session):
         gen = await detect_and_stream_plan(
-            db, project_id,
+            source_db, project_id,
             message=body.message,
             conversation_id=body.conversation_id,
             scope=body.scope,
             model=body.model,
             assistant_mode=body.assistant_mode,
+            selected_outline_node_id=body.selected_outline_node_id,
         )
         if gen is None:
             yield _sse_event({
@@ -268,7 +322,11 @@ async def plan_stream(
             yield _sse_event("[DONE]")
 
     return StreamingResponse(
-        event_generator(),
+        detached_assistant_stream(event_generator),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

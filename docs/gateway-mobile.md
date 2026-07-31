@@ -34,7 +34,7 @@ $env:SIMING_GATEWAY_BOOTSTRAP_KEY = "请使用至少12位随机口令"
 docker compose -f compose.gateway.yml up -d
 ```
 
-也可以直接使用 `ghcr.io/teangtang1122/siming-ai-gateway:3.0.15`。默认映射宿主机 8000 端口，数据写入 Docker 卷 `siming-gateway-data`。首次打开管理页时输入 `SIMING_GATEWAY_BOOTSTRAP_KEY`；成功后服务器写入 12 小时 HttpOnly、SameSite=Strict 会话 Cookie，口令不会进入浏览器存储。
+也可以直接使用 `ghcr.io/teangtang1122/siming-ai-gateway:3.1.0`。默认映射宿主机 8000 端口，数据写入 Docker 卷 `siming-gateway-data`。首次打开管理页时输入 `SIMING_GATEWAY_BOOTSTRAP_KEY`；成功后服务器写入 12 小时 HttpOnly、SameSite=Strict 会话 Cookie，口令不会进入浏览器存储。本版同步协议保持不变。
 
 建议显式设置：
 

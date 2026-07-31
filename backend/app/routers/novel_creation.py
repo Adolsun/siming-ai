@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
@@ -20,6 +20,10 @@ from ..ai.local_cli_adapter import is_local_cli_provider
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..database.session import SessionLocal
+from ..schemas.novel_creation import (
+    NovelCreationStageRunResponse,
+    NovelCreationStageRunStartData,
+)
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_workspace import (
@@ -173,6 +177,10 @@ class NovelCreationStartRequest(BaseModel):
     special_requirements: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     author_overrides: dict[str, Any] = Field(default_factory=dict)
+    creation_mode: Literal["author_led", "explore"] = "explore"
+    author_brief: str = Field(default="", max_length=5000)
+    author_outline: str = Field(default="", max_length=20000)
+    locked_requirements: list[str] = Field(default_factory=list, max_length=100)
 
 
 class NovelCreationDraftRequest(BaseModel):
@@ -291,6 +299,10 @@ class NovelCreationSessionPatchRequest(BaseModel):
     form: dict[str, Any] | None = None
     selected_concept_id: str | None = None
     quick_mode: bool | None = None
+    creation_mode: Literal["author_led", "explore"] | None = None
+    author_brief: str | None = Field(default=None, max_length=5000)
+    author_outline: str | None = Field(default=None, max_length=20000)
+    locked_requirements: list[str] | None = Field(default=None, max_length=100)
     expected_revision: int | None = None
 
 
@@ -299,9 +311,32 @@ class NovelCreationStageRunRequest(BaseModel):
     model: str | None = None
     use_model: bool = True
     auto_confirm: bool = False
-    operation: str = "generate"
+    operation: Literal["generate", "regenerate", "refine"] = "generate"
+    instruction: str | None = Field(default=None, min_length=1, max_length=2000)
     session_patch: dict[str, Any] | None = None
     expected_revision: int | None = None
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def normalize_legacy_operation(cls, value: Any) -> Any:
+        # V2 clients used this internal name for the first concept run.
+        return "generate" if value == "generate_concepts" else value
+
+    @field_validator("instruction")
+    @classmethod
+    def validate_refinement_instruction(cls, value: str | None, info: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("instruction must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_refinement_instruction(self) -> "NovelCreationStageRunRequest":
+        if self.operation == "refine" and not self.instruction:
+            raise ValueError("refine operation requires an instruction")
+        return self
 
 
 class NovelCreationStageConfirmRequest(BaseModel):
@@ -391,8 +426,11 @@ async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, A
         if run and run.status == "running":
             run.status = "cancelled"
             run.current_message = "立项任务已取消，已保存内容不会丢失"
+            run.next_action = "检查当前草稿后可重新生成本阶段"
             run.completed_at = datetime.utcnow()
             commit_session(db)
+            if run.operation_id:
+                finish_operation(run.operation_id, message=run.current_message, status="cancelled")
         raise
     finally:
         if heartbeat_task:
@@ -403,7 +441,10 @@ async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, A
         db.close()
 
 
-@router.post("/novel-creation/sessions/{session_id}/runs")
+@router.post(
+    "/novel-creation/sessions/{session_id}/runs",
+    response_model=ApiResponse[NovelCreationStageRunStartData],
+)
 async def start_creation_stage_run(session_id: str, payload: NovelCreationStageRunRequest, db: Session = Depends(get_db)):
     store = novel_creation_session_store(db)
     session = store.session(session_id)
@@ -451,7 +492,10 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
-@router.get("/novel-creation/runs/{run_id}")
+@router.get(
+    "/novel-creation/runs/{run_id}",
+    response_model=ApiResponse[NovelCreationStageRunResponse],
+)
 async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
     run = novel_creation_session_store(db).run(run_id)
     if not run:
@@ -482,7 +526,7 @@ async def stream_creation_stage_run(run_id: str):
                     }
                     yield f"event: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 sent = len(rows)
-                if run.status in {"completed", "failed", "cancelled"}:
+                if run.status in {"completed", "failed", "cancelled", "interrupted"}:
                     yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
                     return
             finally:

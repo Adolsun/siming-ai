@@ -21,7 +21,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **3.0.15** 新增 Android 手机独立 API 模式：无需连接或开启电脑，即可使用 OpenAI 兼容的 Responses API / Chat Completions 完成项目创作。手机会先自动获取模型，失败后允许手动填写；API Key 仅由 Android Keystore 加密保存在本机。跨设备同步仍可按需连接用户自有 Gateway。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **3.1.0** 加固了写章闭环：中文章节名和当前选中大纲可稳定定位，断流任务可恢复和取消，同一大纲不会因重试生成重复或空章节；新书立项新增“按我的设定立项”、逐阶段定向调整和已有小说导入入口。Windows 关闭动画效果时，下拉框也能正常显示，并可在写作工作台直接切换全局默认模型。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 

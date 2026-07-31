@@ -9,11 +9,28 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import AssistantRun, AssistantRunStep
+from ...database.models import (
+    AgentPlan,
+    AssistantMessage,
+    AssistantRun,
+    AssistantRunStep,
+)
+from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..operation_runtime import ensure_operation, fail_operation, finish_operation, record_operation_signal
 
 
 MAX_JSON_CHARS = 80_000
+
+
+def resolve_assistant_model(model: str | None) -> str | None:
+    """Resolve and pin the effective provider/model used by one assistant run."""
+
+    try:
+        provider, model_name = LLMGateway.model_identity(model)
+        return f"{provider}:{model_name}"
+    except Exception:
+        normalized = str(model or "").strip()
+        return normalized or None
 
 
 def _safe_json(data: Any, *, max_chars: int = MAX_JSON_CHARS) -> str:
@@ -24,6 +41,84 @@ def _safe_json(data: Any, *, max_chars: int = MAX_JSON_CHARS) -> str:
     if len(text) > max_chars:
         return text[:max_chars] + "...[truncated]"
     return text
+
+
+def _message_payload(message: AssistantMessage) -> dict[str, Any]:
+    if not message.payload_json:
+        return {}
+    try:
+        payload = json.loads(message.payload_json)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _persist_run_on_message(
+    db: Session,
+    run: AssistantRun,
+    *,
+    status: str | None = None,
+    content: str | None = None,
+) -> None:
+    if not run.assistant_message_id:
+        return
+    message = (
+        db.query(AssistantMessage)
+        .filter(AssistantMessage.id == run.assistant_message_id)
+        .first()
+    )
+    if not message:
+        return
+    payload = _message_payload(message)
+    payload["run"] = run_payload(run)
+    message.payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+    if status is not None:
+        message.status = status
+    if content is not None:
+        message.content = content
+    message.updated_at = datetime.utcnow()
+
+
+def _finish_running_children(
+    db: Session,
+    run: AssistantRun,
+    *,
+    status: str,
+    detail: str,
+) -> None:
+    now = datetime.utcnow()
+    for step in (
+        db.query(AssistantRunStep)
+        .filter(AssistantRunStep.run_id == run.id, AssistantRunStep.status == "running")
+        .all()
+    ):
+        step.status = status
+        step.error = detail
+        step.detail = step.detail or detail
+        step.completed_at = now
+        step.updated_at = now
+
+    plan_status = "cancelled" if status == "cancelled" else "interrupted" if status == "interrupted" else "error"
+    plans = (
+        db.query(AgentPlan)
+        .filter(
+            AgentPlan.assistant_run_id == run.id,
+            AgentPlan.status.in_(["pending", "running"]),
+        )
+        .all()
+    )
+    for plan in plans:
+        plan.status = plan_status
+        plan.error = detail
+        plan.updated_at = now
+        plan.completed_at = now
+        for step in plan.steps:
+            if step.status == "running":
+                step.status = status
+                step.error = detail
+                step.detail = step.detail or detail
+                step.updated_at = now
+                step.completed_at = now
 
 
 def create_assistant_run(
@@ -37,6 +132,7 @@ def create_assistant_run(
     assistant_mode: str,
     model: str | None,
 ) -> AssistantRun:
+    model = resolve_assistant_model(model)
     run = AssistantRun(
         project_id=project_id,
         conversation_id=conversation_id,
@@ -66,11 +162,12 @@ def create_assistant_run(
         tool_mode=assistant_mode,
         resume_url=f"/project/{project_id}",
         can_pause=False,
-        can_cancel=False,
+        can_cancel=True,
         can_retry=False,
         progress_mode="indeterminate",
     )
     run.operation_id = operation.id
+    _persist_run_on_message(db, run)
     commit_session(db)
     db.refresh(run)
     return run
@@ -170,6 +267,31 @@ def mark_assistant_run(
     run.updated_at = now
     if status in {"completed", "error", "aborted", "cancelled"}:
         run.completed_at = now
+    if status == "cancelled":
+        detail = error or "用户取消了任务"
+        _finish_running_children(db, run, status="cancelled", detail=detail)
+        _persist_run_on_message(
+            db,
+            run,
+            status="aborted",
+            content=final_reply or "任务已取消，本轮不会再写入章节。",
+        )
+    elif status in {"error", "aborted"}:
+        detail = error or "作品助手执行失败"
+        _finish_running_children(db, run, status="error", detail=detail)
+        _persist_run_on_message(
+            db,
+            run,
+            status="aborted" if status == "aborted" else "error",
+            content=final_reply or detail,
+        )
+    else:
+        _persist_run_on_message(
+            db,
+            run,
+            status="completed" if status == "completed" else None,
+            content=final_reply if status == "completed" and final_reply is not None else None,
+        )
     commit_session(db)
     if status == "completed":
         normalized = outcome or ("completed_with_reply" if str(final_reply or "").strip() else "empty_response")
@@ -212,6 +334,8 @@ def mark_assistant_run(
 
 def run_payload(run: AssistantRun) -> dict:
     return {
+        "run_id": run.id,
+        "actual_model": run.model,
         "id": run.id,
         "project_id": run.project_id,
         "conversation_id": run.conversation_id,
@@ -259,10 +383,25 @@ def mark_interrupted_assistant_runs(db: Session) -> int:
     )
     for run in runs:
         run.status = "interrupted"
-        run.phase = run.phase or "interrupted"
+        run.phase = "interrupted"
         run.error = run.error or "应用上次关闭或服务重启时任务尚未完成"
         run.updated_at = now
         run.completed_at = now
+        _finish_running_children(
+            db,
+            run,
+            status="interrupted",
+            detail=run.error,
+        )
+        _persist_run_on_message(
+            db,
+            run,
+            status="error",
+            content=run.error,
+        )
+    from .idempotency import mark_interrupted_chapter_write_claims
+
+    mark_interrupted_chapter_write_claims(db)
     if runs:
         db.flush()
     return len(runs)

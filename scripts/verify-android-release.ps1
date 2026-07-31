@@ -1,6 +1,7 @@
 param(
     [string]$ReleaseDir = "release",
-    [string]$ExpectedVersion = ""
+    [string]$ExpectedVersion = "",
+    [string]$ExpectedCertificateSha256 = "7977f60224fbfd336c5670103a415664e82d1b90750225fbd511b9949100c60a"
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +42,19 @@ foreach ($tool in @($apksigner, $aapt, $zipalign)) {
 
 & $zipalign -c -p 4 $apkPath
 if ($LASTEXITCODE -ne 0) { throw "Siming.apk is not zip-aligned." }
-& $apksigner verify --verbose --print-certs $apkPath
-if ($LASTEXITCODE -ne 0) { throw "Siming.apk signature verification failed." }
+$signatureOutput = (& $apksigner verify --verbose --print-certs $apkPath 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0) { throw "Siming.apk signature verification failed.`n$signatureOutput" }
+$certificateMatch = [regex]::Match(
+    $signatureOutput,
+    "(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$"
+)
+if (-not $certificateMatch.Success) {
+    throw "Unable to read the APK signing certificate SHA-256 fingerprint."
+}
+$actualCertificateSha256 = $certificateMatch.Groups[1].Value.Replace(":", "").ToLowerInvariant()
+if ($ExpectedCertificateSha256 -and $actualCertificateSha256 -ne $ExpectedCertificateSha256.ToLowerInvariant()) {
+    throw "APK certificate '$actualCertificateSha256' does not match the trusted Siming release certificate."
+}
 
 $badging = (& $aapt dump badging $apkPath) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw "Unable to read Siming.apk manifest." }
@@ -54,12 +66,23 @@ $versionMatch = [regex]::Match(
     $packageMatch.Value,
     "(?:^|\s)versionName='([^']+)'"
 )
-if (-not $packageMatch.Success -or -not $versionMatch.Success) {
+$versionCodeMatch = [regex]::Match(
+    $packageMatch.Value,
+    "(?:^|\s)versionCode='([^']+)'"
+)
+if (-not $packageMatch.Success -or -not $versionMatch.Success -or -not $versionCodeMatch.Success) {
     throw "Siming.apk does not contain the expected application id and version."
 }
 $actualVersion = $versionMatch.Groups[1].Value
+$actualVersionCode = $versionCodeMatch.Groups[1].Value
 if ($ExpectedVersion -and $actualVersion -ne $ExpectedVersion) {
     throw "APK version '$actualVersion' does not match expected '$ExpectedVersion'."
 }
+if ($ExpectedVersion -and $ExpectedVersion -match '^(\d+)\.(\d+)\.(\d+)') {
+    $expectedVersionCode = ([int]$Matches[1] * 10000) + ([int]$Matches[2] * 100) + [int]$Matches[3]
+    if ($actualVersionCode -ne [string]$expectedVersionCode) {
+        throw "APK versionCode '$actualVersionCode' does not match expected '$expectedVersionCode'."
+    }
+}
 
-Write-Host "Android release verified: Siming.apk version=$actualVersion sha256=$actualSha" -ForegroundColor Green
+Write-Host "Android release verified: Siming.apk version=$actualVersion code=$actualVersionCode cert=$actualCertificateSha256 sha256=$actualSha" -ForegroundColor Green

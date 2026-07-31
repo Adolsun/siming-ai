@@ -14,10 +14,14 @@ from sqlalchemy.orm import sessionmaker
 from app.database.models import (
     AgentPlan,
     AgentPlanStep,
+    AgentRun,
+    ChapterWriteClaim,
     AssistantConversation,
     AssistantMessage,
     AssistantRun,
     Base,
+    OperationRun,
+    OutlineNode,
     Project,
 )
 from app.database.session import engine as app_engine, get_db
@@ -29,10 +33,13 @@ from app.services.agent.planner import (
     plan_create_outline,
     plan_cataloging_init,
     plan_fast_chapter,
+    plan_has_chapter_writing_contract,
     plan_local_cli_writing,
     plan_quality_chapter,
 )
 from app.services.agent.step_args import resolve_step_args
+from app.services.external_agent.run_service import create_run
+from app.services.workspace.run_log import create_assistant_run
 
 from app.main import app
 
@@ -243,6 +250,50 @@ class PlannerTestCase(unittest.TestCase):
         self.assertEqual(result["mode"], "quality")
         self.assertEqual(result["chapter_number"], 42)
 
+    def test_detect_intent_chinese_chapter_numbers(self):
+        cases = {
+            "写第一章": 1,
+            "写第二十五章": 25,
+            "写第一百零三章": 103,
+            "写第〇七章": 7,
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                result = detect_intent(message)
+                self.assertIsNotNone(result)
+                self.assertEqual(result["intent_type"], "chapter")
+                self.assertEqual(result["chapter_number"], expected)
+
+    def test_detect_intent_strong_prose_request_without_number(self):
+        for message in ("用质量模式写本章", "生成正文", "创建章节"):
+            with self.subTest(message=message):
+                result = detect_intent(message)
+                self.assertIsNotNone(result)
+                self.assertEqual(result["intent_type"], "chapter")
+
+    def test_chapter_number_without_write_intent_does_not_start_writing(self):
+        self.assertIsNone(detect_intent("检查第一章是否 OOC"))
+        self.assertIsNone(detect_intent("总结第二十五章"))
+
+    def test_strong_write_intent_wins_over_outline_vocabulary(self):
+        result = detect_intent("先创建下一章大纲，然后生成正文")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "chapter")
+
+        result = detect_intent("写第一章，按照大纲来")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "chapter")
+
+    def test_plan_contract_requires_generation_and_persistence(self):
+        incomplete = PlanGraph(
+            name="bad-writing",
+            steps={"reply": StepDef(tool="search_outline", args={}, depends_on=[])},
+        )
+        self.assertFalse(plan_has_chapter_writing_contract(incomplete))
+        self.assertTrue(plan_has_chapter_writing_contract(
+            plan_fast_chapter(outline_node_id="outline-1")
+        ))
+
     def test_detect_intent_cataloging(self):
         result = detect_intent("给这个项目建档")
         self.assertIsNotNone(result)
@@ -259,6 +310,10 @@ class PlannerTestCase(unittest.TestCase):
         self.assertEqual(result["intent_type"], "outline")
         self.assertEqual(result["chapter_number"], 151)
         self.assertIsNone(result["batch_count"])
+
+        result = detect_intent("重写第一章大纲")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "outline")
 
     def test_detect_intent_outline_batch_keeps_count_separate(self):
         result = detect_intent("帮我创建后续3章大纲")
@@ -286,6 +341,20 @@ class PlannerTestCase(unittest.TestCase):
         self.assertEqual(wait_step.args["run_id"], "{start_local_cli_agent_run.data.run_id}")
         self.assertEqual(wait_step.args["outline_node_id"], "outline-151")
         self.assertEqual(wait_step.args["startup_timeout_seconds"], 3)
+
+    def test_local_cli_rewrite_plan_uses_managed_update_contract(self):
+        graph = plan_local_cli_writing(
+            requirements="重写本章",
+            provider="opencode_cli",
+            outline_node_id="outline-151",
+            rewrite=True,
+        )
+        start = graph.steps["start_local_cli_agent_run"]
+        wait = graph.steps["wait_local_cli_agent_run"]
+        self.assertTrue(start.args["rewrite"])
+        self.assertTrue(wait.args["rewrite"])
+        self.assertIn("update_chapter", start.args["user_request"])
+        self.assertNotIn("must use `create_chapter`", start.args["user_request"])
 
     def test_assistant_mode_quality_overrides_chapter_plan_mode(self):
         intent = {
@@ -401,7 +470,7 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertIn("tool", payload)
         self.assertIn("status", payload)
 
-    def test_running_step_no_duplicate(self):
+    def test_stale_running_step_is_recovered_instead_of_skipped(self):
         graph = PlanGraph(name="test", steps={
             "a": StepDef(tool="search_outline", args={}, depends_on=[]),
         })
@@ -413,9 +482,10 @@ class OrchestratorTestCase(unittest.TestCase):
         step.status = "running"
         self.db.commit()
 
-        # Execute should skip the running step
+        # A persisted running step belongs to a previous interrupted executor;
+        # a new execution must own it from pending instead of treating it as done.
         events = _run_async(_collect_events(orchestrator.execute_plan(plan.id)))
-        step_events = [e for e in events if e.get("type") == "step_skip"]
+        step_events = [e for e in events if e.get("type") == "step_start"]
         self.assertEqual(len(step_events), 1)
         self.assertEqual(step_events[0]["step_key"], "a")
 
@@ -433,8 +503,11 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
 
     def setUp(self):
         self.db = TestSession()
+        self.db.query(ChapterWriteClaim).delete()
+        self.db.query(AgentRun).delete()
         self.db.query(AgentPlanStep).delete()
         self.db.query(AgentPlan).delete()
+        self.db.query(OutlineNode).delete()
         self.db.query(Project).delete()
         self.db.commit()
 
@@ -471,6 +544,45 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         self.assertIn("tool_c", call_order)
         self.assertLess(call_order.index("tool_a"), call_order.index("tool_b"))
         self.assertLess(call_order.index("tool_a"), call_order.index("tool_c"))
+
+    @patch("app.services.agent.orchestrator.execute_workspace_action")
+    def test_cancelled_execution_marks_plan_and_running_step_cancelled(self, mock_execute):
+        started = asyncio.Event()
+
+        async def wait_forever(_db, _project_id, _action):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def cancel_running_plan(orchestrator, plan_id):
+            task = asyncio.create_task(_collect_events(orchestrator.execute_plan(plan_id)))
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        mock_execute.side_effect = wait_forever
+        graph = PlanGraph(name="cancel-test", steps={
+            "write": StepDef(tool="chapter_writer", depends_on=[]),
+        })
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+
+        _run_async(cancel_running_plan(orchestrator, plan.id))
+        self.db.refresh(plan)
+        step = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).one()
+        self.assertEqual(plan.status, "cancelled")
+        self.assertEqual(step.status, "cancelled")
+
+        async def succeed(_db, _project_id, action):
+            return {"tool": action["tool"], "status": "ok", "detail": "done", "data": {}}
+
+        mock_execute.side_effect = succeed
+        events = _run_async(_collect_events(orchestrator.resume_plan(plan.id)))
+        self.db.refresh(plan)
+        self.db.refresh(step)
+        self.assertEqual(plan.status, "completed")
+        self.assertEqual(step.status, "ok")
+        self.assertTrue(any(event.get("type") == "step_start" for event in events))
 
     @patch("app.services.agent.orchestrator.execute_workspace_action")
     def test_plan_injects_model_and_chapter_mode(self, mock_execute):
@@ -526,6 +638,233 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         ).first()
         self.assertEqual(step_c.status, "blocked")
         self.assertIn("上游步骤", step_c.detail)
+
+    @patch("app.services.agent.orchestrator.execute_workspace_action")
+    def test_formal_chapter_write_skipped_is_an_error(self, mock_execute):
+        async def skip_write(_db, _project_id, _action):
+            return {"tool": "create_chapter", "status": "skipped", "detail": "正文为空"}
+
+        mock_execute.side_effect = skip_write
+        graph = PlanGraph(name="write-contract", steps={
+            "save": StepDef(tool="create_chapter", args={"title": "第一章"}, depends_on=[]),
+        })
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+
+        events = _run_async(_collect_events(orchestrator.execute_plan(plan.id)))
+
+        self.db.refresh(plan)
+        step = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).one()
+        self.assertEqual(plan.status, "error")
+        self.assertEqual(step.status, "error")
+        self.assertTrue(any(event.get("status") == "error" for event in events))
+
+    @patch("app.services.agent.orchestrator.execute_workspace_action")
+    def test_formal_write_post_handler_fence_observes_durable_cancel(self, mock_execute):
+        assistant_run = create_assistant_run(
+            self.db,
+            project_id="proj-2",
+            conversation_id=None,
+            user_message_id=None,
+            assistant_message_id=None,
+            scope="project",
+            assistant_mode="fast",
+            model=None,
+        )
+
+        async def cancel_during_write(db, _project_id, action):
+            operation = db.query(OperationRun).filter(
+                OperationRun.id == assistant_run.operation_id,
+            ).one()
+            operation.status = "cancelled"
+            db.commit()
+            return {
+                "tool": action["tool"],
+                "status": "ok",
+                "detail": "handler returned after cancellation",
+                "data": {"chapter_id": "chapter-late"},
+            }
+
+        mock_execute.side_effect = cancel_during_write
+        graph = PlanGraph(name="late-cancel", steps={
+            "save": StepDef(tool="create_chapter", args={"title": "第一章"}),
+        })
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph, assistant_run_id=assistant_run.id)
+
+        events = _run_async(_collect_events(orchestrator.execute_plan(plan.id)))
+
+        self.db.refresh(plan)
+        step = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).one()
+        self.assertEqual(step.status, "cancelled")
+        self.assertEqual(plan.status, "cancelled")
+        self.assertTrue(any(event.get("status") == "cancelled" for event in events))
+
+    def test_second_execute_while_plan_is_running_is_rejected_by_cas(self):
+        graph = PlanGraph(name="single-owner", steps={
+            "read": StepDef(tool="search_outline", args={}, depends_on=[]),
+        })
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+
+        async def exercise():
+            first = orchestrator.execute_plan(plan.id)
+            first_event = await first.__anext__()
+            second_events = await _collect_events(orchestrator.execute_plan(plan.id))
+            await first.aclose()
+            return first_event, second_events
+
+        first_event, second_events = _run_async(exercise())
+        self.assertEqual(first_event["type"], "plan_start")
+        self.assertEqual(second_events[0]["type"], "plan_already_running")
+        self.assertIn("未重复启动", second_events[0]["detail"])
+        self.db.refresh(plan)
+        self.assertEqual(plan.status, "interrupted")
+
+    @patch("app.services.agent.orchestrator.execute_workspace_action", new_callable=AsyncMock)
+    def test_closing_nonterminal_plan_releases_running_chapter_claim(self, mock_execute):
+        outline = OutlineNode(
+            id="outline-interrupt-1",
+            project_id="proj-2",
+            title="第一章 雨夜",
+            node_type="chapter",
+        )
+        self.db.add(outline)
+        self.db.commit()
+        graph = plan_fast_chapter(outline_node_id=outline.id)
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+
+        async def execute(_db, _project_id, action):
+            return {
+                "tool": action["tool"],
+                "status": "ok",
+                "detail": "done",
+                "data": {},
+            }
+
+        mock_execute.side_effect = execute
+
+        async def exercise():
+            stream = orchestrator.execute_plan(plan.id)
+            while True:
+                event = await stream.__anext__()
+                if event.get("type") == "step_start" and event.get("tool") == "chapter_writer":
+                    break
+            await stream.aclose()
+
+        _run_async(exercise())
+
+        self.db.refresh(plan)
+        claim = self.db.query(ChapterWriteClaim).filter(
+            ChapterWriteClaim.project_id == "proj-2",
+        ).one()
+        self.assertEqual(plan.status, "interrupted")
+        self.assertEqual(claim.status, "failed")
+        mock_execute.assert_awaited_once()
+
+    @patch("app.services.agent.orchestrator.invoke_operation_action", new_callable=AsyncMock)
+    def test_parent_plan_cancel_cascades_to_local_cli_child_operation(self, invoke_action):
+        invoke_action.return_value = True
+        child = create_run(
+            self.db,
+            "proj-2",
+            source="internal_cli",
+            client_name="opencode_cli",
+            title="writing",
+        )
+        graph = plan_local_cli_writing(
+            requirements="写第一章",
+            provider="opencode_cli",
+            outline_node_id="outline-1",
+        )
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+        start_step = next(
+            step for step in plan.steps if step.tool == "start_local_cli_agent_run"
+        )
+        start_step.result_json = json.dumps({
+            "tool": "start_local_cli_agent_run",
+            "status": "ok",
+            "data": {"run_id": child.id},
+        })
+        self.db.commit()
+
+        _run_async(orchestrator._cancel_local_cli_children(plan))
+
+        invoke_action.assert_awaited_once_with(child.operation_id, "cancel")
+
+    @patch("app.services.agent.orchestrator.execute_workspace_action")
+    def test_resume_reacquires_claim_without_rerunning_completed_writer(self, mock_execute):
+        outline = OutlineNode(
+            id="outline-resume-1",
+            project_id="proj-2",
+            title="第一章 旧港",
+            node_type="chapter",
+        )
+        self.db.add(outline)
+        self.db.commit()
+
+        graph = plan_quality_chapter(outline_node_id=outline.id)
+        orchestrator = PlanOrchestrator(self.db, "proj-2")
+        plan = orchestrator.create_plan(graph)
+        steps = {step.step_key: step for step in plan.steps}
+        for key in ("preview_context", "design_plot", "roleplay", "chapter_writer"):
+            steps[key].status = "ok"
+            steps[key].result_json = json.dumps({"tool": steps[key].tool, "status": "ok", "data": {}})
+        steps["preview_context"].result_json = json.dumps({
+            "tool": "preview_writing_context",
+            "status": "ok",
+            "data": {"outline_context": {"title": outline.title}},
+        })
+        steps["chapter_writer"].result_json = json.dumps({
+            "tool": "chapter_writer",
+            "status": "ok",
+            "data": {"draft_id": "draft-resume", "content_ref": "draft-resume"},
+        })
+        steps["evaluate_chapter"].status = "error"
+        steps["create_chapter"].status = "blocked"
+        steps["archive_chapter_after_write"].status = "blocked"
+        plan.status = "error"
+        target_key = f"project:proj-2:outline:{outline.id}"
+        idempotency_key = f"create_chapter:proj-2:{outline.id}"
+        old_token = "old-claim-token"
+        claim = ChapterWriteClaim(
+            project_id="proj-2",
+            target_key=target_key,
+            idempotency_key=idempotency_key,
+            claim_token=old_token,
+            status="failed",
+        )
+        self.db.add(claim)
+        self.db.flush()
+        save_args = json.loads(steps["create_chapter"].args_json)
+        save_args.update({
+            "_chapter_target_key": target_key,
+            "_chapter_idempotency_key": idempotency_key,
+            "_chapter_claim_id": claim.id,
+            "_chapter_claim_token": old_token,
+        })
+        steps["create_chapter"].args_json = json.dumps(save_args)
+        self.db.commit()
+
+        called_tools = []
+
+        async def execute(_db, _project_id, action):
+            called_tools.append(action["tool"])
+            if action["tool"] == "create_chapter":
+                return {"tool": "create_chapter", "status": "error", "detail": "stop after capture"}
+            return {"tool": action["tool"], "status": "ok", "detail": "done", "data": {}}
+
+        mock_execute.side_effect = execute
+        _run_async(_collect_events(orchestrator.resume_plan(plan.id)))
+
+        self.assertNotIn("chapter_writer", called_tools)
+        self.assertIn("evaluate_chapter", called_tools)
+        self.assertIn("create_chapter", called_tools)
+        self.db.refresh(steps["create_chapter"])
+        refreshed_args = json.loads(steps["create_chapter"].args_json)
+        self.assertNotEqual(refreshed_args["_chapter_claim_token"], old_token)
 
     @patch("app.services.agent.orchestrator.execute_workspace_action")
     def test_resume_unblocks_downstream(self, mock_execute):

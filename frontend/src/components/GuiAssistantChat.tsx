@@ -42,6 +42,7 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { motionAwareScrollBehavior } from '../utils/motion'
 import {
   defaultInterviewRuntime,
   type InterviewQuestion,
@@ -340,7 +341,7 @@ function GuiAssistantChat() {
   }, [sidebarCollapsed])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    messagesEndRef.current?.scrollIntoView({ behavior: motionAwareScrollBehavior() })
   }, [messages])
 
   const fetchProjects = useCallback(async () => {

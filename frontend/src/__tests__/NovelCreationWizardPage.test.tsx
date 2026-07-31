@@ -75,6 +75,7 @@ describe('NovelCreationWizardPage', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('新书立项工作台')
+    await user.click(screen.getByRole('button', { name: /帮我探索创意/ }))
     await user.click(screen.getByRole('button', { name: /悬疑推理/ }))
     await user.click(screen.getByText('创作约束与高级设置'))
     expect(await screen.findByDisplayValue('信息公平')).toBeInTheDocument()
@@ -82,18 +83,22 @@ describe('NovelCreationWizardPage', () => {
   })
 
   it('uses the only ready model directly and exposes the mobile genre-scroll hint', async () => {
+    const user = userEvent.setup()
     renderPage()
 
     expect(await screen.findByText('AI 已准备好')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /帮我探索创意/ }))
     expect(screen.queryByRole('combobox', { name: '选择本阶段模型' })).not.toBeInTheDocument()
     expect(screen.getByText('选择题材')).toBeInTheDocument()
     expect(screen.getByText('左右滑动选择')).toBeInTheDocument()
   })
 
   it('allows saving the intake but explains model setup when none is configured', async () => {
+    const user = userEvent.setup()
     modelState.hasModels = false
     renderPage()
     expect(await screen.findByText('当前没有可用模型')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /按我的设定立项/ }))
     expect(screen.getByRole('button', { name: /只保存草稿/ })).toBeEnabled()
     expect(screen.getByRole('button', { name: '免费开始' })).toBeInTheDocument()
   })
@@ -120,16 +125,22 @@ describe('NovelCreationWizardPage', () => {
   })
 
   it('reconnects to the active lightweight-concept run after a handoff', async () => {
+    const user = userEvent.setup()
     const session = {
       id: 'session-1', status: 'drafting', revision: 1, current_stage: 'concepts',
-      runs: [{ id: 'run-1', stage: 'concepts', status: 'running', current_message: '正在生成三套轻量创意' }],
+      runs: [{
+        id: 'run-1', session_id: 'session-1', stage: 'concepts', status: 'running',
+        operation_id: 'operation-1', model_source: 'openai:test', attempt: 1,
+        current_message: '正在生成三套轻量创意',
+      }],
       draft: {
         form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
         concepts: [], stages: {},
       },
     }
+    const closeSource = vi.fn()
     const eventSource = vi.fn().mockImplementation(function EventSourceStub() {
-      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null }
+      return { addEventListener: vi.fn(), close: closeSource, onerror: null }
     })
     vi.stubGlobal('EventSource', eventSource)
     mockGet.mockImplementation((url: string) => {
@@ -138,13 +149,167 @@ describe('NovelCreationWizardPage', () => {
       if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
+    mockPost.mockResolvedValue({ data: { data: { status: 'cancelling' } } })
 
-    renderPage('/novel-creation?session=session-1&run=run-1&model=openai%3Atest')
+    const view = renderPage('/novel-creation?session=session-1&run=run-1&model=openai%3Atest')
 
     await waitFor(() => {
       expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-1/stream')
     })
     expect(screen.getByText('正在生成三套轻量创意')).toBeInTheDocument()
+    expect(screen.getByText('实际模型：openai:test')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建立项' })).toBeDisabled()
+    const cancelButton = screen.getByRole('button', { name: /取消任务/ })
+    expect(cancelButton).toBeEnabled()
+    await user.click(cancelButton)
+    expect(mockPost).toHaveBeenCalledWith('/operations/operation-1/cancel')
+    view.unmount()
+    expect(closeSource).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a newly started stage run authoritative over an old run URL', async () => {
+    const user = userEvent.setup()
+    const oldRun = {
+      id: 'run-old', session_id: 'session-1', stage: 'concepts', status: 'completed',
+      current_message: '旧创意任务已完成',
+    }
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 2, current_stage: 'concepts', runs: [oldRun],
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [{ id: 'concept-1', source_index: 0, title: '灰港遗忘症', logline: '女孩用遗忘换取感染者的记忆。', protagonist_seed: { name: '林七', identity: '医生', goal: '找母亲', lack: '害怕遗忘' }, world_hook: '记忆传播', core_conflict: '救人就会遗忘', story_engine: '读忆换线索', opening_hook: '陌生人说出她的童年', differentiators: [], risks: [], coverage: { score: 92, covered: [], missing: [] } }],
+        stages: {},
+      },
+    }
+    const selected = { ...session, revision: 3, draft: { ...session.draft, selected_concept_id: 'concept-1' } }
+    const constraintsConfirmed = { ...selected, revision: 4 }
+    const conceptsConfirmed = { ...selected, revision: 5, current_stage: 'world_style' }
+    const eventSource = vi.fn().mockImplementation(function EventSourceStub() {
+      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null, onopen: null }
+    })
+    vi.stubGlobal('EventSource', eventSource)
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPatch.mockResolvedValue({ data: { data: selected } })
+    mockPost.mockImplementation((url: string) => {
+      if (url.endsWith('/stages/constraints/confirm')) return Promise.resolve({ data: { data: constraintsConfirmed } })
+      if (url.endsWith('/stages/concepts/confirm')) return Promise.resolve({ data: { data: conceptsConfirmed } })
+      if (url.endsWith('/runs')) return Promise.resolve({ data: { data: { run: {
+        id: 'run-new', session_id: 'session-1', stage: 'world_style', status: 'running',
+        operation_id: 'operation-new', current_message: '正在生成文风与世界观',
+      } } } })
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    renderPage('/novel-creation?session=session-1&run=run-old')
+    await user.click(await screen.findByRole('button', { name: '进入完整向导' }))
+
+    await waitFor(() => expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-new/stream'))
+    expect(screen.getByRole('button', { name: /取消任务/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '新建立项' })).toBeDisabled()
+    expect(screen.queryByText('旧创意任务已完成')).not.toBeInTheDocument()
+  })
+
+  it('finalizes a run from REST when the SSE connection closes after completion', async () => {
+    const persistedSessionRun = {
+      id: 'run-1', session_id: 'session-1', stage: 'concepts', status: 'running',
+      operation_id: 'operation-1', current_message: '正在生成三套轻量创意',
+    }
+    let currentRun = persistedSessionRun
+    const session = {
+      id: 'session-1', status: 'drafting', revision: 1, current_stage: 'concepts',
+      runs: [persistedSessionRun],
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [], stages: {},
+      },
+    }
+    let sourceInstance: {
+      onerror: ((event: Event) => void) | null
+      onopen: null
+      close: ReturnType<typeof vi.fn>
+      addEventListener: ReturnType<typeof vi.fn>
+    } | undefined
+    vi.stubGlobal('EventSource', vi.fn().mockImplementation(function EventSourceStub() {
+      sourceInstance = { addEventListener: vi.fn(), close: vi.fn(), onerror: null, onopen: null }
+      return sourceInstance
+    }))
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: { ...session, runs: [{ ...persistedSessionRun }] } } })
+      if (url === '/novel-creation/runs/run-1') {
+        currentRun = { ...currentRun, status: 'completed', current_message: '三套创意已保存' }
+        return Promise.resolve({ data: { data: currentRun } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderPage('/novel-creation?session=session-1&run=run-1')
+    await waitFor(() => expect(sourceInstance?.onerror).toBeTypeOf('function'))
+    act(() => sourceInstance?.onerror?.(new Event('error')))
+
+    expect(await screen.findByText('本轮立项任务已完成')).toBeInTheDocument()
+    expect(screen.getByText('三套创意已保存')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /取消任务/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建立项' })).toBeEnabled()
+    expect(sourceInstance?.close).toHaveBeenCalled()
+  })
+
+  it('restores a requested terminal run and keeps its outcome visible after refresh', async () => {
+    const completedRun = {
+      id: 'run-completed', session_id: 'session-1', stage: 'world_style', status: 'completed',
+      model_source: 'openai:gpt-test', attempt: 2, result_mode: 'repaired',
+      current_message: '文风与世界观已生成', warning: '模型结构已自动修复',
+      next_action: '审阅并确认文风与世界观',
+    }
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 3, current_stage: 'world_style',
+      runs: [
+        completedRun,
+        { id: 'run-newer', session_id: 'session-1', stage: 'characters', status: 'failed' },
+      ],
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [], stages: {},
+      },
+    }
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderPage('/novel-creation?session=session-1&run=run-completed')
+
+    expect(await screen.findByText('本轮立项任务已完成')).toBeInTheDocument()
+    expect(screen.getByText('文风与世界观已生成')).toBeInTheDocument()
+    expect(screen.getByText('openai:gpt-test')).toBeInTheDocument()
+    expect(screen.getByText('2 次')).toBeInTheDocument()
+    expect(screen.getAllByText('阶段结果已保存到立项草稿').length).toBeGreaterThan(0)
+    expect(screen.getByText('模型结构已自动修复')).toBeInTheDocument()
+    expect(screen.getByText('审阅并确认文风与世界观')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /取消任务/ })).not.toBeInTheDocument()
+  })
+
+  it('offers author-led, exploration, and existing-novel import entry points', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: /按我的设定立项/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /帮我探索创意/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /导入已有小说/ }))
+    expect(mockNavigate).toHaveBeenCalledWith('/dashboard?create=import')
+
+    await user.click(screen.getByRole('button', { name: /按我的设定立项/ }))
+    expect(await screen.findByLabelText('已有故事方案')).toBeInTheDocument()
+    expect(screen.getByLabelText(/已有大纲/)).toBeInTheDocument()
+    expect(screen.getByText('不可改动的设定')).toBeInTheDocument()
   })
 
   it('refreshes the workbench after every completed quick-generation stage', async () => {

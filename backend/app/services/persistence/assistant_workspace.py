@@ -124,6 +124,9 @@ class SqlAlchemyAssistantWorkspace:
         self.db.add(message)
         return message
 
+    def message(self, message_id: str):
+        return self.db.query(AssistantMessage).filter(AssistantMessage.id == message_id).first()
+
     def conversation_messages(self, conversation_id: str):
         return self.db.query(AssistantMessage).filter(
             AssistantMessage.conversation_id == conversation_id

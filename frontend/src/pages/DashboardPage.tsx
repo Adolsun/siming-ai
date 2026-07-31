@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -129,6 +129,7 @@ function titleFromFile(file: File) {
 
 function DashboardPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [searchKeyword, setSearchKeyword] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const projectsQuery = useProjects(appliedSearch || undefined)
@@ -195,6 +196,18 @@ function DashboardPage() {
     if (file) setPendingImportFile(file)
     if (draft) form.setFieldsValue(draft)
   }
+
+  useEffect(() => {
+    if (searchParams.get('create') !== 'import') return
+    openCreateModal()
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('create')
+      return next
+    }, { replace: true })
+  // openCreateModal only updates local modal state; URL is the durable route contract.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, setSearchParams])
 
   const openNovelCreation = () => {
     navigate('/novel-creation')

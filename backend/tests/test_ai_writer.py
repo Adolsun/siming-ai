@@ -37,7 +37,11 @@ from app.database.models import (
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 from app.routers.ai_writer import _execute_workspace_action
-from app.services.agent.bridge import _resolve_outline_node_id
+from app.services.agent.bridge import (
+    _latest_outline_chapter_number,
+    _pending_missing_outline_chapter_number,
+    _resolve_outline_node_id,
+)
 
 API_PREFIX = "/api/v1"
 
@@ -465,6 +469,116 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             self.assertEqual(resolved, second.id)
         finally:
             db.close()
+
+    def test_outline_resolution_supports_chinese_numbers_and_selected_node_priority(self):
+        project_id = self.create_project("Chinese Outline Resolution Project")
+        first_id = self.create_outline_node(project_id, "第一章 潮汐来信")
+        second_id = self.create_outline_node(project_id, "第二章 火灾残影")
+
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                _resolve_outline_node_id(db, project_id, 2, "写第二章", first_id),
+                first_id,
+            )
+            self.assertEqual(
+                _resolve_outline_node_id(db, project_id, 2, "写第二章"),
+                second_id,
+            )
+        finally:
+            db.close()
+
+    def test_outline_resolution_rejects_foreign_or_section_selection_then_falls_back(self):
+        project_id = self.create_project("Current Outline Project")
+        foreign_project_id = self.create_project("Foreign Outline Project")
+        current_id = self.create_outline_node(project_id, "第〇七章 暗火")
+        foreign_id = self.create_outline_node(foreign_project_id, "第〇七章 暗火")
+
+        db = SessionLocal()
+        try:
+            section = OutlineNode(
+                project_id=project_id,
+                node_type="section",
+                title="第〇七章 场景一",
+                sort_order=1,
+            )
+            db.add(section)
+            db.commit()
+            self.assertEqual(
+                _resolve_outline_node_id(db, project_id, 7, "写第〇七章", foreign_id),
+                current_id,
+            )
+            self.assertEqual(
+                _resolve_outline_node_id(db, project_id, 7, "写第〇七章", section.id),
+                current_id,
+            )
+        finally:
+            db.close()
+
+    def test_outline_resolution_fuzzy_matches_chapter_title(self):
+        project_id = self.create_project("Fuzzy Outline Project")
+        outline_id = self.create_outline_node(project_id, "潮汐来信")
+        db = SessionLocal()
+        try:
+            resolved = _resolve_outline_node_id(
+                db,
+                project_id,
+                None,
+                "请写章《潮汐来信》，保留结尾钩子",
+            )
+            self.assertEqual(resolved, outline_id)
+        finally:
+            db.close()
+
+    def test_latest_and_pending_outline_numbers_support_chinese_titles(self):
+        project_id = self.create_project("Chinese Outline History Project")
+        self.create_outline_node(project_id, "第二十五章 潮落")
+        self.create_outline_node(project_id, "第一百零三章 火灾真相")
+
+        db = SessionLocal()
+        try:
+            conversation = AssistantConversation(
+                project_id=project_id,
+                title="写章",
+                scope="project",
+            )
+            db.add(conversation)
+            db.flush()
+            db.add(AssistantMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="未找到第一〇四章的大纲节点，请先创建第一〇四章大纲。",
+                status="completed",
+            ))
+            db.commit()
+
+            self.assertEqual(_latest_outline_chapter_number(db, project_id), 103)
+            self.assertEqual(
+                _pending_missing_outline_chapter_number(db, project_id, conversation.id),
+                104,
+            )
+        finally:
+            db.close()
+
+    def test_workspace_selected_outline_reaches_deterministic_chapter_preflight(self):
+        project_id = self.create_project("Selected Outline Plan Project")
+        outline_id = self.create_outline_node(project_id, "第一章 潮汐来信")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "用质量模式写本章",
+                "selected_outline_node_id": outline_id,
+                "model": "local_llama_cpp:qwen3-8b-q4",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("司命本地 AI", response.text)
+        self.assertNotIn("没有定位到要写的章节大纲节点", response.text)
+        self.assertNotIn("模型正在生成回复", response.text)
 
     @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_workspace_outline_direction_followup_creates_missing_chapter_outline(self, mock_chat):

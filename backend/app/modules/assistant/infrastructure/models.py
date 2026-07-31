@@ -180,6 +180,49 @@ class AssistantRunStep(Base):
     )
 
 
+class ChapterWriteClaim(Base):
+    """Durable reservation that prevents concurrent writes for one outline chapter."""
+
+    __tablename__ = "chapter_write_claims"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    target_key = Column(String(300), nullable=False)
+    idempotency_key = Column(String(300), nullable=False)
+    claim_token = Column(String(36), nullable=False, default=generate_uuid)
+    status = Column(String(20), nullable=False, default="running")
+    run_id = Column(
+        String(36), ForeignKey("assistant_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    chapter_id = Column(
+        String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
+    )
+    result_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_chapter_write_claim_identity"
+        ),
+        Index(
+            "uq_chapter_write_claim_active_target",
+            "project_id",
+            "target_key",
+            unique=True,
+            sqlite_where=(status == "running"),
+            postgresql_where=(status == "running"),
+        ),
+        Index("ix_chapter_write_claim_status", "status", "updated_at"),
+        Index("ix_chapter_write_claim_run", "run_id"),
+    )
+
+
 class AssistantMemory(Base):
     __tablename__ = "assistant_memories"
 
@@ -291,6 +334,7 @@ __all__ = [
     "SystemAssistantMessage",
     "AssistantRun",
     "AssistantRunStep",
+    "ChapterWriteClaim",
     "AssistantMemory",
     "ChapterDraft",
     "RagDocument",

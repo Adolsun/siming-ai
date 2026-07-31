@@ -4,7 +4,7 @@ Connects the main assistant chat flow with the plan orchestrator:
 detect_intent -> build_plan -> create_plan -> execute_plan (SSE events).
 """
 from __future__ import annotations
-from app.architecture.uow import commit_session
+
 import json
 import re
 from datetime import datetime, timedelta
@@ -13,27 +13,38 @@ from typing import Any, AsyncGenerator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import commit_session
+
 from ...ai.local_cli_adapter import is_local_cli_provider
 from ...core.db_helpers import get_project_or_404
+from ...core.numbers import extract_chapter_number
 from ...database.models import (
     AgentPlanStep,
-    AssistantMemory,
     AssistantConversation,
+    AssistantMemory,
     AssistantMessage,
     OutlineNode,
 )
 from ...prompts.workspace_assistant import format_memory_context
+from ..operation_runtime import iterate_with_operation, record_operation_signal
 from ..skills.service import build_skill_prompt_section, select_relevant_skills
 from ..workspace.registry import registry
 from ..workspace.run_log import (
     create_assistant_run,
     mark_assistant_run,
+    resolve_assistant_model,
     run_payload,
 )
-from ..operation_runtime import iterate_with_operation, record_operation_signal
+from .chapter_intent import has_chapter_rewrite_intent, has_strong_chapter_writing_intent
+from .outline_resolution import resolve_outline_node_id as _resolve_outline_node_id
 from .orchestrator import PlanOrchestrator, _serialize_step
 from .plan_graph import PlanGraph
-from .planner import build_plan_from_intent, detect_intent, plan_local_cli_writing
+from .planner import (
+    build_plan_from_intent,
+    detect_intent,
+    plan_has_chapter_writing_contract,
+    plan_local_cli_writing,
+)
 
 
 def _apply_assistant_mode_to_intent(
@@ -53,36 +64,6 @@ def _sse_event(payload: Any) -> str:
     return f"data: {data}\n\n"
 
 
-def _resolve_outline_node_id(
-    db: Session,
-    project_id: str,
-    chapter_number: int | None,
-    outline_query: str,
-) -> str:
-    """Try to find an outline node ID from chapter number or query text."""
-    if chapter_number is not None:
-        nodes = (
-            db.query(OutlineNode)
-            .filter(
-                OutlineNode.project_id == project_id,
-                OutlineNode.node_type == "chapter",
-            )
-            .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
-            .all()
-        )
-        chapter_pattern = re.compile(rf"^\s*第\s*{chapter_number}\s*章(?:\s|$|[^0-9])")
-        for node in nodes:
-            if chapter_pattern.search(node.title or ""):
-                return node.id
-
-    # Try matching by keywords from the query
-    match = re.search(r"第\s*(\d+)\s*章", outline_query or "")
-    if match:
-        return _resolve_outline_node_id(db, project_id, int(match.group(1)), "")
-
-    return ""
-
-
 def _latest_outline_label(db: Session, project_id: str) -> str:
     node = (
         db.query(OutlineNode)
@@ -98,14 +79,17 @@ def _latest_outline_label(db: Session, project_id: str) -> str:
 def _latest_outline_chapter_number(db: Session, project_id: str) -> int | None:
     nodes = (
         db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id)
+        .filter(
+            OutlineNode.project_id == project_id,
+            OutlineNode.node_type == "chapter",
+        )
         .all()
     )
     numbers: list[int] = []
     for node in nodes:
-        match = re.search(r"第\s*(\d+)\s*章", node.title or "")
-        if match:
-            numbers.append(int(match.group(1)))
+        number = extract_chapter_number(node.title or "", allow_bare=True)
+        if number is not None:
+            numbers.append(number)
     return max(numbers) if numbers else None
 
 
@@ -141,12 +125,14 @@ def _pending_missing_outline_chapter_number(
     )
     for message in messages:
         text = message.content or ""
-        match = re.search(r"未找到第\s*(\d+)\s*章的大纲节点", text)
-        if match:
-            return int(match.group(1))
-        match = re.search(r"请先创建第\s*(\d+)\s*章大纲", text)
-        if match:
-            return int(match.group(1))
+        if "未找到" in text and "大纲节点" in text:
+            number = extract_chapter_number(text)
+            if number is not None:
+                return number
+        if "请先创建" in text and "大纲" in text:
+            number = extract_chapter_number(text)
+            if number is not None:
+                return number
     return None
 
 
@@ -805,13 +791,24 @@ async def detect_and_stream_plan(
     model: str | None = None,
     assistant_mode: str = "fast",
     outline_batch_count: int = 1,
+    selected_outline_node_id: str | None = None,
+    force_chapter_writing: bool = False,
 ) -> AsyncGenerator[str, None] | None:
-    """Detect intent and stream plan execution via SSE.
-
-    Returns an SSE event generator if a plan intent was detected, or None
-    if no plan intent was found (caller should fall back to old agentic loop).
-    """
+    """Return a plan SSE generator, or None when the legacy agent should handle it."""
+    model = resolve_assistant_model(model)
     intent = detect_intent(message)
+    strong_chapter_writing = force_chapter_writing or has_strong_chapter_writing_intent(message)
+    if strong_chapter_writing and (
+        intent is None or intent.get("intent_type") not in {"chapter", "external_writing"}
+    ):
+        intent = {
+            "intent_type": "chapter",
+            "mode": "quality" if assistant_mode == "quality" else "fast",
+            "outline_query": message,
+            "requirements": message,
+            "chapter_number": extract_chapter_number(message, allow_bare=True),
+            "rewrite": has_chapter_rewrite_intent(message),
+        }
     outline_followup = _outline_direction_followup_intent(
         db,
         project_id,
@@ -839,6 +836,7 @@ async def detect_and_stream_plan(
             db, project_id,
             intent.get("chapter_number"),
             intent.get("outline_query", ""),
+            selected_outline_node_id,
         )
 
     memory_context = _build_memory_context(db, project_id, message)
@@ -897,9 +895,34 @@ async def detect_and_stream_plan(
             requirements=intent.get("requirements", ""),
             provider=_model_provider(model),
             outline_node_id=outline_node_id,
+            rewrite=bool(intent.get("rewrite")),
         )
     else:
         graph = build_plan_from_intent(intent, outline_node_id=outline_node_id)
+
+    used_deterministic_fallback = False
+    if strong_chapter_writing and not plan_has_chapter_writing_contract(graph):
+        used_deterministic_fallback = True
+        deterministic_intent = {
+            "intent_type": "chapter",
+            "mode": "quality" if assistant_mode == "quality" else "fast",
+            "outline_query": message,
+            "requirements": message,
+            "chapter_number": intent.get("chapter_number"),
+            "rewrite": has_chapter_rewrite_intent(message),
+        }
+        if is_local_cli_provider(_model_provider(model)):
+            graph = plan_local_cli_writing(
+                requirements=message,
+                provider=_model_provider(model),
+                outline_node_id=outline_node_id,
+                rewrite=bool(deterministic_intent["rewrite"]),
+            )
+        else:
+            graph = build_plan_from_intent(
+                deterministic_intent,
+                outline_node_id=outline_node_id,
+            )
     if graph is None:
         return None
 
@@ -977,6 +1000,12 @@ async def detect_and_stream_plan(
             "assistant_message": _assistant_message_to_dict(assistant_msg_db),
         })
         yield _sse_event({"type": "run", "run": run_payload(assistant_run)})
+        if used_deterministic_fallback:
+            yield _sse_event({
+                "type": "status",
+                "tool": "deterministic_chapter_fallback",
+                "message": "模型没有执行写章工具，本轮未创建章节。正在切换到确定性写章流程。",
+            })
         if skill_info:
             yield _sse_event({
                 "type": "skills_matched",

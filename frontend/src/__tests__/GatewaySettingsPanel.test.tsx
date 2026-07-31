@@ -54,7 +54,7 @@ describe('GatewaySettingsPanel', () => {
     })
     gatewayApi.listSyncProjects.mockResolvedValue([{
       project_id: 'project-1',
-      title: '算法记忆之城',
+      title: '河谷温室异色记录',
       status: 'enabled',
       entity_count: 26,
       counts: { chapter: 3 },
@@ -64,7 +64,7 @@ describe('GatewaySettingsPanel', () => {
     }])
     gatewayApi.listGatewayDevices.mockResolvedValue([{
       id: 'device-1',
-      name: '林岚的手机',
+      name: '测试作者的手机',
       platform: 'android',
       role: 'owner',
       status: 'approved',
@@ -110,8 +110,8 @@ describe('GatewaySettingsPanel', () => {
       />,
     )
 
-    expect(await screen.findByText('算法记忆之城')).toBeInTheDocument()
-    expect(screen.getByText('林岚的手机')).toBeInTheDocument()
+    expect(await screen.findByText('河谷温室异色记录')).toBeInTheDocument()
+    expect(screen.getByText('测试作者的手机')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
     expect(document.querySelector('.gateway-project-proof')).toHaveTextContent('26 项资料')
     expect(screen.getByText('没有待处理冲突')).toBeInTheDocument()

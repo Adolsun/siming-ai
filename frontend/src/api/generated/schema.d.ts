@@ -4579,6 +4579,34 @@ export interface components {
              */
             message: string;
         };
+        /** ApiResponse[NovelCreationStageRunResponse] */
+        ApiResponse_NovelCreationStageRunResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["NovelCreationStageRunResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[NovelCreationStageRunStartData] */
+        ApiResponse_NovelCreationStageRunStartData_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["NovelCreationStageRunStartData"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
         /** ApiResponse[OperationListData] */
         ApiResponse_OperationListData_: {
             /**
@@ -4783,6 +4811,34 @@ export interface components {
              */
             code: number;
             data?: components["schemas"]["TokenPair"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[WorkspaceAssistantRunDetailResponse] */
+        ApiResponse_WorkspaceAssistantRunDetailResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["WorkspaceAssistantRunDetailResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[WorkspaceAssistantRunListResponse] */
+        ApiResponse_WorkspaceAssistantRunListResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["WorkspaceAssistantRunListResponse"] | null;
             /**
              * Message
              * @default success
@@ -6140,12 +6196,20 @@ export interface components {
         };
         /** NovelCreationSessionPatchRequest */
         NovelCreationSessionPatchRequest: {
+            /** Author Brief */
+            author_brief?: string | null;
+            /** Author Outline */
+            author_outline?: string | null;
+            /** Creation Mode */
+            creation_mode?: ("author_led" | "explore") | null;
             /** Expected Revision */
             expected_revision?: number | null;
             /** Form */
             form?: {
                 [key: string]: unknown;
             } | null;
+            /** Locked Requirements */
+            locked_requirements?: string[] | null;
             /** Quick Mode */
             quick_mode?: boolean | null;
             /** Selected Concept Id */
@@ -6170,6 +6234,23 @@ export interface components {
              */
             source: string;
         };
+        /** NovelCreationStageEventResponse */
+        NovelCreationStageEventResponse: {
+            /** Created At */
+            created_at?: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Message */
+            message?: string | null;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** Sequence */
+            sequence: number;
+            /** Status */
+            status: string;
+        };
         /** NovelCreationStagePatchRequest */
         NovelCreationStagePatchRequest: {
             /** Data */
@@ -6193,13 +6274,16 @@ export interface components {
             auto_confirm: boolean;
             /** Expected Revision */
             expected_revision?: number | null;
+            /** Instruction */
+            instruction?: string | null;
             /** Model */
             model?: string | null;
             /**
              * Operation
              * @default generate
+             * @enum {string}
              */
-            operation: string;
+            operation: "generate" | "regenerate" | "refine";
             /** Session Patch */
             session_patch?: {
                 [key: string]: unknown;
@@ -6212,8 +6296,83 @@ export interface components {
              */
             use_model: boolean;
         };
+        /**
+         * NovelCreationStageRunResponse
+         * @description Stable wire contract for one durable novel-creation stage run.
+         */
+        NovelCreationStageRunResponse: {
+            /**
+             * Attempt
+             * @default 0
+             */
+            attempt: number;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Context Manifest Id */
+            context_manifest_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Current Message */
+            current_message?: string | null;
+            /** Events */
+            events?: components["schemas"]["NovelCreationStageEventResponse"][];
+            /** Failure Class */
+            failure_class?: string | null;
+            /** Id */
+            id: string;
+            /** Input Revision */
+            input_revision?: number | null;
+            /** Input Snapshot Hash */
+            input_snapshot_hash?: string | null;
+            /** Model Source */
+            model_source?: string | null;
+            /** Next Action */
+            next_action?: string | null;
+            /** Operation */
+            operation: string;
+            /** Operation Id */
+            operation_id?: string | null;
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** Result Mode */
+            result_mode?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Stage */
+            stage: string;
+            /** Status */
+            status: string;
+            /** Storage Target */
+            storage_target: string;
+            /** Tool Mode */
+            tool_mode?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Warning */
+            warning?: string | null;
+        };
+        /** NovelCreationStageRunStartData */
+        NovelCreationStageRunStartData: {
+            run: components["schemas"]["NovelCreationStageRunResponse"];
+            /** Stream Url */
+            stream_url: string;
+        };
         /** NovelCreationStartRequest */
         NovelCreationStartRequest: {
+            /**
+             * Author Brief
+             * @default
+             */
+            author_brief: string;
+            /**
+             * Author Outline
+             * @default
+             */
+            author_outline: string;
             /** Author Overrides */
             author_overrides?: {
                 [key: string]: unknown;
@@ -6221,10 +6380,18 @@ export interface components {
             /** Avoid */
             avoid?: string[];
             /**
+             * Creation Mode
+             * @default explore
+             * @enum {string}
+             */
+            creation_mode: "author_led" | "explore";
+            /**
              * Genre
              * @default
              */
             genre: string;
+            /** Locked Requirements */
+            locked_requirements?: string[];
             /**
              * Mode
              * @default template
@@ -6733,6 +6900,8 @@ export interface components {
              * @default project
              */
             scope: string;
+            /** Selected Outline Node Id */
+            selected_outline_node_id?: string | null;
         };
         /**
          * ProjectCreate
@@ -7555,6 +7724,107 @@ export interface components {
              * @default 0.3
              */
             temperature: number | null;
+        };
+        /** WorkspaceAssistantRunDetailResponse */
+        WorkspaceAssistantRunDetailResponse: {
+            /** Assistant Message */
+            assistant_message?: {
+                [key: string]: unknown;
+            } | null;
+            run: components["schemas"]["WorkspaceAssistantRunResponse"];
+            /** Steps */
+            steps: components["schemas"]["WorkspaceAssistantRunStepResponse"][];
+        };
+        /** WorkspaceAssistantRunListResponse */
+        WorkspaceAssistantRunListResponse: {
+            /** Items */
+            items: components["schemas"]["WorkspaceAssistantRunResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * WorkspaceAssistantRunResponse
+         * @description Stable public contract for one durable workspace-assistant run.
+         */
+        WorkspaceAssistantRunResponse: {
+            /** Actual Model */
+            actual_model?: string | null;
+            /** Assistant Message Id */
+            assistant_message_id?: string | null;
+            /** Assistant Mode */
+            assistant_mode?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Current Iteration
+             * @default 0
+             */
+            current_iteration: number;
+            /** Error */
+            error?: string | null;
+            /** Id */
+            id: string;
+            /** Model */
+            model?: string | null;
+            /** Operation Id */
+            operation_id?: string | null;
+            /** Phase */
+            phase?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Scope */
+            scope?: string | null;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** WorkspaceAssistantRunStepResponse */
+        WorkspaceAssistantRunStepResponse: {
+            /**
+             * Attempt No
+             * @default 1
+             */
+            attempt_no: number;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Detail */
+            detail?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Id */
+            id: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /**
+             * Iteration
+             * @default 0
+             */
+            iteration: number;
+            /** Request */
+            request?: unknown;
+            /** Resolved Step Id */
+            resolved_step_id?: string | null;
+            /** Result */
+            result?: unknown;
+            /** Retry Of Step Id */
+            retry_of_step_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Step Type */
+            step_type: string;
+            /** Tool */
+            tool?: string | null;
         };
         /**
          * WorldbuildingEntryCreate
@@ -9892,7 +10162,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_NovelCreationStageRunResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -10154,7 +10424,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_NovelCreationStageRunStartData_"];
                 };
             };
             /** @description Validation Error */
@@ -11708,7 +11978,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_WorkspaceAssistantRunListResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -11740,7 +12010,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_WorkspaceAssistantRunDetailResponse_"];
                 };
             };
             /** @description Validation Error */

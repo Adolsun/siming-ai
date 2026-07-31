@@ -30,11 +30,12 @@ from app.ai.local_cli_adapter import (
     parse_cli_launch,
     terminate_cli_process_tree,
 )
-from app.database.models import APIConfig, AgentRun, Chapter, Project
+from app.database.models import APIConfig, AgentRun, Chapter, ContextManifest, Project
 from app.database.session import SessionLocal
 from app.services.content_store import ensure_project_folder
 from app.services.external_agent.run_service import add_event, cancel_run, create_run, update_run_status
 from app.services.operation_runtime import register_operation_actions, unregister_operation_actions
+from app.services.workspace.idempotency import fail_chapter_write_claim
 
 
 _TASKS: dict[str, asyncio.Task] = {}
@@ -50,6 +51,16 @@ _OPENCODE_WRITING_RECOVERY_PROMPT = (
     "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
     "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
     "attached task. Do not stop before create_chapter succeeds."
+)
+_OPENCODE_REWRITE_RECOVERY_PROMPT = (
+    "Your previous response produced replacement chapter prose but did not finish the "
+    "required Siming MCP rewrite workflow. Do not print or rewrite the chapter again. "
+    "Reuse the complete replacement text from your immediately preceding response, call "
+    "save_external_chapter_draft and record_external_quality_review, then call "
+    "update_chapter with rewrite=true for the exact outline_node_id, followed by "
+    "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
+    "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
+    "attached task. Never call create_chapter for this rewrite."
 )
 
 
@@ -72,6 +83,7 @@ def _opencode_recovery_args(
     *,
     original_prompt: str,
     session_id: str,
+    recovery_prompt: str = _OPENCODE_WRITING_RECOVERY_PROMPT,
 ) -> list[str]:
     """Continue the same OpenCode session without accidentally retitling it."""
     recovered = list(args)
@@ -81,10 +93,10 @@ def _opencode_recovery_args(
             del recovered[index : min(index + 2, len(recovered))]
     try:
         prompt_index = recovered.index(original_prompt)
-        recovered[prompt_index] = _OPENCODE_WRITING_RECOVERY_PROMPT
+        recovered[prompt_index] = recovery_prompt
     except ValueError:
         prompt_index = len(recovered)
-        recovered.append(_OPENCODE_WRITING_RECOVERY_PROMPT)
+        recovered.append(recovery_prompt)
     recovered[prompt_index:prompt_index] = ["--session", session_id]
     return recovered
 
@@ -115,6 +127,7 @@ async def _continue_opencode_writing_session(
     process: asyncio.subprocess.Process,
     out_text: str,
     err_text: str,
+    rewrite: bool = False,
 ) -> tuple[asyncio.subprocess.Process, str, str]:
     """Resume OpenCode when it printed prose but skipped the Siming write tools."""
     if (
@@ -146,6 +159,11 @@ async def _continue_opencode_writing_session(
         args,
         original_prompt=prompt,
         session_id=session_id,
+        recovery_prompt=(
+            _OPENCODE_REWRITE_RECOVERY_PROMPT
+            if rewrite
+            else _OPENCODE_WRITING_RECOVERY_PROMPT
+        ),
     )
     recovery_process = await asyncio.create_subprocess_exec(
         command,
@@ -187,9 +205,51 @@ async def _cancel_local_cli_agent(run_id: str) -> None:
         task.cancel()
     db = SessionLocal()
     try:
+        run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        _release_managed_chapter_claim(
+            db,
+            run,
+            status="cancelled",
+            error="本机 CLI 写作已取消，未继续写入章节",
+        )
         cancel_run(db, run_id)
     finally:
         db.close()
+
+
+def _managed_write_contract(db: Session, run: AgentRun | None) -> dict[str, Any]:
+    if not run or not run.context_manifest_id:
+        return {}
+    manifest = (
+        db.query(ContextManifest)
+        .filter(
+            ContextManifest.id == run.context_manifest_id,
+            ContextManifest.project_id == run.project_id,
+        )
+        .first()
+    )
+    query = manifest.query_json if manifest and isinstance(manifest.query_json, dict) else {}
+    arguments = query.get("arguments") if isinstance(query, dict) else None
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def _release_managed_chapter_claim(
+    db: Session,
+    run: AgentRun | None,
+    *,
+    status: str,
+    error: str,
+) -> bool:
+    contract = _managed_write_contract(db, run)
+    if not contract.get("managed_chapter_write"):
+        return False
+    return fail_chapter_write_claim(
+        db,
+        str(contract.get("chapter_claim_id") or "").strip() or None,
+        str(contract.get("chapter_claim_token") or "").strip() or None,
+        status=status,
+        error=error,
+    )
 
 
 def _select_cli_config(db: Session, provider: str | None = None) -> APIConfig | None:
@@ -210,7 +270,7 @@ def _task_prompt(task_file: Path) -> str:
     )
 
 
-def _workflow_section(task_type: str) -> str:
+def _workflow_section(task_type: str, *, rewrite: bool = False) -> str:
     if task_type == "cataloging":
         return """
 ## Required Workflow: Cataloging
@@ -224,6 +284,15 @@ def _workflow_section(task_type: str) -> str:
 8. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
 """
     if task_type == "writing":
+        formal_write = (
+            "8. Call `record_external_quality_review`, then `update_chapter` with "
+            "`rewrite=true`, the exact `outline_node_id`, and `draft_id/content_ref`. "
+            "Never call `create_chapter` for this task."
+            if rewrite
+            else "8. Call `record_external_quality_review`, then `create_chapter` with "
+            "`draft_id/content_ref` and `context_manifest_id`. Never call "
+            "`update_chapter` for this new-chapter task."
+        )
         return """
 ## Required Workflow: Writing
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
@@ -233,10 +302,10 @@ def _workflow_section(task_type: str) -> str:
 5. Call `prepare_external_writing_context` with `context_manifest_id` to get the compatible quality prompt wrapper.
 6. Read relevant project files directly when useful, but write only through Siming MCP tools.
 7. Call `save_external_chapter_draft` with `context_manifest_id` for long chapter text instead of printing it.
-8. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref` and `context_manifest_id`.
+{formal_write}
 9. Call `archive_chapter_after_write` with the same manifest and standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
 10. Call `get_project_archive_status` before reporting completion.
-"""
+""".format(formal_write=formal_write)
     return """
 ## Required Workflow: General Project Work
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
@@ -255,11 +324,30 @@ def write_task_file(
     task_type: str,
     provider: str,
     context_manifest_id: str | None = None,
+    writing_contract: dict[str, Any] | None = None,
 ) -> Path:
     folder = ensure_project_folder(db, project)
     run_dir = folder / ".siming" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     task_file = run_dir / "task.md"
+    contract = dict(writing_contract or {})
+    rewrite = bool(contract.get("rewrite"))
+    managed_write = bool(contract.get("managed_chapter_write"))
+    target_outline = str(contract.get("outline_node_id") or "").strip()
+    formal_tool = "update_chapter" if rewrite else "create_chapter"
+    write_contract_section = ""
+    if task_type == "writing":
+        write_contract_section = f"""
+## Managed Chapter Write Contract
+- outline_node_id: `{target_outline or "missing"}`
+- mode: `{"rewrite" if rewrite else "create"}`
+- required formal tool: `{formal_tool}`
+- parent_operation_id: `{str(contract.get("parent_operation_id") or "unavailable")}`
+- chapter_claim_id: `{str(contract.get("chapter_claim_id") or "unavailable")}`
+- managed claim: `{"required" if managed_write else "unavailable"}`
+- Pass `run_id="{run_id}"` to every MCP tool call. Siming validates the child run, parent operation, and chapter claim immediately before the formal write.
+- If any cancellation or claim-expired error is returned, stop immediately and do not retry the formal write.
+"""
     text = f"""# Siming Local CLI Agent Task
 
 ## Run
@@ -273,6 +361,8 @@ def write_task_file(
 
 ## User Request
 {user_request.strip() or "No user request provided."}
+
+{write_contract_section}
 
 ## Data Boundary
 - The database is the only authoritative source.
@@ -289,7 +379,7 @@ def write_task_file(
 - If blocked, call `report_agent_progress` with the blocker, then `finish_agent_run` with a clear summary.
 - When complete, call `finish_agent_run`.
 
-{_workflow_section(task_type)}
+{_workflow_section(task_type, rewrite=rewrite)}
 
 ## Language Rules
 - Preserve the source novel language. For Chinese novels, save Chinese names, titles, summaries, aliases, outline nodes, and worldbuilding.
@@ -316,6 +406,7 @@ async def _run_cli_process(
     cwd: str,
     task_type: str = "general",
     prompt: str = "",
+    rewrite: bool = False,
 ) -> None:
     db = SessionLocal()
     operation_id: str | None = None
@@ -372,6 +463,7 @@ async def _run_cli_process(
                 process=proc,
                 out_text=out_text,
                 err_text=err_text,
+                rewrite=rewrite,
             )
         payload = {
             "returncode": proc.returncode,
@@ -439,6 +531,17 @@ async def _run_cli_process(
     finally:
         _PROCESSES.pop(run_id, None)
         _TASKS.pop(run_id, None)
+        run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        _release_managed_chapter_claim(
+            db,
+            run,
+            status="cancelled" if run and run.status == "cancelled" else "failed",
+            error=(
+                "本机 CLI 写作已取消，未继续写入章节"
+                if run and run.status == "cancelled"
+                else "本机 CLI 已结束但没有完成受管章节写入，可安全重试"
+            ),
+        )
         if operation_id:
             unregister_operation_actions(operation_id)
         db.close()
@@ -490,7 +593,18 @@ def start_local_cli_agent_worker(
         from app.services.context_orchestrator import ContextOrchestrator
 
         orchestrator = ContextOrchestrator(db)
-        manifest = orchestrator.get_manifest(str(context_manifest_id), project_id) if context_manifest_id else None
+        managed_chapter_write = bool(
+            task_type == "writing"
+            and requested_arguments.get("managed_chapter_write")
+        )
+        # A managed write needs a private, immutable baseline containing its
+        # claim token and parent-operation fence. Reusing a caller-supplied
+        # manifest could silently drop that contract.
+        manifest = (
+            orchestrator.get_manifest(str(context_manifest_id), project_id)
+            if context_manifest_id and not managed_chapter_write
+            else None
+        )
         if manifest is None:
             manifest = orchestrator.prepare(
                 project_id=project_id,
@@ -522,6 +636,7 @@ def start_local_cli_agent_worker(
                 "detail": detail,
                 "data": {
                     "run_id": run.id,
+                    "operation_id": run.operation_id,
                     "provider": provider,
                     "task_type": task_type,
                     "context_manifest_id": manifest.id,
@@ -536,6 +651,7 @@ def start_local_cli_agent_worker(
         task_type=task_type,
         provider=provider,
         context_manifest_id=manifest.id if manifest else None,
+        writing_contract=requested_arguments if task_type == "writing" else None,
     )
     commit_session(db)
 
@@ -568,6 +684,7 @@ def start_local_cli_agent_worker(
             cwd=str(Path(project.folder_path or task_file.parent).resolve()),
             task_type=task_type,
             prompt=prompt,
+            rewrite=bool(requested_arguments.get("rewrite")),
         )
     )
     _TASKS[run.id] = task
@@ -581,6 +698,7 @@ def start_local_cli_agent_worker(
         "detail": f"已启动本机 CLI Agent：{provider}",
         "data": {
             "run_id": run.id,
+            "operation_id": run.operation_id,
             "provider": provider,
             "task_type": task_type,
             "task_file": str(task_file),

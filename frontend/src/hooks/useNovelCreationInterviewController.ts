@@ -78,6 +78,9 @@ export interface NovelCreationRunSummary {
   input_revision?: number
   input_snapshot_hash?: string
   model_source?: string
+  attempt?: number
+  result_mode?: 'model' | 'repaired' | 'deterministic_fallback'
+  warning?: string
 }
 
 interface ConceptRunData {
@@ -88,6 +91,10 @@ export interface StartNovelCreationSessionInput {
   userBrief: string
   mode?: 'template' | 'internal_llm'
   form?: object
+  creationMode?: 'author_led' | 'explore'
+  authorBrief?: string
+  authorOutline?: string
+  lockedRequirements?: string[]
 }
 
 export interface NovelCreationSessionResult {
@@ -129,6 +136,10 @@ export async function startNovelCreationSession(input: StartNovelCreationSession
   const response = await apiClient.post<ApiResponse<StartSessionData>>('/novel-creation/start', {
     mode: input.mode || 'template',
     user_brief: input.userBrief,
+    creation_mode: input.creationMode || 'explore',
+    author_brief: input.authorBrief || '',
+    author_outline: input.authorOutline || '',
+    locked_requirements: input.lockedRequirements || [],
     ...(input.form || {}),
   })
   const data = response.data.data
@@ -137,13 +148,20 @@ export async function startNovelCreationSession(input: StartNovelCreationSession
   return { id, raw: data }
 }
 
-export async function startNovelCreationConceptRun(sessionId: string, model?: string, expectedRevision?: number) {
+export async function startNovelCreationConceptRun(
+  sessionId: string,
+  model?: string,
+  expectedRevision?: number,
+  operation: 'generate' | 'regenerate' | 'refine' = 'generate',
+  instruction?: string,
+) {
   const response = await apiClient.post<ApiResponse<ConceptRunData>>(`/novel-creation/sessions/${sessionId}/runs`, {
     stage: 'concepts',
     model,
     use_model: true,
-    operation: 'generate_concepts',
-    expected_revision: expectedRevision,
+    operation,
+    ...(instruction ? { instruction } : {}),
+    ...(expectedRevision != null ? { expected_revision: expectedRevision } : {}),
   })
   return response.data.data.run
 }

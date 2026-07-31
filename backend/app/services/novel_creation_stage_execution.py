@@ -1,0 +1,481 @@
+"""Orchestration for one resumable novel-creation stage run."""
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import update
+from sqlalchemy.orm import Session
+
+from app.architecture.uow import commit_session
+from app.database.models import NovelCreationSession, NovelCreationStageRun
+from app.services.context_orchestrator import ContextOrchestrator
+from app.services.novel_creation_authoring import (
+    _safe_compact_concepts,
+    _validate_author_requirements,
+    _validate_stage,
+)
+from app.services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
+from app.services.novel_creation_runs import block_run_for_context
+from app.services.novel_creation_workspace import (
+    STAGE_LABELS,
+    STAGE_ORDER,
+    add_run_event,
+    complete_run,
+    create_run,
+    derive_stage,
+    fail_run,
+    patch_session,
+    save_compact_concepts,
+    save_stage,
+    serialize_run,
+    serialize_session,
+)
+from app.services.observability.run_events import classify_failure
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _session(db: Session, session_id: str) -> NovelCreationSession | None:
+    return db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+
+
+@dataclass
+class StageExecution:
+    db: Session
+    project_id: str
+    args: dict[str, Any]
+    session_id: str
+    session: NovelCreationSession
+    stage: str
+    model: str
+    use_model: bool
+    auto_confirm: bool
+    operation: str
+    working_draft: dict[str, Any]
+    run: NovelCreationStageRun
+    orchestrator: ContextOrchestrator
+    manifest: Any
+    ensure_not_cancelled: Any
+    generate_concepts: Any
+    normalize_stage: Any
+    enhance_with_model: Any
+    model_response_error: type[Exception]
+    expected_revision: int
+    active_stage: str = ""
+    generated: dict[str, Any] = field(default_factory=dict)
+    run_metadata: list[dict[str, Any]] = field(default_factory=list)
+
+
+class StageRevisionConflict(ValueError):
+    """A user edit won the race with a long-running stage generation."""
+
+    failure_class = "revision_conflict"
+
+
+def _revision_conflict(expected: int, actual: int) -> StageRevisionConflict:
+    return StageRevisionConflict(
+        "立项草稿版本已经变化，本次生成结果未保存，以免覆盖你的人工修改。"
+        f"任务基于版本 {expected}，当前版本为 {actual}；请确认当前内容后重新生成本阶段。"
+    )
+
+
+def _save_with_revision_cas(context: StageExecution, saver: Any) -> Any:
+    """Apply one stage save only when its frozen input revision still owns the draft."""
+    context.ensure_not_cancelled(context.db, context.run)
+    context.db.refresh(context.session)
+    actual_revision = int(context.session.revision or 0)
+    if actual_revision != context.expected_revision:
+        raise _revision_conflict(context.expected_revision, actual_revision)
+
+    with context.db.no_autoflush:
+        saved = deepcopy(saver())
+        next_revision = int(context.session.revision or 0)
+        values = {
+            "draft_json": deepcopy(context.session.draft_json),
+            "checkpoints_json": deepcopy(context.session.checkpoints_json),
+            "last_error_json": deepcopy(context.session.last_error_json),
+            "current_stage": context.session.current_stage,
+            "status": context.session.status,
+            "revision": next_revision,
+        }
+        result = context.db.execute(
+            update(NovelCreationSession)
+            .where(
+                NovelCreationSession.id == context.session.id,
+                NovelCreationSession.revision == context.expected_revision,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+    if result.rowcount != 1:
+        context.db.expire(context.session)
+        current = _session(context.db, context.session_id)
+        raise _revision_conflict(
+            context.expected_revision,
+            int(getattr(current, "revision", context.expected_revision) or 0),
+        )
+    context.db.expire(context.session)
+    context.db.refresh(context.session)
+    context.expected_revision = next_revision
+    return saved
+
+
+def _prepare_execution(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+    *,
+    ensure_not_cancelled: Any,
+    generate_concepts: Any,
+    normalize_stage: Any,
+    enhance_with_model: Any,
+    model_response_error: type[Exception],
+) -> tuple[StageExecution | None, dict[str, Any] | None]:
+    session_id = _text(args.get("session_id"))
+    stage = _text(args.get("stage"))
+    session = _session(db, session_id)
+    if not session:
+        return None, {
+            "tool": "generate_novel_creation_stage",
+            "status": "skipped",
+            "detail": "Session not found",
+            "data": None,
+        }
+    if stage not in {*STAGE_ORDER, "all"}:
+        return None, {
+            "tool": "generate_novel_creation_stage",
+            "status": "skipped",
+            "detail": "Unknown stage",
+            "data": None,
+        }
+    if isinstance(args.get("session_patch"), dict):
+        patch_session(session, args["session_patch"])
+    model = _text(args.get("model"))
+    operation = _text(args.get("operation")) or "generate"
+    existing_run_id = _text(args.get("_run_id"))
+    run = (
+        db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == existing_run_id).first()
+        if existing_run_id
+        else None
+    )
+    run_request = run.request_json if run and isinstance(run.request_json, dict) else {}
+    current_draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    snapshot = run_request.get("input_snapshot")
+    working_draft = deepcopy(snapshot) if isinstance(snapshot, dict) else deepcopy(current_draft)
+    instruction = _text(args.get("instruction"))
+    if instruction:
+        working_draft["_refinement_instruction"] = instruction
+    orchestrator = ContextOrchestrator(db)
+    manifest_id = _text(args.get("context_manifest_id")) or _text(
+        getattr(run, "context_manifest_id", "")
+    )
+    manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
+    if manifest is None:
+        interview = working_draft.get("interview")
+        manifest = orchestrator.prepare(
+            project_id=None,
+            task_type="new_project",
+            model=model or None,
+            execution_route="novel_creation",
+            session_id=session.id,
+            arguments={
+                "session_id": session.id,
+                "session": {"brief": session.user_brief, "draft": working_draft},
+                "answers": interview.get("history") if isinstance(interview, dict) else [],
+                "confirmed_stages": working_draft.get("stages") or {},
+                "author_constraints": session.user_brief or "",
+                "stage": stage,
+            },
+        )
+    usable, context_detail = orchestrator.validate(manifest)
+    governed_args = {**args, "context_manifest_id": manifest.id}
+    if run is None:
+        run = create_run(db, session, stage, governed_args)
+        commit_session(db)
+    elif not run.context_manifest_id:
+        run.context_manifest_id = manifest.id
+        commit_session(db)
+    if not usable:
+        block_run_for_context(
+            db,
+            run,
+            context_status=manifest.status,
+            message=context_detail,
+        )
+        commit_session(db)
+        return None, {
+            "tool": "generate_novel_creation_stage",
+            "status": manifest.status,
+            "detail": context_detail,
+            "data": {"run": serialize_run(run), "session": serialize_session(session)},
+        }
+    return StageExecution(
+        db=db,
+        project_id=project_id,
+        args=args,
+        session_id=session_id,
+        session=session,
+        stage=stage,
+        model=model,
+        use_model=bool(args.get("use_model", bool(model))),
+        auto_confirm=bool(args.get("auto_confirm", stage == "all")),
+        operation=operation,
+        working_draft=working_draft,
+        run=run,
+        orchestrator=orchestrator,
+        manifest=manifest,
+        ensure_not_cancelled=ensure_not_cancelled,
+        generate_concepts=generate_concepts,
+        normalize_stage=normalize_stage,
+        enhance_with_model=enhance_with_model,
+        model_response_error=model_response_error,
+        expected_revision=int(run.input_revision if run.input_revision is not None else session.revision or 0),
+        active_stage=stage,
+    ), None
+
+
+async def _generate_concept_stage(context: StageExecution) -> None:
+    draft = context.working_draft
+    author_led = draft.get("creation_mode") == "author_led"
+    concept_label = "作者方案" if author_led else "三套轻量创意"
+    action = "按要求调整" if context.operation == "refine" else "生成"
+    add_run_event(
+        context.db,
+        context.run,
+        "stage_progress",
+        "running",
+        f"正在{action}{concept_label}",
+        {
+            "stage": "concepts",
+            "model_source": context.model or "none",
+            "storage_target": "session_draft",
+        },
+    )
+    context.run.current_message = f"正在{action}{concept_label}"
+    commit_session(context.db)
+    if not context.use_model or not context.model:
+        raise ValueError("轻量创意需要选择可用模型后才能生成")
+    try:
+        context.ensure_not_cancelled(context.db, context.run)
+        concepts, metadata = await context.generate_concepts(
+            context.session,
+            context.model,
+            context_manifest=context.manifest,
+            on_fallback=lambda *_args: None,
+            input_snapshot=draft,
+        )
+        context.ensure_not_cancelled(context.db, context.run)
+        source = "model" if metadata.get("result_mode") == "model" else "model_repaired"
+    except context.model_response_error as exc:
+        metadata = {
+            "attempt": exc.attempt,
+            "result_mode": "deterministic_fallback",
+            "warning": "模型回复格式不可用，已保留可编辑安全草稿",
+        }
+        concepts = _safe_compact_concepts(draft)
+        _validate_author_requirements("concepts", {"options": concepts}, {}, draft)
+        source = "contract_fallback"
+        add_run_event(
+            context.db,
+            context.run,
+            "stage_repaired",
+            "warning",
+            metadata["warning"],
+            {"stage": "concepts", **metadata, "storage_target": "session_draft"},
+        )
+        commit_session(context.db)
+    context.run_metadata.append(metadata)
+    preserve = context.operation == "refine" and source == "contract_fallback"
+    if not preserve:
+        concept_stage = _save_with_revision_cas(
+            context,
+            lambda: save_compact_concepts(context.session, concepts, source=source),
+        )
+        context.generated["concepts"] = deepcopy(concept_stage.get("data") or {})
+    else:
+        stage = ((draft.get("stages") or {}).get("concepts") or {})
+        context.generated["concepts"] = deepcopy(stage.get("data") or {})
+    add_run_event(
+        context.db,
+        context.run,
+        "stage_completed",
+        "ok",
+        f"{concept_label}{'保持原稿' if preserve else '已保存'}",
+        {"stage": "concepts", **metadata, "storage_target": "session_draft"},
+    )
+    commit_session(context.db)
+
+
+async def _generate_regular_stages(context: StageExecution) -> None:
+    stages = (
+        [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}]
+        if context.stage == "all"
+        else [context.stage]
+    )
+    for name in stages:
+        context.active_stage = name
+        context.ensure_not_cancelled(context.db, context.run)
+        label = STAGE_LABELS.get(name, name)
+        add_run_event(
+            context.db,
+            context.run,
+            "stage_progress",
+            "running",
+            f"正在生成{label}",
+            {
+                "stage": name,
+                "model_source": context.model or "contract",
+                "storage_target": "session_draft",
+            },
+        )
+        context.run.current_message = f"正在生成{label}"
+        commit_session(context.db)
+        existing_stage = ((context.working_draft.get("stages") or {}).get(name) or {})
+        baseline = (
+            deepcopy(existing_stage.get("data"))
+            if context.operation == "refine" and isinstance(existing_stage.get("data"), dict)
+            else derive_stage(context.session, name, context.working_draft)
+        )
+        data, source, metadata = await stage_data_with_fallback(
+            context.db,
+            context.run,
+            context.session,
+            stage=name,
+            baseline=baseline,
+            model=context.model,
+            use_model=context.use_model,
+            quick_run=context.stage == "all",
+            manifest=context.manifest,
+            working_draft=context.working_draft,
+            enhance=context.enhance_with_model,
+        )
+        context.ensure_not_cancelled(context.db, context.run)
+        context.run_metadata.append(metadata)
+        data = context.normalize_stage(name, data, baseline)
+        _validate_stage(name, data)
+        _validate_author_requirements(name, data, baseline, context.working_draft)
+        preserve = context.operation == "refine" and source == "contract_fallback"
+        if not preserve:
+            _save_with_revision_cas(
+                context,
+                lambda: save_stage(
+                    context.session,
+                    name,
+                    data,
+                    confirm=context.auto_confirm,
+                    source=source,
+                ),
+            )
+        context.working_draft.setdefault("stages", {})[name] = {
+            "status": existing_stage.get("status", "generated") if preserve else (
+                "confirmed" if context.auto_confirm else "generated"
+            ),
+            "data": deepcopy(data),
+            "source": existing_stage.get("source", source) if preserve else source,
+        }
+        context.generated[name] = deepcopy(data)
+        add_run_event(
+            context.db,
+            context.run,
+            "stage_completed",
+            "ok",
+            f"{label}{'保持原稿' if preserve else '已保存'}",
+            {"stage": name, **metadata, "storage_target": "session_draft"},
+        )
+        commit_session(context.db)
+
+
+def _finish_execution(context: StageExecution) -> dict[str, Any]:
+    if context.stage == "all":
+        context.ensure_not_cancelled(context.db, context.run)
+        final = derive_stage(context.session, "final_review", context.working_draft)
+        context.ensure_not_cancelled(context.db, context.run)
+        _save_with_revision_cas(
+            context,
+            lambda: save_stage(
+                context.session,
+                "final_review",
+                final,
+                confirm=False,
+                source="contract",
+            ),
+        )
+        context.generated["final_review"] = final
+        add_run_event(
+            context.db,
+            context.run,
+            "stage_completed",
+            "ok" if final.get("ready") else "warning",
+            "最终审阅已完成",
+            {"stage": "final_review", "ready": bool(final.get("ready")), "storage_target": "session_draft"},
+        )
+        commit_session(context.db)
+    warnings = [str(item.get("warning")) for item in context.run_metadata if item.get("warning")]
+    modes = {item.get("result_mode") for item in context.run_metadata}
+    result_mode = (
+        "deterministic_fallback" if "deterministic_fallback" in modes
+        else "repaired" if "repaired" in modes
+        else "model"
+    )
+    context.ensure_not_cancelled(context.db, context.run)
+    complete_run(context.db, context.run, {
+        "stages": context.generated,
+        "attempt": max([int(item.get("attempt") or 0) for item in context.run_metadata] or [0]),
+        "result_mode": result_mode,
+        "warning": "；".join(dict.fromkeys(warnings)) or None,
+    })
+    context.orchestrator.mark_consumed(context.manifest)
+    commit_session(context.db)
+    context.db.refresh(context.run)
+    return stage_tool_result("ok", "Novel creation stage generated", context.run, context.session)
+
+
+async def execute_novel_creation_stage(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+    *,
+    ensure_not_cancelled: Any,
+    generate_concepts: Any,
+    normalize_stage: Any,
+    enhance_with_model: Any,
+    model_response_error: type[Exception],
+) -> dict[str, Any]:
+    context, early_result = _prepare_execution(
+        db,
+        project_id,
+        args,
+        ensure_not_cancelled=ensure_not_cancelled,
+        generate_concepts=generate_concepts,
+        normalize_stage=normalize_stage,
+        enhance_with_model=enhance_with_model,
+        model_response_error=model_response_error,
+    )
+    if early_result is not None:
+        return early_result
+    assert context is not None
+    try:
+        context.ensure_not_cancelled(db, context.run)
+        if context.stage == "concepts":
+            await _generate_concept_stage(context)
+        else:
+            await _generate_regular_stages(context)
+        return _finish_execution(context)
+    except Exception as exc:
+        db.rollback()
+        session = _session(db, context.session_id)
+        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == context.run.id).first()
+        if run and session:
+            fail_run(db, run, exc, failed_stage=context.active_stage)
+            commit_session(db)
+            return stage_tool_result("error", str(exc), run, session)
+        return {
+            "tool": "generate_novel_creation_stage",
+            "status": "error",
+            "detail": str(exc),
+            "data": None,
+        }

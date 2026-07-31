@@ -14,26 +14,26 @@ const model = {
 
 const project = {
   id: 'p1',
-  title: '海滨城记忆修复档案',
-  description: '算法分配记忆的近未来悬疑故事',
+  title: '河谷温室异色记录',
+  description: '公共温室花色异常的轻悬疑故事',
   created_at: '2026-07-20T08:00:00Z',
   updated_at: '2026-07-27T08:00:00Z',
 }
 
 const outlineNodes = [
   {
-    id: 'volume-1', project_id: 'p1', parent_id: null, node_type: 'volume', title: '第一卷 被城市共同遗忘的火灾',
-    summary: '林岚收到来自未来的死亡通知。', status: 'in_progress', sort_order: 0, linked_characters: [],
+    id: 'volume-1', project_id: 'p1', parent_id: null, node_type: 'volume', title: '第一卷 花展前的异常花期',
+    summary: '周遥发现公共温室的蓝花一夜变白。', status: 'in_progress', sort_order: 0, linked_characters: [],
     created_at: '2026-07-20T08:00:00Z', updated_at: '2026-07-27T08:00:00Z',
     children: [
       {
-        id: 'outline-1', project_id: 'p1', parent_id: 'volume-1', node_type: 'chapter', title: '第一章 来自三天后的死亡通知',
-        summary: '档案修复师林岚发现通知中的死亡地点不存在。', status: 'completed', sort_order: 0, linked_characters: [],
+        id: 'outline-1', project_id: 'p1', parent_id: 'volume-1', node_type: 'chapter', title: '第一章 一夜变白的蓝花',
+        summary: '植物学实习生周遥发现不同花圃的蓝花同时变色。', status: 'completed', sort_order: 0, linked_characters: [],
         created_at: '2026-07-20T08:00:00Z', updated_at: '2026-07-27T08:00:00Z', children: [],
       },
       {
-        id: 'outline-2', project_id: 'p1', parent_id: 'volume-1', node_type: 'chapter', title: '第二章 被删掉的集体记忆留下潮汐般的回声',
-        summary: '林岚在旧档案中发现全城共同经历过一场火灾。', status: 'in_progress', sort_order: 1, linked_characters: [],
+        id: 'outline-2', project_id: 'p1', parent_id: 'volume-1', node_type: 'chapter', title: '第二章 消失的土壤样本留下错误标签',
+        summary: '周遥在样本柜里发现原始土壤样本被替换。', status: 'in_progress', sort_order: 1, linked_characters: [],
         created_at: '2026-07-20T08:00:00Z', updated_at: '2026-07-27T08:00:00Z', children: [],
       },
     ],
@@ -45,18 +45,18 @@ const flatOutline = [outlineNodes[0], ...outlineNodes[0].children]
 const chapters = [
   {
     id: 'chapter-1', project_id: 'p1', outline_node_id: 'outline-1',
-    title: '第一章 来自三天后的死亡通知与一座不存在的旧港档案馆', word_count: 2186, current_version: 3,
-    outline_title: '第一章 来自三天后的死亡通知', outline_status: 'completed', outline_node_type: 'chapter',
-    outline_path: ['第一卷 被城市共同遗忘的火灾', '第一章 来自三天后的死亡通知'],
-    summary_text: '林岚收到死亡通知，并在通知的校验码中发现被删除的火灾档案索引。',
-    key_events: ['未来死亡通知', '旧港档案馆', '火灾索引'],
+    title: '第一章 一夜变白的蓝花与一份错位的值班表', word_count: 2186, current_version: 3,
+    outline_title: '第一章 一夜变白的蓝花', outline_status: 'completed', outline_node_type: 'chapter',
+    outline_path: ['第一卷 花展前的异常花期', '第一章 一夜变白的蓝花'],
+    summary_text: '周遥发现蓝花异常，并在值班表中找到被涂改的温室编号。',
+    key_events: ['花色异常', '错位值班表', '土壤编号'],
     created_at: '2026-07-20T08:00:00Z', updated_at: '2026-07-27T08:00:00Z',
   },
   {
     id: 'chapter-2', project_id: 'p1', outline_node_id: 'outline-2',
-    title: '第二章 潮汐退去以后所有人都忘记了那场火', word_count: 2042, current_version: 2,
-    outline_title: '第二章 被删掉的集体记忆', outline_status: 'in_progress', outline_node_type: 'chapter',
-    outline_path: ['第一卷 被城市共同遗忘的火灾', '第二章 被删掉的集体记忆'],
+    title: '第二章 花展闭馆以后样本柜少了一只玻璃瓶', word_count: 2042, current_version: 2,
+    outline_title: '第二章 消失的土壤样本', outline_status: 'in_progress', outline_node_type: 'chapter',
+    outline_path: ['第一卷 花展前的异常花期', '第二章 消失的土壤样本'],
     created_at: '2026-07-20T08:00:00Z', updated_at: '2026-07-27T08:00:00Z',
   },
 ]
@@ -85,6 +85,169 @@ const operations = [
   },
 ]
 
+const creationPresets = {
+  categories: [
+    {
+      id: 'suspense',
+      label: '悬疑推理',
+      description: '证据链、认知差与持续升级的谜团',
+      themes: [{ id: 'suspense:social', label: '近未来社会派' }],
+      defaults: {
+        world_tone: '技术克制，规则透明',
+        story_structure: '三层谜团逐步揭示',
+        pacing: '每章推进一条可验证线索',
+        writing_style: '冷静、清晰、有画面感',
+        special_requirements: ['伏笔可回看'],
+        avoid: ['空降真相'],
+      },
+    },
+    {
+      id: 'science-fiction',
+      label: '科幻未来',
+      description: '技术变化与人的选择',
+      themes: [{ id: 'science-fiction:near-future', label: '近未来城市' }],
+      defaults: {
+        world_tone: '可信技术与现实生活并存',
+        story_structure: '单主线推进',
+        pacing: '紧凑',
+        writing_style: '专业克制',
+        special_requirements: [],
+        avoid: [],
+      },
+    },
+  ],
+  platforms: ['暂不确定', '起点中文网'],
+  audiences: ['成年大众', '青年读者'],
+  length_options: [
+    { id: 'medium', label: '中篇', words: 200000, chapters: 80 },
+    { id: 'long', label: '长篇', words: 600000, chapters: 240 },
+  ],
+  stage_order: ['constraints', 'concepts', 'world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review'],
+  stage_labels: {
+    constraints: '创作约束', concepts: '创意方向', world_style: '文风与世界观', characters: '角色与关系',
+    locations: '地点与势力', macro_outline: '全书卷纲', opening_outline: '前15章细纲', final_review: '最终审阅',
+  },
+}
+
+const authorBrief = '河谷镇的植物学实习生周遥发现公共温室里的蓝花一夜变白。'
+const authorOutline = '第一卷：周遥调查花色变化的原因。\n第二卷：异常花期波及年度展览。\n结局：周遥公开被调换的土壤试剂检测报告。'
+const lockedRequirements = ['主角姓名必须是周遥', '花展在七天后举行', '全书固定规划为六卷', '不得改变公开检测报告的结局']
+
+const creationForm = {
+  brief: authorBrief,
+  preset_id: 'suspense',
+  theme_id: 'suspense:social',
+  genre: '悬疑推理',
+  target_audience: '成年大众',
+  platform: '暂不确定',
+  target_words: 600000,
+  target_chapters: 240,
+  world_tone: '技术克制，规则透明',
+  story_structure: '三层谜团逐步揭示',
+  pacing: '每章推进一条可验证线索',
+  writing_style: '冷静、清晰、有画面感',
+  special_requirements: ['伏笔可回看'],
+  avoid: ['空降真相'],
+}
+
+const authorConcept = {
+  id: 'author-concept',
+  source_index: 0,
+  title: '温室异色记录',
+  subtitle: '作者方案整理稿',
+  logline: '周遥必须在年度花展前查出是谁调换了温室的土壤试剂。',
+  protagonist_seed: { name: '周遥', identity: '植物学实习生', goal: '找回原始土壤样本', lack: '不敢质疑导师的判断' },
+  world_hook: '河谷镇依靠公共温室维持四季花展',
+  core_conflict: '公开试剂真相会让周遥失去实习资格',
+  story_engine: '每核对一块花圃，就出现一条被改写的养护记录',
+  opening_hook: '周遥发现公共温室的蓝花一夜变白',
+  differentiators: ['作者专名已保留', '六卷结构已锁定'],
+  risks: ['需要持续校验时间线'],
+  coverage: { score: 96, covered: ['主角', '世界规则', '结局'], missing: [] },
+}
+
+const authorWorkbenchSession = {
+  id: 'author-workbench',
+  status: 'reviewing',
+  revision: 7,
+  current_stage: 'world_style',
+  updated_at: '2026-07-27T09:55:00Z',
+  runs: [{
+    id: 'run-failed', session_id: 'author-workbench', stage: 'world_style', status: 'failed',
+    operation_id: 'operation-failed', model_source: 'opencode_cli:opencode/deepseek-v4-flash-free', attempt: 2,
+    result_mode: 'repaired', current_message: '模型结构修复后仍缺少世界规则',
+    warning: '原阶段草稿未被覆盖', next_action: '检查要求后重新生成文风与世界观',
+  }],
+  last_error: {
+    failure_class: 'invalid_response', message: '文风与世界观生成未完成',
+    next_action: '作者原始设定和当前草稿均已保留，可以安全重试。', run_id: 'run-failed',
+    failed_stage: 'world_style', failed_stage_label: '文风与世界观',
+  },
+  stage_flow: {
+    attention_stage: 'world_style', recommended_stage: 'world_style', pending_confirmations: ['world_style'],
+    items: {
+      world_style: { stage: 'world_style', label: '文风与世界观', status: 'generated', can_view: true, can_generate: true, can_confirm: true, blocked_by: [], actions: ['refine', 'confirm'], next_stage: 'characters' },
+      characters: { stage: 'characters', label: '角色与关系', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'world_style', label: '文风与世界观', reason: '等待确认' }], actions: [], next_stage: 'locations' },
+      locations: { stage: 'locations', label: '地点与势力', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'characters', label: '角色与关系', reason: '等待确认' }], actions: [], next_stage: 'macro_outline' },
+      macro_outline: { stage: 'macro_outline', label: '全书卷纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'locations', label: '地点与势力', reason: '等待确认' }], actions: [], next_stage: 'opening_outline' },
+      opening_outline: { stage: 'opening_outline', label: '前15章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书卷纲', reason: '等待确认' }], actions: [], next_stage: 'final_review' },
+      final_review: { stage: 'final_review', label: '最终审阅', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '前15章细纲', reason: '等待确认' }], actions: [] },
+    },
+  },
+  draft: {
+    schema_version: 3,
+    creation_mode: 'author_led',
+    author_brief: authorBrief,
+    author_outline: authorOutline,
+    locked_requirements: lockedRequirements,
+    form: creationForm,
+    concepts: [authorConcept],
+    selected_concept_id: authorConcept.id,
+    quick_mode: false,
+    stages: {
+      world_style: {
+        status: 'generated',
+        source: 'model',
+        data: {
+          world_tone: '明亮、克制的现代河谷小镇',
+          writing_style: '有限视角，证据与感官细节并行',
+          story_structure: '围绕花色异常展开三层谜团',
+          pacing: '每章推进一条证据并留下可回看的钩子',
+          worldbuilding: [{ title: '温室轮作表', dimension: '管理规则', content: '每块花圃按季节轮换品种，试剂和土壤样本都必须双人登记。' }],
+        },
+      },
+    },
+  },
+}
+
+const runningCreationSession = {
+  id: 'running-creation',
+  status: 'drafting',
+  revision: 3,
+  current_stage: 'concepts',
+  updated_at: '2026-07-27T09:58:00Z',
+  runs: [{
+    id: 'run-running', session_id: 'running-creation', stage: 'concepts', status: 'running',
+    operation_id: 'operation-running', model_source: 'opencode_cli:opencode/deepseek-v4-flash-free', attempt: 1,
+    input_revision: 3, current_message: '正在忠实整理作者方案...',
+  }],
+  draft: {
+    schema_version: 3,
+    creation_mode: 'author_led',
+    author_brief: authorBrief,
+    author_outline: authorOutline,
+    locked_requirements: lockedRequirements,
+    form: creationForm,
+    concepts: [],
+    stages: {},
+  },
+}
+
+const creationSessions: Record<string, typeof authorWorkbenchSession | typeof runningCreationSession> = {
+  [authorWorkbenchSession.id]: authorWorkbenchSession,
+  [runningCreationSession.id]: runningCreationSession,
+}
+
 async function fulfill(route: Route, data: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
 }
@@ -111,6 +274,18 @@ async function mockUiApi(page: Page) {
 
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
+    if (path === '/api/v1/novel-creation/presets') return fulfill(route, { code: 0, data: creationPresets })
+    if (path === '/api/v1/novel-creation/sessions') return fulfill(route, { code: 0, data: { sessions: [] } })
+    const creationSessionMatch = path.match(/^\/api\/v1\/novel-creation\/sessions\/([^/]+)$/)
+    if (creationSessionMatch && route.request().method() === 'GET') {
+      const creationSession = creationSessions[decodeURIComponent(creationSessionMatch[1])]
+      return creationSession
+        ? fulfill(route, { code: 0, data: creationSession })
+        : fulfill(route, { code: 404, message: '立项草稿不存在', data: null }, 404)
+    }
+    if (path === '/api/v1/operations/operation-running/cancel' && route.request().method() === 'POST') {
+      return fulfill(route, { code: 0, data: { status: 'cancelling' } })
+    }
     if (path === '/api/v1/config/getting-started') {
       return fulfill(route, { code: 0, data: {
         free_models: [], recommended_model: null, platform_supported: true, configured: true,
@@ -126,13 +301,13 @@ async function mockUiApi(page: Page) {
     if (path === '/api/v1/operations') return fulfill(route, { code: 0, data: { items: operations } })
     if (path === '/api/v1/projects/p1') return fulfill(route, { code: 0, data: project })
     if (path === '/api/v1/projects/p1/chapters') return fulfill(route, { code: 0, data: { items: chapters, total: chapters.length } })
-    if (path === '/api/v1/projects/p1/chapters/chapter-1') return fulfill(route, { code: 0, data: { ...chapters[0], content: '海风把死亡通知吹得贴在修复台上。\n\n林岚第一次看见自己的名字出现在三天后的死亡档案里。', snapshot_count: 2 } })
+    if (path === '/api/v1/projects/p1/chapters/chapter-1') return fulfill(route, { code: 0, data: { ...chapters[0], content: '清晨的玻璃温室蒙着薄雾。\n\n周遥第一次看见整排蓝花在一夜之间变成了白色。', snapshot_count: 2 } })
     if (path === '/api/v1/projects/p1/chapters/chapter-1/snapshots') return fulfill(route, { code: 0, data: { items: [
       { id: 'snapshot-2', chapter_id: 'chapter-1', version_number: 3, word_count: 2186, trigger_type: 'manual_save', created_at: '2026-07-27T08:00:00Z' },
       { id: 'snapshot-1', chapter_id: 'chapter-1', version_number: 2, word_count: 2040, trigger_type: 'ai_insert', created_at: '2026-07-26T08:00:00Z' },
     ], total: 2 } })
     if (path === '/api/v1/projects/p1/outline') return fulfill(route, { code: 0, data: { items: outlineNodes, flat: flatOutline, total: flatOutline.length } })
-    if (path === '/api/v1/projects/p1/characters') return fulfill(route, { code: 0, data: { items: [{ id: 'character-1', name: '林岚', role_type: 'protagonist', current_version: 2, is_evolution_tracked: true }], total: 1 } })
+    if (path === '/api/v1/projects/p1/characters') return fulfill(route, { code: 0, data: { items: [{ id: 'character-1', name: '周遥', role_type: 'protagonist', current_version: 2, is_evolution_tracked: true }], total: 1 } })
     if (path === '/api/v1/projects/p1/narrative-governance') return fulfill(route, { code: 0, data: {
       foreshadowings: [], causal_edges: [], narrative_debts: [], character_states: [], quality_metrics: [], checkpoints: [],
       counts: { open_foreshadowings: 0, open_causal_edges: 0, open_debts: 0 },
@@ -167,6 +342,20 @@ async function expectVisualSnapshot(page: Page, name: string) {
   }
 }
 
+async function expectFullPageVisualSnapshot(page: Page, name: string) {
+  if (!process.env.CI) {
+    // Chromium stitches full-page captures in viewport-height tiles. Keep the
+    // intentionally off-screen accessibility link out of that stitching pass.
+    const skipLink = page.locator('.siming-skip-link')
+    await skipLink.evaluate((element) => { (element as HTMLElement).style.visibility = 'hidden' })
+    try {
+      await expect(page).toHaveScreenshot(name, { animations: 'disabled', fullPage: true })
+    } finally {
+      await skipLink.evaluate((element) => { (element as HTMLElement).style.removeProperty('visibility') })
+    }
+  }
+}
+
 const viewports = [
   { name: '1920x1080', width: 1920, height: 1080 },
   { name: '1400x900', width: 1400, height: 900 },
@@ -180,8 +369,14 @@ for (const viewport of viewports) {
     await mockUiApi(page)
 
     await page.goto('/project/p1', { waitUntil: 'networkidle' })
-    await expect(page.locator('.writer-editor-title')).toContainText('第一章 来自三天后的死亡通知')
+    await expect(page.locator('.writer-editor-title')).toContainText('第一章 一夜变白的蓝花')
     await expect(page.getByText('已完成', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /删除本章/ })).toBeVisible()
+    if (viewport.width === 1920) {
+      await page.getByRole('button', { name: /删除本章/ }).click()
+      await expect(page.getByRole('dialog', { name: /第一章 一夜变白的蓝花/ })).toBeVisible()
+      await page.getByRole('button', { name: /取\s*消/ }).click()
+    }
     await expectViewportSafe(page)
     await expectVisualSnapshot(page, `writer-${viewport.name}.png`)
 
@@ -220,4 +415,148 @@ test('keeps onboarding, model settings and governance visually focused', async (
   await expectViewportSafe(page)
   await expectVisualSnapshot(page, 'governance-empty-1920x1080.png')
   await expectNoSeriousAccessibilityViolations(page)
+})
+
+test('keeps the workspace global-model control usable in the compact assistant panel', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 })
+  await mockUiApi(page)
+  await page.goto('/project/p1', { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: '展开项目助手' }).click()
+
+  await expect(page.getByRole('combobox', { name: '全局模型' })).toBeVisible()
+  await expect(page.locator('.workspace-assistant-model-select .ant-select-selection-item')).toContainText('opencode')
+  await expect(page.getByRole('button', { name: '管理模型' })).toBeVisible()
+  await expectViewportSafe(page)
+  await expectVisualSnapshot(page, 'assistant-global-model-800x600.png')
+})
+
+const creationViewports = [
+  { name: '1920x1080', width: 1920, height: 1080 },
+  { name: '800x600', width: 800, height: 600 },
+]
+
+for (const viewport of creationViewports) {
+  test(`keeps all new-book entry points and the author-led intake usable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/novel-creation', { waitUntil: 'networkidle' })
+
+    const authorLedEntry = page.getByRole('button', { name: /按我的设定立项/ })
+    const exploreEntry = page.getByRole('button', { name: /帮我探索创意/ })
+    const importEntry = page.getByRole('button', { name: /导入已有小说/ })
+    await expect(authorLedEntry).toBeVisible()
+    await expect(exploreEntry).toBeVisible()
+    await expect(importEntry).toBeVisible()
+    await expect(page.getByText('已有设定不会被随机方案覆盖。')).toBeVisible()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectFullPageVisualSnapshot(page, `creation-path-${viewport.name}.png`)
+
+    await importEntry.click()
+    await expect(page).toHaveURL(/\/dashboard\?create=import$/)
+    await page.goBack({ waitUntil: 'networkidle' })
+    await authorLedEntry.click()
+
+    const briefInput = page.getByLabel('已有故事方案')
+    const outlineInput = page.getByLabel(/已有大纲/)
+    const lockedInput = page.getByLabel('不可改动的设定')
+    await expect(briefInput).toBeVisible()
+    await briefInput.fill(authorBrief)
+    await outlineInput.fill(authorOutline)
+    await lockedInput.fill(lockedRequirements.join('\n'))
+    await expect(page.getByText('作者原始设定优先')).toBeVisible()
+    await expect(page.getByRole('button', { name: '整理为作者方案' })).toBeEnabled()
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await expectViewportSafe(page)
+    await expectFullPageVisualSnapshot(page, `creation-author-intake-${viewport.name}.png`)
+  })
+
+  test(`keeps author facts, targeted refinement and failed outcome recoverable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/novel-creation?session=author-workbench&run=run-failed&stage=world_style', { waitUntil: 'networkidle' })
+
+    const authorSource = page.getByRole('region', { name: '作者原始设定' })
+    await expect(authorSource).toContainText(authorBrief)
+    await expect(authorSource).toContainText('主角姓名必须是周遥')
+    await expect(page.getByText('作者原始设定持续生效')).toBeVisible()
+    const refineButton = page.getByRole('button', { name: '让 AI 按要求调整' })
+    await expect(refineButton).toBeEnabled()
+    await refineButton.click()
+
+    const refineDialog = page.getByRole('dialog', { name: '让 AI 调整：文风与世界观' })
+    await expect(refineDialog).toBeVisible()
+    await expect(refineDialog.getByText('只修改当前阶段')).toBeVisible()
+    await refineDialog.getByPlaceholder(/例如：改成六卷结构/).fill('保留周遥和温室花展；将全书调整为六卷，但不要改变结局。')
+    await expect(refineDialog.getByRole('button', { name: '按要求调整' })).toBeEnabled()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectVisualSnapshot(page, `creation-author-refine-${viewport.name}.png`)
+    await refineDialog.getByRole('button', { name: /取\s*消/ }).click()
+
+    const failedOutcome = page.getByText('本轮立项任务失败')
+    await failedOutcome.scrollIntoViewIfNeeded()
+    await expect(failedOutcome).toBeVisible()
+    await expect(page.getByText('原阶段草稿未被覆盖')).toBeVisible()
+    await expect(page.getByText('文风与世界观生成未完成')).toBeVisible()
+    await expect(page.getByRole('button', { name: '重试“文风与世界观”' })).toBeVisible()
+    await expectViewportSafe(page)
+    await expectVisualSnapshot(page, `creation-author-failed-${viewport.name}.png`)
+  })
+
+  test(`keeps a running author-led task visible and cancellable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/novel-creation?session=running-creation&run=run-running', { waitUntil: 'networkidle' })
+
+    await expect(page.getByText('正在忠实整理作者方案...')).toBeVisible()
+    await expect(page.getByText('实际模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()
+    await expect(page.getByText('尝试次数：1')).toBeVisible()
+    await expect(page.getByRole('button', { name: '新建立项' })).toBeDisabled()
+    const cancelButton = page.getByRole('button', { name: '取消任务' })
+    await expect(cancelButton).toBeEnabled()
+    await expectViewportSafe(page)
+    await expectVisualSnapshot(page, `creation-author-running-${viewport.name}.png`)
+
+    const cancelRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/api/v1/operations/operation-running/cancel'
+      && request.method() === 'POST'
+    ))
+    await cancelButton.click()
+    await cancelRequest
+    await expect(page.getByRole('button', { name: '正在取消' })).toBeDisabled()
+    await expect(page.getByText('正在取消任务；已保存的草稿不会丢失...')).toBeVisible()
+  })
+}
+
+test.describe('Windows reduced-motion compatibility', () => {
+  test.use({ reducedMotion: 'reduce' })
+
+  test('keeps the provider dropdown visible, positioned and selectable', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 })
+    // Keep an explicit page-level emulation for system Chrome/WebView2 runs;
+    // the describe-level setting covers Playwright's bundled Chromium.
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await mockUiApi(page)
+    await page.goto('/settings', { waitUntil: 'networkidle' })
+
+    expect(await page.evaluate(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true)
+    await page.getByRole('button', { name: '添加配置' }).click()
+    const dialog = page.getByRole('dialog', { name: '添加模型配置' })
+    const provider = dialog.getByRole('combobox', { name: '提供商' })
+    await provider.click()
+
+    const dropdown = page.locator('.ant-select-dropdown:visible')
+    await expect(dropdown).toBeVisible()
+    const bounds = await dropdown.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.y).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(800)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(600)
+    await expectVisualSnapshot(page, 'provider-dropdown-reduced-motion-800x600.png')
+
+    await dropdown.locator('.ant-select-item-option-content', { hasText: 'OpenAI' }).click()
+    await expect(dialog.locator('.ant-select-selection-item').first()).toHaveText('OpenAI')
+  })
 })

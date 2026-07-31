@@ -102,7 +102,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     }), { timeout: 0 })
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
       stage: 'concepts',
-      operation: 'generate_concepts',
+      operation: 'generate',
     }))
     expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/draft', expect.anything())
   })

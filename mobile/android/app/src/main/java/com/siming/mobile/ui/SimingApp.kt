@@ -894,7 +894,7 @@ private fun AssistantScreen(projectId: String, viewModel: MainViewModel) {
                 value = prompt,
                 onValueChange = { prompt = it },
                 label = { Text("告诉项目助手要做什么") },
-                placeholder = { Text("例如：用质量模式续写下一章，保持林岚的动机与记忆分配规则，并留下章末钩子") },
+                placeholder = { Text("例如：用质量模式续写下一章，保持周遥的求证动机与温室管理规则，并留下章末钩子") },
                 minLines = 4,
                 modifier = Modifier.fillMaxWidth(),
             )

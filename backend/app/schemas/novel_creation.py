@@ -18,6 +18,10 @@ class NovelCreationSessionCreate(BaseModel):
     theme_id: Optional[str] = None
     target_words: Optional[int] = None
     target_chapters: Optional[int] = None
+    creation_mode: str = Field(default="explore", description="author_led|explore")
+    author_brief: Optional[str] = Field(default=None, max_length=5000)
+    author_outline: Optional[str] = Field(default=None, max_length=20000)
+    locked_requirements: list[str] = Field(default_factory=list)
 
 
 class NovelCreationSessionRead(BaseModel):
@@ -32,6 +36,10 @@ class NovelCreationSessionRead(BaseModel):
     genre: Optional[str] = None
     platform: Optional[str] = None
     schema_version: int = 1
+    creation_mode: str = "explore"
+    author_brief: Optional[str] = None
+    author_outline: Optional[str] = None
+    locked_requirements: list[str] = Field(default_factory=list)
     current_stage: Optional[str] = None
     revision: int = 0
     blueprint_json: Optional[Any] = None
@@ -45,3 +53,48 @@ class NovelCreationSessionRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class NovelCreationStageEventResponse(BaseModel):
+    sequence: int
+    event_type: str
+    status: str
+    message: Optional[str] = None
+    payload: Optional[dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+
+
+class NovelCreationStageRunResponse(BaseModel):
+    """Stable wire contract for one durable novel-creation stage run."""
+
+    run_id: str
+    operation_id: Optional[str] = None
+    status: str
+
+    # Compatibility alias retained for clients that predate the durable-run API.
+    id: str
+    session_id: str
+    stage: str
+    operation: str
+    model_source: Optional[str] = None
+    tool_mode: Optional[str] = None
+    failure_class: Optional[str] = None
+    storage_target: str
+    context_manifest_id: Optional[str] = None
+    input_revision: Optional[int] = None
+    input_snapshot_hash: Optional[str] = None
+    next_action: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    attempt: int = 0
+    result_mode: Optional[str] = None
+    warning: Optional[str] = None
+    current_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    events: list[NovelCreationStageEventResponse] = Field(default_factory=list)
+
+
+class NovelCreationStageRunStartData(BaseModel):
+    run: NovelCreationStageRunResponse
+    stream_url: str
