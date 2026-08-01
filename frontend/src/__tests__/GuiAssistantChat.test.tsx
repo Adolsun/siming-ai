@@ -41,6 +41,30 @@ describe('GuiAssistantChat new-book handoff', () => {
     mockGet.mockImplementation((url: string) => {
       if (url === '/projects') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
       if (url === '/ai/system-assistant/conversations') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url === '/novel-creation/sessions/session-1/artifacts') return Promise.resolve({ data: { data: {
+        revision: 7,
+        artifacts: [
+          {
+            artifact: 'concepts',
+            label: '创意方案',
+            status: 'generated',
+            source: 'model',
+            revision: 7,
+            locked_paths: [],
+            flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [] },
+          },
+          {
+            artifact: 'characters',
+            label: '角色与关系',
+            status: 'stale',
+            source: 'assistant',
+            revision: 7,
+            stale_reason: '上游创意方案已修改',
+            locked_paths: ['/characters/0'],
+            flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] },
+          },
+        ],
+      } } })
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
     mockPost.mockImplementation((url: string) => {
@@ -87,6 +111,9 @@ describe('GuiAssistantChat new-book handoff', () => {
           },
         } } })
       }
+      if (url === '/novel-creation/sessions/session-1/stages/concepts/confirm') {
+        return Promise.resolve({ data: { data: { id: 'session-1', revision: 8 } } })
+      }
       if (url === '/ai/system-assistant/conversations') {
         return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '新书' } } } })
       }
@@ -125,6 +152,26 @@ describe('GuiAssistantChat new-book handoff', () => {
       operation: 'generate',
     }))
     expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/draft', expect.anything())
+  })
+
+  it('keeps structured creation data visible beside the conversation and confirms it in place', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByRole('complementary', { name: '立项数据' })).toBeInTheDocument()
+    expect(await screen.findByText('角色与关系')).toBeInTheDocument()
+    expect(screen.getByText('上游创意方案已修改')).toBeInTheDocument()
+    expect(screen.getByText('已锁定 1 项')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '确认创意方案' }))
+    expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/concepts/confirm', {
+      confirm: true,
+      source: 'author',
+      expected_revision: 7,
+    })
   })
 
   it('makes the current conversation model visible', async () => {

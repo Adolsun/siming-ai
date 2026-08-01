@@ -22,13 +22,17 @@ from app.services.novel_creation_workspace import (
     attach_concepts,
     build_stage_flow,
     build_apply_blueprint,
+    creation_artifact_dependencies,
     derive_stage,
     generation_blockers,
     get_presets,
     initialize_session_draft,
     patch_session,
+    patch_creation_artifact,
     save_stage,
     serialize_session,
+    serialize_creation_artifact,
+    set_creation_artifact_locks,
 )
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
@@ -175,6 +179,82 @@ def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
     assert len(session.checkpoints_json["characters"]) == 3
     assert session.draft_json["stages"]["locations"]["status"] == "stale"
     assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+
+def test_artifact_patch_is_atomic_and_reports_downstream_impact():
+    db = _db()
+    session = _ready_session(db)
+    before_revision = int(session.revision or 0)
+    before_volume_count = len(session.draft_json["stages"]["macro_outline"]["data"]["volumes"])
+
+    result = patch_creation_artifact(session, "macro_outline", [
+        {"path": "/volumes/0/title", "action": "replace", "value": "第一卷 失忆封锁线"},
+        {"path": "/volumes", "action": "append", "value": {"title": "第二卷 白塔回声"}},
+    ], source="assistant")
+
+    assert result["artifact"]["data"]["volumes"][0]["title"] == "第一卷 失忆封锁线"
+    assert len(result["artifact"]["data"]["volumes"]) == before_volume_count + 1
+    assert int(session.revision or 0) == before_revision + 1
+    assert result["affected_artifacts"]
+    assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+    saved = deepcopy(session.draft_json)
+    with pytest.raises(ValueError, match="invalid list path segment"):
+        patch_creation_artifact(session, "macro_outline", [
+            {"path": "/volumes/99/title", "action": "replace", "value": "不会写入"},
+        ])
+    assert session.draft_json == saved
+
+
+def test_artifact_locks_block_parent_and_child_patch_paths():
+    db = _db()
+    session = _ready_session(db)
+    set_creation_artifact_locks(session, "characters", ["/characters/0"], locked=True)
+    artifact = serialize_creation_artifact(session, "characters")
+    assert artifact["locked_paths"] == ["/characters/0"]
+
+    with pytest.raises(ValueError, match="字段已锁定"):
+        patch_creation_artifact(session, "characters", [
+            {"path": "/characters/0/goal", "action": "replace", "value": "改写目标"},
+        ])
+
+    set_creation_artifact_locks(session, "characters", ["/characters/0"], locked=False)
+    result = patch_creation_artifact(session, "characters", [
+        {"path": "/characters/0/goal", "action": "replace", "value": "找到母亲并保存记忆"},
+    ])
+    assert result["artifact"]["data"]["characters"][0]["goal"] == "找到母亲并保存记忆"
+
+
+def test_artifact_patch_runs_schema_validation_before_writing():
+    db = _db()
+    session = _ready_session(db)
+    saved = deepcopy(session.draft_json)
+    revision = int(session.revision or 0)
+
+    def reject_missing_characters(stage: str, data: dict) -> None:
+        assert stage == "characters"
+        if not data.get("characters"):
+            raise ValueError("缺少角色档案")
+
+    with pytest.raises(ValueError, match="缺少角色档案"):
+        patch_creation_artifact(
+            session,
+            "characters",
+            [{"path": "/characters", "action": "replace", "value": []}],
+            validator=reject_missing_characters,
+        )
+
+    assert session.draft_json == saved
+    assert int(session.revision or 0) == revision
+
+
+def test_artifact_dependencies_keep_existing_downstream_data_visible():
+    db = _db()
+    session = _ready_session(db)
+    dependencies = creation_artifact_dependencies(session, "characters")
+    affected = {item["artifact"] for item in dependencies["affected_artifacts"]}
+    assert {"locations", "macro_outline", "opening_outline", "final_review"} <= affected
+    assert all(item["effect"] == "stale" for item in dependencies["affected_artifacts"])
 
 
 def test_generated_stage_remains_current_until_the_author_confirms_it():

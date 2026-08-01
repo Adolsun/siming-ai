@@ -27,6 +27,7 @@ import {
 } from 'antd'
 import {
   DeleteOutlined,
+  DatabaseOutlined,
   FileAddOutlined,
   FolderOpenOutlined,
   HistoryOutlined,
@@ -125,6 +126,24 @@ interface NovelCreationRunSummary {
   model_source?: string
   attempt?: number
   result_mode?: string
+}
+
+interface CreationArtifactSummary {
+  artifact: string
+  label: string
+  status: 'pending' | 'generated' | 'confirmed' | 'stale'
+  source?: string
+  updated_at?: string
+  stale_reason?: string
+  locked_paths?: string[]
+  revision: number
+  flow?: {
+    can_view?: boolean
+    can_generate?: boolean
+    can_confirm?: boolean
+    blocked_by?: Array<{ stage: string; label: string; reason: string }>
+  }
+  running_operation?: NovelCreationRunSummary | null
 }
 
 interface NovelBlueprint {
@@ -302,6 +321,10 @@ function GuiAssistantChat() {
   const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
   const [activeCreationRun, setActiveCreationRun] = useState<NovelCreationRunSummary | null>(null)
   const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'retry' | null>(null)
+  const [creationArtifacts, setCreationArtifacts] = useState<CreationArtifactSummary[]>([])
+  const [creationArtifactsLoading, setCreationArtifactsLoading] = useState(false)
+  const [creationPanelOpen, setCreationPanelOpen] = useState(true)
+  const [artifactAction, setArtifactAction] = useState<string | null>(null)
 
   const {
     defaultModel,
@@ -331,6 +354,28 @@ function GuiAssistantChat() {
       : update
     novelInterview.replaceQuestion(nextQuestion)
   }
+
+  const fetchCreationArtifacts = useCallback(async () => {
+    if (!systemSessionId) {
+      setCreationArtifacts([])
+      return
+    }
+    setCreationArtifactsLoading(true)
+    try {
+      const response = await apiClient.get<ApiResponse<{ artifacts: CreationArtifactSummary[] }>>(
+        `/novel-creation/sessions/${systemSessionId}/artifacts`,
+      )
+      setCreationArtifacts(response.data.data.artifacts || [])
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '立项数据同步失败')
+    } finally {
+      setCreationArtifactsLoading(false)
+    }
+  }, [systemSessionId])
+
+  useEffect(() => {
+    void fetchCreationArtifacts()
+  }, [fetchCreationArtifacts, activeCreationRun?.status])
   const interviewRuntime = {
     ...defaultInterviewRuntime(selectedModel, interviewModelSource),
     ...novelInterview.state.runtime,
@@ -2148,6 +2193,131 @@ function GuiAssistantChat() {
     )
   }
 
+  const confirmArtifactFromPanel = async (artifact: CreationArtifactSummary) => {
+    if (!systemSessionId || artifactAction) return
+    setArtifactAction(artifact.artifact)
+    try {
+      await apiClient.post(`/novel-creation/sessions/${systemSessionId}/stages/${artifact.artifact}/confirm`, {
+        confirm: true,
+        source: 'author',
+        expected_revision: artifact.revision,
+      })
+      message.success(`${artifact.label}已确认`)
+      await fetchCreationArtifacts()
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '确认失败，立项数据未改变')
+      await fetchCreationArtifacts()
+    } finally {
+      setArtifactAction(null)
+    }
+  }
+
+  const creationStatusLabel: Record<CreationArtifactSummary['status'], string> = {
+    pending: '待生成',
+    generated: '待确认',
+    confirmed: '已确认',
+    stale: '需校验',
+  }
+
+  const creationStatusColor: Record<CreationArtifactSummary['status'], string> = {
+    pending: 'default',
+    generated: 'processing',
+    confirmed: 'success',
+    stale: 'warning',
+  }
+
+  const renderCreationDataPanel = () => {
+    if (!systemSessionId) return null
+    return (
+      <aside className={`gui-chat-creation-panel${creationPanelOpen ? ' gui-chat-creation-panel-open' : ''}`} aria-label="立项数据">
+        <div className="gui-chat-creation-panel-head">
+          <div>
+            <Text className="gui-chat-creation-panel-kicker">CREATION DATA</Text>
+            <Title level={5}>立项数据</Title>
+          </div>
+          <Space size={4}>
+            <Tooltip title="刷新立项数据">
+              <Button
+                size="small"
+                type="text"
+                icon={<ReloadOutlined />}
+                loading={creationArtifactsLoading}
+                aria-label="刷新立项数据"
+                onClick={() => void fetchCreationArtifacts()}
+              />
+            </Tooltip>
+            <Tooltip title="收起立项数据">
+              <Button
+                size="small"
+                type="text"
+                icon={<MenuFoldOutlined />}
+                aria-label="收起立项数据"
+                onClick={() => setCreationPanelOpen(false)}
+              />
+            </Tooltip>
+          </Space>
+        </div>
+        <div className="gui-chat-creation-panel-summary">
+          <Text type="secondary">结构化数据是当前立项的事实来源。聊天修改完成后会自动同步到这里。</Text>
+        </div>
+        <div className="gui-chat-creation-artifacts">
+          {creationArtifactsLoading && creationArtifacts.length === 0 ? (
+            <div className="gui-chat-creation-panel-loading"><Spin size="small" /> 正在同步…</div>
+          ) : creationArtifacts.map((artifact) => (
+            <section key={artifact.artifact} className={`gui-chat-creation-artifact gui-chat-creation-artifact-${artifact.status}`}>
+              <div className="gui-chat-creation-artifact-head">
+                <Text strong ellipsis={{ tooltip: artifact.label }}>{artifact.label}</Text>
+                <Tag color={creationStatusColor[artifact.status]}>{creationStatusLabel[artifact.status]}</Tag>
+              </div>
+              <div className="gui-chat-creation-artifact-meta">
+                <span>来源：{artifact.source && artifact.source !== 'unknown' ? artifact.source : '尚未生成'}</span>
+                <span>{artifact.locked_paths?.length ? `已锁定 ${artifact.locked_paths.length} 项` : '未锁定字段'}</span>
+              </div>
+              {artifact.running_operation && (
+                <div className="gui-chat-creation-artifact-running">
+                  <span className="siming-status-dot" /> {artifact.running_operation.current_message || '任务正在运行'}
+                </div>
+              )}
+              {artifact.stale_reason && <Text type="warning" className="gui-chat-creation-artifact-warning">{artifact.stale_reason}</Text>}
+              {artifact.flow?.blocked_by?.length ? (
+                <Text type="secondary" className="gui-chat-creation-artifact-blocked">
+                  建议先完善：{artifact.flow.blocked_by.map((item) => item.label).join('、')}
+                </Text>
+              ) : null}
+              <div className="gui-chat-creation-artifact-actions">
+                {artifact.flow?.can_confirm && (
+                  <Button
+                    size="small"
+                    type="primary"
+                    aria-label={`确认${artifact.label}`}
+                    loading={artifactAction === artifact.artifact}
+                    onClick={() => void confirmArtifactFromPanel(artifact)}
+                  >
+                    确认
+                  </Button>
+                )}
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setInputValue(`${artifact.status === 'pending' ? '生成' : '调整'}${artifact.label}：`)
+                    setCreationPanelOpen(false)
+                  }}
+                >
+                  {artifact.status === 'pending' ? '在聊天中生成' : '继续调整'}
+                </Button>
+              </div>
+            </section>
+          ))}
+        </div>
+        <div className="gui-chat-creation-panel-footer">
+          <Button block icon={<FolderOpenOutlined />} onClick={() => navigate(`/novel-creation?session=${systemSessionId}`)}>
+            打开完整编辑器
+          </Button>
+        </div>
+      </aside>
+    )
+  }
+
   const runtimeHasProblem = interviewRuntime.quota_status === 'exhausted_or_limited'
   const runtimePanel = (
     <div className="gui-chat-runtime-panel" aria-label="当前模型运行状态">
@@ -2184,7 +2354,7 @@ function GuiAssistantChat() {
   )
 
   return (
-    <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}`}>
+    <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}${systemSessionId && creationPanelOpen ? ' gui-chat-with-creation-panel' : ''}`}>
       <aside className="gui-chat-sidebar">
         <div className="gui-chat-sidebar-head">
           {!sidebarCollapsed && (
@@ -2267,6 +2437,11 @@ function GuiAssistantChat() {
           </div>
           <Space className="gui-chat-header-actions">
             <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
+            {systemSessionId && !creationPanelOpen && (
+              <Button icon={<DatabaseOutlined />} onClick={() => setCreationPanelOpen(true)}>
+                立项数据
+              </Button>
+            )}
             <Button
               icon={<HistoryOutlined />}
               onClick={() => setSidebarCollapsed((value) => !value)}
@@ -2445,6 +2620,7 @@ function GuiAssistantChat() {
           </div>
         </div>
       </main>
+      {renderCreationDataPanel()}
       {renderSlotEditorModal()}
     </div>
   )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any
 
 from app.core.numbers import chinese_number_to_int
@@ -514,6 +515,205 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
     if include_runs:
         data["runs"] = [serialize_run(run, include_events=False) for run in list(session.stage_runs or [])[-10:]]
     return data
+
+
+def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Return one creation artifact with its workflow and provenance metadata."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
+    state = _dict(_dict(draft.get("stages")).get(stage))
+    flow = build_stage_flow(session, draft)["items"][stage]
+    locks = _dict(draft.get("artifact_locks"))
+    running = next(
+        (
+            serialize_run(run, include_events=False)
+            for run in reversed(list(session.stage_runs or []))
+            if run.stage == stage and run.status in {"queued", "running", "paused"}
+        ),
+        None,
+    )
+    return {
+        "artifact": stage,
+        "label": STAGE_LABELS[stage],
+        "status": _text(state.get("status"), "pending"),
+        "data": deepcopy(state.get("data")),
+        "source": _text(state.get("source"), "unknown"),
+        "updated_at": state.get("updated_at"),
+        "stale_reason": state.get("stale_reason"),
+        "locked_paths": list(_list(locks.get(stage))),
+        "revision": int(session.revision or 0),
+        "flow": deepcopy(flow),
+        "running_operation": running,
+    }
+
+
+def list_creation_artifacts(session: NovelCreationSession) -> list[dict[str, Any]]:
+    return [serialize_creation_artifact(session, stage) for stage in STAGE_ORDER]
+
+
+def creation_artifact_dependencies(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Describe blockers and retained downstream data that a change may stale."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
+    downstream = []
+    for name in STAGE_ORDER[STAGE_ORDER.index(stage) + 1:]:
+        state = _dict(_dict(draft.get("stages")).get(name))
+        if state.get("data") is not None:
+            downstream.append({
+                "artifact": name,
+                "label": STAGE_LABELS[name],
+                "status": _text(state.get("status"), "pending"),
+                "effect": "stale",
+            })
+    return {
+        "artifact": stage,
+        "hard_dependencies": generation_blockers(session, stage, draft),
+        "soft_dependencies": [],
+        "affected_artifacts": downstream,
+    }
+
+
+def _pointer_parts(path: str) -> list[str]:
+    if path in {"", "/"}:
+        return []
+    if not path.startswith("/"):
+        raise ValueError(f"patch path must be a JSON Pointer: {path}")
+    return [part.replace("~1", "/").replace("~0", "~") for part in path[1:].split("/")]
+
+
+def _path_is_locked(path: str, locked_paths: list[str]) -> bool:
+    normalized = path.rstrip("/") or "/"
+    return any(
+        normalized == lock.rstrip("/")
+        or normalized.startswith(lock.rstrip("/") + "/")
+        or lock.rstrip("/").startswith(normalized + "/")
+        for lock in locked_paths
+    )
+
+
+def _patch_parent(document: Any, parts: list[str]) -> tuple[Any, str]:
+    if not parts:
+        raise ValueError("the artifact root cannot be removed or appended")
+    cursor = document
+    for part in parts[:-1]:
+        if isinstance(cursor, dict):
+            if part not in cursor:
+                cursor[part] = {}
+            cursor = cursor[part]
+        elif isinstance(cursor, list):
+            try:
+                cursor = cursor[int(part)]
+            except (ValueError, IndexError) as exc:
+                raise ValueError(f"invalid list path segment: {part}") from exc
+        else:
+            raise ValueError(f"patch path crosses a scalar value: {part}")
+    return cursor, parts[-1]
+
+
+def patch_creation_artifact(
+    session: NovelCreationSession,
+    stage: str,
+    changes: list[dict[str, Any]],
+    *,
+    source: str = "author",
+    validator: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Atomically apply validated, lock-aware operations to one artifact."""
+    artifact = serialize_creation_artifact(session, stage)
+    if not isinstance(artifact.get("data"), dict):
+        raise ValueError("当前立项数据尚未生成，不能执行局部修改")
+    if not changes:
+        raise ValueError("changes must contain at least one patch operation")
+    document = deepcopy(artifact["data"])
+    locked_paths = [str(item) for item in artifact.get("locked_paths") or []]
+    summary: list[dict[str, Any]] = []
+    for change in changes:
+        path = _text(change.get("path"))
+        action = _text(change.get("action"))
+        if action not in {"set", "replace", "append", "remove", "resize"}:
+            raise ValueError(f"unsupported patch action: {action}")
+        if _path_is_locked(path, locked_paths):
+            raise ValueError(f"字段已锁定，不能修改：{path}")
+        parts = _pointer_parts(path)
+        if not parts and action in {"set", "replace"}:
+            value = change.get("value")
+            if not isinstance(value, dict):
+                raise ValueError("artifact root replacement must be an object")
+            document = deepcopy(value)
+            summary.append({"path": path or "/", "action": action})
+            continue
+        parent, key = _patch_parent(document, parts)
+        if action in {"set", "replace"}:
+            if isinstance(parent, dict):
+                parent[key] = deepcopy(change.get("value"))
+            elif isinstance(parent, list):
+                try:
+                    parent[int(key)] = deepcopy(change.get("value"))
+                except (ValueError, IndexError) as exc:
+                    raise ValueError(f"invalid list index: {key}") from exc
+        elif action == "append":
+            target = parent.get(key) if isinstance(parent, dict) else parent[int(key)]
+            if not isinstance(target, list):
+                raise ValueError(f"append target is not a list: {path}")
+            target.append(deepcopy(change.get("value")))
+        elif action == "remove":
+            if isinstance(parent, dict):
+                if key not in parent:
+                    raise ValueError(f"remove target does not exist: {path}")
+                del parent[key]
+            elif isinstance(parent, list):
+                try:
+                    parent.pop(int(key))
+                except (ValueError, IndexError) as exc:
+                    raise ValueError(f"invalid list index: {key}") from exc
+        else:
+            target = parent.get(key) if isinstance(parent, dict) else parent[int(key)]
+            if not isinstance(target, list):
+                raise ValueError(f"resize target is not a list: {path}")
+            target_count = int(change.get("target_count", -1))
+            if target_count < 0:
+                raise ValueError("target_count must be non-negative")
+            if target_count < len(target):
+                del target[target_count:]
+            else:
+                fill_value = change.get("fill_value", {})
+                target.extend(deepcopy(fill_value) for _ in range(target_count - len(target)))
+        summary.append({"path": path, "action": action})
+    if validator:
+        validator(stage, document)
+    affected = creation_artifact_dependencies(session, stage)["affected_artifacts"]
+    save_stage(session, stage, document, confirm=False, source=source)
+    return {
+        "artifact": serialize_creation_artifact(session, stage),
+        "changes": summary,
+        "affected_artifacts": affected,
+    }
+
+
+def set_creation_artifact_locks(
+    session: NovelCreationSession,
+    stage: str,
+    paths: list[str],
+    *,
+    locked: bool,
+) -> dict[str, Any]:
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    normalized = {_text(path) for path in paths if _text(path)}
+    if any(not path.startswith("/") for path in normalized):
+        raise ValueError("locked paths must use JSON Pointer syntax")
+    draft = initialize_session_draft(session)
+    locks = _dict(draft.get("artifact_locks"))
+    existing = {str(item) for item in _list(locks.get(stage))}
+    updated = existing | normalized if locked else existing - normalized
+    locks[stage] = sorted(updated)
+    draft["artifact_locks"] = locks
+    draft["updated_at"] = _now()
+    session.draft_json = deepcopy(draft)
+    session.revision = int(session.revision or 0) + 1
+    return serialize_creation_artifact(session, stage)
 
 
 def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[str, Any]:

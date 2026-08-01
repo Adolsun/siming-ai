@@ -1321,6 +1321,76 @@ export interface paths {
         patch: operations["update_creation_session_api_v1_novel_creation_sessions__session_id__patch"];
         trace?: never;
     };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Artifacts */
+        get: operations["get_creation_artifacts_api_v1_novel_creation_sessions__session_id__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Artifact */
+        get: operations["get_creation_artifact_api_v1_novel_creation_sessions__session_id__artifacts__stage__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Creation Artifact Endpoint */
+        patch: operations["patch_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__patch"];
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}/dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Dependencies */
+        get: operations["get_creation_dependencies_api_v1_novel_creation_sessions__session_id__artifacts__stage__dependencies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}/locks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Lock Creation Artifact Fields */
+        post: operations["lock_creation_artifact_fields_api_v1_novel_creation_sessions__session_id__artifacts__stage__locks_post"];
+        /** Unlock Creation Artifact Fields */
+        delete: operations["unlock_creation_artifact_fields_api_v1_novel_creation_sessions__session_id__artifacts__stage__locks_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/sessions/{session_id}/interview/next": {
         parameters: {
             query?: never;
@@ -1370,6 +1440,23 @@ export interface paths {
         head?: never;
         /** Update Creation Stage */
         patch: operations["update_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__patch"];
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Creation Stage */
+        post: operations["confirm_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/novel-creation/start": {
@@ -6179,6 +6266,27 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
+        /** NovelCreationArtifactLockRequest */
+        NovelCreationArtifactLockRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Paths */
+            paths: string[];
+        };
+        /** NovelCreationArtifactPatchRequest */
+        NovelCreationArtifactPatchRequest: {
+            /** Changes */
+            changes: {
+                [key: string]: unknown;
+            }[];
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Source
+             * @default author
+             */
+            source: string;
+        };
         /** NovelCreationDraftRequest */
         NovelCreationDraftRequest: {
             /** Answers */
@@ -6284,6 +6392,25 @@ export interface components {
             quick_mode?: boolean | null;
             /** Selected Concept Id */
             selected_concept_id?: string | null;
+        };
+        /** NovelCreationStageConfirmRequest */
+        NovelCreationStageConfirmRequest: {
+            /**
+             * Confirm
+             * @default true
+             */
+            confirm: boolean;
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /**
+             * Source
+             * @default author
+             */
+            source: string;
         };
         /** NovelCreationStageEventResponse */
         NovelCreationStageEventResponse: {
@@ -10617,6 +10744,209 @@ export interface operations {
             };
         };
     };
+    get_creation_artifacts_api_v1_novel_creation_sessions__session_id__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_artifact_api_v1_novel_creation_sessions__session_id__artifacts__stage__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationArtifactPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_dependencies_api_v1_novel_creation_sessions__session_id__artifacts__stage__dependencies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lock_creation_artifact_fields_api_v1_novel_creation_sessions__session_id__artifacts__stage__locks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationArtifactLockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unlock_creation_artifact_fields_api_v1_novel_creation_sessions__session_id__artifacts__stage__locks_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationArtifactLockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     advance_creation_interview_api_v1_novel_creation_sessions__session_id__interview_next_post: {
         parameters: {
             query?: never;
@@ -10702,6 +11032,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationStagePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationStageConfirmRequest"];
             };
         };
         responses: {

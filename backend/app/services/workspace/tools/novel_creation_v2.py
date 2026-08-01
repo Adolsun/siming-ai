@@ -40,14 +40,19 @@ from ...novel_creation_workspace import (
     add_run_event,
     complete_run,
     create_run,
+    creation_artifact_dependencies,
     derive_stage,
     fail_run,
+    list_creation_artifacts,
+    patch_creation_artifact,
     patch_session,
     _requested_volume_count,
     save_compact_concepts,
     save_stage,
     serialize_run,
+    serialize_creation_artifact,
     serialize_session,
+    set_creation_artifact_locks,
 )
 
 
@@ -700,6 +705,103 @@ async def get_novel_creation_session(db: Session, project_id: str, args: dict[st
         "detail": "Novel creation session loaded",
         "data": serialize_session(session),
     }
+
+
+async def get_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    stage = _text(args.get("artifact"))
+    if not session:
+        return {"tool": "get_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
+    try:
+        return {"tool": "get_creation_artifact", "status": "ok", "detail": "Artifact loaded", "data": serialize_creation_artifact(session, stage)}
+    except ValueError as exc:
+        return {"tool": "get_creation_artifact", "status": "error", "detail": str(exc), "data": None}
+
+
+async def list_creation_artifacts_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "list_creation_artifacts", "status": "skipped", "detail": "Session not found", "data": None}
+    return {
+        "tool": "list_creation_artifacts",
+        "status": "ok",
+        "detail": "Creation artifacts loaded",
+        "data": {"revision": int(session.revision or 0), "artifacts": list_creation_artifacts(session)},
+    }
+
+
+async def get_creation_dependencies(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "get_creation_dependencies", "status": "skipped", "detail": "Session not found", "data": None}
+    try:
+        return {
+            "tool": "get_creation_dependencies",
+            "status": "ok",
+            "detail": "Artifact dependencies loaded",
+            "data": creation_artifact_dependencies(session, _text(args.get("artifact"))),
+        }
+    except ValueError as exc:
+        return {"tool": "get_creation_dependencies", "status": "error", "detail": str(exc), "data": None}
+
+
+def _revision_error(tool: str, session: NovelCreationSession) -> dict[str, Any]:
+    return {
+        "tool": tool,
+        "status": "error",
+        "detail": "Novel creation session revision conflict",
+        "data": {"failure_class": "revision_conflict", "current_revision": int(session.revision or 0)},
+    }
+
+
+async def patch_creation_artifact_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "patch_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("patch_creation_artifact", session)
+    try:
+        result = patch_creation_artifact(
+            session,
+            _text(args.get("artifact")),
+            args.get("changes") if isinstance(args.get("changes"), list) else [],
+            source=_text(args.get("source")) or "assistant",
+            validator=_validate_stage,
+        )
+        commit_session(db)
+        return {"tool": "patch_creation_artifact", "status": "ok", "detail": "Artifact patched", "data": result}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "patch_creation_artifact", "status": "error", "detail": str(exc), "data": None}
+
+
+async def _set_creation_locks(db: Session, args: dict[str, Any], *, locked: bool) -> dict[str, Any]:
+    tool = "lock_creation_fields" if locked else "unlock_creation_fields"
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": tool, "status": "skipped", "detail": "Session not found", "data": None}
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error(tool, session)
+    try:
+        artifact = set_creation_artifact_locks(
+            session,
+            _text(args.get("artifact")),
+            args.get("paths") if isinstance(args.get("paths"), list) else [],
+            locked=locked,
+        )
+        commit_session(db)
+        return {"tool": tool, "status": "ok", "detail": "Artifact locks updated", "data": artifact}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": tool, "status": "error", "detail": str(exc), "data": None}
+
+
+async def lock_creation_fields(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _set_creation_locks(db, args, locked=True)
+
+
+async def unlock_creation_fields(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _set_creation_locks(db, args, locked=False)
 
 
 async def generate_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:

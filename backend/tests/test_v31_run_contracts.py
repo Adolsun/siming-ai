@@ -59,6 +59,21 @@ def test_creation_run_openapi_exposes_durable_result_contract() -> None:
     }.issubset(properties)
 
 
+def test_creation_artifact_openapi_exposes_query_patch_lock_and_confirm_routes() -> None:
+    paths = app.openapi()["paths"]
+    artifact_path = "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}"
+    lock_path = artifact_path + "/locks"
+    assert "get" in paths[artifact_path]
+    assert "patch" in paths[artifact_path]
+    assert "get" in paths[artifact_path + "/dependencies"]
+    assert "post" in paths[lock_path]
+    assert "delete" in paths[lock_path]
+    assert "post" in paths["/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm"]
+
+    patch_schema = paths[artifact_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]
+    assert "NovelCreationArtifactPatchRequest" in patch_schema["$ref"]
+
+
 def test_creation_claim_replays_identical_stage_command() -> None:
     db = _db()
     session = NovelCreationSession(mode="internal_llm", status="drafting", draft_json={"stages": {}})

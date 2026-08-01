@@ -43,6 +43,12 @@ _PROJECT_OPTIONAL_TOOLS = {
     "review_novel_blueprint",
     "apply_novel_blueprint",
     "get_novel_creation_session",
+    "get_creation_artifact",
+    "list_creation_artifacts",
+    "get_creation_dependencies",
+    "patch_creation_artifact",
+    "lock_creation_fields",
+    "unlock_creation_fields",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
 }

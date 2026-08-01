@@ -43,6 +43,26 @@ class GetNovelCreationSessionInput(CompatibleInput):
     session_id: str
 
 
+class CreationArtifactInput(CompatibleInput):
+    session_id: str
+    artifact: str
+
+
+class ListCreationArtifactsInput(CompatibleInput):
+    session_id: str
+
+
+class PatchCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    changes: list[dict[str, Any]]
+    source: str = "assistant"
+
+
+class CreationArtifactLockInput(CreationArtifactInput):
+    expected_revision: int
+    paths: list[str]
+
+
 class GenerateNovelCreationStageInput(CompatibleInput):
     session_id: str
     stage: str
@@ -65,6 +85,12 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "draft_novel_blueprint": DraftNovelBlueprintInput,
     "apply_novel_blueprint": ApplyNovelBlueprintInput,
     "get_novel_creation_session": GetNovelCreationSessionInput,
+    "get_creation_artifact": CreationArtifactInput,
+    "list_creation_artifacts": ListCreationArtifactsInput,
+    "get_creation_dependencies": CreationArtifactInput,
+    "patch_creation_artifact": PatchCreationArtifactInput,
+    "lock_creation_fields": CreationArtifactLockInput,
+    "unlock_creation_fields": CreationArtifactLockInput,
     "generate_novel_creation_stage": GenerateNovelCreationStageInput,
     "submit_novel_creation_stage": SubmitNovelCreationStageInput,
 }

@@ -305,6 +305,20 @@ async function mockUiApi(page: Page) {
         },
       ],
     } })
+    if (path === '/api/v1/novel-creation/sessions/running-creation/artifacts') return fulfill(route, { code: 0, data: {
+      session_id: 'running-creation',
+      revision: 3,
+      artifacts: [
+        { artifact: 'constraints', label: '作品定位', status: 'confirmed', source: 'author', revision: 3, locked_paths: ['/genre'], flow: { can_view: true, can_generate: false, can_confirm: false, blocked_by: [] } },
+        { artifact: 'concepts', label: '创意方案', status: 'confirmed', source: 'author', revision: 3, locked_paths: ['/protagonist'], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'world_style', label: '文风与世界观', status: 'confirmed', source: 'model', revision: 3, locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'characters', label: '角色与关系', status: 'confirmed', source: 'author', revision: 3, locked_paths: ['/characters/0'], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'locations', label: '地点与势力', status: 'confirmed', source: 'model', revision: 3, locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'macro_outline', label: '主线与卷纲', status: 'generated', source: 'assistant', revision: 3, locked_paths: [], running_operation: { id: 'run-running', stage: 'macro_outline', status: 'running', current_message: '正在调整第 3—8 卷' }, flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [] } },
+        { artifact: 'opening_outline', label: '开篇细纲', status: 'stale', source: 'model', revision: 3, stale_reason: '上游阶段“主线与卷纲”已修改', locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
+      ],
+    } })
     const creationSessionMatch = path.match(/^\/api\/v1\/novel-creation\/sessions\/([^/]+)$/)
     if (creationSessionMatch && route.request().method() === 'GET') {
       const creationSession = creationSessions[decodeURIComponent(creationSessionMatch[1])]
@@ -474,8 +488,10 @@ for (const viewport of creationViewports) {
     await expect(page.getByRole('heading', { name: '主线与卷纲' })).toBeVisible()
     await expect(page.getByText('正在调整第 3—8 卷，并保留主角设定')).toBeVisible()
     await expect(page.getByText('模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()
+    await expect(page.getByRole('complementary', { name: '立项数据' })).toBeVisible()
+    await expect(page.getByText('上游阶段“主线与卷纲”已修改')).toBeVisible()
     await expect(page.getByRole('button', { name: '停止' })).toBeEnabled()
-    await expect(page.getByRole('button', { name: '打开完整编辑器' })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '打开完整编辑器' }).first()).toBeEnabled()
     await expectViewportSafe(page)
     await expectNoSeriousAccessibilityViolations(page)
     await expectVisualSnapshot(page, `assistant-creation-running-${viewport.name}.png`)

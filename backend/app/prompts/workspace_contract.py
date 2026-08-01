@@ -59,6 +59,8 @@ WORKSPACE_TOOL_NAMES = frozenset(
     finish_agent_run
     forget
     generate_novel_creation_stage
+    get_creation_artifact
+    get_creation_dependencies
     get_cataloging_control_state
     get_cataloging_job
     get_deconstruct_report
@@ -92,6 +94,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     list_deconstruct_reports
     list_duplicate_characters
     list_imported_files
+    list_creation_artifacts
     list_memories
     list_narrative_checkpoints
     list_project_files
@@ -156,6 +159,9 @@ WORKSPACE_TOOL_NAMES = frozenset(
     start_novel_creation_session
     submit_context_evidence
     submit_novel_creation_stage
+    patch_creation_artifact
+    lock_creation_fields
+    unlock_creation_fields
     suggest_conflicts
     sync_project_files
     update_cataloging_candidate

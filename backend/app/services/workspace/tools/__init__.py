@@ -100,7 +100,17 @@ from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
-from .novel_creation_v2 import get_novel_creation_session, generate_novel_creation_stage, submit_novel_creation_stage
+from .novel_creation_v2 import (
+    generate_novel_creation_stage,
+    get_creation_artifact,
+    get_creation_dependencies,
+    get_novel_creation_session,
+    list_creation_artifacts_tool,
+    lock_creation_fields,
+    patch_creation_artifact_tool,
+    submit_novel_creation_stage,
+    unlock_creation_fields,
+)
 from .narrative_governance import (
     apply_narrative_governance_candidates,
     diff_narrative_checkpoint,
@@ -229,6 +239,12 @@ __all__ = [
     "inspect_story_granularity",
     "repair_story_granularity",
     "get_novel_creation_session",
+    "get_creation_artifact",
+    "list_creation_artifacts_tool",
+    "get_creation_dependencies",
+    "patch_creation_artifact_tool",
+    "lock_creation_fields",
+    "unlock_creation_fields",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
     "get_narrative_governance",

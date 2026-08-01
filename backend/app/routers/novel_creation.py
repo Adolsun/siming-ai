@@ -34,9 +34,14 @@ from ..services.novel_creation_workspace import (
     confirm_run,
     generation_blockers,
     get_presets,
+    creation_artifact_dependencies,
+    list_creation_artifacts,
+    patch_creation_artifact,
     patch_session,
+    serialize_creation_artifact,
     serialize_run,
     serialize_session,
+    set_creation_artifact_locks,
 )
 from ..services.observability.run_events import classify_failure
 from ..services.operation_runtime import (
@@ -56,7 +61,7 @@ from ..services.workspace.tools.novel_creation import (
     review_novel_blueprint,
     start_novel_creation_session,
 )
-from ..services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage, submit_novel_creation_stage
+from ..services.workspace.tools.novel_creation_v2 import _validate_stage, generate_novel_creation_stage, submit_novel_creation_stage
 
 router = APIRouter(tags=["novel-creation"])
 
@@ -355,6 +360,17 @@ class NovelCreationStagePatchRequest(BaseModel):
     expected_revision: int
 
 
+class NovelCreationArtifactPatchRequest(BaseModel):
+    changes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    source: str = "author"
+    expected_revision: int
+
+
+class NovelCreationArtifactLockRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=100)
+    expected_revision: int
+
+
 @router.get("/novel-creation/presets")
 async def novel_creation_presets():
     return ApiResponse.success(data=get_presets())
@@ -375,6 +391,40 @@ async def get_creation_session(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     return ApiResponse.success(data=serialize_session(session))
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts")
+async def get_creation_artifacts(session_id: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    return ApiResponse.success(data={
+        "session_id": session.id,
+        "revision": int(session.revision or 0),
+        "artifacts": list_creation_artifacts(session),
+    })
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}")
+async def get_creation_artifact(session_id: str, stage: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        return ApiResponse.success(data=serialize_creation_artifact(session, stage))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}/dependencies")
+async def get_creation_dependencies(session_id: str, stage: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        return ApiResponse.success(data=creation_artifact_dependencies(session, stage))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/novel-creation/sessions/{session_id}")
@@ -672,6 +722,7 @@ async def retry_creation_stage_run(
         message="已创建重试任务",
     )
 
+@router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm")
 async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCreationStageConfirmRequest, db: Session = Depends(get_db)):
     store = novel_creation_session_store(db)
     session = store.session(session_id)
@@ -728,6 +779,84 @@ async def update_creation_stage(session_id: str, stage: str, payload: NovelCreat
         "expected_revision": payload.expected_revision,
     })
     return _tool_response(result)
+
+
+def _require_creation_revision(session: Any, expected_revision: int) -> None:
+    if int(session.revision or 0) != expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿版本已经变化，本次操作未写入。",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
+
+
+@router.patch("/novel-creation/sessions/{session_id}/artifacts/{stage}")
+async def patch_creation_artifact_endpoint(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactPatchRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        result = patch_creation_artifact(
+            session,
+            stage,
+            payload.changes,
+            source=payload.source,
+            validator=_validate_stage,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message=f"{STAGE_LABELS[stage]}已局部更新")
+    except (KeyError, TypeError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/novel-creation/sessions/{session_id}/artifacts/{stage}/locks")
+async def lock_creation_artifact_fields(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactLockRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        artifact = set_creation_artifact_locks(session, stage, payload.paths, locked=True)
+        commit_session(db)
+        return ApiResponse.success(data=artifact, message="字段已锁定")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/novel-creation/sessions/{session_id}/artifacts/{stage}/locks")
+async def unlock_creation_artifact_fields(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactLockRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        artifact = set_creation_artifact_locks(session, stage, payload.paths, locked=False)
+        commit_session(db)
+        return ApiResponse.success(data=artifact, message="字段已解锁")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class RefreshQuestionRequest(BaseModel):
