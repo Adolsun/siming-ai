@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...operation_runtime import current_operation_id, record_operation_signal
-from ....core.json_repair import parse_json_object
+from ....core.json_repair import parse_json_object_detailed
 from ....database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
 from ....services.novel_creation_authoring import (
@@ -67,6 +67,68 @@ class StageModelResponseError(RuntimeError):
     def __init__(self, message: str, *, attempt: int = 1) -> None:
         super().__init__(message)
         self.attempt = max(1, int(attempt))
+
+
+def _repair_provenance(raw: str, method: str, warning: str) -> dict[str, Any]:
+    return {
+        "result_mode": "repaired",
+        "warning": warning,
+        "repair_method": method,
+        "original_response_excerpt": raw[:12_000],
+    }
+
+
+def _safe_partial_stage(
+    raw: str,
+    stage: str,
+    baseline: dict[str, Any],
+    draft: dict[str, Any],
+) -> dict[str, Any] | None:
+    parsed, _method = parse_json_object_detailed(raw)
+    if not isinstance(parsed, dict):
+        return None
+    partial = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    if not isinstance(partial, dict):
+        return None
+    try:
+        data = _normalize_stage_data(stage, partial, baseline)
+        _validate_stage(stage, data)
+        _validate_author_requirements(stage, data, baseline, draft)
+    except Exception:
+        return None
+    return data if data != baseline else None
+
+
+def _safe_partial_concepts(
+    raw: str,
+    *,
+    expected_count: int,
+    draft: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    parsed, _method = parse_json_object_detailed(raw)
+    if not isinstance(parsed, dict):
+        return None
+    payload = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    rows = payload.get("concepts") if isinstance(payload.get("concepts"), list) else []
+    if not rows:
+        return None
+    safe = deepcopy(_safe_compact_concepts(draft))
+    while len(safe) < expected_count:
+        safe.append(deepcopy(safe[-1] if safe else {}))
+    merged = safe[:expected_count]
+    for index, row in enumerate(rows[:expected_count]):
+        if not isinstance(row, dict):
+            continue
+        protagonist = dict(merged[index].get("protagonist_seed") or {})
+        protagonist.update(row.get("protagonist_seed") if isinstance(row.get("protagonist_seed"), dict) else {})
+        merged[index].update(row)
+        merged[index]["protagonist_seed"] = protagonist
+    try:
+        cards = _validate_compact_concepts(merged, expected_count=expected_count)
+        _validate_author_requirements("concepts", {"options": cards}, {}, draft)
+    except Exception:
+        return None
+    return cards
 
 
 def _raise_if_task_cancelled() -> None:
@@ -453,7 +515,7 @@ async def _repair_json_with_model(
     contract: str,
     max_tokens: int,
     extra_body: dict[str, Any] | None,
-) -> tuple[dict[str, Any] | None, int]:
+) -> tuple[dict[str, Any] | None, int, str | None]:
     _raise_if_task_cancelled()
     system = (
         "你是司命的阶段结构修复器。只修复 JSON 语法和结构契约，不改写作者事实、专名、"
@@ -473,7 +535,8 @@ async def _repair_json_with_model(
         extra_body=extra_body,
     )
     _raise_if_task_cancelled()
-    return parse_json_object(repaired), attempt
+    parsed, method = parse_json_object_detailed(repaired)
+    return parsed, attempt, method
 
 
 async def _generate_compact_concepts(
@@ -549,20 +612,23 @@ async def _generate_compact_concepts(
     try:
         if not raw:
             raise ValueError("模型没有返回轻量创意卡")
-        parsed = parse_json_object(raw)
+        parsed, parse_method = parse_json_object_detailed(raw)
         if not isinstance(parsed, dict):
             raise ValueError("模型返回的轻量创意卡不是有效 JSON")
         payload = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
         cards = _validate_compact_concepts(payload.get("concepts"), expected_count=expected_count)
         _validate_author_requirements("concepts", {"options": cards}, {}, draft)
-        return cards, {
-            "attempt": attempt,
-            "result_mode": "model",
-            "warning": None,
-        }
+        metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
+        if parse_method != "direct":
+            metadata.update(_repair_provenance(
+                raw,
+                "deterministic_json",
+                "模型原始回复存在 JSON 语法问题，系统已确定性修复并保留可识别内容",
+            ))
+        return cards, metadata
     except Exception as parse_error:
         try:
-            repaired, repair_attempt = await _repair_json_with_model(
+            repaired, repair_attempt, repair_parse_method = await _repair_json_with_model(
                 raw=raw,
                 error=parse_error,
                 model=model,
@@ -580,12 +646,28 @@ async def _generate_compact_concepts(
             cards = _validate_compact_concepts(payload.get("concepts"), expected_count=expected_count)
             _raise_if_task_cancelled()
             _validate_author_requirements("concepts", {"options": cards}, {}, draft)
-            return cards, {
+            metadata = {
                 "attempt": attempt + repair_attempt,
-                "result_mode": "repaired",
-                "warning": "模型原始回复格式不合法，已使用同一模型完成一次结构修复",
+                **_repair_provenance(raw, "model_json", "模型原始回复格式不合法，已使用同一模型完成一次结构修复"),
             }
+            if repair_parse_method not in {None, "direct"}:
+                metadata["repair_method"] = "model_json+deterministic_json"
+            return cards, metadata
         except Exception as repair_error:
+            safe_cards = None if instruction else _safe_partial_concepts(
+                raw,
+                expected_count=expected_count,
+                draft=draft,
+            )
+            if safe_cards is not None:
+                return safe_cards, {
+                    "attempt": attempt + 1,
+                    "result_mode": "deterministic_fallback",
+                    "warning": "模型返回的部分创意结构不可用，系统已保留可识别内容并补齐安全默认值",
+                    "repair_method": "safe_partial_draft",
+                    "repair_error": str(repair_error)[:1000],
+                    "original_response_excerpt": raw[:12_000],
+                }
             raise StageModelResponseError(
                 f"{parse_error}；同模型结构修复失败：{repair_error}",
                 attempt=attempt + 1,
@@ -652,7 +734,7 @@ async def _enhance_with_model(
     try:
         if not raw:
             raise ValueError("没有收到模型的文字回复")
-        parsed = parse_json_object(raw)
+        parsed, parse_method = parse_json_object_detailed(raw)
         if not isinstance(parsed, dict):
             raise ValueError("模型返回的阶段 JSON 格式不合法")
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
@@ -660,10 +742,17 @@ async def _enhance_with_model(
         data = _normalize_stage_data(stage, data, baseline)
         _validate_stage(stage, data)
         _validate_author_requirements(stage, data, baseline, draft)
-        return data, {"attempt": attempt, "result_mode": "model", "warning": None}
+        metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
+        if parse_method != "direct":
+            metadata.update(_repair_provenance(
+                raw,
+                "deterministic_json",
+                "模型原始回复存在 JSON 语法问题，系统已确定性修复并保留可识别内容",
+            ))
+        return data, metadata
     except Exception as parse_error:
         try:
-            repaired, repair_attempt = await _repair_json_with_model(
+            repaired, repair_attempt, repair_parse_method = await _repair_json_with_model(
                 raw=raw,
                 error=parse_error,
                 model=model,
@@ -683,12 +772,24 @@ async def _enhance_with_model(
             data = _normalize_stage_data(stage, data, baseline)
             _validate_stage(stage, data)
             _validate_author_requirements(stage, data, baseline, draft)
-            return data, {
+            metadata = {
                 "attempt": attempt + repair_attempt,
-                "result_mode": "repaired",
-                "warning": "模型原始回复格式不合法，已使用同一模型完成一次结构修复",
+                **_repair_provenance(raw, "model_json", "模型原始回复格式不合法，已使用同一模型完成一次结构修复"),
             }
+            if repair_parse_method not in {None, "direct"}:
+                metadata["repair_method"] = "model_json+deterministic_json"
+            return data, metadata
         except Exception as repair_error:
+            safe_data = None if instruction else _safe_partial_stage(raw, stage, baseline, draft)
+            if safe_data is not None:
+                return safe_data, {
+                    "attempt": attempt + 1,
+                    "result_mode": "deterministic_fallback",
+                    "warning": "模型返回的部分阶段结构不可用，系统已保留可识别内容并补齐安全默认值",
+                    "repair_method": "safe_partial_draft",
+                    "repair_error": str(repair_error)[:1000],
+                    "original_response_excerpt": raw[:12_000],
+                }
             raise StageModelResponseError(
                 f"{parse_error}；同模型结构修复失败：{repair_error}",
                 attempt=attempt + 1,

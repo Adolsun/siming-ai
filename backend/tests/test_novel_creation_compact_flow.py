@@ -273,7 +273,8 @@ def test_invalid_concepts_create_safe_draft_then_a_retry_can_succeed():
     assert recovered["status"] == "ok"
     assert recovered["data"]["run"]["status"] == "waiting_author"
     assert recovered["data"]["run"]["result_mode"] == "deterministic_fallback"
-    assert session.draft_json["stages"]["concepts"]["source"] == "contract_fallback"
+    assert session.draft_json["stages"]["concepts"]["source"] == "model_repaired"
+    assert session.draft_json["stages"]["concepts"]["data"]["options"][0]["title"] == _concepts()[0]["title"]
 
     valid = json.dumps({"concepts": _concepts()})
     with patch(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
@@ -545,6 +546,37 @@ def test_quick_run_uses_an_explicit_safe_fallback_for_empty_model_events():
     macro = result["data"]["session"]["draft"]["stages"]["macro_outline"]
     assert macro["source"] == "contract_fallback"
     assert macro["data"]["volumes"]
+
+
+def test_truncated_stage_json_is_repaired_without_a_second_model_call():
+    db = _db()
+    session = _ready_session(db)
+    world = derive_stage(session, "world_style")
+    raw = json.dumps({"data": world}, ensure_ascii=False)[:-1]
+
+    def truncated_stream(**_kwargs):
+        async def generate():
+            yield raw
+
+        return generate()
+
+    completion = MagicMock(side_effect=truncated_stream)
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=completion,
+    ):
+        result = asyncio.run(generate_novel_creation_stage(db, "", {
+            "session_id": session.id,
+            "stage": "world_style",
+            "model": "openai:test",
+            "use_model": True,
+        }))
+
+    assert result["status"] == "ok"
+    assert completion.call_count == 1
+    completed = [event for event in result["data"]["run"]["events"] if event["event_type"] == "stage_completed"][-1]
+    assert completed["payload"]["repair_method"] == "deterministic_json"
+    assert completed["payload"]["original_response_excerpt"]
 
 
 def test_stage_run_classifies_invalid_token_with_actionable_next_step():

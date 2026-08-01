@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 
 
 def strip_json_fences(text: str) -> str:
-    value = (text or "").strip()
+    value = (text or "").strip().lstrip("﻿")
     for _ in range(2):
         if value.startswith("```json"):
             value = value[7:]
@@ -17,6 +18,54 @@ def strip_json_fences(text: str) -> str:
         if value.endswith("```"):
             value = value[:-3]
     return value.strip()
+
+
+def remove_trailing_commas(text: str) -> str:
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
+def normalize_json_punctuation(text: str) -> str:
+    return text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+
+
+def repair_truncated_json(candidate: str) -> Optional[str]:
+    """Conservatively close an object cut off by a model token limit."""
+    repaired = candidate.strip()
+    if not repaired.startswith("{"):
+        return None
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in repaired:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]" and stack and stack[-1] == char:
+            stack.pop()
+    if not stack and not in_string:
+        return None
+    if in_string:
+        repaired += '"'
+    repaired = repaired.rstrip()
+    for _ in range(3):
+        next_text = re.sub(r',?\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*:\s*$', "", repaired).rstrip()
+        if next_text == repaired:
+            break
+        repaired = next_text
+    repaired = re.sub(r"[:,]\s*$", "", repaired).rstrip()
+    repaired += "".join(reversed(stack))
+    return remove_trailing_commas(repaired)
 
 
 def escape_json_string_values(text: str) -> str:
@@ -64,7 +113,8 @@ def escape_json_string_values(text: str) -> str:
     return ''.join(result)
 
 
-def parse_json_object(text: str) -> Optional[dict]:
+def parse_json_object_detailed(text: str) -> tuple[Optional[dict], Optional[str]]:
+    """Parse one object and report whether deterministic repair was required."""
     cleaned = strip_json_fences(text)
 
     def _try_parse(candidate_text: str) -> Optional[dict]:
@@ -86,11 +136,29 @@ def parse_json_object(text: str) -> Optional[dict]:
 
     parsed = _try_parse(cleaned)
     if parsed is not None:
-        return parsed
+        return parsed, "direct"
     escaped = escape_json_string_values(cleaned)
     if escaped != cleaned:
-        return _try_parse(escaped)
-    return None
+        parsed = _try_parse(escaped)
+        if parsed is not None:
+            return parsed, "deterministic_json"
+    normalized = remove_trailing_commas(normalize_json_punctuation(cleaned))
+    parsed = _try_parse(normalized)
+    if parsed is not None:
+        return parsed, "deterministic_json"
+    start = normalized.find("{")
+    if start >= 0:
+        repaired = repair_truncated_json(normalized[start:])
+        if repaired:
+            parsed = _try_parse(repaired)
+            if parsed is not None:
+                return parsed, "deterministic_json"
+    return None, None
+
+
+def parse_json_object(text: str) -> Optional[dict]:
+    parsed, _method = parse_json_object_detailed(text)
+    return parsed
 
 
 WORKSPACE_JSON_REPAIR_SYSTEM_PROMPT = (
