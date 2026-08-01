@@ -42,9 +42,36 @@ jobs:
             '+refs/heads/*:refs/heads/*' \
             '+refs/tags/*:refs/tags/*'
 
-      - name: Push all branches and tags to Gitee
+      - name: Configure and verify Gitee SSH
         env:
           GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+
+          ssh_dir="${RUNNER_TEMP}/gitee-ssh"
+          install -m 700 -d "$ssh_dir"
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          chmod 600 "$ssh_dir/id_ed25519"
+          ssh-keyscan -H gitee.com > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/known_hosts"
+
+          ssh_output="$(ssh -i "$ssh_dir/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" -T git@gitee.com 2>&1 || true)"
+          echo "$ssh_output"
+          grep -Fq "$GITEE_OWNER" <<< "$ssh_output"
+
+      - name: Repack Git objects
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+
+          mirror_dir="${RUNNER_TEMP}/siming-ai-mirror.git"
+          git -C "$mirror_dir" repack -a -d
+
+      - name: Push branches to Gitee
+        env:
           GIT_TERMINAL_PROMPT: "0"
         shell: bash
         timeout-minutes: 30
@@ -53,19 +80,23 @@ jobs:
 
           mirror_dir="${RUNNER_TEMP}/siming-ai-mirror.git"
           ssh_dir="${RUNNER_TEMP}/gitee-ssh"
-          install -m 700 -d "$ssh_dir"
-          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
-          chmod 600 "$ssh_dir/id_ed25519"
-          ssh-keyscan -H gitee.com > "$ssh_dir/known_hosts"
-          chmod 600 "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
-          trap 'rm -rf "$ssh_dir"' EXIT
-
           git -C "$mirror_dir" remote add gitee "git@gitee.com:${GITEE_OWNER}/${GITEE_REPO}.git"
-          git -C "$mirror_dir" repack -a -d
-          git -C "$mirror_dir" push --force --prune gitee \
+          git -C "$mirror_dir" push --progress --force --prune gitee \
             'refs/heads/*:refs/heads/*'
-          git -C "$mirror_dir" push --force --prune gitee \
+
+      - name: Push tags to Gitee
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+
+          mirror_dir="${RUNNER_TEMP}/siming-ai-mirror.git"
+          ssh_dir="${RUNNER_TEMP}/gitee-ssh"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
+          git -C "$mirror_dir" push --progress --force --prune gitee \
             'refs/tags/*:refs/tags/*'
 
       - name: Check out release sync script
@@ -79,3 +110,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: python .github/scripts/sync_gitee_releases.py
+
+      - name: Remove SSH credentials
+        if: always()
+        shell: bash
+        run: rm -rf "${RUNNER_TEMP}/gitee-ssh"
