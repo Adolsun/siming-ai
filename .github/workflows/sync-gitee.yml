@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Fetch all GitHub branches and tags
         shell: bash
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           set -euo pipefail
 
@@ -61,7 +61,13 @@ jobs:
           trap 'rm -f "$credential_file"' EXIT
 
           git -C "$mirror_dir" remote add gitee "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
-          git -C "$mirror_dir" push --mirror gitee
+          git -C "$mirror_dir" config http.version HTTP/1.1
+          git -C "$mirror_dir" config http.postBuffer 536870912
+          git -C "$mirror_dir" repack -a -d
+          git -C "$mirror_dir" push --force --prune gitee \
+            'refs/heads/*:refs/heads/*'
+          git -C "$mirror_dir" push --force --prune gitee \
+            'refs/tags/*:refs/tags/*'
 
       - name: Check out release sync script
         uses: actions/checkout@v4
