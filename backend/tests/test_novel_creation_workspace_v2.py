@@ -392,7 +392,7 @@ def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
     event_types = [item["event_type"] for item in run["events"]]
     assert event_types.count("stage_progress") == 5
     assert event_types.count("stage_completed") == 6
-    assert run["status"] == "completed"
+    assert run["status"] == "waiting_author"
     final = result["data"]["session"]["draft"]["stages"]["final_review"]
     assert final["status"] == "generated"
     assert final["data"]["ready"] is True

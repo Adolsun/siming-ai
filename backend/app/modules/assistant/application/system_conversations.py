@@ -11,6 +11,17 @@ class SystemConversationStore(Protocol):
 
     def get(self, conversation_id: str) -> dict[str, Any]: ...
 
+    def start_turn(self, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def finish_turn(
+        self,
+        conversation_id: str,
+        assistant_message_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    def interrupt_running_messages(self) -> int: ...
+
     def append_turn(
         self,
         conversation_id: str,

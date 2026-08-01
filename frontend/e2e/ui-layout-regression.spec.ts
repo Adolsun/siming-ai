@@ -276,6 +276,35 @@ async function mockUiApi(page: Page) {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/novel-creation/presets') return fulfill(route, { code: 0, data: creationPresets })
     if (path === '/api/v1/novel-creation/sessions') return fulfill(route, { code: 0, data: { sessions: [] } })
+    if (path === '/api/v1/projects') return fulfill(route, { code: 0, data: { items: [], total: 0 } })
+    if (path === '/api/v1/ai/system-assistant/conversations') return fulfill(route, { code: 0, data: {
+      items: [{
+        id: 'conversation-running', title: '八卷仙侠悬疑立项', creation_session_id: 'running-creation',
+        user_brief: '保留主角，扩写为八卷。', created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
+      }],
+      total: 1,
+    } })
+    if (path === '/api/v1/ai/system-assistant/conversations/conversation-running') return fulfill(route, { code: 0, data: {
+      conversation: {
+        id: 'conversation-running', title: '八卷仙侠悬疑立项', creation_session_id: 'running-creation',
+        user_brief: '保留主角，扩写为八卷。', created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
+      },
+      messages: [
+        {
+          id: 'message-user-running', role: 'user', content: '主角保持不变，把原来的三卷改成八卷。',
+          status: 'completed', message_type: 'text', created_at: '2026-07-27T09:59:00Z', payload: {},
+        },
+        {
+          id: 'message-assistant-running', role: 'assistant', content: '正在调整主线与卷纲',
+          status: 'running', message_type: 'operation', created_at: '2026-07-27T10:00:00Z',
+          payload: { run: {
+            id: 'run-running', session_id: 'running-creation', stage: 'macro_outline', status: 'running',
+            operation_id: 'operation-running', model_source: 'opencode_cli:opencode/deepseek-v4-flash-free',
+            attempt: 1, current_message: '正在调整第 3—8 卷，并保留主角设定',
+          } },
+        },
+      ],
+    } })
     const creationSessionMatch = path.match(/^\/api\/v1\/novel-creation\/sessions\/([^/]+)$/)
     if (creationSessionMatch && route.request().method() === 'GET') {
       const creationSession = creationSessions[decodeURIComponent(creationSessionMatch[1])]
@@ -436,6 +465,22 @@ const creationViewports = [
 ]
 
 for (const viewport of creationViewports) {
+  test(`keeps the conversational creation task controllable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/gui', { waitUntil: 'networkidle' })
+
+    await expect(page.getByText('立项任务')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '主线与卷纲' })).toBeVisible()
+    await expect(page.getByText('正在调整第 3—8 卷，并保留主角设定')).toBeVisible()
+    await expect(page.getByText('模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止' })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '打开完整编辑器' })).toBeEnabled()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectVisualSnapshot(page, `assistant-creation-running-${viewport.name}.png`)
+  })
+
   test(`keeps all new-book entry points and the author-led intake usable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)

@@ -342,6 +342,12 @@ export function useNovelCreationInterviewController({
     return { run, url }
   }, [navigate, requestedModel, state.sessionId])
 
+  const startConceptRun = useCallback(async (sessionId?: string) => {
+    const targetSessionId = sessionId || state.sessionId
+    if (!targetSessionId) throw new Error('缺少新书立项会话，请重新开始。')
+    return startNovelCreationConceptRun(targetSessionId, requestedModel)
+  }, [requestedModel, state.sessionId])
+
   const adoptSession = useCallback((sessionId: string, userBrief = '', history: InterviewQuestionAnswer[] = []) => {
     setState({
       sessionId,
@@ -372,8 +378,9 @@ export function useNovelCreationInterviewController({
     rerunWithHistory,
     replaceHistory,
     replaceQuestion,
+    startConceptRun,
     handoffToWorkbench,
     adoptSession,
     reset,
-  }), [adoptSession, answer, handoffToWorkbench, replaceHistory, replaceQuestion, rerunWithHistory, reset, skip, start, state, supplement])
+  }), [adoptSession, answer, handoffToWorkbench, replaceHistory, replaceQuestion, rerunWithHistory, reset, skip, start, startConceptRun, state, supplement])
 }

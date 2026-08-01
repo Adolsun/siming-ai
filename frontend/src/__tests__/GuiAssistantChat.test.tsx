@@ -65,7 +65,27 @@ describe('GuiAssistantChat new-book handoff', () => {
         })
       }
       if (url === '/novel-creation/sessions/session-1/runs') {
-        return Promise.resolve({ data: { data: { run: { id: 'run-1', status: 'running' } } } })
+        return Promise.resolve({ data: { data: { run: {
+          id: 'run-1',
+          session_id: 'session-1',
+          stage: 'concepts',
+          status: 'running',
+          operation_id: 'operation-1',
+          current_message: '正在生成创意方向',
+        } } } })
+      }
+      if (url === '/novel-creation/conversation-command') {
+        return Promise.resolve({ data: { data: {
+          summary: '已开始角色与关系调整',
+          run: {
+            id: 'run-characters',
+            session_id: 'session-1',
+            stage: 'characters',
+            status: 'running',
+            operation_id: 'operation-characters',
+            current_message: '正在调整角色与关系',
+          },
+        } } })
       }
       if (url === '/ai/system-assistant/conversations') {
         return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '新书' } } } })
@@ -94,9 +114,9 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/novel-creation?session=session-1&run=run-1')
-    })
+    expect(await screen.findByText('立项任务')).toBeInTheDocument()
+    expect(screen.getByText('正在生成创意方向')).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalledWith('/novel-creation?session=session-1&run=run-1')
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/interview/next', expect.objectContaining({
       qa_history: [],
     }), { timeout: 0 })
@@ -114,6 +134,29 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.click(await screen.findByRole('button', { name: '查看当前模型与运行状态' }))
     expect(await screen.findByRole('combobox', { name: '选择本次对话模型' })).toBeInTheDocument()
     expect(screen.getByText('OpenAI · test')).toBeInTheDocument()
+  })
+
+  it('starts a targeted artifact refinement from chat without opening the workbench', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    const input = await screen.findByRole('textbox', { name: '给司命的消息' })
+    await user.type(input, '我要创建一本新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    expect(await screen.findByText('立项任务')).toBeInTheDocument()
+
+    await user.type(input, '主角保持不变，重做反派和人物关系')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/conversation-command', expect.objectContaining({
+        session_id: 'session-1',
+        stage: 'characters',
+        action: 'refine_artifact',
+      }))
+    })
+    expect(screen.getByText('正在调整角色与关系')).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalledWith(expect.stringContaining('/novel-creation'))
   })
 
   it('shows actual runtime diagnostics after an interview response', async () => {

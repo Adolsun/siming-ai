@@ -49,6 +49,7 @@ from app.modules.continuity.infrastructure.models import (
     WorldbuildingVersion,
 )
 from app.modules.creation.infrastructure.models import (
+    NovelCreationRunClaim,
     NovelCreationSession,
     NovelCreationStageEvent,
     NovelCreationStageRun,

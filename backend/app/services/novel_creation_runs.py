@@ -31,6 +31,9 @@ def create_run(
     session: NovelCreationSession,
     stage: str,
     request: dict[str, Any],
+    *,
+    claim_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> NovelCreationStageRun:
     model = _text(request.get("model")) or None
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
@@ -50,6 +53,8 @@ def create_run(
         current_message=f"正在生成{STAGE_LABELS.get(stage, stage)}",
         input_revision=revision,
         input_snapshot_hash=snapshot_hash,
+        claim_id=claim_id,
+        idempotency_key=idempotency_key,
     )
     db.add(run)
     db.flush()
@@ -71,6 +76,13 @@ def create_run(
         snapshot_hash=snapshot_hash,
     )
     run.operation_id = operation.id
+    if claim_id:
+        from app.database.models import NovelCreationRunClaim
+
+        claim = db.get(NovelCreationRunClaim, claim_id)
+        if claim:
+            claim.run_id = run.id
+            claim.operation_id = operation.id
     request_copy = deepcopy(request)
     request_copy["input_revision"] = revision
     request_copy["input_snapshot_hash"] = snapshot_hash
@@ -139,30 +151,49 @@ def add_run_event(
     return event
 
 
+def _complete_claim(
+    db: Session,
+    run: NovelCreationStageRun,
+    *,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+    status: str | None = None,
+) -> None:
+    if not run.claim_id:
+        return
+    from app.services.novel_creation_claims import complete_creation_claim
+
+    complete_creation_claim(db, run.claim_id, result=result, error=error, status=status)
+
+
 def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]) -> None:
-    run.status = "completed"
+    # Saving generated output is a successful checkpoint, but the author still
+    # owns the decision to accept it. Keep that state distinct from a failure.
+    run.status = "waiting_author"
     run.result_json = deepcopy(result)
-    run.current_message = "阶段结果已保存到立项草稿"
+    run.current_message = "阶段结果已保存到立项草稿，等待作者确认"
     run.next_action = "审阅并确认本阶段，或编辑后重新生成"
     run.completed_at = datetime.utcnow()
     add_run_event(
         db,
         run,
-        "completed",
-        "ok",
+        "waiting_author",
+        "waiting_author",
         run.current_message,
         {"storage_target": run.storage_target, "next_action": run.next_action},
     )
     if not run.operation_id:
+        _complete_claim(db, run, result=result)
         return
     operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
     if not operation:
+        _complete_claim(db, run, result=result)
         return
     attention_stage = run.session.current_stage if run.stage == "all" else run.stage
     update_operation(
         db,
         operation,
-        status="failed",
+        status="waiting_user",
         health_status="active",
         message=run.current_message,
         next_action=run.next_action,
@@ -180,10 +211,33 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
             "completed": [f"{STAGE_LABELS.get(attention_stage, attention_stage)}内容已生成并保存到立项草稿"],
             "incomplete": ["阶段尚未由作者确认"],
         },
-        outcome="blocked",
+        outcome="awaiting_confirmation",
     )
     operation.can_cancel = False
-    operation.can_retry = False
+    operation.can_retry = True
+    _complete_claim(db, run, result=result)
+
+
+def confirm_run(db: Session, run: NovelCreationStageRun) -> bool:
+    """Complete the exact generated run after an author confirmation."""
+    if run.status == "completed":
+        return True
+    if run.status != "waiting_author":
+        return False
+
+    run.status = "completed"
+    run.current_message = "阶段内容已由作者确认"
+    run.next_action = "继续处理下一阶段"
+    run.completed_at = datetime.utcnow()
+    add_run_event(
+        db,
+        run,
+        "author_confirmed",
+        "completed",
+        run.current_message,
+        {"next_action": run.next_action},
+    )
+    return True
 
 
 def fail_run(
@@ -215,6 +269,7 @@ def fail_run(
     run.completed_at = datetime.utcnow()
     run.session.last_error_json = failure_payload
     add_run_event(db, run, "failed", "error", message, failure_payload)
+    _complete_claim(db, run, error=message, status="failed")
     if not run.operation_id:
         return
     operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
@@ -258,6 +313,7 @@ def block_run_for_context(
             "retryable": True,
         },
     )
+    _complete_claim(db, run, error=message, status="failed")
     if not run.operation_id:
         return
     operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
@@ -343,15 +399,22 @@ def mark_interrupted_novel_creation_runs(db: Session) -> int:
             if run.operation_id
             else None
         )
-        # Startup has no surviving producer. The Operation recovery pass either
-        # made the operation terminal or the backing operation is already gone;
-        # in both cases keeping the stage run "running" would block all retries.
-        if operation is not None and operation.status in {"queued", "running", "paused"}:
-            continue
-        run.status = "interrupted"
-        run.failure_class = "interrupted"
-        run.current_message = "应用上次关闭或服务重启时，本阶段尚未完成"
-        run.next_action = "检查已保存草稿后重新生成本阶段"
+        # Startup has no surviving producer. A saved result remains available
+        # for author review; every other active producer becomes recoverable.
+        if isinstance(run.result_json, dict):
+            run.status = "waiting_author"
+            run.failure_class = None
+            run.current_message = "阶段结果已保存，等待作者确认"
+            run.next_action = "审阅并确认本阶段，或编辑后重新生成"
+            event_type = "recovered_waiting_author"
+            event_status = "waiting_author"
+        else:
+            run.status = "interrupted"
+            run.failure_class = "interrupted"
+            run.current_message = "应用上次关闭或服务重启时，本阶段尚未完成"
+            run.next_action = "检查已保存草稿后重新生成本阶段"
+            event_type = "interrupted"
+            event_status = "interrupted"
         run.completed_at = now
         run.updated_at = now
         sequence = max([int(event.sequence or 0) for event in run.events] or [0]) + 1
@@ -359,16 +422,23 @@ def mark_interrupted_novel_creation_runs(db: Session) -> int:
             NovelCreationStageEvent(
                 run_id=run.id,
                 sequence=sequence,
-                event_type="interrupted",
-                status="interrupted",
+                event_type=event_type,
+                status=event_status,
                 message=run.current_message,
                 payload_json={
-                    "failure_class": "interrupted",
+                    "failure_class": run.failure_class,
                     "next_action": run.next_action,
-                    "retryable": True,
+                    "retryable": run.status == "interrupted",
                 },
                 created_at=now,
             )
+        )
+        _complete_claim(
+            db,
+            run,
+            result=deepcopy(run.result_json) if isinstance(run.result_json, dict) else None,
+            error=None if run.status == "waiting_author" else run.current_message,
+            status="completed" if run.status == "waiting_author" else "interrupted",
         )
     if runs:
         db.flush()

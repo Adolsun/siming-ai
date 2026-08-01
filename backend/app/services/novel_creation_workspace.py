@@ -15,7 +15,7 @@ from app.database.models import NovelCreationSession
 from app.services.novel_creation_contract import SCHEMA_VERSION, STAGE_LABELS, STAGE_ORDER
 from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
 from app.services.novel_creation_failures import clear_stage_failure
-from app.services.novel_creation_runs import add_run_event, complete_run, create_run, fail_run, serialize_run
+from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
 
 _PRESET_ROWS: tuple[tuple[str, str, str, tuple[str, ...], dict[str, Any]], ...] = (
     ("xuanhuan", "玄幻奇幻", "力量体系、升级兑现与世界奇观", ("东方玄幻", "高武世界", "异世大陆", "诡秘奇幻"), {

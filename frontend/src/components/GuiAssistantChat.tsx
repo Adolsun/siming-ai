@@ -91,7 +91,10 @@ interface PersistedMessage {
   role: 'user' | 'assistant'
   content: string
   status?: string
-  payload?: { reply?: string } | null
+  run_id?: string | null
+  operation_id?: string | null
+  message_type?: string
+  payload?: { reply?: string; run?: NovelCreationRunSummary; question?: ChatQuestion } | null
   created_at?: string
 }
 
@@ -105,6 +108,23 @@ interface ChatMessage {
   status?: string
   created_at?: string
   questions?: ChatQuestion[]
+  messageType?: string
+  run?: NovelCreationRunSummary
+}
+
+interface NovelCreationRunSummary {
+  id: string
+  run_id?: string
+  session_id?: string
+  stage: string
+  status: string
+  current_message?: string
+  next_action?: string
+  failure_class?: string
+  operation_id?: string
+  model_source?: string
+  attempt?: number
+  result_mode?: string
 }
 
 interface NovelBlueprint {
@@ -227,6 +247,30 @@ function parseBlueprintIndex(text: string) {
   return map[match[1]] ?? null
 }
 
+function parseCreationArtifactCommand(text: string) {
+  const normalized = text.trim()
+  if (!normalized) return null
+  const targets: Array<[string, RegExp]> = [
+    ['macro_outline', /卷纲|分卷|\d+\s*卷|主线|大纲/],
+    ['opening_outline', /开篇|前三章|黄金三章|开篇细纲/],
+    ['characters', /角色|人物|主角|反派|配角|人物关系/],
+    ['locations', /地点|场景|势力|宗门|组织/],
+    ['world_style', /世界观|文风|风格|设定体系|力量体系/],
+    ['concepts', /创意|方案|故事方向|核心卖点/],
+    ['final_review', /完整性|一致性|检查立项|校验立项/],
+  ]
+  const target = targets.find(([, pattern]) => pattern.test(normalized))
+  if (!target) return null
+  const requestsChange = /改|调整|重做|重写|删除|去掉|增加|加入|补充|保留|不要|换成|扩成|缩成|重新/.test(normalized)
+  const requestsGeneration = /生成|创建|先做|帮我做|整理/.test(normalized)
+  if (!requestsChange && !requestsGeneration) return null
+  return {
+    stage: target[0],
+    action: requestsChange ? 'refine_artifact' as const : 'generate_artifact' as const,
+    instruction: normalized,
+  }
+}
+
 function GuiAssistantChat() {
   const navigate = useNavigate()
   const [projects, setProjects] = useState<Project[]>([])
@@ -256,6 +300,8 @@ function GuiAssistantChat() {
   const [showQAEditor, setShowQAEditor] = useState(false)
   const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
   const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
+  const [activeCreationRun, setActiveCreationRun] = useState<NovelCreationRunSummary | null>(null)
+  const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'retry' | null>(null)
 
   const {
     defaultModel,
@@ -311,6 +357,7 @@ function GuiAssistantChat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const creationRunMessageRef = useRef<{ conversationId: string; assistantMessageId: string } | null>(null)
 
   // Elapsed timer for "running" status messages
   useEffect(() => {
@@ -323,6 +370,76 @@ function GuiAssistantChat() {
     }, 1000)
     return () => clearInterval(interval)
   }, [runningStartTime])
+
+  useEffect(() => {
+    const runId = activeCreationRun?.id || activeCreationRun?.run_id
+    if (!runId || !['queued', 'running'].includes(activeCreationRun.status)) return
+    let source: EventSource | null = null
+    let pollTimer: ReturnType<typeof setInterval> | null = null
+    const applyRun = (nextRun: NovelCreationRunSummary) => {
+        setActiveCreationRun(nextRun)
+        setMessages((previous) => previous.map((item) => (
+          item.run && (item.run.id || item.run.run_id) === runId
+            ? { ...item, run: nextRun, content: nextRun.current_message || item.content }
+            : item
+        )))
+        if (['waiting_author', 'completed', 'failed', 'cancelled', 'interrupted'].includes(nextRun.status)) {
+          const binding = creationRunMessageRef.current
+          if (binding) {
+            const messageStatus = nextRun.status === 'failed'
+              ? 'error'
+              : nextRun.status === 'cancelled'
+                ? 'cancelled'
+                : nextRun.status === 'interrupted'
+                  ? 'interrupted'
+                  : 'completed'
+            void finishSystemTurn(
+              binding.conversationId,
+              binding.assistantMessageId,
+              nextRun.current_message || '立项任务状态已更新',
+              messageStatus,
+              {
+                creationSessionId: nextRun.session_id || systemSessionId,
+                userBrief: systemBrief,
+                messageType: 'operation',
+                run: nextRun,
+              },
+            )
+          }
+          source?.close()
+          if (pollTimer) clearInterval(pollTimer)
+        }
+    }
+    const updateRun = (event: MessageEvent) => {
+      try {
+        applyRun(JSON.parse(event.data) as NovelCreationRunSummary)
+      } catch {
+        // A reconnect will deliver a fresh snapshot; malformed events are ignored.
+      }
+    }
+    if (typeof EventSource !== 'undefined') {
+      source = new EventSource(`/api/v1/novel-creation/runs/${runId}/stream`)
+      source.addEventListener('snapshot', updateRun as EventListener)
+      source.addEventListener('done', updateRun as EventListener)
+    } else {
+      const poll = async () => {
+        try {
+          const response = await apiClient.get<ApiResponse<NovelCreationRunSummary>>(
+            `/novel-creation/runs/${runId}`,
+          )
+          applyRun(response.data.data)
+        } catch {
+          // Keep the last durable state visible while the connection recovers.
+        }
+      }
+      void poll()
+      pollTimer = setInterval(() => void poll(), 1500)
+    }
+    return () => {
+      source?.close()
+      if (pollTimer) clearInterval(pollTimer)
+    }
+  }, [activeCreationRun?.id, activeCreationRun?.run_id, activeCreationRun?.status, systemBrief, systemSessionId])
 
   // Load creation templates on mount
   useEffect(() => {
@@ -405,8 +522,17 @@ function GuiAssistantChat() {
         content: item.content || item.payload?.reply || '',
         status: item.status,
         created_at: item.created_at,
+        messageType: item.message_type,
+        questions: item.payload?.question ? [item.payload.question] : undefined,
+        run: item.payload?.run,
       }))
       setMessages(loadedMessages)
+      const restoredMessage = [...loadedMessages].reverse().find((item) => item.run)
+      const restoredRun = restoredMessage?.run
+      setActiveCreationRun(restoredRun || null)
+      creationRunMessageRef.current = restoredMessage?.id
+        ? { conversationId: convId, assistantMessageId: restoredMessage.id }
+        : null
       setActiveConvId(res.data.data.conversation.id)
       if (!activeProjectId) {
         const conversation = res.data.data.conversation
@@ -568,6 +694,66 @@ function GuiAssistantChat() {
     })
   }
 
+  const startSystemTurn = async (
+    userContent: string,
+    state: { creationSessionId?: string; userBrief?: string; messageType?: string },
+  ) => {
+    let conversationId = systemConversationId
+    if (!conversationId) {
+      const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
+        '/ai/system-assistant/conversations',
+        { title: userContent.slice(0, 36) },
+      )
+      conversationId = createRes.data.data.conversation.id
+      setSystemConversationId(conversationId)
+    }
+    const response = await apiClient.post<ApiResponse<{ conversation: Conversation; messages: ChatMessage[] }>>(
+      `/ai/system-assistant/conversations/${conversationId}/turns/start`,
+      {
+        user_content: userContent,
+        creation_session_id: state.creationSessionId || null,
+        user_brief: state.userBrief || '',
+        message_type: state.messageType || 'text',
+      },
+    )
+    if (!activeProjectId) {
+      setActiveConvId(conversationId)
+      upsertConversation(response.data.data.conversation)
+    }
+    return { conversationId, assistantMessageId: response.data.data.messages[1]?.id }
+  }
+
+  const finishSystemTurn = async (
+    conversationId: string,
+    assistantMessageId: string | undefined,
+    assistantContent: string,
+    status: ChatMessage['status'],
+    state: {
+      creationSessionId?: string
+      userBrief?: string
+      blueprints?: NovelBlueprint[]
+      messageType?: string
+      run?: NovelCreationRunSummary
+      question?: ChatQuestion
+    },
+  ) => {
+    if (!assistantMessageId) return
+    await apiClient.patch(
+      `/ai/system-assistant/conversations/${conversationId}/turns/${assistantMessageId}`,
+      {
+        assistant_content: assistantContent,
+        status: status || 'completed',
+        creation_session_id: state.creationSessionId || null,
+        user_brief: state.userBrief || '',
+        blueprints: state.blueprints || [],
+        run_id: state.run?.id || state.run?.run_id || null,
+        operation_id: state.run?.operation_id || null,
+        message_type: state.messageType || (state.run ? 'operation' : state.question ? 'question' : 'text'),
+        payload: state.run ? { run: state.run } : state.question ? { question: state.question } : null,
+      },
+    )
+  }
+
   const persistSystemTurn = async (
     userContent: string,
     assistantContent: string,
@@ -611,12 +797,19 @@ function GuiAssistantChat() {
   const handleSystemAssistantMessage = async (text: string, originalText?: string) => {
     let finalReply = ''
     let finalStatus: ChatMessage['status'] = 'completed'
+    let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
     let persistedSessionId = systemSessionId
     let persistedBrief = systemBrief
     let persistedBlueprints = systemBlueprints
-    const finish = (content: string, status: ChatMessage['status'] = 'completed') => {
+    let durablePayload: { run?: NovelCreationRunSummary; question?: ChatQuestion } = {}
+    const finish = (
+      content: string,
+      status: ChatMessage['status'] = 'completed',
+      payload: { run?: NovelCreationRunSummary; question?: ChatQuestion } = {},
+    ) => {
       finalReply = content
       finalStatus = status
+      durablePayload = payload
       setLastAssistantMessage(content, status)
     }
 
@@ -627,6 +820,15 @@ function GuiAssistantChat() {
     ])
     setInputValue('')
     setStreaming(true)
+
+    try {
+      durableTurn = await startSystemTurn(originalText || text, {
+        creationSessionId: persistedSessionId,
+        userBrief: persistedBrief,
+      })
+    } catch {
+      message.warning('本轮消息暂未保存到系统历史，仍会继续处理请求')
+    }
 
     try {
       const selectedBlueprintIndex = parseBlueprintIndex(text)
@@ -661,6 +863,24 @@ function GuiAssistantChat() {
         return
       }
 
+      const artifactCommand = systemSessionId ? parseCreationArtifactCommand(originalText || text) : null
+      if (artifactCommand && systemSessionId && !activeQuestion) {
+        const response = await apiClient.post<ApiResponse<{
+          run: NovelCreationRunSummary
+          summary: string
+        }>>('/novel-creation/conversation-command', {
+          session_id: systemSessionId,
+          stage: artifactCommand.stage,
+          instruction: artifactCommand.instruction,
+          model: selectedModel || null,
+          action: artifactCommand.action,
+        })
+        const run = response.data.data.run
+        setActiveCreationRun(run)
+        finish(response.data.data.summary || run.current_message || '已创建立项调整任务', 'running', { run })
+        return
+      }
+
       if (shouldUseNovelCreation(originalText || text, Boolean(activeProjectId))) {
         setLastAssistantMessage('正在让当前模型根据你的想法决定第一个问题...', 'running')
         const transition = await novelInterview.start({
@@ -677,6 +897,9 @@ function GuiAssistantChat() {
 
         if (transition.kind === 'question' && transition.state.activeQuestion) {
           const firstQ = transition.state.activeQuestion
+          finalReply = firstQ.question
+          finalStatus = 'completed'
+          durablePayload = { question: firstQ }
           setCurrentOptions(firstQ.options || [])
           setSelectedOption(null)
           setShowOtherInput(false)
@@ -695,8 +918,9 @@ function GuiAssistantChat() {
           return
         }
 
-        finish('采访已完成，正在进入立项工作台生成三套轻量创意。')
-        await novelInterview.handoffToWorkbench(transition.state.sessionId)
+        const run = await novelInterview.startConceptRun(transition.state.sessionId)
+        setActiveCreationRun(run)
+        finish('采访已完成，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
         return
       }
 
@@ -714,8 +938,9 @@ function GuiAssistantChat() {
             finish(transition.error || formatNovelInterviewError(new Error('动态采访失败。')), 'error')
             return
           }
-          finish('采访已结束，正在进入立项工作台生成三套轻量创意。')
-          await novelInterview.handoffToWorkbench(transition.state.sessionId)
+          const run = await novelInterview.startConceptRun(transition.state.sessionId)
+          setActiveCreationRun(run)
+          finish('采访已结束，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
           return
         } else if (activeQuestion) {
           // User typed an answer while a question is active — use submitQuestionAnswer
@@ -734,14 +959,18 @@ function GuiAssistantChat() {
           }
           if (transition.kind === 'question' && transition.state.activeQuestion) {
             const nextQ = transition.state.activeQuestion
+            finalReply = nextQ.question
+            finalStatus = 'completed'
+            durablePayload = { question: nextQ }
             setRunningStartTime(null)
             setMessages((prev) => [
               ...prev,
               { role: 'assistant', content: '', questions: [nextQ], status: 'completed' },
             ])
           } else {
-            finish('采访已完成，正在进入立项工作台生成三套轻量创意。')
-            await novelInterview.handoffToWorkbench(transition.state.sessionId)
+            const run = await novelInterview.startConceptRun(transition.state.sessionId)
+            setActiveCreationRun(run)
+            finish('采访已完成，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
             return
           }
         }
@@ -749,9 +978,7 @@ function GuiAssistantChat() {
       }
 
       if (systemBlueprints.length > 0 && systemSessionId && !/作品|项目|列表|有哪些|查看/.test(text)) {
-        setLastAssistantMessage('正在转到新书立项工作台继续调整方案...', 'running')
-        await novelInterview.handoffToWorkbench(systemSessionId)
-        finish('已打开新书立项工作台。后续的方案调整、概念生成和正式创建都会在那里完成。')
+        finish('立项会话仍在当前对话中。请直接告诉我要调整哪个部分；需要完整表单时可使用任务卡片中的“打开完整编辑器”。')
         return
       }
       if (/作品|项目|列表|有哪些|查看/.test(text)) {
@@ -792,7 +1019,25 @@ function GuiAssistantChat() {
       finish(err.message || '处理失败', 'error')
       message.error(err.message || '处理失败')
     } finally {
-      if (finalReply) {
+      if (durableTurn) {
+        try {
+          await finishSystemTurn(durableTurn.conversationId, durableTurn.assistantMessageId, finalReply, finalStatus, {
+            creationSessionId: persistedSessionId,
+            userBrief: persistedBrief,
+            blueprints: persistedBlueprints,
+            run: durablePayload.run,
+            question: durablePayload.question,
+          })
+          if (durablePayload.run && durableTurn.assistantMessageId) {
+            creationRunMessageRef.current = {
+              conversationId: durableTurn.conversationId,
+              assistantMessageId: durableTurn.assistantMessageId,
+            }
+          }
+        } catch {
+          message.warning('系统对话状态更新失败，可稍后刷新历史重试')
+        }
+      } else if (finalReply) {
         await persistSystemTurn(text, finalReply, finalStatus, {
           creationSessionId: persistedSessionId,
           userBrief: persistedBrief,
@@ -1060,6 +1305,40 @@ function GuiAssistantChat() {
     }
   }
 
+  const cancelCreationRun = async () => {
+    if (!activeCreationRun?.operation_id || creationRunAction) return
+    setCreationRunAction('cancel')
+    try {
+      await apiClient.post(`/operations/${activeCreationRun.operation_id}/cancel`)
+      setActiveCreationRun((current) => current ? {
+        ...current,
+        status: 'cancelled',
+        current_message: '任务已取消；已保存草稿保持不变。',
+      } : current)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消任务失败')
+    } finally {
+      setCreationRunAction(null)
+    }
+  }
+
+  const retryCreationRun = async () => {
+    const runId = activeCreationRun?.id || activeCreationRun?.run_id
+    if (!runId || creationRunAction) return
+    setCreationRunAction('retry')
+    try {
+      const response = await apiClient.post<ApiResponse<{ run: NovelCreationRunSummary }>>(
+        `/novel-creation/runs/${runId}/retry`,
+        { use_latest_draft: true, model: selectedModel || null },
+      )
+      setActiveCreationRun(response.data.data.run)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '重试任务失败')
+    } finally {
+      setCreationRunAction(null)
+    }
+  }
+
   const stopGeneration = () => {
     abortRef.current?.abort()
     setStreaming(false)
@@ -1089,6 +1368,17 @@ function GuiAssistantChat() {
   // ── Single-question interactive flow ──
   const submitQuestionAnswer = async (answer: string) => {
     if (!activeQuestion || !systemSessionId) return
+    let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
+
+    try {
+      durableTurn = await startSystemTurn(answer, {
+        creationSessionId: systemSessionId,
+        userBrief: systemBrief,
+        messageType: 'question',
+      })
+    } catch {
+      message.warning('本次回答暂未保存到对话历史，仍会继续处理。')
+    }
 
     // Add user's answer to chat
     setMessages((prev) => [...prev, { role: 'user', content: answer }])
@@ -1140,6 +1430,20 @@ function GuiAssistantChat() {
           }
           return [...next]
         })
+        if (durableTurn) {
+          await finishSystemTurn(
+            durableTurn.conversationId,
+            durableTurn.assistantMessageId,
+            nextQ.question,
+            'completed',
+            {
+              creationSessionId: systemSessionId,
+              userBrief: systemBrief,
+              messageType: 'question',
+              question: nextQ,
+            },
+          )
+        }
       } else {
         setActiveQuestion(null)
         setRunningStartTime(null)
@@ -1153,7 +1457,28 @@ function GuiAssistantChat() {
           }
           return [...next]
         })
-        await novelInterview.handoffToWorkbench(interview.state.sessionId)
+        const run = await novelInterview.startConceptRun(interview.state.sessionId)
+        setActiveCreationRun(run)
+        if (durableTurn) {
+          await finishSystemTurn(
+            durableTurn.conversationId,
+            durableTurn.assistantMessageId,
+            run.current_message || '正在生成创意方向',
+            'running',
+            {
+              creationSessionId: systemSessionId,
+              userBrief: systemBrief,
+              messageType: 'operation',
+              run,
+            },
+          )
+          if (durableTurn.assistantMessageId) {
+            creationRunMessageRef.current = {
+              conversationId: durableTurn.conversationId,
+              assistantMessageId: durableTurn.assistantMessageId,
+            }
+          }
+        }
       }
     } catch (err: unknown) {
       setActiveQuestion(null)
@@ -1167,11 +1492,30 @@ function GuiAssistantChat() {
         }
         return [...next]
       })
+      if (durableTurn) {
+        await finishSystemTurn(
+          durableTurn.conversationId,
+          durableTurn.assistantMessageId,
+          formatNovelInterviewError(err),
+          'error',
+          { creationSessionId: systemSessionId, userBrief: systemBrief },
+        ).catch(() => undefined)
+      }
     }
   }
 
   const handleQuestionSkip = async () => {
     if (!systemSessionId) return
+    let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
+    try {
+      durableTurn = await startSystemTurn('跳过并生成创意方向', {
+        creationSessionId: systemSessionId,
+        userBrief: systemBrief,
+        messageType: 'operation',
+      })
+    } catch {
+      message.warning('跳过操作暂未保存到对话历史，仍会继续处理。')
+    }
     setRunningStartTime(Date.now())
     setLastAssistantMessage('收到，正在准备创意方向并进入立项工作台...', 'running')
     setActiveQuestion(null)
@@ -1184,10 +1528,40 @@ function GuiAssistantChat() {
       if (transition.kind === 'error') throw new Error(transition.error || '动态采访失败。')
       setRunningStartTime(null)
       setLastAssistantMessage('采访已结束，正在进入立项工作台生成三套轻量创意。', 'completed')
-      await novelInterview.handoffToWorkbench(transition.state.sessionId)
+      const run = await novelInterview.startConceptRun(transition.state.sessionId)
+      setActiveCreationRun(run)
+      if (durableTurn) {
+        await finishSystemTurn(
+          durableTurn.conversationId,
+          durableTurn.assistantMessageId,
+          run.current_message || '正在生成创意方向',
+          'running',
+          {
+            creationSessionId: systemSessionId,
+            userBrief: systemBrief,
+            messageType: 'operation',
+            run,
+          },
+        )
+        if (durableTurn.assistantMessageId) {
+          creationRunMessageRef.current = {
+            conversationId: durableTurn.conversationId,
+            assistantMessageId: durableTurn.assistantMessageId,
+          }
+        }
+      }
     } catch (err: unknown) {
       setRunningStartTime(null)
       setLastAssistantMessage(formatNovelInterviewError(err), 'error')
+      if (durableTurn) {
+        await finishSystemTurn(
+          durableTurn.conversationId,
+          durableTurn.assistantMessageId,
+          formatNovelInterviewError(err),
+          'error',
+          { creationSessionId: systemSessionId, userBrief: systemBrief },
+        ).catch(() => undefined)
+      }
     }
   }
 
@@ -1399,7 +1773,8 @@ function GuiAssistantChat() {
         }
         return [...next]
       })
-      await novelInterview.handoffToWorkbench(transition.state.sessionId)
+      const run = await novelInterview.startConceptRun(transition.state.sessionId)
+      setActiveCreationRun(run)
     } catch (error: unknown) {
       setRunningStartTime(null)
       setMessages((prev) => {
@@ -1707,6 +2082,72 @@ function GuiAssistantChat() {
     )
   }
 
+  const renderCreationRunCard = () => {
+    if (!activeCreationRun) return null
+    const runId = activeCreationRun.id || activeCreationRun.run_id
+    const isRunning = ['queued', 'running'].includes(activeCreationRun.status)
+    const isWaiting = activeCreationRun.status === 'waiting_author'
+    const canRetry = ['failed', 'cancelled', 'interrupted'].includes(activeCreationRun.status)
+    const statusLabels: Record<string, string> = {
+      queued: '排队中',
+      running: '正在生成',
+      waiting_author: '等待确认',
+      completed: '已完成',
+      failed: '失败',
+      cancelled: '已取消',
+      interrupted: '已中断',
+    }
+    const stageLabels: Record<string, string> = {
+      concepts: '创意方向',
+      world_style: '文风与世界观',
+      characters: '角色与关系',
+      locations: '地点与势力',
+      macro_outline: '主线与卷纲',
+      opening_outline: '开篇细纲',
+      final_review: '完整性检查',
+      all: '完整立项',
+    }
+    return (
+      <Card className={`gui-chat-creation-run gui-chat-creation-run-${activeCreationRun.status}`} variant="outlined">
+        <div className="gui-chat-creation-run-head">
+          <div>
+            <Text type="secondary" className="gui-chat-creation-run-kicker">立项任务</Text>
+            <Title level={5}>{stageLabels[activeCreationRun.stage] || activeCreationRun.stage}</Title>
+          </div>
+          <Tag color={isRunning ? 'processing' : isWaiting ? 'gold' : activeCreationRun.status === 'failed' ? 'error' : 'default'}>
+            {statusLabels[activeCreationRun.status] || activeCreationRun.status}
+          </Tag>
+        </div>
+        <Paragraph className="gui-chat-creation-run-message">
+          {activeCreationRun.current_message || '任务状态正在同步…'}
+        </Paragraph>
+        <Space size={[8, 8]} wrap>
+          {activeCreationRun.model_source && <Tag>模型：{activeCreationRun.model_source}</Tag>}
+          {activeCreationRun.attempt != null && <Tag>尝试：{activeCreationRun.attempt}</Tag>}
+          {activeCreationRun.result_mode && <Tag>结果：{activeCreationRun.result_mode}</Tag>}
+        </Space>
+        <div className="gui-chat-creation-run-actions">
+          {isRunning && (
+            <Button danger icon={<StopOutlined />} loading={creationRunAction === 'cancel'} onClick={() => void cancelCreationRun()}>
+              停止
+            </Button>
+          )}
+          {canRetry && (
+            <Button icon={<ReloadOutlined />} loading={creationRunAction === 'retry'} onClick={() => void retryCreationRun()}>
+              用当前模型重试
+            </Button>
+          )}
+          <Button
+            icon={<FolderOpenOutlined />}
+            onClick={() => navigate(`/novel-creation?session=${activeCreationRun.session_id || systemSessionId}&run=${runId}`)}
+          >
+            打开完整编辑器
+          </Button>
+        </div>
+      </Card>
+    )
+  }
+
   const runtimeHasProblem = interviewRuntime.quota_status === 'exhausted_or_limited'
   const runtimePanel = (
     <div className="gui-chat-runtime-panel" aria-label="当前模型运行状态">
@@ -1955,6 +2396,7 @@ function GuiAssistantChat() {
                 </div>
               ))}
               {renderBlueprintCards()}
+              {renderCreationRunCard()}
               <div ref={messagesEndRef} />
             </>
           )}

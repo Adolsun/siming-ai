@@ -74,6 +74,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ai/system-assistant/conversations/{conversation_id}/turns/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start System Turn */
+        post: operations["start_system_turn_api_v1_ai_system_assistant_conversations__conversation_id__turns_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ai/system-assistant/conversations/{conversation_id}/turns/{assistant_message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Finish System Turn */
+        patch: operations["finish_system_turn_api_v1_ai_system_assistant_conversations__conversation_id__turns__assistant_message_id__patch"];
+        trace?: never;
+    };
     "/api/v1/auth/admin/login": {
         parameters: {
             query?: never;
@@ -1055,6 +1089,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/conversation-command": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creation Conversation Command */
+        post: operations["creation_conversation_command_api_v1_novel_creation_conversation_command_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/draft": {
         parameters: {
             query?: never;
@@ -1174,6 +1225,23 @@ export interface paths {
         get: operations["get_creation_stage_run_api_v1_novel_creation_runs__run_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/runs/{run_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Creation Stage Run */
+        post: operations["retry_creation_stage_run_api_v1_novel_creation_runs__run_id__retry_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1302,23 +1370,6 @@ export interface paths {
         head?: never;
         /** Update Creation Stage */
         patch: operations["update_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__patch"];
-        trace?: never;
-    };
-    "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Confirm Creation Stage */
-        post: operations["confirm_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
         trace?: never;
     };
     "/api/v1/novel-creation/start": {
@@ -5433,6 +5484,25 @@ export interface components {
              */
             requirements: string;
         };
+        /** CreationConversationCommandRequest */
+        CreationConversationCommandRequest: {
+            /**
+             * Action
+             * @default refine_artifact
+             * @enum {string}
+             */
+            action: "generate_artifact" | "refine_artifact" | "open_editor";
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Instruction */
+            instruction?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Session Id */
+            session_id: string;
+            /** Stage */
+            stage: string;
+        };
         /** DatasetCreateRequest */
         DatasetCreateRequest: {
             /** Chapter Ids */
@@ -6215,25 +6285,6 @@ export interface components {
             /** Selected Concept Id */
             selected_concept_id?: string | null;
         };
-        /** NovelCreationStageConfirmRequest */
-        NovelCreationStageConfirmRequest: {
-            /**
-             * Confirm
-             * @default true
-             */
-            confirm: boolean;
-            /** Data */
-            data?: {
-                [key: string]: unknown;
-            } | null;
-            /** Expected Revision */
-            expected_revision?: number | null;
-            /**
-             * Source
-             * @default author
-             */
-            source: string;
-        };
         /** NovelCreationStageEventResponse */
         NovelCreationStageEventResponse: {
             /** Created At */
@@ -6264,6 +6315,16 @@ export interface components {
              * @default author
              */
             source: string;
+        };
+        /** NovelCreationStageRetryRequest */
+        NovelCreationStageRetryRequest: {
+            /** Model */
+            model?: string | null;
+            /**
+             * Use Latest Draft
+             * @default false
+             */
+            use_latest_draft: boolean;
         };
         /** NovelCreationStageRunRequest */
         NovelCreationStageRunRequest: {
@@ -6357,6 +6418,11 @@ export interface components {
         };
         /** NovelCreationStageRunStartData */
         NovelCreationStageRunStartData: {
+            /**
+             * Replayed
+             * @default false
+             */
+            replayed: boolean;
             run: components["schemas"]["NovelCreationStageRunResponse"];
             /** Stream Url */
             stream_url: string;
@@ -7582,10 +7648,19 @@ export interface components {
             }[] | null;
             /** Creation Session Id */
             creation_session_id?: string | null;
+            /**
+             * Message Type
+             * @default text
+             */
+            message_type: string;
+            /** Operation Id */
+            operation_id?: string | null;
             /** Payload */
             payload?: {
                 [key: string]: unknown;
             } | null;
+            /** Run Id */
+            run_id?: string | null;
             /**
              * Status
              * @default completed
@@ -7595,6 +7670,37 @@ export interface components {
             user_brief?: string | null;
             /** User Content */
             user_content: string;
+        };
+        /** SystemTurnFinish */
+        SystemTurnFinish: {
+            /**
+             * Assistant Content
+             * @default
+             */
+            assistant_content: string;
+            /** Blueprints */
+            blueprints?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Creation Session Id */
+            creation_session_id?: string | null;
+            /** Message Type */
+            message_type?: string | null;
+            /** Operation Id */
+            operation_id?: string | null;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * Status
+             * @default completed
+             */
+            status: string;
+            /** User Brief */
+            user_brief?: string | null;
         };
         /** TokenPair */
         TokenPair: {
@@ -8033,6 +8139,77 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SystemTurnCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_system_turn_api_v1_ai_system_assistant_conversations__conversation_id__turns_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemTurnCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finish_system_turn_api_v1_ai_system_assistant_conversations__conversation_id__turns__assistant_message_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                assistant_message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemTurnFinish"];
             };
         };
         responses: {
@@ -9975,6 +10152,39 @@ export interface operations {
             };
         };
     };
+    creation_conversation_command_api_v1_novel_creation_conversation_command_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreationConversationCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     draft_blueprints_api_v1_novel_creation_draft_post: {
         parameters: {
             query?: never;
@@ -10176,10 +10386,49 @@ export interface operations {
             };
         };
     };
-    stream_creation_stage_run_api_v1_novel_creation_runs__run_id__stream_get: {
+    retry_creation_stage_run_api_v1_novel_creation_runs__run_id__retry_post: {
         parameters: {
             query?: never;
             header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationStageRetryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_creation_stage_run_api_v1_novel_creation_runs__run_id__stream_get: {
+        parameters: {
+            query?: {
+                after_sequence?: number;
+            };
+            header?: {
+                "Last-Event-ID"?: string | null;
+            };
             path: {
                 run_id: string;
             };
@@ -10406,7 +10655,9 @@ export interface operations {
     start_creation_stage_run_api_v1_novel_creation_sessions__session_id__runs_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 session_id: string;
             };
@@ -10451,42 +10702,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationStagePatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    confirm_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-                stage: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NovelCreationStageConfirmRequest"];
             };
         };
         responses: {

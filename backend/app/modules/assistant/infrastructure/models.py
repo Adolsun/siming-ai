@@ -93,6 +93,11 @@ class SystemAssistantMessage(Base):
     )
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False, default="")
+    run_id = Column(String(36), nullable=True)
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    message_type = Column(String(30), nullable=False, default="text")
     payload_json = Column(JSON, nullable=True)
     status = Column(String(20), nullable=False, default="completed")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

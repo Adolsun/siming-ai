@@ -83,6 +83,11 @@ class NovelCreationStageRun(Base):
     request_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)
     current_message = Column(Text, nullable=True)
+    idempotency_key = Column(String(128), nullable=True)
+    # Kept as a durable identifier rather than a database FK to avoid a cycle:
+    # claims point back to their eventual stage run after acquisition.
+    claim_id = Column(String(36), nullable=True)
+    retry_of_run_id = Column(String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
@@ -98,6 +103,47 @@ class NovelCreationStageRun(Base):
     __table_args__ = (
         Index("ix_novel_creation_stage_runs_session", "session_id"),
         Index("ix_novel_creation_stage_runs_status", "status"),
+    )
+
+
+class NovelCreationRunClaim(Base):
+    """Database fence for a logical creation-stage command."""
+
+    __tablename__ = "novel_creation_run_claims"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    claim_token = Column(String(36), nullable=False)
+    status = Column(String(30), nullable=False, default="running")
+    input_revision = Column(Integer, nullable=False)
+    input_snapshot_hash = Column(String(64), nullable=False)
+    run_id = Column(
+        String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    result_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "idempotency_key", name="uq_novel_creation_claim_identity"),
+        Index("ix_novel_creation_claim_status", "status", "updated_at"),
+        Index(
+            "uq_novel_creation_claim_active_target",
+            "session_id",
+            "artifact_key",
+            unique=True,
+            sqlite_where=(status == "running"),
+            postgresql_where=(status == "running"),
+        ),
     )
 
 
@@ -126,5 +172,6 @@ class NovelCreationStageEvent(Base):
 __all__ = [
     "NovelCreationSession",
     "NovelCreationStageRun",
+    "NovelCreationRunClaim",
     "NovelCreationStageEvent",
 ]

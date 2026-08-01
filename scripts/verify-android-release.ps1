@@ -42,12 +42,34 @@ foreach ($tool in @($apksigner, $aapt, $zipalign)) {
 
 & $zipalign -c -p 4 $apkPath
 if ($LASTEXITCODE -ne 0) { throw "Siming.apk is not zip-aligned." }
-$signatureOutput = (& $apksigner verify --verbose --print-certs $apkPath 2>&1) -join "`n"
-if ($LASTEXITCODE -ne 0) { throw "Siming.apk signature verification failed.`n$signatureOutput" }
-# Match apksigner's "certificate SHA-256 digest" label across spacing variants.
+$signatureOutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "siming-apksigner-$([guid]::NewGuid().ToString('N')).out"
+$signatureErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) "siming-apksigner-$([guid]::NewGuid().ToString('N')).err"
+try {
+    # Redirect native output to files so PowerShell does not wrap stderr lines
+    # as ErrorRecord objects before the certificate digest is parsed.
+    $signatureProcess = Start-Process `
+        -FilePath $apksigner `
+        -ArgumentList @("verify", "--verbose", "--print-certs", $apkPath) `
+        -Wait `
+        -PassThru `
+        -NoNewWindow `
+        -RedirectStandardOutput $signatureOutputPath `
+        -RedirectStandardError $signatureErrorPath
+    $signatureOutput = @(
+        Get-Content -LiteralPath $signatureOutputPath -Raw -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $signatureErrorPath -Raw -ErrorAction SilentlyContinue
+    ) -join "`n"
+    if ($signatureProcess.ExitCode -ne 0) {
+        throw "Siming.apk signature verification failed.`n$signatureOutput"
+    }
+} finally {
+    Remove-Item -LiteralPath $signatureOutputPath, $signatureErrorPath -Force -ErrorAction SilentlyContinue
+}
+# Match the "certificate SHA-256 digest" label and spacing variants emitted by
+# current and older build-tools.
 $certificateMatch = [regex]::Match(
     $signatureOutput,
-    "(?im)Signer\s*#\s*1\s+certificate\s+SHA-256\s+digest:\s*([0-9a-f:]+)"
+    "(?im)certificate[^\r\n]*SHA[- ]?256[^\r\n]*:\s*([0-9a-f:]{64,95})"
 )
 if (-not $certificateMatch.Success) {
     throw "Unable to read the APK signing certificate SHA-256 fingerprint."

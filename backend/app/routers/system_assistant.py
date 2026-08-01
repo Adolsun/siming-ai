@@ -27,6 +27,21 @@ class SystemTurnCreate(BaseModel):
     creation_session_id: str | None = None
     user_brief: str | None = None
     blueprints: list[dict[str, Any]] | None = None
+    run_id: str | None = None
+    operation_id: str | None = None
+    message_type: str = "text"
+
+
+class SystemTurnFinish(BaseModel):
+    assistant_content: str = ""
+    status: str = "completed"
+    payload: dict[str, Any] | None = None
+    creation_session_id: str | None = None
+    user_brief: str | None = None
+    blueprints: list[dict[str, Any]] | None = None
+    run_id: str | None = None
+    operation_id: str | None = None
+    message_type: str | None = None
 
 
 @router.get("/ai/system-assistant/conversations")
@@ -59,6 +74,39 @@ async def get_system_conversation(
     ],
 ):
     return ApiResponse.success(data=conversations.get(conversation_id))
+
+
+@router.post("/ai/system-assistant/conversations/{conversation_id}/turns/start")
+async def start_system_turn(
+    conversation_id: str,
+    payload: SystemTurnCreate,
+    conversations: Annotated[
+        SystemConversationStore,
+        Depends(get_system_conversation_store),
+    ],
+):
+    return ApiResponse.success(
+        data=conversations.start_turn(conversation_id, payload.model_dump())
+    )
+
+
+@router.patch("/ai/system-assistant/conversations/{conversation_id}/turns/{assistant_message_id}")
+async def finish_system_turn(
+    conversation_id: str,
+    assistant_message_id: str,
+    payload: SystemTurnFinish,
+    conversations: Annotated[
+        SystemConversationStore,
+        Depends(get_system_conversation_store),
+    ],
+):
+    return ApiResponse.success(
+        data=conversations.finish_turn(
+            conversation_id,
+            assistant_message_id,
+            payload.model_dump(),
+        )
+    )
 
 
 @router.post("/ai/system-assistant/conversations/{conversation_id}/turns")

@@ -1,6 +1,7 @@
 """SQLAlchemy system-assistant conversation adapter."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
@@ -40,6 +41,9 @@ def _message_data(message: SystemAssistantMessage) -> dict[str, Any]:
         "conversation_id": message.conversation_id,
         "role": message.role,
         "content": message.content,
+        "run_id": message.run_id,
+        "operation_id": message.operation_id,
+        "message_type": message.message_type,
         "payload": message.payload_json,
         "status": message.status,
         "created_at": message.created_at.isoformat() if message.created_at else None,
@@ -107,6 +111,95 @@ class SqlAlchemySystemConversationStore:
             "conversation": _conversation_data(conversation, len(messages)),
             "messages": [_message_data(message) for message in messages],
         }
+
+    def start_turn(
+        self,
+        conversation_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a user turn and its running assistant placeholder."""
+        conversation = self._conversation(conversation_id)
+        if conversation.title == "新对话":
+            conversation.title = _title_from_message(str(payload.get("user_content") or ""))
+        for field, source in (("creation_session_id", "creation_session_id"), ("user_brief", "user_brief")):
+            if payload.get(source) is not None:
+                setattr(conversation, field, payload.get(source) or None)
+
+        user_message = SystemAssistantMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=payload["user_content"],
+            status="completed",
+        )
+        assistant_message = SystemAssistantMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="",
+            run_id=payload.get("run_id"),
+            operation_id=payload.get("operation_id"),
+            message_type=payload.get("message_type") or "text",
+            status="running",
+            payload_json=payload.get("payload"),
+        )
+        self._session.add_all([user_message, assistant_message])
+        self._session.flush()
+        return {
+            "conversation": _conversation_data(conversation),
+            "messages": [_message_data(user_message), _message_data(assistant_message)],
+        }
+
+    def finish_turn(
+        self,
+        conversation_id: str,
+        assistant_message_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Finish or fail a previously persisted assistant placeholder."""
+        conversation = self._conversation(conversation_id)
+        message = self._session.query(SystemAssistantMessage).filter(
+            SystemAssistantMessage.id == assistant_message_id,
+            SystemAssistantMessage.conversation_id == conversation.id,
+            SystemAssistantMessage.role == "assistant",
+        ).first()
+        if not message:
+            raise NotFoundError("系统助手消息不存在")
+        message.content = payload.get("assistant_content") or ""
+        message.status = payload.get("status") or "completed"
+        if payload.get("run_id") is not None:
+            message.run_id = payload.get("run_id") or None
+        if payload.get("operation_id") is not None:
+            message.operation_id = payload.get("operation_id") or None
+        if payload.get("message_type") is not None:
+            message.message_type = payload.get("message_type") or "text"
+        message.payload_json = payload.get("payload")
+        if payload.get("creation_session_id") is not None:
+            conversation.creation_session_id = payload.get("creation_session_id") or None
+        if payload.get("user_brief") is not None:
+            conversation.user_brief = payload.get("user_brief") or None
+        if payload.get("blueprints") is not None:
+            conversation.blueprint_json = payload["blueprints"]
+        self._session.flush()
+        return {"conversation": _conversation_data(conversation), "message": _message_data(message)}
+
+    def interrupt_running_messages(self) -> int:
+        """Make abandoned placeholders explicit and recoverable after restart."""
+        messages = self._session.query(SystemAssistantMessage).filter(
+            SystemAssistantMessage.role == "assistant",
+            SystemAssistantMessage.status == "running",
+        ).all()
+        now = datetime.utcnow()
+        for message in messages:
+            message.status = "interrupted"
+            if not message.content.strip():
+                message.content = "上次处理在应用关闭或服务重启时中断，可按原消息重试。"
+            payload = dict(message.payload_json or {})
+            payload["interrupted_at"] = now.isoformat()
+            payload["retryable"] = True
+            message.payload_json = payload
+            message.updated_at = now
+        if messages:
+            self._session.flush()
+        return len(messages)
 
     def append_turn(
         self,

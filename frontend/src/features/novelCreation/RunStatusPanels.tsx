@@ -58,22 +58,32 @@ export function RunStatusPanels({
         </div>
       )}
 
-      {!busy && activeRun && ['completed', 'failed', 'cancelled'].includes(activeRun.status) && (
+      {!busy && activeRun && ['completed', 'waiting_author', 'failed', 'cancelled', 'interrupted', 'superseded'].includes(activeRun.status) && (
         <Alert
           className="creation-run-outcome"
-          type={activeRun.status === 'failed' ? 'error' : activeRun.status === 'cancelled' ? 'warning' : 'success'}
+          type={activeRun.status === 'failed' ? 'error' : ['cancelled', 'interrupted', 'superseded'].includes(activeRun.status) ? 'warning' : 'success'}
           showIcon
-          message={activeRun.status === 'completed' ? '本轮立项任务已完成' : activeRun.status === 'cancelled' ? '本轮立项任务已取消' : '本轮立项任务失败'}
+          message={activeRun.status === 'waiting_author'
+            ? '阶段结果等待作者确认'
+            : activeRun.status === 'completed'
+              ? '本轮立项任务已完成'
+              : activeRun.status === 'cancelled'
+                ? '本轮立项任务已取消'
+                : activeRun.status === 'interrupted'
+                  ? '本轮立项任务已中断'
+                  : activeRun.status === 'superseded'
+                    ? '本轮立项任务已被新版本取代'
+                    : '本轮立项任务失败'}
           description={(
             <Descriptions className="creation-run-outcome-details" size="small" column={1} colon={false}>
-              <Descriptions.Item label="状态说明">{activeRun.current_message || (activeRun.status === 'completed' ? '任务已完成' : '任务已结束')}</Descriptions.Item>
+              <Descriptions.Item label="状态说明">{activeRun.current_message || (activeRun.status === 'waiting_author' ? '生成结果已保存，等待作者确认' : activeRun.status === 'completed' ? '任务已完成' : '任务已结束')}</Descriptions.Item>
               <Descriptions.Item label="阶段">{stageLabels[activeRun.stage] || activeRun.stage}</Descriptions.Item>
               <Descriptions.Item label="实际模型">{activeRun.model_source || '未记录'}</Descriptions.Item>
               <Descriptions.Item label="尝试次数">{runAttempt(activeRun) == null ? '未记录' : `${runAttempt(activeRun)} 次`}</Descriptions.Item>
               <Descriptions.Item label="结果模式">{runResultModeLabel(activeRun)}</Descriptions.Item>
               <Descriptions.Item label="保存结果">{runSaveResult(activeRun)}</Descriptions.Item>
               <Descriptions.Item label="警告">{(activeRun.warning || activeRun.result?.warning) ? <Text type="warning">{activeRun.warning || activeRun.result?.warning}</Text> : '无'}</Descriptions.Item>
-              <Descriptions.Item label="下一步">{activeRun.next_action || (activeRun.status === 'completed' ? '审阅并确认本阶段，或编辑后重新生成' : '检查当前草稿后可重新生成本阶段')}</Descriptions.Item>
+              <Descriptions.Item label="下一步">{activeRun.next_action || (activeRun.status === 'waiting_author' ? '审阅并确认本阶段，或编辑后重新生成' : activeRun.status === 'completed' ? '继续处理下一阶段' : '检查当前草稿后可重新生成本阶段')}</Descriptions.Item>
             </Descriptions>
           )}
         />

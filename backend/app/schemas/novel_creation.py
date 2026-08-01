@@ -98,3 +98,4 @@ class NovelCreationStageRunResponse(BaseModel):
 class NovelCreationStageRunStartData(BaseModel):
     run: NovelCreationStageRunResponse
     stream_url: str
+    replayed: bool = False
