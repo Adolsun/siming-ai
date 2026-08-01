@@ -28,15 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Mirror branches and tags
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      - name: Fetch all GitHub branches and tags
         shell: bash
+        timeout-minutes: 15
         run: |
           set -euo pipefail
 
           mirror_dir="${RUNNER_TEMP}/siming-ai-mirror.git"
-          credential_file="${RUNNER_TEMP}/gitee-credentials"
           rm -rf "$mirror_dir"
           git init --bare "$mirror_dir"
           git -C "$mirror_dir" remote add github "https://github.com/${GITHUB_REPOSITORY}.git"
@@ -44,6 +42,18 @@ jobs:
             '+refs/heads/*:refs/heads/*' \
             '+refs/tags/*:refs/tags/*'
 
+      - name: Push all branches and tags to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_ASKPASS: /bin/false
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+
+          mirror_dir="${RUNNER_TEMP}/siming-ai-mirror.git"
+          credential_file="${RUNNER_TEMP}/gitee-credentials"
           encoded_token="$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["GITEE_TOKEN"], safe=""))')"
           printf 'https://teangtang13:%s@gitee.com\n' "$encoded_token" > "$credential_file"
           chmod 600 "$credential_file"
