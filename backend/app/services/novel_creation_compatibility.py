@@ -61,17 +61,7 @@ def projected_generation_blockers(
 ) -> list[dict[str, str]]:
     if stage not in {*stage_order, "all"}:
         return [{"stage": stage, "label": stage, "reason": "unknown_stage"}]
-    if stage in {"constraints", "concepts"}:
-        return []
-    stages = _record(draft.get("stages"))
-    required = ("constraints", "concepts") if stage == "all" else stage_order[:stage_order.index(stage)]
-    blockers = []
-    for required_stage in required:
-        status = _record(stages.get(required_stage)).get("status") or "pending"
-        if status != "confirmed":
-            blockers.append({
-                "stage": required_stage,
-                "label": stage_labels[required_stage],
-                "reason": "stale" if status == "stale" else "not_confirmed",
-            })
-    return blockers
+    # 3.1.3 removes the fixed wizard order for artifact generation. True hard
+    # dependencies are enforced by finalization and chapter-writing contracts,
+    # while missing planning inputs are surfaced separately as soft hints.
+    return []

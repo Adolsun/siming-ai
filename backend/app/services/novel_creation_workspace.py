@@ -13,7 +13,13 @@ from typing import Any
 
 from app.core.numbers import chinese_number_to_int
 from app.database.models import NovelCreationSession
-from app.services.novel_creation_contract import SCHEMA_VERSION, STAGE_LABELS, STAGE_ORDER
+from app.services.novel_creation_contract import (
+    IMPACT_DEPENDENCIES,
+    SCHEMA_VERSION,
+    SOFT_DEPENDENCIES,
+    STAGE_LABELS,
+    STAGE_ORDER,
+)
 from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
 from app.services.novel_creation_failures import clear_stage_failure
 from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
@@ -447,6 +453,7 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
         state = _dict(stages.get(stage))
         status = _text(state.get("status"), "pending")
         blockers = generation_blockers(session, stage, draft)
+        soft_dependencies = _soft_dependencies(draft, stage)
         has_data = state.get("data") is not None
         can_generate = stage not in {"constraints", "concepts"} and not blockers
         can_confirm = has_data and status in {"generated", "stale"} and not blockers
@@ -466,6 +473,7 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
             "can_generate": can_generate,
             "can_confirm": can_confirm,
             "blocked_by": blockers,
+            "soft_dependencies": soft_dependencies,
             "actions": actions,
             "next_stage": STAGE_ORDER[index + 1] if index + 1 < len(STAGE_ORDER) else None,
         }
@@ -525,6 +533,7 @@ def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> di
     state = _dict(_dict(draft.get("stages")).get(stage))
     flow = build_stage_flow(session, draft)["items"][stage]
     locks = _dict(draft.get("artifact_locks"))
+    checkpoints = _list(_dict(session.checkpoints_json).get(stage))
     running = next(
         (
             serialize_run(run, include_events=False)
@@ -542,6 +551,9 @@ def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> di
         "updated_at": state.get("updated_at"),
         "stale_reason": state.get("stale_reason"),
         "locked_paths": list(_list(locks.get(stage))),
+        "checkpoint_count": len(checkpoints),
+        "can_undo": bool(checkpoints),
+        "latest_checkpoint_at": checkpoints[-1].get("created_at") if checkpoints else None,
         "revision": int(session.revision or 0),
         "flow": deepcopy(flow),
         "running_operation": running,
@@ -558,7 +570,7 @@ def creation_artifact_dependencies(session: NovelCreationSession, stage: str) ->
         raise ValueError(f"unknown stage: {stage}")
     draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
     downstream = []
-    for name in STAGE_ORDER[STAGE_ORDER.index(stage) + 1:]:
+    for name in IMPACT_DEPENDENCIES.get(stage, ()):
         state = _dict(_dict(draft.get("stages")).get(name))
         if state.get("data") is not None:
             downstream.append({
@@ -570,9 +582,26 @@ def creation_artifact_dependencies(session: NovelCreationSession, stage: str) ->
     return {
         "artifact": stage,
         "hard_dependencies": generation_blockers(session, stage, draft),
-        "soft_dependencies": [],
+        "soft_dependencies": _soft_dependencies(draft, stage),
         "affected_artifacts": downstream,
     }
+
+
+def _soft_dependencies(draft: dict[str, Any], stage: str) -> list[dict[str, str]]:
+    if stage not in STAGE_ORDER:
+        return []
+    stages = _dict(draft.get("stages"))
+    missing: list[dict[str, str]] = []
+    for dependency in SOFT_DEPENDENCIES.get(stage, ()):
+        status = _text(_dict(stages.get(dependency)).get("status"), "pending")
+        if status != "confirmed":
+            missing.append({
+                "stage": dependency,
+                "label": STAGE_LABELS[dependency],
+                "reason": "stale" if status == "stale" else "not_confirmed",
+                "message": f"缺少已确认的{STAGE_LABELS[dependency]}，仍可生成，但结果可能需要后续校验",
+            })
+    return missing
 
 
 def _pointer_parts(path: str) -> list[str]:
@@ -714,6 +743,42 @@ def set_creation_artifact_locks(
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
     return serialize_creation_artifact(session, stage)
+
+
+def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Restore the most recent artifact checkpoint without reviving stale dependents."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    checkpoints = _dict(session.checkpoints_json)
+    items = _list(checkpoints.get(stage))
+    if not items:
+        raise ValueError("当前立项数据没有可撤销的最近修改")
+    checkpoint = items.pop()
+    data = checkpoint.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("最近检查点不包含可恢复的结构化数据")
+    draft = initialize_session_draft(session)
+    current = _dict(_dict(draft.get("stages")).get(stage))
+    affected = _invalidate_after(draft, stage)
+    draft["stages"][stage] = {
+        "status": _text(checkpoint.get("status"), "generated"),
+        "data": deepcopy(data),
+        "source": _text(checkpoint.get("source"), "restored_checkpoint"),
+        "updated_at": _now(),
+        "restored_from_revision": checkpoint.get("revision"),
+    }
+    checkpoints[stage] = items
+    session.checkpoints_json = checkpoints
+    session.draft_json = deepcopy(draft)
+    session.revision = int(session.revision or 0) + 1
+    session.current_stage = stage
+    session.status = "reviewing"
+    return {
+        "artifact": serialize_creation_artifact(session, stage),
+        "undone_source": current.get("source"),
+        "restored_revision": checkpoint.get("revision"),
+        "affected_artifacts": affected,
+    }
 
 
 def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[str, Any]:
@@ -1039,22 +1104,44 @@ def derive_stage(
     }
 
 
-def _checkpoint(session: NovelCreationSession, stage: str, data: Any) -> None:
+def _checkpoint(
+    session: NovelCreationSession,
+    stage: str,
+    data: Any,
+    *,
+    status: str = "generated",
+    source: str = "unknown",
+) -> None:
     checkpoints = _dict(session.checkpoints_json)
     items = _list(checkpoints.get(stage))
-    items.append({"revision": int(session.revision or 0), "created_at": _now(), "data": deepcopy(data)})
+    items.append({
+        "revision": int(session.revision or 0),
+        "created_at": _now(),
+        "status": status,
+        "source": source,
+        "data": deepcopy(data),
+    })
     checkpoints[stage] = items[-3:]
     session.checkpoints_json = checkpoints
 
 
-def _invalidate_after(draft: dict[str, Any], stage: str) -> None:
-    start = STAGE_ORDER.index(stage)
-    for downstream in STAGE_ORDER[start + 1:]:
+def _invalidate_after(draft: dict[str, Any], stage: str) -> list[dict[str, str]]:
+    affected: list[dict[str, str]] = []
+    for downstream in IMPACT_DEPENDENCIES.get(stage, ()):
         current = _dict(draft.get("stages", {}).get(downstream))
         if current.get("status") in {"generated", "confirmed"}:
+            previous_status = _text(current.get("status"), "generated")
             current["status"] = "stale"
             current["stale_reason"] = f"上游阶段“{STAGE_LABELS[stage]}”已修改"
+            current["stale_source"] = stage
             draft["stages"][downstream] = current
+            affected.append({
+                "artifact": downstream,
+                "label": STAGE_LABELS[downstream],
+                "previous_status": previous_status,
+                "effect": "stale",
+            })
+    return affected
 
 
 def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], *, confirm: bool = False, source: str = "generated") -> dict[str, Any]:
@@ -1063,7 +1150,13 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
     draft = initialize_session_draft(session)
     previous = _dict(draft["stages"].get(stage))
     if previous.get("data") is not None:
-        _checkpoint(session, stage, previous.get("data"))
+        _checkpoint(
+            session,
+            stage,
+            previous.get("data"),
+            status=_text(previous.get("status"), "generated"),
+            source=_text(previous.get("source"), "unknown"),
+        )
     changed = previous.get("data") != data
     draft["stages"][stage] = {
         "status": "confirmed" if confirm else "generated",

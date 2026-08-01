@@ -109,6 +109,7 @@ from .novel_creation_v2 import (
     lock_creation_fields,
     patch_creation_artifact_tool,
     submit_novel_creation_stage,
+    undo_creation_artifact_tool,
     unlock_creation_fields,
 )
 from .narrative_governance import (
@@ -245,6 +246,7 @@ __all__ = [
     "patch_creation_artifact_tool",
     "lock_creation_fields",
     "unlock_creation_fields",
+    "undo_creation_artifact_tool",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
     "get_narrative_governance",

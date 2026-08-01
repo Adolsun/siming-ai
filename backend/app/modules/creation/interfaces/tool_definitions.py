@@ -364,6 +364,21 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         handler_name="unlock_creation_fields",
     ),
     ToolDef(
+        name="undo_creation_artifact",
+        description="Undo the most recent saved change to one creation artifact using its durable checkpoint.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "artifact": {"type": "string", "description": "Creation artifact identifier"},
+            "expected_revision": {"type": "integer", "description": "Required current session revision"},
+        },
+        required=["session_id", "artifact", "expected_revision"],
+        tool_type="write",
+        writes_project_data=False,
+        risk_level="low",
+        estimated_cost="free",
+        handler_name="undo_creation_artifact_tool",
+    ),
+    ToolDef(
         name="generate_novel_creation_stage",
         description="Generate one V2 creation stage or the complete quick pipeline. Saves only to the session draft; it never writes project files.",
         input_schema={

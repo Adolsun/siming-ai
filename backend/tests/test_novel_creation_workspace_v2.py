@@ -33,6 +33,7 @@ from app.services.novel_creation_workspace import (
     serialize_session,
     serialize_creation_artifact,
     set_creation_artifact_locks,
+    undo_creation_artifact,
 )
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
@@ -177,7 +178,8 @@ def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
         data["characters"][0]["background"] = f"修订 {revision}"
         save_stage(session, "characters", data, confirm=True, source="author")
     assert len(session.checkpoints_json["characters"]) == 3
-    assert session.draft_json["stages"]["locations"]["status"] == "stale"
+    assert session.draft_json["stages"]["locations"]["status"] == "confirmed"
+    assert session.draft_json["stages"]["macro_outline"]["status"] == "stale"
     assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
 
 
@@ -253,7 +255,7 @@ def test_artifact_dependencies_keep_existing_downstream_data_visible():
     session = _ready_session(db)
     dependencies = creation_artifact_dependencies(session, "characters")
     affected = {item["artifact"] for item in dependencies["affected_artifacts"]}
-    assert {"locations", "macro_outline", "opening_outline", "final_review"} <= affected
+    assert affected == {"macro_outline", "opening_outline", "final_review"}
     assert all(item["effect"] == "stale" for item in dependencies["affected_artifacts"])
 
 
@@ -291,23 +293,27 @@ def test_stage_flow_recovers_a_legacy_session_that_advanced_before_confirmation(
 
     assert flow["legacy_current_stage"] == "characters"
     assert flow["attention_stage"] == "world_style"
-    assert flow["pending_confirmations"] == ["world_style"]
+    assert "world_style" in flow["pending_confirmations"]
     assert flow["items"]["characters"]["can_view"] is False
-    assert flow["items"]["characters"]["blocked_by"][0]["stage"] == "world_style"
+    assert flow["items"]["characters"]["can_generate"] is True
+    assert flow["items"]["characters"]["blocked_by"] == []
+    assert flow["items"]["characters"]["soft_dependencies"][0]["stage"] == "world_style"
 
 
-def test_generation_blockers_require_confirmed_upstream_stages():
+def test_generation_uses_soft_dependency_hints_instead_of_fixed_stage_blockers():
     db = _db()
     session = _ready_session(db)
     session.draft_json["stages"]["world_style"]["status"] = "generated"
 
     blockers = generation_blockers(session, "characters")
 
-    assert [item["stage"] for item in blockers] == ["world_style"]
+    assert blockers == []
+    dependencies = creation_artifact_dependencies(session, "characters")
+    assert [item["stage"] for item in dependencies["soft_dependencies"]] == ["world_style"]
     assert generation_blockers(session, "concepts") == []
 
 
-def test_legacy_lifecycle_stage_is_projected_as_stale_and_blocks_downstream():
+def test_legacy_lifecycle_stage_is_projected_as_stale_without_blocking_downstream():
     db = _db()
     session = _ready_session(db)
     session.draft_json["stages"]["macro_outline"] = {
@@ -323,9 +329,40 @@ def test_legacy_lifecycle_stage_is_projected_as_stale_and_blocks_downstream():
     assert macro["data"] is None
     assert "重新生成" in macro["stale_reason"]
     assert serialized["stage_flow"]["recommended_stage"] == "macro_outline"
-    assert [item["stage"] for item in generation_blockers(session, "opening_outline")] == ["macro_outline"]
+    assert generation_blockers(session, "opening_outline") == []
+    assert [
+        item["stage"]
+        for item in creation_artifact_dependencies(session, "opening_outline")["soft_dependencies"]
+    ] == ["macro_outline"]
     with pytest.raises(ValueError, match="全书主线与卷纲"):
         build_apply_blueprint(session)
+
+
+def test_artifact_undo_restores_latest_checkpoint_and_keeps_dependents_stale():
+    db = _db()
+    session = _ready_session(db)
+    original = deepcopy(session.draft_json["stages"]["macro_outline"]["data"])
+    patch_creation_artifact(session, "macro_outline", [
+        {"path": "/volumes/0/title", "action": "replace", "value": "修改后的卷名"},
+    ])
+    revision_after_patch = int(session.revision or 0)
+
+    result = undo_creation_artifact(session, "macro_outline")
+
+    assert result["artifact"]["data"] == original
+    assert result["artifact"]["can_undo"] is False
+    assert int(session.revision or 0) == revision_after_patch + 1
+    assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+
+def test_artifact_undo_rejects_an_artifact_without_a_checkpoint():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="先写卷纲")
+    db.add(session)
+    initialize_session_draft(session)
+
+    with pytest.raises(ValueError, match="没有可撤销"):
+        undo_creation_artifact(session, "macro_outline")
 
 
 def test_stage_submission_rejects_a_stale_expected_revision():

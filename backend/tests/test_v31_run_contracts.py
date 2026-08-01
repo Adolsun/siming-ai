@@ -68,6 +68,7 @@ def test_creation_artifact_openapi_exposes_query_patch_lock_and_confirm_routes()
     assert "get" in paths[artifact_path + "/dependencies"]
     assert "post" in paths[lock_path]
     assert "delete" in paths[lock_path]
+    assert "post" in paths[artifact_path + "/undo"]
     assert "post" in paths["/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm"]
 
     patch_schema = paths[artifact_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]

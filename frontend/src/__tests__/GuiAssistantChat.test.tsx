@@ -51,7 +51,9 @@ describe('GuiAssistantChat new-book handoff', () => {
             source: 'model',
             revision: 7,
             locked_paths: [],
-            flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [] },
+            can_undo: true,
+            checkpoint_count: 1,
+            flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [], soft_dependencies: [] },
           },
           {
             artifact: 'characters',
@@ -61,7 +63,13 @@ describe('GuiAssistantChat new-book handoff', () => {
             revision: 7,
             stale_reason: '上游创意方案已修改',
             locked_paths: ['/characters/0'],
-            flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] },
+            flow: {
+              can_view: true,
+              can_generate: true,
+              can_confirm: false,
+              blocked_by: [],
+              soft_dependencies: [{ stage: 'world_style', label: '文风与世界观', reason: 'not_confirmed', message: '仍可生成' }],
+            },
           },
         ],
       } } })
@@ -113,6 +121,9 @@ describe('GuiAssistantChat new-book handoff', () => {
       }
       if (url === '/novel-creation/sessions/session-1/stages/concepts/confirm') {
         return Promise.resolve({ data: { data: { id: 'session-1', revision: 8 } } })
+      }
+      if (url === '/novel-creation/sessions/session-1/artifacts/concepts/undo') {
+        return Promise.resolve({ data: { data: { artifact: { artifact: 'concepts', revision: 8 } } } })
       }
       if (url === '/ai/system-assistant/conversations') {
         return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '新书' } } } })
@@ -170,6 +181,11 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/concepts/confirm', {
       confirm: true,
       source: 'author',
+      expected_revision: 7,
+    })
+
+    await user.click(screen.getByRole('button', { name: '撤销创意方案最近一次修改' }))
+    expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/artifacts/concepts/undo', {
       expected_revision: 7,
     })
   })

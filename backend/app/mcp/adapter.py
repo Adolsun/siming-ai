@@ -49,6 +49,7 @@ _PROJECT_OPTIONAL_TOOLS = {
     "patch_creation_artifact",
     "lock_creation_fields",
     "unlock_creation_fields",
+    "undo_creation_artifact",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
 }

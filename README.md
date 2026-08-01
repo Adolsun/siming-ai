@@ -21,7 +21,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **3.1.2** 增加对话式立项的结构化事实面：AI 助手内可查看、确认和定向调整各项立项数据；新增 revision 防护的原子补丁、字段锁定、依赖与影响摘要工具。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **3.1.3** 解除立项阶段的固定生成顺序，改用软依赖质量提示和精确影响图；AI 助手的数据面板支持按 revision 安全撤销最近一次修改。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 

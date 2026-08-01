@@ -63,6 +63,10 @@ class CreationArtifactLockInput(CreationArtifactInput):
     paths: list[str]
 
 
+class UndoCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+
+
 class GenerateNovelCreationStageInput(CompatibleInput):
     session_id: str
     stage: str
@@ -91,6 +95,7 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "patch_creation_artifact": PatchCreationArtifactInput,
     "lock_creation_fields": CreationArtifactLockInput,
     "unlock_creation_fields": CreationArtifactLockInput,
+    "undo_creation_artifact": UndoCreationArtifactInput,
     "generate_novel_creation_stage": GenerateNovelCreationStageInput,
     "submit_novel_creation_stage": SubmitNovelCreationStageInput,
 }

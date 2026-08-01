@@ -53,6 +53,7 @@ from ...novel_creation_workspace import (
     serialize_creation_artifact,
     serialize_session,
     set_creation_artifact_locks,
+    undo_creation_artifact,
 )
 
 
@@ -802,6 +803,21 @@ async def lock_creation_fields(db: Session, project_id: str, args: dict[str, Any
 
 async def unlock_creation_fields(db: Session, project_id: str, args: dict[str, Any]) -> dict:
     return await _set_creation_locks(db, args, locked=False)
+
+
+async def undo_creation_artifact_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "undo_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("undo_creation_artifact", session)
+    try:
+        result = undo_creation_artifact(session, _text(args.get("artifact")))
+        commit_session(db)
+        return {"tool": "undo_creation_artifact", "status": "ok", "detail": "Latest artifact change undone", "data": result}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "undo_creation_artifact", "status": "error", "detail": str(exc), "data": None}
 
 
 async def generate_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:

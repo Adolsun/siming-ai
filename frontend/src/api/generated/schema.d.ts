@@ -1391,6 +1391,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo Creation Artifact Endpoint */
+        post: operations["undo_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/sessions/{session_id}/interview/next": {
         parameters: {
             query?: never;
@@ -6287,6 +6304,11 @@ export interface components {
              */
             source: string;
         };
+        /** NovelCreationArtifactUndoRequest */
+        NovelCreationArtifactUndoRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** NovelCreationDraftRequest */
         NovelCreationDraftRequest: {
             /** Answers */
@@ -10924,6 +10946,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationArtifactLockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationArtifactUndoRequest"];
             };
         };
         responses: {

@@ -369,6 +369,7 @@ _TOOL_REGISTRATION_ORDER = (
     "patch_creation_artifact",
     "lock_creation_fields",
     "unlock_creation_fields",
+    "undo_creation_artifact",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
     "list_imported_files",

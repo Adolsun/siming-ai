@@ -42,6 +42,7 @@ from ..services.novel_creation_workspace import (
     serialize_run,
     serialize_session,
     set_creation_artifact_locks,
+    undo_creation_artifact,
 )
 from ..services.observability.run_events import classify_failure
 from ..services.operation_runtime import (
@@ -368,6 +369,10 @@ class NovelCreationArtifactPatchRequest(BaseModel):
 
 class NovelCreationArtifactLockRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=100)
+    expected_revision: int
+
+
+class NovelCreationArtifactUndoRequest(BaseModel):
     expected_revision: int
 
 
@@ -855,6 +860,26 @@ async def unlock_creation_artifact_fields(
         commit_session(db)
         return ApiResponse.success(data=artifact, message="字段已解锁")
     except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/novel-creation/sessions/{session_id}/artifacts/{stage}/undo")
+async def undo_creation_artifact_endpoint(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactUndoRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        result = undo_creation_artifact(session, stage)
+        commit_session(db)
+        return ApiResponse.success(data=result, message=f"已撤销{STAGE_LABELS[stage]}的最近一次修改")
+    except (KeyError, ValueError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

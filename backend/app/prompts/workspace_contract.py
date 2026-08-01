@@ -162,6 +162,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     patch_creation_artifact
     lock_creation_fields
     unlock_creation_fields
+    undo_creation_artifact
     suggest_conflicts
     sync_project_files
     update_cataloging_candidate

@@ -315,7 +315,7 @@ async function mockUiApi(page: Page) {
         { artifact: 'characters', label: '角色与关系', status: 'confirmed', source: 'author', revision: 3, locked_paths: ['/characters/0'], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
         { artifact: 'locations', label: '地点与势力', status: 'confirmed', source: 'model', revision: 3, locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
         { artifact: 'macro_outline', label: '主线与卷纲', status: 'generated', source: 'assistant', revision: 3, locked_paths: [], running_operation: { id: 'run-running', stage: 'macro_outline', status: 'running', current_message: '正在调整第 3—8 卷' }, flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [] } },
-        { artifact: 'opening_outline', label: '开篇细纲', status: 'stale', source: 'model', revision: 3, stale_reason: '上游阶段“主线与卷纲”已修改', locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        { artifact: 'opening_outline', label: '开篇细纲', status: 'stale', source: 'model', revision: 3, stale_reason: '上游阶段“主线与卷纲”已修改', locked_paths: [], checkpoint_count: 1, can_undo: true, flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [{ stage: 'macro_outline', label: '主线与卷纲', reason: 'not_confirmed', message: '仍可生成' }] } },
         { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
       ],
     } })
@@ -490,11 +490,19 @@ for (const viewport of creationViewports) {
     await expect(page.getByText('模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()
     await expect(page.getByRole('complementary', { name: '立项数据' })).toBeVisible()
     await expect(page.getByText('上游阶段“主线与卷纲”已修改')).toBeVisible()
+    await expect(page.getByRole('button', { name: '撤销开篇细纲最近一次修改' })).toBeVisible()
+    await expect(page.getByText(/可先生成/)).toBeVisible()
     await expect(page.getByRole('button', { name: '停止' })).toBeEnabled()
     await expect(page.getByRole('button', { name: '打开完整编辑器' }).first()).toBeEnabled()
     await expectViewportSafe(page)
     await expectNoSeriousAccessibilityViolations(page)
     await expectVisualSnapshot(page, `assistant-creation-running-${viewport.name}.png`)
+    if (viewport.width === 800) {
+      await page.getByRole('button', { name: '撤销开篇细纲最近一次修改' }).scrollIntoViewIfNeeded()
+      await expect(page.getByText(/可先生成/)).toBeVisible()
+      await expectViewportSafe(page)
+      await expectVisualSnapshot(page, 'assistant-creation-undo-800x600.png')
+    }
   })
 
   test(`keeps all new-book entry points and the author-led intake usable at ${viewport.name}`, async ({ page }) => {

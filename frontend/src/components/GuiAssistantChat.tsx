@@ -40,6 +40,7 @@ import {
   RobotOutlined,
   SendOutlined,
   StopOutlined,
+  UndoOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
@@ -136,12 +137,16 @@ interface CreationArtifactSummary {
   updated_at?: string
   stale_reason?: string
   locked_paths?: string[]
+  checkpoint_count?: number
+  can_undo?: boolean
+  latest_checkpoint_at?: string
   revision: number
   flow?: {
     can_view?: boolean
     can_generate?: boolean
     can_confirm?: boolean
     blocked_by?: Array<{ stage: string; label: string; reason: string }>
+    soft_dependencies?: Array<{ stage: string; label: string; reason: string; message: string }>
   }
   running_operation?: NovelCreationRunSummary | null
 }
@@ -2212,6 +2217,23 @@ function GuiAssistantChat() {
     }
   }
 
+  const undoArtifactFromPanel = async (artifact: CreationArtifactSummary) => {
+    if (!systemSessionId || artifactAction || !artifact.can_undo) return
+    setArtifactAction(`undo:${artifact.artifact}`)
+    try {
+      await apiClient.post(`/novel-creation/sessions/${systemSessionId}/artifacts/${artifact.artifact}/undo`, {
+        expected_revision: artifact.revision,
+      })
+      message.success(`${artifact.label}已撤销最近一次修改`)
+      await fetchCreationArtifacts()
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '撤销失败，立项数据未改变')
+      await fetchCreationArtifacts()
+    } finally {
+      setArtifactAction(null)
+    }
+  }
+
   const creationStatusLabel: Record<CreationArtifactSummary['status'], string> = {
     pending: '待生成',
     generated: '待确认',
@@ -2284,6 +2306,11 @@ function GuiAssistantChat() {
                   建议先完善：{artifact.flow.blocked_by.map((item) => item.label).join('、')}
                 </Text>
               ) : null}
+              {artifact.flow?.soft_dependencies?.length ? (
+                <Text type="secondary" className="gui-chat-creation-artifact-blocked">
+                  可先生成；补充{artifact.flow.soft_dependencies.map((item) => item.label).join('、')}后质量会更稳定
+                </Text>
+              ) : null}
               <div className="gui-chat-creation-artifact-actions">
                 {artifact.flow?.can_confirm && (
                   <Button
@@ -2294,6 +2321,17 @@ function GuiAssistantChat() {
                     onClick={() => void confirmArtifactFromPanel(artifact)}
                   >
                     确认
+                  </Button>
+                )}
+                {artifact.can_undo && (
+                  <Button
+                    size="small"
+                    icon={<UndoOutlined />}
+                    aria-label={`撤销${artifact.label}最近一次修改`}
+                    loading={artifactAction === `undo:${artifact.artifact}`}
+                    onClick={() => void undoArtifactFromPanel(artifact)}
+                  >
+                    撤销
                   </Button>
                 )}
                 <Button
