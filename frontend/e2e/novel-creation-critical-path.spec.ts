@@ -133,6 +133,7 @@ async function mockApi(page: Page, options: {
   onStageRun?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
+  let turnCalls = 0
   let startedSession: Record<string, unknown> | undefined
   const unexpected: string[] = []
   unexpectedApiRequests.set(page, unexpected)
@@ -251,6 +252,27 @@ async function mockApi(page: Page, options: {
     }
     if (path === '/api/v1/ai/system-assistant/conversations' && method === 'POST') {
       return fulfill(route, { code: 0, data: { conversation: { id: 'conversation-1', title: '\u65b0\u4e66' } } })
+    }
+    if (path.endsWith('/turns/start') && method === 'POST') {
+      turnCalls += 1
+      const payload = request.postDataJSON() as { user_content?: string; message_type?: string }
+      return fulfill(route, { code: 0, data: {
+        conversation: { id: 'conversation-1', title: '\u65b0\u4e66' },
+        messages: [
+          { id: `user-message-${turnCalls}`, role: 'user', content: payload.user_content || '', status: 'completed', message_type: 'text', payload: {} },
+          { id: `assistant-message-${turnCalls}`, role: 'assistant', content: '', status: 'running', message_type: payload.message_type || 'text', payload: {} },
+        ],
+      } })
+    }
+    if (/\/turns\/assistant-message-\d+$/.test(path) && method === 'PATCH') {
+      const payload = request.postDataJSON() as { assistant_content?: string; status?: string; message_type?: string; payload?: unknown }
+      return fulfill(route, { code: 0, data: {
+        conversation: { id: 'conversation-1', title: '\u65b0\u4e66' },
+        message: {
+          id: path.split('/').pop(), role: 'assistant', content: payload.assistant_content || '',
+          status: payload.status || 'completed', message_type: payload.message_type || 'text', payload: payload.payload || {},
+        },
+      } })
     }
     if (path.includes('/ai/system-assistant/conversations/') && path.endsWith('/turns') && method === 'POST') {
       return fulfill(route, { code: 0, data: { conversation: { id: 'conversation-1', title: '\u65b0\u4e66' } } })
