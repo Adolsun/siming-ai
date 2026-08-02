@@ -52,18 +52,17 @@ from ..services.novel_creation_imports import (
 )
 from ..services.novel_creation_entities import (
     ENTITY_TYPES_BY_ARTIFACT,
-    delete_creation_entity,
     get_creation_entity,
     list_creation_entities,
-    patch_creation_entity,
     serialize_creation_entity,
 )
+from ..services.novel_creation_actions import delete_creation_entity, patch_creation_entity, restore_artifact_version
+from ..services.novel_creation_retry import select_creation_retry_input
 from ..services.novel_creation_versions import (
     artifact_version_diff,
     get_artifact_version,
     list_artifact_versions,
     record_artifact_version,
-    restore_artifact_version,
     serialize_artifact_version,
 )
 from ..services.novel_creation_workspace import (
@@ -104,6 +103,7 @@ from ..services.workspace.tools.novel_creation import (
 )
 from ..services.workspace.tools.novel_creation_v2 import _validate_stage, submit_novel_creation_stage
 from ..services.novel_creation_task_runtime import schedule_creation_stage
+from .novel_creation_support import idempotent_confirmation_response
 
 router = APIRouter(tags=["novel-creation"])
 
@@ -917,21 +917,17 @@ async def retry_creation_stage_run(
     session = store.session(previous.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
-    request = dict(previous.request_json or {})
-    request.pop("input_snapshot", None)
-    request.pop("operation_id", None)
+    retry_input = select_creation_retry_input(previous, session, use_latest=payload.use_latest_draft)
+    request = retry_input.request
     if payload.model:
         request["model"] = payload.model
-    request["retry_of_run_id"] = previous.id
-    request["retry_mode"] = "latest_draft" if payload.use_latest_draft else "original_input"
-    snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
     retry_key = creation_idempotency_key(
         session_id=session.id,
         stage=previous.stage,
         operation=str(request.get("operation") or previous.operation),
         request=request,
-        input_revision=int(session.revision or 0),
-        input_snapshot_hash=snapshot_hash,
+        input_revision=retry_input.revision,
+        input_snapshot_hash=retry_input.snapshot_hash,
         explicit_key=f"retry:{previous.id}:{uuid.uuid4()}",
     )
     claim, _ = claim_or_replay_creation_run(
@@ -939,8 +935,8 @@ async def retry_creation_stage_run(
         session_id=session.id,
         artifact_key=previous.stage,
         idempotency_key=retry_key,
-        input_revision=int(session.revision or 0),
-        input_snapshot_hash=snapshot_hash,
+        input_revision=retry_input.revision,
+        input_snapshot_hash=retry_input.snapshot_hash,
     )
     run = create_run(
         db,
@@ -949,6 +945,8 @@ async def retry_creation_stage_run(
         request,
         claim_id=claim.id,
         idempotency_key=retry_key,
+        frozen_input_snapshot=retry_input.snapshot,
+        frozen_input_revision=retry_input.revision,
     )
     run.retry_of_run_id = previous.id
     commit_session(db)
@@ -964,6 +962,9 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
     session = store.session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
+    confirmation, replay = idempotent_confirmation_response(session, stage, data=payload.data, confirm=payload.confirm)
+    if replay:
+        return replay
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
         raise HTTPException(
             status_code=409,
@@ -976,7 +977,7 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
     result = await submit_novel_creation_stage(db, "", {
         "session_id": session_id,
         "stage": stage,
-        "data": payload.data,
+        "data": payload.data if payload.data is not None else confirmation.current_data,
         "confirm": payload.confirm,
         "source": payload.source,
         "expected_revision": payload.expected_revision,
@@ -1025,7 +1026,6 @@ async def confirm_and_generate_recommended(
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    """Confirm exactly one artifact and start only the newly recommended artifact."""
     if idempotency_key:
         existing_claim = get_creation_claim_by_idempotency_key(
             db,

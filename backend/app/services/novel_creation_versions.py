@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -167,6 +167,9 @@ def restore_artifact_version(
     version: NovelCreationArtifactVersion,
     *,
     expected_revision: int,
+    validator: Callable[[str, dict[str, Any]], None],
+    save_stage_fn: Callable[..., dict[str, Any]],
+    serialize_artifact_fn: Callable[[NovelCreationSession, str], dict[str, Any]],
 ) -> dict[str, Any]:
     if version.session_id != session.id:
         raise ValueError("版本不属于当前立项会话")
@@ -174,11 +177,8 @@ def restore_artifact_version(
         raise RuntimeError("revision_conflict")
     if not isinstance(version.snapshot_json, dict):
         raise ValueError("版本不包含可恢复的结构化数据")
-    from app.services.novel_creation_authoring import _validate_stage
-    from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
-
-    _validate_stage(version.artifact_key, version.snapshot_json)
-    save_stage(
+    validator(version.artifact_key, version.snapshot_json)
+    save_stage_fn(
         session,
         version.artifact_key,
         deepcopy(version.snapshot_json),
@@ -189,7 +189,7 @@ def restore_artifact_version(
         restored_from_version_id=version.id,
     )
     return {
-        "artifact": serialize_creation_artifact(session, version.artifact_key),
+        "artifact": serialize_artifact_fn(session, version.artifact_key),
         "restored_version": serialize_artifact_version(version),
         "revision": int(session.revision or 0),
     }

@@ -8,6 +8,27 @@ from .openai_adapter import compact_openai_kwargs, create_openai_compatible_clie
 from ..core.exceptions import LLMError
 
 
+def _provider_extra_body(extra_body: Optional[dict]) -> dict:
+    return {
+        key: value
+        for key, value in (extra_body or {}).items()
+        if not key.startswith(("moshu_", "local_cli_"))
+    }
+
+
+def _plain_text_extra_body(extra_body: Optional[dict]) -> dict:
+    """Reserve the response budget for content on text-only adapter methods.
+
+    DeepSeek V4 defaults thinking mode to enabled. These adapter methods expose
+    only final text, not reasoning deltas, so an implicit thinking response can
+    consume the output budget without producing any usable content. Callers
+    that deliberately handle that protocol can still opt in explicitly.
+    """
+    body = _provider_extra_body(extra_body)
+    body.setdefault("thinking", {"type": "disabled"})
+    return body
+
+
 class DeepSeekAdapter(BaseAdapter):
     """Adapter for DeepSeek API (OpenAI-compatible)."""
 
@@ -45,8 +66,7 @@ class DeepSeekAdapter(BaseAdapter):
         client = self._get_client()
         model = self._normalize_model(model)
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens))
-        if extra_body:
-            kwargs["extra_body"] = extra_body
+        kwargs["extra_body"] = _plain_text_extra_body(extra_body)
         if tools:
             kwargs["tools"] = tools
         # DeepSeek V4 thinking mode rejects OpenAI's tool_choice parameter even
@@ -55,8 +75,13 @@ class DeepSeekAdapter(BaseAdapter):
         try:
             response = await client.chat.completions.create(**kwargs)
             choice = response.choices[0]
+            content = choice.message.content or ""
+            if not content and getattr(choice.message, "reasoning_content", None):
+                raise LLMError(
+                    "DeepSeek 已返回思考内容，但最终回答为空。系统可提高输出上限或使用无思考补偿重试；原始思考模式无需永久关闭。"
+                )
             return {
-                "content": choice.message.content or "",
+                "content": content,
                 "model": response.model,
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
@@ -87,14 +112,29 @@ class DeepSeekAdapter(BaseAdapter):
         client = self._get_client()
         model = self._normalize_model(model)
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True))
-        if extra_body:
-            kwargs["extra_body"] = extra_body
+        kwargs["extra_body"] = _plain_text_extra_body(extra_body)
         try:
             stream = await client.chat.completions.create(**kwargs)
+            content_emitted = False
+            reasoning_received = False
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+                reasoning_received = reasoning_received or bool(
+                    getattr(delta, "reasoning_content", None)
+                )
+                content = getattr(delta, "content", None)
+                if content:
+                    content_emitted = True
+                    yield content
+            if not content_emitted and reasoning_received:
+                raise LLMError(
+                    "DeepSeek 已返回思考内容，但最终回答为空。系统可提高输出上限或使用无思考补偿重试；原始思考模式无需永久关闭。"
+                )
         except AuthenticationError as e:
             raise LLMError(f"DeepSeek API Key 无效: {e}")
         except APITimeoutError as e:
@@ -119,8 +159,9 @@ class DeepSeekAdapter(BaseAdapter):
         client = self._get_client()
         model = self._normalize_model(model)
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True))
-        if extra_body:
-            kwargs["extra_body"] = extra_body
+        provider_body = _provider_extra_body(extra_body)
+        if provider_body:
+            kwargs["extra_body"] = provider_body
         if tools:
             kwargs["tools"] = tools
         # DeepSeek V4 thinking mode rejects OpenAI's tool_choice parameter even
@@ -133,8 +174,6 @@ class DeepSeekAdapter(BaseAdapter):
             usage = None
             reasoning_buffer = ""
             async for chunk in stream:
-                delta = chunk.choices[0].delta
-                finish_reason = chunk.choices[0].finish_reason or finish_reason
                 if getattr(chunk, 'usage', None):
                     u = chunk.usage
                     if isinstance(u, dict):
@@ -149,14 +188,24 @@ class DeepSeekAdapter(BaseAdapter):
                             "completion_tokens": getattr(u, 'completion_tokens', 0),
                             "total_tokens": getattr(u, 'total_tokens', 0),
                         }
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+                if delta is None:
+                    continue
                 rc = getattr(delta, 'reasoning_content', None)
                 if rc:
                     reasoning_buffer += rc
                     yield {"type": "reasoning_delta", "delta": rc}
-                if delta.content:
-                    yield {"type": "content_delta", "delta": delta.content}
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
+                content = getattr(delta, "content", None)
+                if content:
+                    yield {"type": "content_delta", "delta": content}
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
                         idx = tc.index
                         if idx not in tool_call_buffers:
                             tool_call_buffers[idx] = {"id": tc.id or "", "name": "", "arguments": ""}

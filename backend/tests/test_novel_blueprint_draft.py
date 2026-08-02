@@ -382,6 +382,79 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
             {"local_cli_cwd": r"D:\novels"},
         )
 
+    def test_deepseek_system_chat_keeps_thinking_and_returns_final_content(self):
+        from app.services.workspace.tools.novel_creation import system_chat_completion
+
+        async def response_stream():
+            yield {"type": "reasoning_delta", "delta": "considering the greeting"}
+            yield {"type": "content_delta", "delta": "你好，我是司命。"}
+            yield {"type": "done", "finish_reason": "stop"}
+
+        with patch(
+            "app.services.workspace.tools.novel_creation.LLMGateway.model_identity",
+            return_value=("deepseek", "deepseek-v4-flash"),
+        ), patch(
+            "app.services.workspace.tools.novel_creation._novel_creation_cli_context",
+            return_value=None,
+        ), patch(
+            "app.services.deepseek_system_chat.LLMGateway.stream_chat_completion_with_tools",
+            return_value=response_stream(),
+        ) as completion_mock, patch(
+            "app.services.deepseek_system_chat.LLMGateway.stream_chat_completion",
+        ) as fallback_mock:
+            result = asyncio.run(system_chat_completion(
+                message="你好？",
+                context={},
+                model="deepseek:deepseek-v4-flash",
+            ))
+
+        self.assertEqual(result["reply"], "你好，我是司命。")
+        self.assertTrue(result["diagnostics"]["thinking_enabled"])
+        self.assertGreater(result["diagnostics"]["reasoning_chars"], 0)
+        self.assertFalse(result["diagnostics"]["recovered_without_thinking"])
+        self.assertEqual(completion_mock.call_args.kwargs["max_tokens"], 8000)
+        self.assertEqual(
+            completion_mock.call_args.kwargs["extra_body"]["thinking"],
+            {"type": "enabled"},
+        )
+        fallback_mock.assert_not_called()
+
+    def test_deepseek_system_chat_recovers_reasoning_only_response(self):
+        from app.services.workspace.tools.novel_creation import system_chat_completion
+
+        async def reasoning_only_stream():
+            yield {"type": "reasoning_delta", "delta": "unfinished reasoning"}
+            yield {"type": "done", "finish_reason": "length"}
+
+        async def fallback_stream():
+            yield "你好，我是司命。"
+
+        with patch(
+            "app.services.workspace.tools.novel_creation.LLMGateway.model_identity",
+            return_value=("deepseek", "deepseek-v4-flash"),
+        ), patch(
+            "app.services.workspace.tools.novel_creation._novel_creation_cli_context",
+            return_value=None,
+        ), patch(
+            "app.services.deepseek_system_chat.LLMGateway.stream_chat_completion_with_tools",
+            return_value=reasoning_only_stream(),
+        ), patch(
+            "app.services.deepseek_system_chat.LLMGateway.stream_chat_completion",
+            return_value=fallback_stream(),
+        ) as fallback_mock:
+            result = asyncio.run(system_chat_completion(
+                message="你好？",
+                context={},
+                model="deepseek:deepseek-v4-flash",
+            ))
+
+        self.assertEqual(result["reply"], "你好，我是司命。")
+        self.assertTrue(result["diagnostics"]["recovered_without_thinking"])
+        self.assertEqual(
+            fallback_mock.call_args.kwargs["extra_body"]["thinking"],
+            {"type": "disabled"},
+        )
+
     def test_template_mode_generates_full_blueprints(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
 

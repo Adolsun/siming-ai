@@ -626,7 +626,7 @@ test('keeps a generated world stage visible until confirmation and only then sta
       caret: 'hide',
     })
   }
-  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' })
+  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u7ee7\u7eed' })
   await expect(confirmAndContinue).toBeEnabled()
   expect(actionBody).toBeUndefined()
 

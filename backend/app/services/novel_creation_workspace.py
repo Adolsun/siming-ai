@@ -11,7 +11,6 @@ from datetime import datetime
 from collections.abc import Callable
 from typing import Any
 
-from app.core.numbers import chinese_number_to_int
 from app.database.models import NovelCreationSession
 from app.services.novel_creation_contract import (
     IMPACT_DEPENDENCIES,
@@ -22,6 +21,8 @@ from app.services.novel_creation_contract import (
 )
 from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
 from app.services.novel_creation_failures import clear_stage_failure
+from app.services.novel_creation_conflicts import artifact_conflict_projection
+from app.services.novel_creation_values import requested_volume_count as _requested_volume_count
 from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
 
 _PRESET_ROWS: tuple[tuple[str, str, str, tuple[str, ...], dict[str, Any]], ...] = (
@@ -129,21 +130,6 @@ def _dict(value: Any) -> dict[str, Any]:
 
 def _list(value: Any) -> list[Any]:
     return deepcopy(value) if isinstance(value, list) else []
-
-
-def _requested_volume_count(draft: dict[str, Any]) -> int | None:
-    import re
-
-    source = "\n".join([
-        _text(draft.get("author_outline")),
-        *[_text(item) for item in _list(draft.get("locked_requirements"))],
-    ])
-    matches = re.findall(r"([0-9０-９零〇一二两三四五六七八九十百]+)\s*卷", source)
-    if not matches:
-        return None
-    token = matches[-1].translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-    value = int(token) if token.isdigit() else chinese_number_to_int(token)
-    return value if value is not None and 1 <= value <= 100 else None
 
 
 def get_presets() -> dict[str, Any]:
@@ -565,10 +551,17 @@ def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> di
         ),
         None,
     )
+    stored_status = _text(state.get("status"), "pending")
+    conflict_projection = artifact_conflict_projection(
+        stage=stage,
+        stored_status=stored_status,
+        stage_runs=session.stage_runs or [],
+        current_revision=int(session.revision or 0),
+    )
     return {
         "artifact": stage,
         "label": STAGE_LABELS[stage],
-        "status": _text(state.get("status"), "pending"),
+        **conflict_projection,
         "data": deepcopy(state.get("data")),
         "source": _text(state.get("source"), "unknown"),
         "updated_at": state.get("updated_at"),

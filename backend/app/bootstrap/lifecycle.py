@@ -34,16 +34,16 @@ class RuntimeBootstrapStatus:
 
 def _run_legacy_startup_recovery() -> None:
     """Run compatibility recovery after the database schema is available."""
-    from ..modules.story.infrastructure.content_sync import (
-        recover_content_sync_queue,
-    )
-    from ..services.operation_runtime import mark_interrupted_operations
-    from ..services.novel_creation_imports import mark_interrupted_material_imports
-    from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
-    from ..services.workspace.run_log import mark_interrupted_assistant_runs
     from ..modules.assistant.infrastructure.system_conversations import (
         SqlAlchemySystemConversationStore,
     )
+    from ..modules.story.infrastructure.content_sync import (
+        recover_content_sync_queue,
+    )
+    from ..services.novel_creation_imports import mark_interrupted_material_imports
+    from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
+    from ..services.operation_runtime import mark_interrupted_operations
+    from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
     recover_content_sync_queue()
     if get_settings().gateway_enabled:

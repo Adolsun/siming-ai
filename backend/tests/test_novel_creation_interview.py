@@ -100,6 +100,50 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
         self.assertEqual(chat_mock.call_args.kwargs["timeout"], INTERVIEW_CLI_TIMEOUT_SECONDS)
         self.assertIsNone(chat_mock.call_args.kwargs["extra_body"])
 
+    def test_deepseek_interview_disables_thinking_by_default(self):
+        chat_mock = self._streaming_completion({
+            "content": '{"action":"generate","reason":"information is sufficient"}'
+        })
+        with patch(
+            "app.services.novel_creation_interview.LLMGateway.model_identity",
+            return_value=("deepseek", "deepseek-v4-flash"),
+        ), patch(
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=chat_mock,
+        ):
+            result = asyncio.run(decide_next_interview_step(
+                user_brief="A cultivation mystery novel",
+                model="deepseek:deepseek-v4-flash",
+            ))
+
+        self.assertEqual(result["action"], "generate")
+        self.assertEqual(
+            chat_mock.call_args.kwargs["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+
+    def test_deepseek_interview_preserves_explicit_thinking_preference(self):
+        chat_mock = self._streaming_completion({
+            "content": '{"action":"generate","reason":"information is sufficient"}'
+        })
+        with patch(
+            "app.services.novel_creation_interview.LLMGateway.model_identity",
+            return_value=("deepseek", "deepseek-v4-flash"),
+        ), patch(
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=chat_mock,
+        ):
+            asyncio.run(decide_next_interview_step(
+                user_brief="A cultivation mystery novel",
+                model="deepseek:deepseek-v4-flash",
+                extra_body={"thinking": {"type": "enabled"}},
+            ))
+
+        self.assertEqual(
+            chat_mock.call_args.kwargs["extra_body"],
+            {"thinking": {"type": "enabled"}},
+        )
+
     def test_dynamic_interview_drops_model_supplied_choices(self):
         content = json.dumps({
             "action": "ask_more",

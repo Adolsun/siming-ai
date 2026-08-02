@@ -243,16 +243,42 @@ const runningCreationSession = {
   },
 }
 
-const creationSessions: Record<string, typeof authorWorkbenchSession | typeof runningCreationSession> = {
+const recoveryCreationSession = {
+  id: 'recovery-creation',
+  status: 'reviewing',
+  revision: 9,
+  current_stage: 'characters',
+  updated_at: '2026-07-27T10:00:00Z',
+  runs: [{
+    id: 'run-conflict', session_id: 'recovery-creation', stage: 'characters', status: 'failed',
+    operation_id: 'operation-conflict', model_source: 'deepseek:deepseek-v4-flash', attempt: 1,
+    input_revision: 7, current_message: '任务基于版本 7，当前作者内容已更新到版本 9',
+    failure_class: 'revision_conflict', next_action: '选择按原输入或最新内容重试',
+    result: { candidate_available: true },
+  }],
+  draft: {
+    schema_version: 3,
+    creation_mode: 'author_led',
+    author_brief: authorBrief,
+    author_outline: authorOutline,
+    locked_requirements: lockedRequirements,
+    form: creationForm,
+    concepts: [authorConcept],
+    stages: {},
+  },
+}
+
+const creationSessions: Record<string, typeof authorWorkbenchSession | typeof runningCreationSession | typeof recoveryCreationSession> = {
   [authorWorkbenchSession.id]: authorWorkbenchSession,
   [runningCreationSession.id]: runningCreationSession,
+  [recoveryCreationSession.id]: recoveryCreationSession,
 }
 
 async function fulfill(route: Route, data: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
 }
 
-async function mockUiApi(page: Page) {
+async function mockUiApi(page: Page, assistantScenario: 'running' | 'recovery' = 'running') {
   await page.clock.setFixedTime(new Date('2026-07-27T10:00:00Z'))
   await page.addInitScript(() => {
     class MockEventSource {
@@ -290,10 +316,29 @@ async function mockUiApi(page: Page) {
     } })
     if (path === '/api/v1/ai/system-assistant/conversations') return fulfill(route, { code: 0, data: {
       items: [{
-        id: 'conversation-running', title: '八卷仙侠悬疑立项', creation_session_id: 'running-creation',
+        id: assistantScenario === 'recovery' ? 'conversation-recovery' : 'conversation-running',
+        title: assistantScenario === 'recovery' ? '角色冲突恢复' : '八卷仙侠悬疑立项',
+        creation_session_id: assistantScenario === 'recovery' ? 'recovery-creation' : 'running-creation',
         user_brief: '保留主角，扩写为八卷。', created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
       }],
       total: 1,
+    } })
+    if (path === '/api/v1/ai/system-assistant/conversations/conversation-recovery') return fulfill(route, { code: 0, data: {
+      conversation: {
+        id: 'conversation-recovery', title: '角色冲突恢复', creation_session_id: 'recovery-creation',
+        user_brief: '保留主角，只调整反派。', created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
+      },
+      messages: [
+        {
+          id: 'message-user-recovery', role: 'user', content: '主角设定不动，重做反派。',
+          status: 'completed', message_type: 'text', created_at: '2026-07-27T09:59:00Z', payload: {},
+        },
+        {
+          id: 'message-assistant-recovery', role: 'assistant', content: '任务基于版本 7，当前作者内容已更新到版本 9',
+          status: 'error', message_type: 'error', created_at: '2026-07-27T10:00:00Z',
+          payload: { run: recoveryCreationSession.runs[0] },
+        },
+      ],
     } })
     if (path === '/api/v1/ai/system-assistant/conversations/conversation-running') return fulfill(route, { code: 0, data: {
       conversation: {
@@ -346,6 +391,33 @@ async function mockUiApi(page: Page) {
         { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
       ],
     } })
+    if (path === '/api/v1/novel-creation/sessions/recovery-creation/artifacts') return fulfill(route, { code: 0, data: {
+      session_id: 'recovery-creation',
+      revision: 9,
+      artifacts: [
+        { artifact: 'constraints', label: '作品定位', status: 'confirmed', source: 'author', revision: 9, locked_paths: ['/genre'], flow: { can_view: true, can_generate: false, can_confirm: false, blocked_by: [] } },
+        { artifact: 'concepts', label: '创意方案', status: 'confirmed', source: 'author', revision: 9, locked_paths: ['/protagonist'], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [] } },
+        {
+          artifact: 'characters', label: '角色与关系', status: 'conflict', stored_status: 'confirmed', source: 'author', revision: 9,
+          locked_paths: ['/characters/0'],
+          conflict: { run_id: 'run-conflict', message: '任务基于版本 7，当前版本为 9', candidate_available: true, input_revision: 7, current_revision: 9 },
+          flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [] },
+        },
+        { artifact: 'macro_outline', label: '主线与卷纲', status: 'stale', source: 'model', revision: 9, stale_reason: '角色与关系已由作者修改', locked_paths: [], flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [] } },
+      ],
+    } })
+    if (path === '/api/v1/novel-creation/sessions/recovery-creation/validate-consistency') return fulfill(route, {
+      code: 0,
+      data: {
+        valid: false,
+        revision: 9,
+        summary: { blocking: 1, warnings: 1, total: 2 },
+        issues: [
+          { code: 'revision_conflict', severity: 'blocking', artifact: 'characters', message: '旧任务候选稿未覆盖作者当前角色数据' },
+          { code: 'stale_artifact', severity: 'warning', artifact: 'macro_outline', message: '主线与卷纲需要重新校验' },
+        ],
+      },
+    })
     if (path === '/api/v1/novel-creation/sessions/running-creation/validate-consistency') return fulfill(route, {
       code: 0,
       data: {
@@ -537,9 +609,20 @@ for (const viewport of viewports) {
     await page.getByRole('button', { name: /任务中心/ }).click()
     await expect(page.getByRole('heading', { name: /待你处理/ })).toBeVisible()
     await expect(page.getByText('历史尝试 1')).toBeVisible()
+    await expect(page.getByText(/^最近活动 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).first()).toBeVisible()
+    await expect(page.getByText(/最近活动.*小时前/)).toHaveCount(0)
     await expect(page.locator('.ant-drawer-content-wrapper')).toHaveCSS('transform', 'none')
     await expectViewportSafe(page)
     await expectVisualSnapshot(page, `task-center-${viewport.name}.png`)
+
+    if (viewport.width === 1920 || viewport.width === 800) {
+      await page.getByRole('button', { name: '全部标为已读' }).click()
+      await expect(page.locator('.global-operation-trigger')).toHaveAttribute('aria-label', /0 项未读提醒/)
+      await expect(page.getByRole('button', { name: '全部标为已读' })).toBeDisabled()
+      await expect(page.getByRole('heading', { name: '待你处理' })).toBeVisible()
+      await expectViewportSafe(page)
+      await expectVisualSnapshot(page, `task-center-read-${viewport.name}.png`)
+    }
 
     if (viewport.width === 1920 || viewport.width === 800) await expectNoSeriousAccessibilityViolations(page)
   })
@@ -606,6 +689,9 @@ for (const viewport of creationViewports) {
     await mockUiApi(page)
     await page.goto('/gui', { waitUntil: 'networkidle' })
 
+    if (viewport.width === 800) {
+      await page.getByRole('button', { name: '立项数据' }).click()
+    }
     await page.locator('button[aria-label$="\u7248\u672c\u5386\u53f2"]').first().click()
     await expect(page.getByRole('dialog', { name: /\u7248\u672c\u5386\u53f2/ })).toBeVisible()
     await expect(page.getByText('/genre')).toBeVisible()
@@ -613,6 +699,7 @@ for (const viewport of creationViewports) {
     await expect(page.getByText(/\u65b0\uff1a\u4ed9\u4fa0\u60ac\u7591/)).toBeVisible()
     await page.locator('.gui-chat-version-item').nth(1).click()
     await expect(page.getByRole('button', { name: /\u6062\u590d\u6b64\u7248\u672c/ })).toBeEnabled()
+    await page.locator('.ant-modal-body').evaluate((element) => { element.scrollTop = 0 })
     await expectViewportSafe(page)
     await expectNoSeriousAccessibilityViolations(page)
     await expectVisualSnapshot(page, `assistant-artifact-history-${viewport.name}.png`)
@@ -645,6 +732,9 @@ for (const viewport of creationViewports) {
     await mockUiApi(page)
     await page.goto('/gui', { waitUntil: 'networkidle' })
 
+    if (viewport.width === 800) {
+      await page.getByRole('button', { name: '立项数据' }).click()
+    }
     await expect(page.getByText('立项任务')).toBeVisible()
     await expect(page.getByText('0 个错误 · 1 个提醒')).toBeVisible()
     await expect(page.getByRole('heading', { name: '主线与卷纲' })).toBeVisible()
@@ -666,6 +756,45 @@ for (const viewport of creationViewports) {
       await expectVisualSnapshot(page, 'assistant-creation-undo-800x600.png')
     }
   })
+
+  if (viewport.width === 1920 || viewport.width === 800) {
+    test(`keeps revision-conflict recovery explicit at ${viewport.name}`, async ({ page }) => {
+      await page.setViewportSize(viewport)
+      await mockUiApi(page, 'recovery')
+      await page.goto('/gui', { waitUntil: 'networkidle' })
+
+      await expect(page.getByText('任务基于版本 7，当前作者内容已更新到版本 9', { exact: true })).toBeVisible()
+      const retryOriginal = page.getByRole('button', { name: '按原输入重试' })
+      const retryLatest = page.getByRole('button', { name: '按最新内容重试' })
+      await expect(retryOriginal).toBeEnabled()
+      await expect(retryLatest).toBeEnabled()
+      await expect(retryLatest).toBeInViewport()
+      expect(await retryLatest.evaluate((button) => {
+        const bounds = button.getBoundingClientRect()
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+        return hit === button || button.contains(hit)
+      })).toBe(true)
+      if (viewport.width === 800) {
+        await expectVisualSnapshot(page, 'assistant-creation-retry-800x600.png')
+        await page.getByRole('button', { name: '立项数据' }).click()
+      }
+      await expect(page.getByText('版本冲突')).toBeVisible()
+      await expect(page.getByText('旧任务结果未覆盖当前内容；候选稿已保留，可按原输入或最新内容重试')).toBeVisible()
+      await expect(page.getByText('角色与关系已由作者修改')).toBeVisible()
+      await expectViewportSafe(page)
+      await expectNoSeriousAccessibilityViolations(page)
+      await expectVisualSnapshot(page, `assistant-creation-conflict-${viewport.name}.png`)
+      if (viewport.width === 800) {
+        await page.getByRole('button', { name: '收起立项数据' }).click()
+        await expect(retryLatest).toBeInViewport()
+        expect(await retryLatest.evaluate((button) => {
+          const bounds = button.getBoundingClientRect()
+          const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+          return hit === button || button.contains(hit)
+        })).toBe(true)
+      }
+    })
+  }
 
   test(`keeps all new-book entry points and the author-led intake usable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)

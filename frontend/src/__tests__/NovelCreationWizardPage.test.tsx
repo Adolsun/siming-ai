@@ -540,6 +540,8 @@ describe('NovelCreationWizardPage', () => {
 
     const user = userEvent.setup()
     renderPage('/novel-creation?session=session-1')
+    expect(await screen.findByRole('button', { name: '确认当前内容' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /确认并继续/ })).toHaveAttribute('title', '确认后生成系统推荐的下一对象')
     await user.click(await screen.findByRole('button', { name: /编辑阶段内容/ }, { timeout: 3000 }))
 
     const toneInput = screen.getByRole('textbox', { name: '世界基调' })
@@ -628,7 +630,7 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.getByText('逃亡与揭密并进')).toBeInTheDocument()
     expect(screen.getByText('快速入局')).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent('[object Object]')
-    await user.click(screen.getByRole('button', { name: '仅确认，稍后继续' }))
+    await user.click(screen.getByRole('button', { name: '确认当前内容' }))
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style/confirm', expect.objectContaining({

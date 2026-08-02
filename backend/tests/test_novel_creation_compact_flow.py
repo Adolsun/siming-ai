@@ -29,6 +29,7 @@ from app.services.novel_creation_workspace import (
     patch_session,
     save_compact_concepts,
     save_stage,
+    serialize_creation_artifact,
 )
 from app.services.workspace.tools.novel_creation import advance_novel_creation_interview, apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import (
@@ -570,8 +571,15 @@ def test_long_stage_save_uses_revision_cas_and_preserves_manual_edit():
     assert result["status"] == "error"
     assert run.status == "failed"
     assert run.failure_class == "revision_conflict"
+    assert run.result_json["status"] == "conflict"
+    assert run.result_json["candidate_artifact"] == "concepts"
+    assert len(run.result_json["candidate_data"]["options"]) == 3
     assert session.draft_json["author_brief"] == manual_brief
     assert session.draft_json.get("concepts") == []
+    artifact = serialize_creation_artifact(session, "concepts")
+    assert artifact["status"] == "conflict"
+    assert artifact["stored_status"] == "pending"
+    assert artifact["conflict"]["candidate_available"] is True
     assert operation.status == "failed"
     assert operation.can_cancel is False
     assert operation.can_retry is True

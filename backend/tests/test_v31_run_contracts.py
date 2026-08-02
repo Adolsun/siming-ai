@@ -6,7 +6,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
@@ -35,8 +37,15 @@ from app.services.novel_creation_workspace import serialize_session
 from app.services.workspace.run_log import resolve_assistant_model
 from app.routers.novel_creation import (
     CreationConversationCommandRequest,
+    NovelCreationConfirmAndGenerateRequest,
+    NovelCreationStageRetryRequest,
+    NovelCreationStageConfirmRequest,
+    confirm_and_generate_recommended,
+    confirm_creation_stage,
     creation_conversation_command,
+    retry_creation_stage_run,
 )
+from app.services.novel_creation_workspace import initialize_session_draft, save_stage
 
 
 def _db():
@@ -114,6 +123,85 @@ def test_creation_claim_replays_identical_stage_command() -> None:
     assert replayed is False
     assert duplicate_replayed is True
     assert duplicate.id == claim.id
+
+
+def test_database_rejects_two_active_claims_for_one_artifact() -> None:
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", draft_json={"stages": {}})
+    db.add(session)
+    db.flush()
+    db.add_all([
+        NovelCreationRunClaim(
+            session_id=session.id,
+            artifact_key="characters",
+            idempotency_key="concurrent-1",
+            claim_token="token-1",
+            status="running",
+            input_revision=0,
+            input_snapshot_hash="snapshot-1",
+        ),
+        NovelCreationRunClaim(
+            session_id=session.id,
+            artifact_key="characters",
+            idempotency_key="concurrent-2",
+            claim_token="token-2",
+            status="running",
+            input_revision=0,
+            input_snapshot_hash="snapshot-2",
+        ),
+    ])
+
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("use_latest_draft", "expected_revision", "expected_marker", "expected_mode"),
+    [
+        (False, 2, "original", "original_input"),
+        (True, 3, "latest", "latest_draft"),
+    ],
+)
+def test_retry_uses_the_selected_original_or_latest_input_snapshot(
+    use_latest_draft: bool,
+    expected_revision: int,
+    expected_marker: str,
+    expected_mode: str,
+) -> None:
+    db = _db()
+    session = NovelCreationSession(
+        mode="internal_llm",
+        status="drafting",
+        revision=2,
+        draft_json={"marker": "original", "stages": {}},
+    )
+    db.add(session)
+    db.flush()
+    previous = create_run(db, session, "characters", {"model": "openai:first"})
+    previous.status = "failed"
+    session.draft_json = {"marker": "latest", "stages": {}}
+    session.revision = 3
+    db.commit()
+
+    with patch("app.routers.novel_creation.schedule_creation_stage") as schedule:
+        response = asyncio.run(
+            retry_creation_stage_run(
+                previous.id,
+                NovelCreationStageRetryRequest(
+                    use_latest_draft=use_latest_draft,
+                    model="openai:retry",
+                ),
+                db,
+            )
+        )
+
+    run = db.get(NovelCreationStageRun, response.data["run"]["run_id"])
+    assert run is not None
+    assert run.input_revision == expected_revision
+    assert run.request_json["input_snapshot"]["marker"] == expected_marker
+    assert run.request_json["retry_mode"] == expected_mode
+    assert run.request_json["model"] == "openai:retry"
+    schedule.assert_called_once()
 
 
 def test_chat_command_starts_targeted_creation_run_without_navigation() -> None:
@@ -228,6 +316,8 @@ def test_completed_generation_waits_for_author_confirmation() -> None:
     operation = db.get(OperationRun, run.operation_id)
     assert operation is not None
     assert operation.status == "waiting_user"
+    assert operation.can_pause is False
+    assert operation.can_cancel is False
     assert operation.result_json["summary"] == run.current_message
 
     assert confirm_run(db, run) is True
@@ -235,6 +325,95 @@ def test_completed_generation_waits_for_author_confirmation() -> None:
     db.refresh(run)
     assert run.status == "completed"
     assert run.events[-1].event_type == "author_confirmed"
+
+
+def test_repeated_confirmation_is_idempotent_for_the_same_content() -> None:
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting")
+    db.add(session)
+    initialize_session_draft(session, {"preset_id": "free"})
+    data = {
+        "characters": [{"name": "林七", "role_type": "protagonist", "goal": "寻找真相"}],
+        "relationships": [],
+    }
+    save_stage(session, "characters", data, confirm=False, source="model")
+    db.commit()
+    clicked_revision = int(session.revision or 0)
+    payload = NovelCreationStageConfirmRequest(
+        confirm=True,
+        source="author",
+        expected_revision=clicked_revision,
+    )
+
+    first = asyncio.run(confirm_creation_stage(session.id, "characters", payload, db))
+    revision_after_first = int(session.revision or 0)
+    assert session.draft_json["stages"]["characters"]["data"] == data
+    second = asyncio.run(confirm_creation_stage(session.id, "characters", payload, db))
+
+    assert first.code == 0
+    assert second.code == 0
+    assert second.message == "当前内容已经确认"
+    assert int(session.revision or 0) == revision_after_first
+
+
+def test_repeated_confirm_and_generate_replays_one_recommended_run() -> None:
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting")
+    db.add(session)
+    initialize_session_draft(session, {"preset_id": "free"})
+    save_stage(session, "constraints", {"brief": "仙侠悬疑"}, confirm=True, source="author")
+    save_stage(
+        session,
+        "concepts",
+        {"options": [], "selected_concept_id": None},
+        confirm=True,
+        source="author",
+    )
+    save_stage(
+        session,
+        "world_style",
+        {"writing_style": "克制", "worldbuilding": []},
+        confirm=False,
+        source="author",
+    )
+    db.commit()
+    clicked_revision = int(session.revision or 0)
+    payload = NovelCreationConfirmAndGenerateRequest(
+        expected_revision=clicked_revision,
+        use_model=False,
+    )
+
+    with patch("app.routers.novel_creation.schedule_creation_stage") as schedule:
+        first = asyncio.run(
+            confirm_and_generate_recommended(
+                session.id,
+                "world_style",
+                payload,
+                db,
+                idempotency_key="confirm-and-next-once",
+            )
+        )
+        revision_after_first = int(session.revision or 0)
+        second = asyncio.run(
+            confirm_and_generate_recommended(
+                session.id,
+                "world_style",
+                payload,
+                db,
+                idempotency_key="confirm-and-next-once",
+            )
+        )
+
+    assert first.data["action_type"] == "confirm_and_generate_recommended"
+    assert first.data["recommended_stage"] == "characters"
+    assert second.data["run"]["run_id"] == first.data["run"]["run_id"]
+    assert second.data["recommended_stage"] == "characters"
+    assert int(session.revision or 0) == revision_after_first
+    assert db.query(NovelCreationRunClaim).filter_by(
+        session_id=session.id,
+        idempotency_key="confirm-and-next-once",
+    ).count() == 1
+    schedule.assert_called_once()
 
 
 def test_restart_releases_interrupted_creation_run_for_retry() -> None:

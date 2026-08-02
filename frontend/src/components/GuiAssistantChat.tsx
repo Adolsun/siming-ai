@@ -139,7 +139,9 @@ interface NovelCreationRunSummary {
 interface CreationArtifactSummary {
   artifact: string
   label: string
-  status: 'pending' | 'generated' | 'confirmed' | 'stale'
+  status: 'pending' | 'generated' | 'confirmed' | 'stale' | 'conflict'
+  stored_status?: 'pending' | 'generated' | 'confirmed' | 'stale'
+  conflict?: { run_id: string; message?: string; candidate_available?: boolean; input_revision?: number; current_revision?: number } | null
   source?: string
   updated_at?: string
   stale_reason?: string
@@ -397,17 +399,31 @@ function GuiAssistantChat() {
   const [importStrategy, setImportStrategy] = useState<'merge' | 'overwrite_unconfirmed' | 'skip_conflicts'>('merge')
   const [importActionLoading, setImportActionLoading] = useState(false)
   const [activeCreationRun, setActiveCreationRun] = useState<NovelCreationRunSummary | null>(null)
-  const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'pause' | 'resume' | 'retry' | null>(null)
+  const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'pause' | 'resume' | 'retry-original' | 'retry-latest' | null>(null)
   const [creationArtifacts, setCreationArtifacts] = useState<CreationArtifactSummary[]>([])
   const [creationArtifactsLoading, setCreationArtifactsLoading] = useState(false)
   const [creationConsistency, setCreationConsistency] = useState<CreationConsistencyReport | null>(null)
   const [creationConsistencyLoading, setCreationConsistencyLoading] = useState(false)
-  const [creationPanelOpen, setCreationPanelOpen] = useState(true)
+  const [creationPanelOpen, setCreationPanelOpen] = useState(() => (
+    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      ? true
+      : !window.matchMedia('(max-width: 1180px)').matches
+  ))
   const [artifactAction, setArtifactAction] = useState<string | null>(null)
   const [versionHistoryArtifact, setVersionHistoryArtifact] = useState<CreationArtifactSummary | null>(null)
   const [artifactVersions, setArtifactVersions] = useState<CreationArtifactVersionSummary[]>([])
   const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<CreationArtifactVersionDetail | null>(null)
   const [versionHistoryLoading, setVersionHistoryLoading] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const compactViewport = window.matchMedia('(max-width: 1180px)')
+    const closePanelWhenCompact = (event: MediaQueryListEvent) => {
+      if (event.matches) setCreationPanelOpen(false)
+    }
+    compactViewport.addEventListener('change', closePanelWhenCompact)
+    return () => compactViewport.removeEventListener('change', closePanelWhenCompact)
+  }, [])
 
   const {
     defaultModel,
@@ -1087,19 +1103,26 @@ function GuiAssistantChat() {
           ? 'pause'
           : /^(继续|恢复|继续生成)$/.test(controlText)
             ? 'continue'
-            : /^(重试|切换模型后重试|用当前模型重试)$/.test(controlText)
-              ? 'retry'
+            : /^(按原输入重试)$/.test(controlText)
+              ? 'retry-original'
+              : /^(重试|按最新内容重试|切换模型后重试|用当前模型重试)$/.test(controlText)
+                ? 'retry-latest'
               : null
       if (controlAction && activeCreationRun?.operation_id) {
-        if (controlAction === 'retry') {
+        if (controlAction === 'retry-original' || controlAction === 'retry-latest') {
           const runId = activeCreationRun.id || activeCreationRun.run_id
           if (!runId) throw new Error('缺少可重试的立项任务')
+          const useLatestDraft = controlAction === 'retry-latest'
           const response = await apiClient.post<ApiResponse<{ run: NovelCreationRunSummary }>>(
             `/novel-creation/runs/${runId}/retry`,
-            { use_latest_draft: true, model: selectedModel || null },
+            { use_latest_draft: useLatestDraft, model: selectedModel || null },
           )
           setActiveCreationRun(response.data.data.run)
-          finish('已按最新草稿和当前模型创建重试任务。', 'running', { run: response.data.data.run })
+          finish(
+            `已按${useLatestDraft ? '最新内容' : '原输入'}和当前模型创建重试任务。`,
+            'running',
+            { run: response.data.data.run },
+          )
         } else {
           const endpoint = controlAction === 'continue' ? 'continue' : controlAction
           const response = await apiClient.post<ApiResponse<NovelCreationRunSummary>>(
@@ -1851,14 +1874,14 @@ function GuiAssistantChat() {
     }
   }
 
-  const retryCreationRun = async () => {
+  const retryCreationRun = async (useLatestDraft: boolean) => {
     const runId = activeCreationRun?.id || activeCreationRun?.run_id
     if (!runId || creationRunAction) return
-    setCreationRunAction('retry')
+    setCreationRunAction(useLatestDraft ? 'retry-latest' : 'retry-original')
     try {
       const response = await apiClient.post<ApiResponse<{ run: NovelCreationRunSummary }>>(
         `/novel-creation/runs/${runId}/retry`,
-        { use_latest_draft: true, model: selectedModel || null },
+        { use_latest_draft: useLatestDraft, model: selectedModel || null },
       )
       setActiveCreationRun(response.data.data.run)
     } catch (error) {
@@ -2725,9 +2748,14 @@ function GuiAssistantChat() {
           )}
           {isPaused && <Button type="primary" icon={<PlayCircleOutlined />} loading={creationRunAction === 'resume'} onClick={() => void resumeCreationRun()}>继续</Button>}
           {canRetry && (
-            <Button icon={<ReloadOutlined />} loading={creationRunAction === 'retry'} onClick={() => void retryCreationRun()}>
-              用当前模型重试
-            </Button>
+            <>
+              <Button icon={<ReloadOutlined />} loading={creationRunAction === 'retry-original'} onClick={() => void retryCreationRun(false)}>
+                按原输入重试
+              </Button>
+              <Button type="primary" icon={<ReloadOutlined />} loading={creationRunAction === 'retry-latest'} onClick={() => void retryCreationRun(true)}>
+                按最新内容重试
+              </Button>
+            </>
           )}
           <Button
             icon={<FolderOpenOutlined />}
@@ -2918,6 +2946,7 @@ function GuiAssistantChat() {
     generated: '待确认',
     confirmed: '已确认',
     stale: '需校验',
+    conflict: '版本冲突',
   }
 
   const creationStatusColor: Record<CreationArtifactSummary['status'], string> = {
@@ -2925,6 +2954,7 @@ function GuiAssistantChat() {
     generated: 'processing',
     confirmed: 'success',
     stale: 'warning',
+    conflict: 'error',
   }
 
   const renderCreationDataPanel = () => {
@@ -3005,6 +3035,11 @@ function GuiAssistantChat() {
                 </div>
               )}
               {artifact.stale_reason && <Text type="warning" className="gui-chat-creation-artifact-warning">{artifact.stale_reason}</Text>}
+              {artifact.conflict && (
+                <Text type="danger" className="gui-chat-creation-artifact-warning">
+                  旧任务结果未覆盖当前内容；候选稿已保留，可按原输入或最新内容重试
+                </Text>
+              )}
               {artifact.flow?.blocked_by?.length ? (
                 <Text type="secondary" className="gui-chat-creation-artifact-blocked">
                   建议先完善：{artifact.flow.blocked_by.map((item) => item.label).join('、')}

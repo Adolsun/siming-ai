@@ -47,7 +47,7 @@ export interface ConceptCard {
 }
 
 export interface StageState {
-  status: 'pending' | 'generated' | 'confirmed' | 'stale'
+  status: 'pending' | 'generated' | 'confirmed' | 'stale' | 'conflict'
   data?: Record<string, unknown> | null
   source?: string
   stale_reason?: string
@@ -194,6 +194,7 @@ export function splitLines(value: string) {
 export function stageTone(status?: StageState['status']) {
   if (status === 'confirmed') return 'success'
   if (status === 'stale') return 'warning'
+  if (status === 'conflict') return 'error'
   if (status === 'generated') return 'processing'
   return 'default'
 }
@@ -204,6 +205,7 @@ export function stageStatusLabel(status?: StageState['status']) {
     generated: '待确认',
     confirmed: '已确认',
     stale: '需重新校验',
+    conflict: '版本冲突',
   }
   return labels[status || 'pending'] || '待生成'
 }

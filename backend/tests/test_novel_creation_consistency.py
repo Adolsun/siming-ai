@@ -1,13 +1,19 @@
 """Generic creation dependency and entity-target generation contracts."""
 from __future__ import annotations
 
+import asyncio
+import json
+from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from app.services.novel_creation_entities import ensure_creation_entities, list_creation_entities
 from app.services.novel_creation_consistency import (
     creation_dependency_graph,
     validate_creation_consistency,
 )
 from app.services.novel_creation_stage_execution import _merge_entity_generation
+from app.services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage
 from tests.test_novel_creation_workspace_v2 import _db, _ready_session
 
 
@@ -62,3 +68,45 @@ def test_entity_generation_replaces_only_the_selected_row():
     ]
     assert merged["relationships"] == []
     assert summary["preserved_entity_count"] == 1
+
+
+def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
+    db = _db()
+    session = _ready_session(db)
+    ensure_creation_entities(session)
+    db.commit()
+    baseline = deepcopy(session.draft_json["stages"]["characters"]["data"])
+    antagonist = next(
+        item
+        for item in list_creation_entities(session, artifact="characters")
+        if item["entity_type"] == "character" and item["data"]["name"] == "周渡"
+    )
+    generated = deepcopy(baseline)
+    generated["characters"][1]["goal"] = "揭开旧案并迫使主角公开真相"
+
+    def stream(**_kwargs):
+        async def generate():
+            yield json.dumps({"data": generated}, ensure_ascii=False)
+
+        return generate()
+
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=stream),
+    ):
+        result = asyncio.run(generate_novel_creation_stage(db, "", {
+            "session_id": session.id,
+            "stage": "characters",
+            "model": "openai:test",
+            "use_model": True,
+            "operation": "refine",
+            "instruction": "只加强反派目标",
+            "entity_id": antagonist["id"],
+            "expected_revision": int(session.revision or 0),
+        }))
+
+    assert result["status"] == "ok"
+    current = session.draft_json["stages"]["characters"]["data"]
+    assert current["characters"][0] == baseline["characters"][0]
+    assert current["characters"][1]["goal"] == "揭开旧案并迫使主角公开真相"
+    assert current["relationships"] == baseline["relationships"]

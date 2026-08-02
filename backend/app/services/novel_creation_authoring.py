@@ -5,7 +5,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from app.services.novel_creation_workspace import _requested_volume_count
+from app.services.novel_creation_values import requested_volume_count as _requested_volume_count
 
 
 class AuthorLockViolation(ValueError):

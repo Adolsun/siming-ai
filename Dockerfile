@@ -1,7 +1,9 @@
 ARG NODE_IMAGE=node:22-alpine
 ARG PYTHON_IMAGE=python:3.11-slim
 
-FROM ${NODE_IMAGE} AS frontend-build
+# Frontend output is architecture-neutral. Build it on the native runner so
+# arm64 Gateway images do not run npm/Node through QEMU.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend-build
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts

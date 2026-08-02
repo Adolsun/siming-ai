@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -239,6 +239,8 @@ def patch_creation_entity(
     *,
     expected_revision: int,
     source: str = "author",
+    patcher: Callable[..., dict[str, Any]],
+    validator: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
     if entity.session_id != session.id:
         raise ValueError("实体不属于当前立项会话")
@@ -259,15 +261,12 @@ def patch_creation_entity(
         item = deepcopy(change)
         item["path"] = full_path
         scoped.append(item)
-    from app.services.novel_creation_authoring import _validate_stage
-    from app.services.novel_creation_workspace import patch_creation_artifact
-
-    result = patch_creation_artifact(
+    result = patcher(
         session,
         entity.artifact_key,
         scoped,
         source=source,
-        validator=_validate_stage,
+        validator=validator,
     )
     refreshed = next((item for item in session.entities if item.id == entity.id), entity)
     return {
@@ -284,23 +283,22 @@ def delete_creation_entity(
     *,
     expected_revision: int,
     source: str = "author",
+    patcher: Callable[..., dict[str, Any]],
+    validator: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
     if int(session.revision or 0) != int(expected_revision):
         raise RuntimeError("revision_conflict")
     pointer = _entity_pointer(session, entity)
-    from app.services.novel_creation_authoring import _validate_stage
-    from app.services.novel_creation_workspace import patch_creation_artifact
-
     changes = [
         *({"path": path, "action": "remove"} for path in _dependent_remove_paths(session, entity)),
         {"path": pointer, "action": "remove"},
     ]
-    result = patch_creation_artifact(
+    result = patcher(
         session,
         entity.artifact_key,
         changes,
         source=source,
-        validator=_validate_stage,
+        validator=validator,
     )
     return {
         "entity": serialize_creation_entity(entity),

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 from pathlib import Path
 
 import pytest
+from docx import Document as DocxDocument
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -58,14 +60,28 @@ def _import(db, session: NovelCreationSession, *, status: str = "waiting_user") 
     return run
 
 
-def test_parse_supports_markdown_and_json_and_chunks_long_text():
+def test_parse_supports_txt_markdown_docx_json_and_chunks_over_thirty_thousand_characters():
+    plain, extension = parse_creation_material("outline.txt", "三万字大纲".encode())
+    assert extension == "txt"
+    assert plain == "三万字大纲"
     markdown, extension = parse_creation_material("outline.md", "# 第一卷\n内容".encode())
     assert extension == "md"
     assert "第一卷" in markdown
+    document = DocxDocument()
+    document.add_heading("八卷大纲", level=1)
+    document.add_paragraph("第一卷：封城")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    docx, extension = parse_creation_material("outline.docx", buffer.getvalue())
+    assert extension == "docx"
+    assert "八卷大纲" in docx
+    assert "第一卷：封城" in docx
     payload, extension = parse_creation_material("outline.json", json.dumps({"characters": [{"name": "林七"}]}, ensure_ascii=False).encode())
     assert extension == "json"
     assert "林七" in payload
-    chunks = split_creation_material(("段落资料\n" * 3000).strip())
+    source = ("段落资料\n" * 6200).strip()
+    assert len(source) > 30_000
+    chunks = split_creation_material(source)
     assert len(chunks) >= 2
     assert chunks[1][0] < chunks[0][1]
 

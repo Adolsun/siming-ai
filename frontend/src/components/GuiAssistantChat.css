@@ -204,6 +204,10 @@
   background: var(--ant-color-warning);
 }
 
+.gui-chat-creation-artifact-conflict::before {
+  background: var(--ant-color-error);
+}
+
 .gui-chat-creation-artifact-head {
   display: flex;
   align-items: center;

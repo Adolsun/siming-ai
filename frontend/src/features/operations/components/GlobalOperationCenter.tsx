@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Badge, Button, Drawer, Empty, Flex, Progress, Space, Spin, Tooltip, Typography, message } from 'antd'
-import { CloseCircleOutlined, ClockCircleOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { CheckOutlined, CloseCircleOutlined, ClockCircleOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { PersistentOutcome } from '../../../components/interaction'
 import {
   operationKeys,
@@ -19,6 +19,7 @@ const { Paragraph, Text, Title } = Typography
 
 const NON_TERMINAL_STATUSES = new Set<OperationRun['status']>(['queued', 'running', 'waiting_user', 'paused'])
 const COMPUTING_STATUSES = new Set<OperationRun['status']>(['queued', 'running'])
+const READ_ATTENTION_STORAGE_KEY = 'siming.operation-center.read-attention.v1'
 
 export interface OperationAttemptGroup {
   latest: OperationRun
@@ -65,13 +66,24 @@ function elapsedLabel(seconds = 0) {
   return `${secs} 秒`
 }
 
-function relativeActivity(value?: string) {
+export function activityTimestamp(value?: string) {
   if (!value) return '尚无活动记录'
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))
-  if (seconds < 10) return '刚刚'
-  if (seconds < 60) return `${seconds} 秒前`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
-  return `${Math.floor(seconds / 3600)} 小时前`
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '时间未知'
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+  ].join(' ')
+}
+
+function loadReadAttentionIds() {
+  try {
+    const value = JSON.parse(localStorage.getItem(READ_ATTENTION_STORAGE_KEY) || '[]')
+    return new Set<string>(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [])
+  } catch {
+    return new Set<string>()
+  }
 }
 
 function hoursSince(value?: string | null) {
@@ -127,7 +139,7 @@ function OperationItem({ operation, history, onAction, onOpen }: {
 
       <div className="operation-center-facts">
         <span><ClockCircleOutlined /> 已运行 {elapsedLabel(operation.elapsed_seconds)}</span>
-        <span>最近活动 {relativeActivity(operation.last_activity_at || undefined)}</span>
+        <span>最近活动 {activityTimestamp(operation.last_activity_at || undefined)}</span>
       </div>
       {waitingHours >= 24 && (
         <Text className="operation-center-stale" type="warning">
@@ -146,10 +158,10 @@ function OperationItem({ operation, history, onAction, onOpen }: {
       {operation.next_action && <Text className="operation-center-next" type="secondary">下一步：{operation.next_action}</Text>}
       {active && (
         <Space size={6} wrap className="operation-center-actions">
-          {operation.can_pause && operation.status !== 'paused' && <Button size="small" icon={<PauseOutlined />} onClick={() => void onAction(operation, 'pause')}>暂停</Button>}
+          {operation.can_pause && operation.status !== 'paused' && operation.status !== 'waiting_user' && <Button size="small" icon={<PauseOutlined />} onClick={() => void onAction(operation, 'pause')}>暂停</Button>}
           {operation.can_pause && operation.status === 'paused' && <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => void onAction(operation, 'continue')}>继续</Button>}
           {operation.can_retry && operation.health_status !== 'active' && <Button size="small" icon={<ReloadOutlined />} onClick={() => void onAction(operation, 'retry-current-unit')}>重试当前单元</Button>}
-          {operation.can_cancel && <Button size="small" danger icon={<CloseCircleOutlined />} onClick={() => void onAction(operation, 'cancel')}>取消</Button>}
+          {operation.can_cancel && operation.status !== 'waiting_user' && <Button size="small" danger icon={<CloseCircleOutlined />} onClick={() => void onAction(operation, 'cancel')}>取消</Button>}
         </Space>
       )}
       {(operation.phase || operation.model_source || operation.source_kind) && (
@@ -169,7 +181,7 @@ function OperationItem({ operation, history, onAction, onOpen }: {
             {history.map((attempt) => (
               <div key={attempt.id}>
                 <RuntimeStatusTags operation={attempt} />
-                <Text type="secondary">{relativeActivity(attempt.updated_at || attempt.created_at || undefined)}</Text>
+                <Text type="secondary">{activityTimestamp(attempt.updated_at || attempt.created_at || undefined)}</Text>
               </div>
             ))}
           </div>
@@ -194,6 +206,7 @@ export default function GlobalOperationCenter() {
     variables: actionVariables,
   } = useOperationAction(30)
   const [open, setOpen] = useState(false)
+  const [readAttentionIds, setReadAttentionIds] = useState<Set<string>>(loadReadAttentionIds)
   const [navTarget, setNavTarget] = useState<HTMLElement | null>(null)
   const [streamDisconnected, setStreamDisconnected] = useState(false)
   const streamRef = useRef<EventSource | null>(null)
@@ -218,6 +231,10 @@ export default function GlobalOperationCenter() {
   const attentionOperations = useMemo(
     () => groupedOperations.filter((group) => operationNeedsAttention(group.latest)),
     [groupedOperations],
+  )
+  const unreadAttentionOperations = useMemo(
+    () => attentionOperations.filter((group) => !readAttentionIds.has(group.latest.id)),
+    [attentionOperations, readAttentionIds],
   )
   const runningOperations = useMemo(
     () => groupedOperations.filter((group) => COMPUTING_STATUSES.has(group.latest.status) && !operationNeedsAttention(group.latest)),
@@ -275,17 +292,27 @@ export default function GlobalOperationCenter() {
     setOpen(false)
   }, [navigate])
 
+  const markAllAttentionRead = useCallback(() => {
+    setReadAttentionIds((current) => {
+      const next = new Set(current)
+      attentionOperations.forEach((group) => next.add(group.latest.id))
+      const persisted = Array.from(next).slice(-200)
+      localStorage.setItem(READ_ATTENTION_STORAGE_KEY, JSON.stringify(persisted))
+      return new Set(persisted)
+    })
+  }, [attentionOperations])
+
   const trigger = (
     <Tooltip title="查看待处理、运行中和最近任务">
       <Badge
-        count={attentionOperations.length}
+        count={unreadAttentionOperations.length}
         size="small"
         className={`global-operation-badge${navTarget ? '' : ' global-operation-badge-floating'}`}
       >
         <Button
           className={`global-operation-trigger${runningOperations.length ? ' global-operation-trigger-running' : ''}`}
           icon={<UnorderedListOutlined />}
-          aria-label={`全局任务中心，${attentionOperations.length} 项待处理，${runningOperations.length} 项运行中`}
+          aria-label={`全局任务中心，${unreadAttentionOperations.length} 项未读提醒，${attentionOperations.length} 项待处理，${runningOperations.length} 项运行中`}
           onClick={() => setOpen(true)}
         >
           任务
@@ -313,7 +340,21 @@ export default function GlobalOperationCenter() {
         {groupedOperations.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚无任务记录" />}
         {attentionOperations.length > 0 && (
           <section className="operation-center-section" aria-labelledby="operation-attention-title">
-            <Title level={5} id="operation-attention-title">待你处理 <Badge count={attentionOperations.length} /></Title>
+            <Flex justify="space-between" align="center" gap={12}>
+              <Title level={5} id="operation-attention-title">
+                待你处理 <Badge count={unreadAttentionOperations.length} aria-hidden={unreadAttentionOperations.length === 0} />
+              </Title>
+              <Button
+                size="small"
+                type="text"
+                icon={<CheckOutlined />}
+                aria-label="全部标为已读"
+                disabled={unreadAttentionOperations.length === 0}
+                onClick={markAllAttentionRead}
+              >
+                全部标为已读
+              </Button>
+            </Flex>
             {renderGroups(attentionOperations)}
           </section>
         )}

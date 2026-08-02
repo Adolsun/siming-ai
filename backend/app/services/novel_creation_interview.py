@@ -179,6 +179,11 @@ async def decide_next_interview_step(
     is_local_cli = is_local_cli_provider(provider)
     timeout = INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli else INTERVIEW_API_TIMEOUT_SECONDS
     call_extra_body = dict(extra_body or {})
+    # This call expects a short JSON decision. DeepSeek thinking mode can spend
+    # the whole output budget on reasoning_content and never emit content,
+    # which would otherwise look like a completely empty model response.
+    if provider == "deepseek" and "thinking" not in call_extra_body:
+        call_extra_body["thinking"] = {"type": "disabled"}
     try:
         chunks: list[str] = []
         output_chars = 0

@@ -1675,10 +1675,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Confirm And Generate Recommended
-         * @description Confirm exactly one artifact and start only the newly recommended artifact.
-         */
+        /** Confirm And Generate Recommended */
         post: operations["confirm_and_generate_recommended_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_and_generate_recommended_post"];
         delete?: never;
         options?: never;

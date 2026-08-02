@@ -82,6 +82,17 @@ class StageRevisionConflict(ValueError):
     failure_class = "revision_conflict"
 
 
+def _preserve_conflict_candidate(
+    exc: StageRevisionConflict,
+    *,
+    artifact: str,
+    data: dict[str, Any],
+) -> None:
+    """Attach a generated candidate to the conflict without writing the artifact."""
+    exc.candidate_artifact = artifact
+    exc.candidate_data = deepcopy(data)
+
+
 def _capture_model_diagnostic(context: StageExecution, stage: str, metadata: dict[str, Any]) -> None:
     """Persist the complete raw model reply while keeping public events bounded."""
     raw = metadata.pop("_diagnostic_raw", None)
@@ -449,10 +460,18 @@ async def _generate_concept_stage(context: StageExecution) -> None:
     context.run_metadata.append(metadata)
     preserve = context.operation == "refine" and source == "contract_fallback"
     if not preserve:
-        concept_stage = _save_with_revision_cas(
-            context,
-            lambda: save_compact_concepts(context.session, concepts, source=source),
-        )
+        try:
+            concept_stage = _save_with_revision_cas(
+                context,
+                lambda: save_compact_concepts(context.session, concepts, source=source),
+            )
+        except StageRevisionConflict as exc:
+            _preserve_conflict_candidate(
+                exc,
+                artifact="concepts",
+                data={"options": deepcopy(concepts), "selected_concept_id": None},
+            )
+            raise
         context.generated["concepts"] = deepcopy(concept_stage.get("data") or {})
     else:
         stage = ((draft.get("stages") or {}).get("concepts") or {})
@@ -552,7 +571,11 @@ async def _generate_regular_stages(context: StageExecution) -> None:
                     operation_id=context.run.operation_id,
                 )
 
-            _save_with_revision_cas(context, save_generated_stage)
+            try:
+                _save_with_revision_cas(context, save_generated_stage)
+            except StageRevisionConflict as exc:
+                _preserve_conflict_candidate(exc, artifact=name, data=data)
+                raise
         context.working_draft.setdefault("stages", {})[name] = {
             "status": existing_stage.get("status", "generated") if preserve else (
                 "confirmed" if context.auto_confirm else "generated"
@@ -587,16 +610,20 @@ def _finish_execution(context: StageExecution) -> dict[str, Any]:
         context.ensure_not_cancelled(context.db, context.run)
         final = derive_stage(context.session, "final_review", context.working_draft)
         context.ensure_not_cancelled(context.db, context.run)
-        _save_with_revision_cas(
-            context,
-            lambda: save_stage(
-                context.session,
-                "final_review",
-                final,
-                confirm=False,
-                source="contract",
-            ),
-        )
+        try:
+            _save_with_revision_cas(
+                context,
+                lambda: save_stage(
+                    context.session,
+                    "final_review",
+                    final,
+                    confirm=False,
+                    source="contract",
+                ),
+            )
+        except StageRevisionConflict as exc:
+            _preserve_conflict_candidate(exc, artifact="final_review", data=final)
+            raise
         context.generated["final_review"] = final
         add_run_event(
             context.db,

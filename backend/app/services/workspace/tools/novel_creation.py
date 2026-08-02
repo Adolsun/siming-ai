@@ -29,6 +29,7 @@ from ...novel_creation_interview import (
     decide_next_interview_step,
     make_novel_interview_error,
 )
+from ...system_chat_completion import complete_system_chat
 
 _logger = logging.getLogger(__name__)
 
@@ -5548,109 +5549,14 @@ async def system_chat_completion(
     context: dict[str, Any],
     model: str | None = None,
 ) -> dict[str, Any]:
-    """General conversation for system assistant without project context.
-
-    Uses LLM to understand user intent and respond naturally.
-    Context may include: blueprints, sessionId, brief, importedFiles, history.
-    """
-    # Build context description
-    context_parts = []
-
-    blueprints = context.get("blueprints")
-    if blueprints and len(blueprints) > 0:
-        titles = [bp.get("title", "未知") for bp in blueprints[:3]]
-        context_parts.append(f"当前有{len(blueprints)}个新书方案：{'、'.join(titles)}")
-
-    session_id = context.get("sessionId")
-    if session_id:
-        context_parts.append("有一个活跃的创作会话")
-
-    brief = context.get("brief")
-    if brief:
-        context_parts.append(f"用户的创作设想：{brief[:200]}")
-
-    imported_files = context.get("importedFiles")
-    if not isinstance(imported_files, list):
-        legacy_imported_file = context.get("importedFile")
-        imported_files = [legacy_imported_file] if isinstance(legacy_imported_file, dict) else []
-    if imported_files:
-        file_descriptions = [
-            f"{item.get('name', '未知')}（{item.get('length', 0)}字）"
-            for item in imported_files[:3]
-            if isinstance(item, dict)
-        ]
-        if file_descriptions:
-            context_parts.append(f"用户刚导入了文件：{'、'.join(file_descriptions)}")
-
-    history = context.get("history")
-    history_text = ""
-    if history and len(history) > 0:
-        recent = history[-6:]  # Last 3 turns
-        history_text = "\n".join([f"{'用户' if h.get('role') == 'user' else '司命'}：{h.get('content', '')[:200]}" for h in recent])
-
-    context_desc = "\n".join(context_parts) if context_parts else "当前没有任何特殊上下文。"
-
-    try:
-        provider, model_name = LLMGateway.model_identity(model)
-        model_identity = f"{provider}:{model_name}"
-    except Exception:
-        model_identity = "司命系统设置中的默认模型"
-
-    system = (
-        f"你是司命，一个专业的中文小说创作助手。你正在和用户进行系统级对话（没有绑定具体作品）。\n"
-        f"当前执行模型：{model_identity}。\n\n"
-        f"## 当前上下文\n{context_desc}\n\n"
-        f"## 近期对话\n{history_text}\n\n"
-        f"## 你的能力\n"
-        f"1. 帮用户创建新小说项目（通过新书立项流程）\n"
-        f"2. 管理已有作品列表\n"
-        f"3. 导入文件为新作品\n"
-        f"4. 基于参考文件写新书\n"
-        f"5. 回答关于小说创作的问题\n\n"
-        f"## 回复原则\n"
-        f"- 你在司命内部工作，不要把自己介绍成 OpenCode、代码助手或软件工程 Agent\n"
-        f"- 默认始终使用中文；除非用户明确要求，否则不要用英文回复\n"
-        f"- 不要自行寻找 requirements.md、代码仓库任务或编程配置，也不要讨论当前工作目录\n"
-        f"- 用户问当前模型时，直接依据“当前执行模型”回答，不要回避\n"
-        f"- 根据上下文理解用户的真实意图，不要死板地匹配关键词\n"
-        f"- 如果用户在表达不满或困惑，理解他们的情绪并给出有帮助的回应\n"
-        f"- 如果用户问了一个问题，直接回答\n"
-        f"- 如果用户想做某件事，告诉他们怎么操作（或直接帮他们做）\n"
-        f"- 回复简洁自然，不要用机器人式的固定格式\n"
-        f"- 如果不确定用户意图，可以反问确认\n\n"
-        f"## 输出格式\n"
-        f"直接回复用户的消息，不要JSON，不要Markdown代码块。"
+    return await complete_system_chat(
+        message=message,
+        context=context,
+        model=model,
+        gateway=LLMGateway,
+        generic_completion=_stream_blueprint_completion,
+        extra_body=_novel_creation_cli_context(model),
     )
-
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": message},
-    ]
-
-    try:
-        reply = (await _stream_blueprint_completion(
-            messages=messages,
-            model=model,
-            temperature=0.7,
-            max_tokens=800,
-            retry=0,
-            activity_message="司命正在组织回复",
-        )).strip()
-        if not reply:
-            raise RuntimeError("没有收到模型的文字回复")
-    except Exception as exc:
-        _logger.warning("System chat failed: %s", exc, exc_info=True)
-        detail = str(exc).strip()
-        if not detail:
-            detail = f"({type(exc).__name__})"
-        if len(detail) > 500:
-            detail = detail[:500] + "..."
-        raise RuntimeError(
-            f"当前选择的模型 {model_identity} 调用失败：{detail}"
-            "。请在系统设置中点击“测试本机 CLI”查看登录、模型或额度状态。"
-        ) from exc
-
-    return {"reply": reply}
 
 
 async def list_imported_files(

@@ -54,6 +54,16 @@ def test_builtin_prompt_catalog_compiles_against_workspace_tools():
     assert compiled["assistant.workspace.fast"].template == compiled["assistant.workspace.quality"].template
 
 
+def test_workspace_prompt_includes_creation_fact_and_revision_contract():
+    compiled = compile_prompt_catalog(known_tools=registry.all_names())
+    template = compiled["assistant.workspace.quality"].template
+    assert "结构化 artifact 是事实来源" in template
+    assert "expected_revision" in template
+    assert "锁定字段" in template
+    assert "大改前说明影响范围" in template
+    assert "不得伪装完成" in template
+
+
 def test_compiler_rejects_undeclared_placeholders():
     compiler = PromptCompiler(Repository([_spec("bad", "Hello {name}")]))
     with pytest.raises(ValueError, match="undeclared inputs"):

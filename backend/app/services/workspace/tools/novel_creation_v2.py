@@ -41,22 +41,25 @@ from ....services.novel_creation_imports import (
     serialize_material_import,
 )
 from ....services.novel_creation_entities import (
-    delete_creation_entity as delete_creation_entity_record,
     get_creation_entity as get_creation_entity_record,
     list_creation_entities as list_creation_entity_records,
-    patch_creation_entity as patch_creation_entity_record,
     serialize_creation_entity,
+)
+from ....services.novel_creation_actions import (
+    delete_creation_entity as delete_creation_entity_record,
+    patch_creation_entity as patch_creation_entity_record,
+    restore_artifact_version as restore_creation_artifact_version_record,
 )
 from ....services.novel_creation_consistency import (
     creation_dependency_graph,
     validate_creation_consistency,
 )
+from ....services.novel_creation_submission import submit_creation_stage
 from ....services.novel_creation_versions import (
     artifact_version_diff,
     get_artifact_version,
     list_artifact_versions,
     record_artifact_version,
-    restore_artifact_version,
     serialize_artifact_version,
 )
 from ....services.operation_runtime import register_operation_actions
@@ -1148,7 +1151,9 @@ async def restore_creation_artifact_version_tool(db: Session, project_id: str, a
     if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
         return _revision_error("restore_creation_artifact_version", session)
     try:
-        result = restore_artifact_version(session, version, expected_revision=int(args["expected_revision"]))
+        result = restore_creation_artifact_version_record(
+            session, version, expected_revision=int(args["expected_revision"]),
+        )
         commit_session(db)
         return {"tool": "restore_creation_artifact_version", "status": "ok", "detail": "Artifact version restored", "data": result}
     except Exception as exc:
@@ -1241,42 +1246,9 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
 
 
 async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:
-    session_id = _text(args.get("session_id"))
-    stage = _text(args.get("stage"))
-    session = _session(db, session_id)
-    if not session:
-        return {"tool": "submit_novel_creation_stage", "status": "skipped", "detail": "Session not found", "data": None}
-    if stage not in STAGE_ORDER:
-        return {"tool": "submit_novel_creation_stage", "status": "skipped", "detail": "Unknown stage", "data": None}
-    expected_revision = args.get("expected_revision")
-    if expected_revision is not None and int(session.revision or 0) != int(expected_revision):
-        return {
-            "tool": "submit_novel_creation_stage",
-            "status": "error",
-            "detail": "Novel creation session revision conflict",
-            "data": {
-                "failure_class": "revision_conflict",
-                "current_revision": int(session.revision or 0),
-                "session": serialize_session(session),
-            },
-        }
-    data = args.get("data")
-    if not isinstance(data, dict):
-        data = derive_stage(session, stage)
-    try:
-        data = _normalize_stage_data(stage, data)
-        _validate_stage(stage, data)
-        save_stage(session, stage, data, confirm=bool(args.get("confirm", True)), source=_text(args.get("source")) or "author")
-        commit_session(db)
-        return {
-            "tool": "submit_novel_creation_stage",
-            "status": "ok",
-            "detail": f"{STAGE_LABELS[stage]}已保存",
-            "data": serialize_session(session),
-        }
-    except Exception as exc:
-        db.rollback()
-        return {"tool": "submit_novel_creation_stage", "status": "error", "detail": str(exc), "data": None}
+    return await submit_creation_stage(
+        db, args, normalize_stage=_normalize_stage_data, validate_stage=_validate_stage,
+    )
 
 
 async def confirm_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:

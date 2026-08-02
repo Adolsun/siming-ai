@@ -32,6 +32,12 @@ class DraftNovelBlueprintInput(CompatibleInput):
     depth: Literal["concept", "full"] = "full"
 
 
+class ReviewNovelBlueprintInput(CompatibleInput):
+    session_id: str
+    execution_mode: Literal["hybrid", "internal_llm", "external_agent"] = "hybrid"
+    blueprint: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApplyNovelBlueprintInput(CompatibleInput):
     session_id: str
     blueprint_index: int = 0
@@ -41,6 +47,17 @@ class ApplyNovelBlueprintInput(CompatibleInput):
 
 class GetNovelCreationSessionInput(CompatibleInput):
     session_id: str
+
+
+class GetCreationOperationInput(CompatibleInput):
+    operation_id: str = ""
+    run_id: str = ""
+
+
+class PatchCreationSessionInput(CompatibleInput):
+    session_id: str
+    expected_revision: int
+    changes: dict[str, Any]
 
 
 class CreationArtifactInput(CompatibleInput):
@@ -125,11 +142,83 @@ class SubmitNovelCreationStageInput(CompatibleInput):
     source: str = "external_agent"
 
 
+class ConfirmCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    data: dict[str, Any] = Field(default_factory=dict)
+    source: Literal["author", "assistant", "external_agent"] = "assistant"
+
+
+class GenerateCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    model: str = ""
+    entity_type: str = ""
+    instruction: str = ""
+
+
+class RefineCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    instruction: str
+    model: str = ""
+    entity_id: str = ""
+
+
+class RegenerateCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    instruction: str = ""
+    model: str = ""
+    entity_id: str = ""
+
+
+class CreationOperationInput(CompatibleInput):
+    operation_id: str
+
+
+class ImportCreationMaterialInput(CompatibleInput):
+    session_id: str
+    file_path: str
+    model: str = ""
+    source_message_id: str = ""
+
+
+class PreviewCreationImportInput(CompatibleInput):
+    session_id: str
+    import_id: str
+
+
+class ApplyCreationImportInput(CompatibleInput):
+    import_id: str
+    selected_artifacts: list[
+        Literal[
+            "world_style",
+            "characters",
+            "locations",
+            "macro_outline",
+            "opening_outline",
+        ]
+    ]
+    strategy: Literal["merge", "overwrite_unconfirmed", "skip_conflicts"] = "merge"
+    expected_revision: int
+
+
+class ListImportedFilesInput(CompatibleInput):
+    pass
+
+
+class ReadImportedFileInput(CompatibleInput):
+    filename: str
+    max_size: int = 50_000
+
+
 _INPUTS: dict[str, type[BaseModel]] = {
     "start_novel_creation_session": StartNovelCreationSessionInput,
     "draft_novel_blueprint": DraftNovelBlueprintInput,
+    "review_novel_blueprint": ReviewNovelBlueprintInput,
     "apply_novel_blueprint": ApplyNovelBlueprintInput,
     "get_novel_creation_session": GetNovelCreationSessionInput,
+    "get_creation_session": GetNovelCreationSessionInput,
+    "get_creation_snapshot": GetNovelCreationSessionInput,
+    "get_creation_operation": GetCreationOperationInput,
+    "patch_creation_session": PatchCreationSessionInput,
     "get_creation_artifact": CreationArtifactInput,
     "list_creation_artifacts": ListCreationArtifactsInput,
     "get_creation_dependencies": CreationArtifactInput,
@@ -148,6 +237,21 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "restore_creation_artifact_version": RestoreArtifactVersionInput,
     "generate_novel_creation_stage": GenerateNovelCreationStageInput,
     "submit_novel_creation_stage": SubmitNovelCreationStageInput,
+    "confirm_creation_artifact": ConfirmCreationArtifactInput,
+    "generate_creation_artifact": GenerateCreationArtifactInput,
+    "refine_creation_artifact": RefineCreationArtifactInput,
+    "regenerate_creation_artifact": RegenerateCreationArtifactInput,
+    "cancel_creation_operation": CreationOperationInput,
+    "pause_creation_operation": CreationOperationInput,
+    "resume_creation_operation": CreationOperationInput,
+    "retry_creation_operation": CreationOperationInput,
+    "validate_creation_session": GetNovelCreationSessionInput,
+    "finalize_creation_session": GetNovelCreationSessionInput,
+    "import_creation_material": ImportCreationMaterialInput,
+    "preview_creation_import": PreviewCreationImportInput,
+    "apply_creation_import": ApplyCreationImportInput,
+    "list_imported_files": ListImportedFilesInput,
+    "read_imported_file": ReadImportedFileInput,
 }
 
 

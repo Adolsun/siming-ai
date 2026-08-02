@@ -265,6 +265,52 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/draft', expect.anything())
   })
 
+  it('offers distinct original-input and latest-content retries for a failed creation run', async () => {
+    const basePost = mockPost.getMockImplementation()
+    mockPost.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/runs') {
+        return Promise.resolve({ data: { data: { run: {
+          id: 'run-failed',
+          session_id: 'session-1',
+          stage: 'concepts',
+          status: 'failed',
+          operation_id: 'operation-failed',
+          current_message: '模型调用失败',
+        } } } })
+      }
+      if (url === '/novel-creation/runs/run-failed/retry') {
+        return Promise.resolve({ data: { data: { run: {
+          id: 'run-retry',
+          session_id: 'session-1',
+          stage: 'concepts',
+          status: 'running',
+          operation_id: 'operation-retry',
+          current_message: '正在按原输入重试',
+        } } } })
+      }
+      return basePost?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      '/novel-creation/sessions/session-1/runs',
+      expect.anything(),
+    ))
+    expect(await screen.findByText('模型调用失败')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /按原输入重试/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /按最新内容重试/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /按原输入重试/ }))
+
+    expect(mockPost).toHaveBeenCalledWith('/novel-creation/runs/run-failed/retry', {
+      use_latest_draft: false,
+      model: 'openai:test',
+    })
+  })
+
   it('keeps structured creation data visible beside the conversation and confirms it in place', async () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
@@ -288,6 +334,43 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/artifacts/concepts/undo', {
       expected_revision: 7,
     })
+  })
+
+  it('shows a preserved candidate when an old task conflicts with newer author data', async () => {
+    const baseGet = mockGet.getMockImplementation()
+    mockGet.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/artifacts') {
+        return Promise.resolve({ data: { data: {
+          revision: 9,
+          artifacts: [{
+            artifact: 'characters',
+            label: '角色与关系',
+            status: 'conflict',
+            stored_status: 'confirmed',
+            source: 'author',
+            revision: 9,
+            locked_paths: ['/characters/0'],
+            conflict: {
+              run_id: 'run-conflict',
+              message: '任务基于版本 7，当前版本为 9',
+              candidate_available: true,
+              input_revision: 7,
+              current_revision: 9,
+            },
+            flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [] },
+          }],
+        } } })
+      }
+      return baseGet?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('版本冲突')).toBeInTheDocument()
+    expect(screen.getByText('旧任务结果未覆盖当前内容；候选稿已保留，可按原输入或最新内容重试')).toBeInTheDocument()
   })
 
   it('shows immutable artifact history, compares revisions, and restores with revision protection', async () => {

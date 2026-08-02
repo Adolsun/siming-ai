@@ -60,6 +60,7 @@ const operation = {
 describe('GlobalOperationCenter', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
     FakeEventSource.last = undefined
     vi.stubGlobal('EventSource', FakeEventSource)
     api.get.mockResolvedValue({ data: { data: { items: [operation] } } })
@@ -71,11 +72,13 @@ describe('GlobalOperationCenter', () => {
   it('shows real health and avoids a fabricated percentage for indeterminate work', async () => {
     renderCenter()
 
-    const trigger = await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' })
+    const trigger = await screen.findByRole('button', { name: /全局任务中心/ })
     fireEvent.click(trigger)
 
     expect(await screen.findByText('疑似停滞')).toBeInTheDocument()
     expect(screen.getByText('正在等待下一条真实活动，不估算完成百分比')).toBeInTheDocument()
+    expect(screen.getByText(/^最近活动 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)).toBeInTheDocument()
+    expect(screen.queryByText(/最近活动.*小时前/)).not.toBeInTheDocument()
     expect(screen.getByText(/opencode_cli:opencode\/deepseek-v4-flash-free/)).toBeInTheDocument()
     expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument()
 
@@ -85,7 +88,7 @@ describe('GlobalOperationCenter', () => {
 
   it('treats an SSE break as reconnection while polling remains active', async () => {
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: /全局任务中心/ }))
     await waitFor(() => expect(FakeEventSource.last?.url).toBe('/api/v1/operations/operation-1/stream'))
 
     act(() => FakeEventSource.last?.onerror?.(new Event('error')))
@@ -124,7 +127,7 @@ describe('GlobalOperationCenter', () => {
     })
 
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 项待处理，0 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: /全局任务中心/ }))
 
     expect(await screen.findByRole('heading', { name: /待你处理/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '正在运行' })).not.toBeInTheDocument()
@@ -132,7 +135,15 @@ describe('GlobalOperationCenter', () => {
     expect(screen.getByText('已完成：生成文风与世界观')).toBeInTheDocument()
     expect(screen.getByText('未完成：作者确认')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '审阅阶段内容' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '暂停' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '取消' })).not.toBeInTheDocument()
     expect(screen.queryByText('正在等待下一条真实活动，不估算完成百分比')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '全部标为已读' }))
+    expect(screen.getByRole('button', { name: /全局任务中心，0 项未读提醒/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '全部标为已读' })).toBeDisabled()
+    expect(screen.getByRole('heading', { name: '待你处理' })).toBeInTheDocument()
+    expect(localStorage.getItem('siming.operation-center.read-attention.v1')).toContain('operation-1')
   })
 
   it('groups repeated attempts for the same source under one current task', async () => {
@@ -148,7 +159,7 @@ describe('GlobalOperationCenter', () => {
     })
 
     renderCenter()
-    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，0 项待处理，1 项运行中' }))
+    fireEvent.click(await screen.findByRole('button', { name: /全局任务中心/ }))
 
     expect(await screen.findAllByText('作品建档 · 第151章')).toHaveLength(1)
     expect(screen.getByText('历史尝试 1')).toBeInTheDocument()

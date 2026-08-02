@@ -4,6 +4,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.architecture.tool_spec import LegacyToolInput
+from app.modules.creation.interfaces.tool_definitions import (
+    TOOL_DEFINITIONS as CREATION_TOOL_DEFINITIONS,
+)
 from app.services.workspace.registry import registry
 
 
@@ -24,6 +28,51 @@ def test_creation_tool_schema_has_one_typed_source():
     assert {"session_id", "stage"}.issubset(
         set(spec.parameters_schema().get("required", []))
     )
+
+
+def test_every_creation_session_tool_has_a_typed_input_contract():
+    unrelated_generators = {
+        "design_plot",
+        "chapter_writer",
+        "character_writer",
+        "outline_writer",
+        "worldbuilding_writer",
+        "rewrite_text",
+        "expand_text",
+        "continue_text",
+        "roleplay_character",
+        "dialogue_battle",
+    }
+
+    for definition in CREATION_TOOL_DEFINITIONS:
+        if definition.name in unrelated_generators:
+            continue
+        spec = registry.get_spec(definition.name)
+        assert spec is not None
+        assert spec.input_model is not LegacyToolInput, definition.name
+        assert spec.version == "3.0.0"
+
+
+def test_creation_import_contract_rejects_unknown_strategy_and_artifact():
+    spec = registry.get_spec("apply_creation_import")
+    assert spec is not None
+
+    with pytest.raises(ValidationError):
+        spec.validate_input(
+            {
+                "import_id": "import-1",
+                "selected_artifacts": ["unknown"],
+                "strategy": "replace_everything",
+                "expected_revision": 3,
+            }
+        )
+
+
+def test_creation_operation_contract_requires_operation_id():
+    spec = registry.get_spec("cancel_creation_operation")
+    assert spec is not None
+    with pytest.raises(ValidationError):
+        spec.validate_input({})
 
 
 def test_continuity_tool_validates_enums_before_execution():

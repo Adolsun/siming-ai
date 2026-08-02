@@ -1,13 +1,18 @@
 """System-assistant conversation application port."""
+
 from __future__ import annotations
 
 from typing import Any, Protocol
 
 
 class SystemConversationStore(Protocol):
-    def list(self, *, scope_type: str | None = None, scope_id: str | None = None) -> dict[str, Any]: ...
+    def list(
+        self, *, scope_type: str | None = None, scope_id: str | None = None
+    ) -> dict[str, Any]: ...
 
-    def create(self, title: str, *, scope_type: str = "system", scope_id: str | None = None) -> dict[str, Any]: ...
+    def create(
+        self, title: str, *, scope_type: str = "system", scope_id: str | None = None
+    ) -> dict[str, Any]: ...
 
     def set_scope(self, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 

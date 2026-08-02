@@ -6,16 +6,14 @@ from copy import deepcopy
 import pytest
 
 from app.services.novel_creation_entities import (
-    delete_creation_entity,
     ensure_creation_entities,
     get_creation_entity,
     list_creation_entities,
-    patch_creation_entity,
 )
+from app.services.novel_creation_actions import delete_creation_entity, patch_creation_entity, restore_artifact_version
 from app.services.novel_creation_versions import (
     artifact_version_diff,
     list_artifact_versions,
-    restore_artifact_version,
 )
 from app.services.novel_creation_workspace import (
     patch_creation_artifact,

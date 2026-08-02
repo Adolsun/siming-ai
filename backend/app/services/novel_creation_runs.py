@@ -34,11 +34,19 @@ def create_run(
     *,
     claim_id: str | None = None,
     idempotency_key: str | None = None,
+    frozen_input_snapshot: dict[str, Any] | None = None,
+    frozen_input_revision: int | None = None,
 ) -> NovelCreationStageRun:
     model = _text(request.get("model")) or None
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
-    input_snapshot = deepcopy(draft)
-    revision = int(session.revision or 0)
+    input_snapshot = deepcopy(
+        frozen_input_snapshot if isinstance(frozen_input_snapshot, dict) else draft
+    )
+    revision = int(
+        frozen_input_revision
+        if frozen_input_revision is not None
+        else session.revision or 0
+    )
     snapshot_hash = input_snapshot_hash(input_snapshot)
     run = NovelCreationStageRun(
         session_id=session.id,
@@ -213,6 +221,7 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
         },
         outcome="awaiting_confirmation",
     )
+    operation.can_pause = False
     operation.can_cancel = False
     operation.can_retry = True
     _complete_claim(db, run, result=result)
@@ -262,6 +271,18 @@ def fail_run(
         advice = "保留当前人工修改，检查草稿后重新生成本阶段。"
         failure_payload["next_action"] = advice
         failure_payload["retryable"] = True
+        candidate_artifact = _text(getattr(exc, "candidate_artifact", ""))
+        candidate_data = getattr(exc, "candidate_data", None)
+        if candidate_artifact and isinstance(candidate_data, dict):
+            run.result_json = {
+                "status": "conflict",
+                "candidate_artifact": candidate_artifact,
+                "candidate_data": deepcopy(candidate_data),
+                "input_revision": run.input_revision,
+                "current_revision": int(run.session.revision or 0),
+            }
+            failure_payload["candidate_available"] = True
+            failure_payload["candidate_artifact"] = candidate_artifact
     run.status = "failed"
     run.failure_class = failure_class
     run.current_message = message[:1000]
