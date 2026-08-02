@@ -143,6 +143,8 @@ interface CreationArtifactSummary {
   checkpoint_count?: number
   can_undo?: boolean
   latest_checkpoint_at?: string
+  version_count?: number
+  latest_version_id?: string | null
   revision: number
   flow?: {
     can_view?: boolean
@@ -152,6 +154,28 @@ interface CreationArtifactSummary {
     soft_dependencies?: Array<{ stage: string; label: string; reason: string; message: string }>
   }
   running_operation?: NovelCreationRunSummary | null
+}
+
+interface CreationArtifactVersionSummary {
+  id: string
+  artifact: string
+  revision: number
+  status: string
+  source: string
+  change_type: string
+  change_summary?: Array<Record<string, unknown>>
+  parent_version_id?: string | null
+  restored_from_version_id?: string | null
+  created_at?: string
+}
+
+interface CreationArtifactVersionDetail {
+  version: CreationArtifactVersionSummary
+  against?: CreationArtifactVersionSummary | null
+  changes: Array<{ path: string; action: string; before?: unknown; after?: unknown }>
+  change_count: number
+  truncated: boolean
+  snapshot?: Record<string, unknown>
 }
 
 interface MaterialImportSummary {
@@ -367,6 +391,10 @@ function GuiAssistantChat() {
   const [creationArtifactsLoading, setCreationArtifactsLoading] = useState(false)
   const [creationPanelOpen, setCreationPanelOpen] = useState(true)
   const [artifactAction, setArtifactAction] = useState<string | null>(null)
+  const [versionHistoryArtifact, setVersionHistoryArtifact] = useState<CreationArtifactSummary | null>(null)
+  const [artifactVersions, setArtifactVersions] = useState<CreationArtifactVersionSummary[]>([])
+  const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<CreationArtifactVersionDetail | null>(null)
+  const [versionHistoryLoading, setVersionHistoryLoading] = useState(false)
 
   const {
     defaultModel,
@@ -2567,6 +2595,66 @@ function GuiAssistantChat() {
     }
   }
 
+  const selectArtifactVersion = async (version: CreationArtifactVersionSummary) => {
+    setVersionHistoryLoading(true)
+    try {
+      const response = await apiClient.get<ApiResponse<CreationArtifactVersionDetail>>(
+        `/novel-creation/artifact-versions/${version.id}`,
+      )
+      setSelectedArtifactVersion(response.data.data)
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '版本差异加载失败')
+    } finally {
+      setVersionHistoryLoading(false)
+    }
+  }
+
+  const openArtifactVersionHistory = async (artifact: CreationArtifactSummary) => {
+    if (!systemSessionId) return
+    setVersionHistoryArtifact(artifact)
+    setArtifactVersions([])
+    setSelectedArtifactVersion(null)
+    setVersionHistoryLoading(true)
+    try {
+      const response = await apiClient.get<ApiResponse<{ versions: CreationArtifactVersionSummary[] }>>(
+        `/novel-creation/sessions/${systemSessionId}/artifacts/${artifact.artifact}/versions`,
+      )
+      const versions = response.data.data.versions || []
+      setArtifactVersions(versions)
+      if (versions[0]) await selectArtifactVersion(versions[0])
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '版本历史加载失败')
+      setVersionHistoryArtifact(null)
+    } finally {
+      setVersionHistoryLoading(false)
+    }
+  }
+
+  const restoreSelectedArtifactVersion = async () => {
+    if (!selectedArtifactVersion || !versionHistoryArtifact || artifactAction) return
+    setArtifactAction(`restore:${selectedArtifactVersion.version.id}`)
+    try {
+      await apiClient.post(`/novel-creation/artifact-versions/${selectedArtifactVersion.version.id}/restore`, {
+        expected_revision: versionHistoryArtifact.revision,
+      })
+      message.success(`${versionHistoryArtifact.label}已恢复到修订 ${selectedArtifactVersion.version.revision}；恢复前内容仍在历史中`)
+      setVersionHistoryArtifact(null)
+      setSelectedArtifactVersion(null)
+      await fetchCreationArtifacts()
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '版本恢复失败，当前立项数据没有变化')
+      await fetchCreationArtifacts()
+    } finally {
+      setArtifactAction(null)
+    }
+  }
+
+  const compactVersionValue = (value: unknown) => {
+    if (value === undefined) return '—'
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    return text.length > 120 ? `${text.slice(0, 117)}…` : text
+  }
+
   const creationStatusLabel: Record<CreationArtifactSummary['status'], string> = {
     pending: '待生成',
     generated: '待确认',
@@ -2665,6 +2753,16 @@ function GuiAssistantChat() {
                     onClick={() => void undoArtifactFromPanel(artifact)}
                   >
                     撤销
+                  </Button>
+                )}
+                {artifact.status !== 'pending' && (
+                  <Button
+                    size="small"
+                    icon={<HistoryOutlined />}
+                    aria-label={`查看${artifact.label}版本历史`}
+                    onClick={() => void openArtifactVersionHistory(artifact)}
+                  >
+                    历史{artifact.version_count ? ` ${artifact.version_count}` : ''}
                   </Button>
                 )}
                 <Button
@@ -2994,6 +3092,84 @@ function GuiAssistantChat() {
       </main>
       {renderCreationDataPanel()}
       {renderSlotEditorModal()}
+      <Modal
+        title={`版本历史 · ${versionHistoryArtifact?.label || ''}`}
+        open={Boolean(versionHistoryArtifact)}
+        onCancel={() => {
+          setVersionHistoryArtifact(null)
+          setSelectedArtifactVersion(null)
+        }}
+        width={880}
+        styles={{ body: { maxHeight: 'min(660px, calc(100vh - 250px))', overflowY: 'auto', paddingRight: 6 } }}
+        footer={[
+          <Button key="close" onClick={() => setVersionHistoryArtifact(null)}>关闭</Button>,
+          <Button
+            key="restore"
+            type="primary"
+            icon={<HistoryOutlined />}
+            loading={Boolean(selectedArtifactVersion && artifactAction === `restore:${selectedArtifactVersion.version.id}`)}
+            disabled={!selectedArtifactVersion || selectedArtifactVersion.version.id === artifactVersions[0]?.id}
+            onClick={() => void restoreSelectedArtifactVersion()}
+          >
+            {selectedArtifactVersion?.version.id === artifactVersions[0]?.id ? '当前版本' : '恢复此版本'}
+          </Button>,
+        ]}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="每次保存、AI 调整、导入、锁定和恢复都会留下不可变版本"
+          description="恢复不会删除较新的内容；恢复前状态仍会保留在历史中，可再次查看或恢复。"
+        />
+        <div className="gui-chat-version-history" aria-label={`${versionHistoryArtifact?.label || ''}版本列表与差异`}>
+          <div className="gui-chat-version-list" role="list" aria-label="版本列表">
+            {artifactVersions.length === 0 && !versionHistoryLoading ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无版本记录" />
+            ) : artifactVersions.map((version, index) => (
+              <button
+                type="button"
+                role="listitem"
+                key={version.id}
+                className={`gui-chat-version-item${selectedArtifactVersion?.version.id === version.id ? ' gui-chat-version-item-active' : ''}`}
+                onClick={() => void selectArtifactVersion(version)}
+              >
+                <span className="gui-chat-version-item-head">
+                  <strong>修订 {version.revision}</strong>
+                  {index === 0 && <Tag color="success">当前</Tag>}
+                </span>
+                <span>{version.source || 'unknown'} · {version.change_type}</span>
+                <span>{version.created_at ? new Date(version.created_at).toLocaleString('zh-CN') : '时间未记录'}</span>
+              </button>
+            ))}
+          </div>
+          <div className="gui-chat-version-diff" aria-live="polite">
+            {versionHistoryLoading && !selectedArtifactVersion ? (
+              <div className="gui-chat-creation-panel-loading"><Spin size="small" /> 正在读取差异…</div>
+            ) : selectedArtifactVersion ? (
+              <>
+                <div className="gui-chat-version-diff-head">
+                  <Text strong>与{selectedArtifactVersion.against ? `修订 ${selectedArtifactVersion.against.revision}` : '空白版本'}相比</Text>
+                  <Tag>{selectedArtifactVersion.change_count} 处变化</Tag>
+                </div>
+                {selectedArtifactVersion.changes.length === 0 ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="内容没有变化（可能只更新了确认或锁定状态）" />
+                ) : (
+                  <div className="gui-chat-version-change-list">
+                    {selectedArtifactVersion.changes.map((change, index) => (
+                      <div className="gui-chat-version-change" key={`${change.path}-${index}`}>
+                        <div><Tag color={change.action === 'remove' ? 'error' : change.action === 'add' ? 'success' : 'processing'}>{change.action}</Tag><code>{change.path}</code></div>
+                        {change.before !== undefined && <Text type="secondary">原：{compactVersionValue(change.before)}</Text>}
+                        {change.after !== undefined && <Text>新：{compactVersionValue(change.after)}</Text>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {selectedArtifactVersion.truncated && <Alert type="warning" message="差异较多，仅显示前 500 项" />}
+              </>
+            ) : null}
+          </div>
+        </div>
+      </Modal>
       <Modal
         title={`导入预览 · ${activeMaterialImport?.filename || ''}`}
         open={importPreviewOpen}

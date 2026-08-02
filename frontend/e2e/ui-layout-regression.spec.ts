@@ -319,6 +319,39 @@ async function mockUiApi(page: Page) {
         { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
       ],
     } })
+    if (/^\/api\/v1\/novel-creation\/sessions\/running-creation\/artifacts\/[^/]+\/versions$/.test(path)) {
+      return fulfill(route, { code: 0, data: { versions: [
+        {
+          id: 'version-current', session_id: 'running-creation', artifact: 'constraints', revision: 3,
+          status: 'confirmed', source: 'author', change_type: 'patch', parent_version_id: 'version-original',
+          created_at: '2026-07-27T10:00:00Z',
+        },
+        {
+          id: 'version-original', session_id: 'running-creation', artifact: 'constraints', revision: 1,
+          status: 'generated', source: 'model', change_type: 'generate', parent_version_id: null,
+          created_at: '2026-07-27T09:00:00Z',
+        },
+      ] } })
+    }
+    if (path === '/api/v1/novel-creation/artifact-versions/version-current') return fulfill(route, { code: 0, data: {
+      version: { id: 'version-current', revision: 3 },
+      against: { id: 'version-original', revision: 1 },
+      changes: [
+        { path: '/genre', action: 'replace', before: '\u4f20\u7edf\u4ed9\u4fa0', after: '\u4ed9\u4fa0\u60ac\u7591' },
+        { path: '/target_words', action: 'replace', before: 120000, after: 180000 },
+      ],
+      change_count: 2,
+      truncated: false,
+    } })
+    if (path === '/api/v1/novel-creation/artifact-versions/version-original') return fulfill(route, { code: 0, data: {
+      version: { id: 'version-original', revision: 1 }, against: null,
+      changes: [
+        { path: '/genre', action: 'add', after: '\u4f20\u7edf\u4ed9\u4fa0' },
+        { path: '/target_words', action: 'add', after: 120000 },
+      ],
+      change_count: 2,
+      truncated: false,
+    } })
     if (path === '/api/v1/novel-creation/sessions/running-creation/imports') return fulfill(route, { code: 0, data: { imports: [] } })
     if (path === '/api/v1/novel-creation/imports/import-preview') return fulfill(route, { code: 0, data: {
       id: 'import-preview', source_file_id: 'import-preview', session_id: 'running-creation', operation_id: 'operation-import-preview',
@@ -391,7 +424,7 @@ async function expectViewportSafe(page: Page) {
 }
 
 async function expectNoSeriousAccessibilityViolations(page: Page) {
-  await page.evaluate(() => {
+  const finishAnimations = () => page.evaluate(() => {
     for (const animation of document.getAnimations()) {
       try {
         animation.finish()
@@ -400,6 +433,12 @@ async function expectNoSeriousAccessibilityViolations(page: Page) {
       }
     }
   })
+  await finishAnimations()
+  // Ant Design may enqueue the modal's enter transition one frame after it is
+  // mounted. Let that frame settle, then finish the newly-created animation so
+  // axe measures final colors instead of the translucent transition midpoint.
+  await page.waitForTimeout(200)
+  await finishAnimations()
   const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
   expect(result.violations.filter((item) => ['serious', 'critical'].includes(item.impact || ''))).toEqual([])
 }
@@ -504,6 +543,23 @@ const creationViewports = [
 ]
 
 for (const viewport of creationViewports) {
+  test(`keeps immutable artifact history reviewable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/gui', { waitUntil: 'networkidle' })
+
+    await page.locator('button[aria-label$="\u7248\u672c\u5386\u53f2"]').first().click()
+    await expect(page.getByRole('dialog', { name: /\u7248\u672c\u5386\u53f2/ })).toBeVisible()
+    await expect(page.getByText('/genre')).toBeVisible()
+    await expect(page.getByText(/\u539f\uff1a\u4f20\u7edf\u4ed9\u4fa0/)).toBeVisible()
+    await expect(page.getByText(/\u65b0\uff1a\u4ed9\u4fa0\u60ac\u7591/)).toBeVisible()
+    await page.locator('.gui-chat-version-item').nth(1).click()
+    await expect(page.getByRole('button', { name: /\u6062\u590d\u6b64\u7248\u672c/ })).toBeEnabled()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectVisualSnapshot(page, `assistant-artifact-history-${viewport.name}.png`)
+  })
+
   test(`keeps the material import preview usable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)

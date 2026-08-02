@@ -58,6 +58,8 @@ describe('GuiAssistantChat new-book handoff', () => {
             locked_paths: [],
             can_undo: true,
             checkpoint_count: 1,
+            version_count: 2,
+            latest_version_id: 'version-new',
             flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [], soft_dependencies: [] },
           },
           {
@@ -78,6 +80,38 @@ describe('GuiAssistantChat new-book handoff', () => {
           },
         ],
       } } })
+      if (url === '/novel-creation/sessions/session-1/artifacts/concepts/versions') {
+        return Promise.resolve({ data: { data: { versions: [
+          {
+            id: 'version-new', session_id: 'session-1', artifact: 'concepts', revision: 7,
+            status: 'generated', source: 'assistant', change_type: 'patch', parent_version_id: 'version-old',
+            created_at: '2026-08-02T12:00:00Z',
+          },
+          {
+            id: 'version-old', session_id: 'session-1', artifact: 'concepts', revision: 5,
+            status: 'generated', source: 'model', change_type: 'generate', parent_version_id: null,
+            created_at: '2026-08-02T11:00:00Z',
+          },
+        ] } } })
+      }
+      if (url === '/novel-creation/artifact-versions/version-new') {
+        return Promise.resolve({ data: { data: {
+          version: { id: 'version-new', revision: 7 },
+          against: { id: 'version-old', revision: 5 },
+          changes: [{ path: '/concepts/0/title', action: 'replace', before: '旧方案', after: '新方案' }],
+          change_count: 1,
+          truncated: false,
+        } } })
+      }
+      if (url === '/novel-creation/artifact-versions/version-old') {
+        return Promise.resolve({ data: { data: {
+          version: { id: 'version-old', revision: 5 },
+          against: null,
+          changes: [{ path: '/concepts', action: 'add', after: [{ title: '旧方案' }] }],
+          change_count: 1,
+          truncated: false,
+        } } })
+      }
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
     mockPost.mockImplementation((url: string) => {
@@ -128,6 +162,9 @@ describe('GuiAssistantChat new-book handoff', () => {
         return Promise.resolve({ data: { data: { id: 'session-1', revision: 8 } } })
       }
       if (url === '/novel-creation/sessions/session-1/artifacts/concepts/undo') {
+        return Promise.resolve({ data: { data: { artifact: { artifact: 'concepts', revision: 8 } } } })
+      }
+      if (url === '/novel-creation/artifact-versions/version-old/restore') {
         return Promise.resolve({ data: { data: { artifact: { artifact: 'concepts', revision: 8 } } } })
       }
       if (url === '/ai/system-assistant/conversations') {
@@ -191,6 +228,27 @@ describe('GuiAssistantChat new-book handoff', () => {
 
     await user.click(screen.getByRole('button', { name: '撤销创意方案最近一次修改' }))
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/artifacts/concepts/undo', {
+      expected_revision: 7,
+    })
+  })
+
+  it('shows immutable artifact history, compares revisions, and restores with revision protection', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByRole('textbox', { name: '\u7ed9\u53f8\u547d\u7684\u6d88\u606f' }), '\u6211\u8981\u521b\u5efa\u65b0\u7684\u5c0f\u8bf4')
+    await user.click(screen.getByRole('button', { name: /\u53d1\u9001/ }))
+
+    await user.click(await screen.findByRole('button', { name: '\u67e5\u770b\u521b\u610f\u65b9\u6848\u7248\u672c\u5386\u53f2' }))
+    expect(await screen.findByRole('dialog', { name: /\u7248\u672c\u5386\u53f2/ })).toBeInTheDocument()
+    expect(await screen.findByText('/concepts/0/title')).toBeInTheDocument()
+    expect(mockGet).toHaveBeenCalledWith('/novel-creation/artifact-versions/version-new')
+
+    await user.click(screen.getAllByRole('listitem')[1])
+    expect(await screen.findByText('/concepts')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /\u6062\u590d\u6b64\u7248\u672c/ }))
+
+    expect(mockPost).toHaveBeenCalledWith('/novel-creation/artifact-versions/version-old/restore', {
       expected_revision: 7,
     })
   })

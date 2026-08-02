@@ -150,6 +150,16 @@ KEYWORD_TOOL_GROUPS: tuple[tuple[tuple[str, ...], set[str]], ...] = (
         "diff_chapter_versions",
         "restore_chapter_version",
         "update_chapter",
+        "list_creation_artifact_versions",
+        "get_creation_artifact_diff",
+        "restore_creation_artifact_version",
+    }),
+    (("立项实体", "角色设定", "人物关系", "地点", "势力", "删除角色", "删除势力"), {
+        "list_creation_entities",
+        "get_creation_entity",
+        "patch_creation_entity",
+        "delete_creation_entity",
+        "get_creation_dependencies",
     }),
     (("大纲", "规划下一章", "后续章节", "补大纲"), {
         "search_outline",

@@ -42,6 +42,21 @@ from ..services.novel_creation_imports import (
     run_material_import,
     serialize_material_import,
 )
+from ..services.novel_creation_entities import (
+    delete_creation_entity,
+    get_creation_entity,
+    list_creation_entities,
+    patch_creation_entity,
+    serialize_creation_entity,
+)
+from ..services.novel_creation_versions import (
+    artifact_version_diff,
+    get_artifact_version,
+    list_artifact_versions,
+    record_artifact_version,
+    restore_artifact_version,
+    serialize_artifact_version,
+)
 from ..services.novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
@@ -391,6 +406,19 @@ class NovelCreationArtifactUndoRequest(BaseModel):
     expected_revision: int
 
 
+class NovelCreationArtifactRestoreRequest(BaseModel):
+    expected_revision: int
+
+
+class NovelCreationEntityPatchRequest(BaseModel):
+    expected_revision: int
+    changes: list[dict[str, Any]] = Field(min_length=1)
+
+
+class NovelCreationEntityDeleteRequest(BaseModel):
+    expected_revision: int
+
+
 @router.get("/novel-creation/presets")
 async def novel_creation_presets():
     return ApiResponse.success(data=get_presets())
@@ -444,6 +472,173 @@ async def get_creation_dependencies(session_id: str, stage: str, db: Session = D
     try:
         return ApiResponse.success(data=creation_artifact_dependencies(session, stage))
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}/versions")
+async def get_creation_artifact_versions(
+    session_id: str,
+    stage: str,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        artifact = serialize_creation_artifact(session, stage)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(artifact.get("data"), dict):
+        record_artifact_version(
+            session,
+            stage,
+            artifact["data"],
+            revision=int(session.revision or 0),
+            status=artifact["status"],
+            source=artifact["source"],
+            change_type="legacy_baseline",
+        )
+        commit_session(db)
+    versions = list_artifact_versions(db, session_id=session_id, artifact=stage, limit=limit)
+    return ApiResponse.success(data={
+        "session_id": session_id,
+        "artifact": stage,
+        "revision": int(session.revision or 0),
+        "versions": [serialize_artifact_version(item) for item in versions],
+    })
+
+
+@router.get("/novel-creation/artifact-versions/{version_id}")
+async def get_creation_artifact_version(
+    version_id: str,
+    against_version_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    version = get_artifact_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="立项版本不存在")
+    try:
+        data = artifact_version_diff(db, version, against_version_id=against_version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    data["snapshot"] = version.snapshot_json
+    return ApiResponse.success(data=data)
+
+
+@router.post("/novel-creation/artifact-versions/{version_id}/restore")
+async def restore_creation_artifact_version(
+    version_id: str,
+    payload: NovelCreationArtifactRestoreRequest,
+    db: Session = Depends(get_db),
+):
+    version = get_artifact_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="立项版本不存在")
+    session = novel_creation_session_store(db).session(version.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        result = restore_artifact_version(session, version, expected_revision=payload.expected_revision)
+        commit_session(db)
+        return ApiResponse.success(data=result, message="已恢复所选版本，原内容仍保留在版本历史中")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新版本历史后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/entities")
+async def get_creation_entities(
+    session_id: str,
+    artifact: str | None = None,
+    entity_type: str | None = None,
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    entities = list_creation_entities(
+        session,
+        artifact=artifact,
+        entity_type=entity_type,
+        include_deleted=include_deleted,
+    )
+    commit_session(db)
+    return ApiResponse.success(data={
+        "session_id": session_id,
+        "revision": int(session.revision or 0),
+        "entities": entities,
+    })
+
+
+@router.get("/novel-creation/entities/{entity_id}")
+async def get_creation_entity_endpoint(entity_id: str, db: Session = Depends(get_db)):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    return ApiResponse.success(data=serialize_creation_entity(entity))
+
+
+@router.patch("/novel-creation/entities/{entity_id}")
+async def patch_creation_entity_endpoint(
+    entity_id: str,
+    payload: NovelCreationEntityPatchRequest,
+    db: Session = Depends(get_db),
+):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    session = novel_creation_session_store(db).session(entity.session_id)
+    try:
+        result = patch_creation_entity(
+            session,
+            entity,
+            payload.changes,
+            expected_revision=payload.expected_revision,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message="立项实体已更新")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新实体后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/novel-creation/entities/{entity_id}")
+async def delete_creation_entity_endpoint(
+    entity_id: str,
+    payload: NovelCreationEntityDeleteRequest,
+    db: Session = Depends(get_db),
+):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    session = novel_creation_session_store(db).session(entity.session_id)
+    try:
+        result = delete_creation_entity(
+            session,
+            entity,
+            expected_revision=payload.expected_revision,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message="立项实体已删除，可通过版本历史恢复")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新实体后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

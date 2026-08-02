@@ -40,6 +40,21 @@ from ....services.novel_creation_imports import (
     run_material_import,
     serialize_material_import,
 )
+from ....services.novel_creation_entities import (
+    delete_creation_entity as delete_creation_entity_record,
+    get_creation_entity as get_creation_entity_record,
+    list_creation_entities as list_creation_entity_records,
+    patch_creation_entity as patch_creation_entity_record,
+    serialize_creation_entity,
+)
+from ....services.novel_creation_versions import (
+    artifact_version_diff,
+    get_artifact_version,
+    list_artifact_versions,
+    record_artifact_version,
+    restore_artifact_version,
+    serialize_artifact_version,
+)
 from ....services.operation_runtime import register_operation_actions
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
@@ -927,6 +942,137 @@ async def undo_creation_artifact_tool(db: Session, project_id: str, args: dict[s
     except Exception as exc:
         db.rollback()
         return {"tool": "undo_creation_artifact", "status": "error", "detail": str(exc), "data": None}
+
+
+async def list_creation_entities_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "list_creation_entities", "status": "skipped", "detail": "Session not found", "data": None}
+    entities = list_creation_entity_records(
+        session,
+        artifact=_text(args.get("artifact")) or None,
+        entity_type=_text(args.get("entity_type")) or None,
+        include_deleted=bool(args.get("include_deleted", False)),
+    )
+    commit_session(db)
+    return {
+        "tool": "list_creation_entities",
+        "status": "ok",
+        "detail": "Creation entities loaded",
+        "data": {"revision": int(session.revision or 0), "entities": entities},
+    }
+
+
+async def get_creation_entity_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    entity = get_creation_entity_record(db, _text(args.get("entity_id")))
+    if not entity:
+        return {"tool": "get_creation_entity", "status": "skipped", "detail": "Entity not found", "data": None}
+    return {"tool": "get_creation_entity", "status": "ok", "detail": "Creation entity loaded", "data": serialize_creation_entity(entity)}
+
+
+async def patch_creation_entity_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    entity = get_creation_entity_record(db, _text(args.get("entity_id")))
+    if not entity:
+        return {"tool": "patch_creation_entity", "status": "skipped", "detail": "Entity not found", "data": None}
+    session = _session(db, entity.session_id)
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("patch_creation_entity", session)
+    try:
+        result = patch_creation_entity_record(
+            session,
+            entity,
+            args.get("changes") if isinstance(args.get("changes"), list) else [],
+            expected_revision=int(args["expected_revision"]),
+            source=_text(args.get("source")) or "assistant",
+        )
+        commit_session(db)
+        return {"tool": "patch_creation_entity", "status": "ok", "detail": "Creation entity patched", "data": result}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "patch_creation_entity", "status": "error", "detail": str(exc), "data": None}
+
+
+async def delete_creation_entity_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    entity = get_creation_entity_record(db, _text(args.get("entity_id")))
+    if not entity:
+        return {"tool": "delete_creation_entity", "status": "skipped", "detail": "Entity not found", "data": None}
+    session = _session(db, entity.session_id)
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("delete_creation_entity", session)
+    try:
+        result = delete_creation_entity_record(
+            session,
+            entity,
+            expected_revision=int(args["expected_revision"]),
+            source=_text(args.get("source")) or "assistant",
+        )
+        commit_session(db)
+        return {"tool": "delete_creation_entity", "status": "ok", "detail": "Creation entity deleted", "data": result}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "delete_creation_entity", "status": "error", "detail": str(exc), "data": None}
+
+
+async def list_creation_artifact_versions_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    artifact = _text(args.get("artifact"))
+    if not session:
+        return {"tool": "list_creation_artifact_versions", "status": "skipped", "detail": "Session not found", "data": None}
+    current = serialize_creation_artifact(session, artifact)
+    if isinstance(current.get("data"), dict):
+        record_artifact_version(
+            session,
+            artifact,
+            current["data"],
+            revision=int(session.revision or 0),
+            status=current["status"],
+            source=current["source"],
+            change_type="legacy_baseline",
+        )
+        commit_session(db)
+    versions = list_artifact_versions(
+        db,
+        session_id=session.id,
+        artifact=artifact,
+        limit=int(args.get("limit") or 100),
+    )
+    return {
+        "tool": "list_creation_artifact_versions",
+        "status": "ok",
+        "detail": "Artifact history loaded",
+        "data": {"revision": int(session.revision or 0), "versions": [serialize_artifact_version(item) for item in versions]},
+    }
+
+
+async def get_creation_artifact_diff_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    version = get_artifact_version(db, _text(args.get("version_id")))
+    if not version:
+        return {"tool": "get_creation_artifact_diff", "status": "skipped", "detail": "Version not found", "data": None}
+    try:
+        return {
+            "tool": "get_creation_artifact_diff",
+            "status": "ok",
+            "detail": "Artifact diff loaded",
+            "data": artifact_version_diff(db, version, against_version_id=_text(args.get("against_version_id")) or None),
+        }
+    except Exception as exc:
+        return {"tool": "get_creation_artifact_diff", "status": "error", "detail": str(exc), "data": None}
+
+
+async def restore_creation_artifact_version_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    version = get_artifact_version(db, _text(args.get("version_id")))
+    if not version:
+        return {"tool": "restore_creation_artifact_version", "status": "skipped", "detail": "Version not found", "data": None}
+    session = _session(db, version.session_id)
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("restore_creation_artifact_version", session)
+    try:
+        result = restore_artifact_version(session, version, expected_revision=int(args["expected_revision"]))
+        commit_session(db)
+        return {"tool": "restore_creation_artifact_version", "status": "ok", "detail": "Artifact version restored", "data": result}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "restore_creation_artifact_version", "status": "error", "detail": str(exc), "data": None}
 
 
 async def import_creation_material(db: Session, project_id: str, args: dict[str, Any]) -> dict:

@@ -53,6 +53,18 @@ class NovelCreationSession(Base):
         cascade="all, delete-orphan",
         order_by="NovelCreationStageRun.created_at",
     )
+    artifact_versions = relationship(
+        "NovelCreationArtifactVersion",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationArtifactVersion.created_at",
+    )
+    entities = relationship(
+        "NovelCreationEntity",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationEntity.position",
+    )
 
     __table_args__ = (Index("ix_novel_creation_sessions_status", "status"),)
 
@@ -169,6 +181,73 @@ class NovelCreationStageEvent(Base):
     )
 
 
+class NovelCreationArtifactVersion(Base):
+    """Immutable artifact snapshot used for diff, audit, and restoration."""
+
+    __tablename__ = "novel_creation_artifact_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    revision = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="generated")
+    source = Column(String(100), nullable=False, default="unknown")
+    change_type = Column(String(40), nullable=False, default="save")
+    snapshot_json = Column(JSON, nullable=False)
+    change_summary_json = Column(JSON, nullable=True)
+    run_id = Column(String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
+    parent_version_id = Column(
+        String(36), ForeignKey("novel_creation_artifact_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    restored_from_version_id = Column(
+        String(36), ForeignKey("novel_creation_artifact_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    session = relationship("NovelCreationSession", back_populates="artifact_versions")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "artifact_key", "revision", name="uq_creation_artifact_version_revision"),
+        Index("ix_creation_artifact_version_history", "session_id", "artifact_key", "created_at"),
+    )
+
+
+class NovelCreationEntity(Base):
+    """Independently addressable entity projected from a creation artifact."""
+
+    __tablename__ = "novel_creation_entities"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    entity_type = Column(String(50), nullable=False)
+    entity_key = Column(String(180), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    status = Column(String(30), nullable=False, default="active")
+    revision = Column(Integer, nullable=False, default=0)
+    source = Column(String(100), nullable=False, default="unknown")
+    data_json = Column(JSON, nullable=False)
+    provenance_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    session = relationship("NovelCreationSession", back_populates="entities")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "artifact_key", "entity_type", "entity_key",
+            name="uq_creation_entity_identity",
+        ),
+        Index("ix_creation_entity_list", "session_id", "artifact_key", "entity_type", "status"),
+    )
+
+
 class NovelCreationMaterialImport(Base):
     """Durable source-file ingestion run for a creation session."""
 
@@ -249,6 +328,8 @@ __all__ = [
     "NovelCreationStageRun",
     "NovelCreationRunClaim",
     "NovelCreationStageEvent",
+    "NovelCreationArtifactVersion",
+    "NovelCreationEntity",
     "NovelCreationMaterialImport",
     "NovelCreationImportChunk",
 ]

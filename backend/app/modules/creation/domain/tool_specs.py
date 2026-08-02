@@ -67,6 +67,42 @@ class UndoCreationArtifactInput(CreationArtifactInput):
     expected_revision: int
 
 
+class ListCreationEntitiesInput(CompatibleInput):
+    session_id: str
+    artifact: str = ""
+    entity_type: str = ""
+    include_deleted: bool = False
+
+
+class CreationEntityInput(CompatibleInput):
+    entity_id: str
+
+
+class PatchCreationEntityInput(CreationEntityInput):
+    expected_revision: int
+    changes: list[dict[str, Any]]
+    source: str = "assistant"
+
+
+class DeleteCreationEntityInput(CreationEntityInput):
+    expected_revision: int
+    source: str = "assistant"
+
+
+class ListArtifactVersionsInput(CreationArtifactInput):
+    limit: int = 100
+
+
+class ArtifactVersionDiffInput(CompatibleInput):
+    version_id: str
+    against_version_id: str = ""
+
+
+class RestoreArtifactVersionInput(CompatibleInput):
+    version_id: str
+    expected_revision: int
+
+
 class GenerateNovelCreationStageInput(CompatibleInput):
     session_id: str
     stage: str
@@ -96,6 +132,13 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "lock_creation_fields": CreationArtifactLockInput,
     "unlock_creation_fields": CreationArtifactLockInput,
     "undo_creation_artifact": UndoCreationArtifactInput,
+    "list_creation_entities": ListCreationEntitiesInput,
+    "get_creation_entity": CreationEntityInput,
+    "patch_creation_entity": PatchCreationEntityInput,
+    "delete_creation_entity": DeleteCreationEntityInput,
+    "list_creation_artifact_versions": ListArtifactVersionsInput,
+    "get_creation_artifact_diff": ArtifactVersionDiffInput,
+    "restore_creation_artifact_version": RestoreArtifactVersionInput,
     "generate_novel_creation_stage": GenerateNovelCreationStageInput,
     "submit_novel_creation_stage": SubmitNovelCreationStageInput,
 }

@@ -315,7 +315,7 @@ def concept_cards(blueprints: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, Any]]) -> dict[str, Any]:
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     draft["concepts"] = concept_cards(blueprints)
     # Legacy full-blueprint flows retain their source in blueprint_json. Clear
     # compact seeds so a stale compact selection can never win over it.
@@ -327,6 +327,17 @@ def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, An
     session.current_stage = "concepts"
     session.status = "reviewing"
     session.revision = int(session.revision or 0) + 1
+    from app.services.novel_creation_versions import record_artifact_version
+
+    record_artifact_version(
+        session,
+        "concepts",
+        draft["stages"]["concepts"]["data"],
+        revision=int(session.revision or 0),
+        status="generated",
+        source="legacy_blueprint",
+        change_type="generate",
+    )
     return draft
 
 
@@ -351,7 +362,7 @@ def save_compact_concepts(
     source: str = "model",
 ) -> dict[str, Any]:
     """Persist compact concept cards without changing legacy blueprint_json."""
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     cards: list[dict[str, Any]] = []
     seeds: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(concepts):
@@ -406,6 +417,17 @@ def save_compact_concepts(
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"
+    from app.services.novel_creation_versions import record_artifact_version
+
+    record_artifact_version(
+        session,
+        "concepts",
+        draft["stages"]["concepts"]["data"],
+        revision=int(session.revision or 0),
+        status="generated",
+        source=source,
+        change_type="generate",
+    )
     return draft["stages"]["concepts"]
 
 
@@ -534,6 +556,7 @@ def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> di
     flow = build_stage_flow(session, draft)["items"][stage]
     locks = _dict(draft.get("artifact_locks"))
     checkpoints = _list(_dict(session.checkpoints_json).get(stage))
+    versions = [item for item in session.artifact_versions if item.artifact_key == stage]
     running = next(
         (
             serialize_run(run, include_events=False)
@@ -554,6 +577,8 @@ def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> di
         "checkpoint_count": len(checkpoints),
         "can_undo": bool(checkpoints),
         "latest_checkpoint_at": checkpoints[-1].get("created_at") if checkpoints else None,
+        "version_count": len(versions),
+        "latest_version_id": versions[-1].id if versions else None,
         "revision": int(session.revision or 0),
         "flow": deepcopy(flow),
         "running_operation": running,
@@ -713,7 +738,15 @@ def patch_creation_artifact(
     if validator:
         validator(stage, document)
     affected = creation_artifact_dependencies(session, stage)["affected_artifacts"]
-    save_stage(session, stage, document, confirm=False, source=source)
+    save_stage(
+        session,
+        stage,
+        document,
+        confirm=False,
+        source=source,
+        change_type="patch",
+        change_summary=summary,
+    )
     return {
         "artifact": serialize_creation_artifact(session, stage),
         "changes": summary,
@@ -733,7 +766,7 @@ def set_creation_artifact_locks(
     normalized = {_text(path) for path in paths if _text(path)}
     if any(not path.startswith("/") for path in normalized):
         raise ValueError("locked paths must use JSON Pointer syntax")
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     locks = _dict(draft.get("artifact_locks"))
     existing = {str(item) for item in _list(locks.get(stage))}
     updated = existing | normalized if locked else existing - normalized
@@ -742,6 +775,20 @@ def set_creation_artifact_locks(
     draft["updated_at"] = _now()
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
+    state = _dict(_dict(draft.get("stages")).get(stage))
+    if isinstance(state.get("data"), dict):
+        from app.services.novel_creation_versions import record_artifact_version
+
+        record_artifact_version(
+            session,
+            stage,
+            state["data"],
+            revision=int(session.revision or 0),
+            status=_text(state.get("status"), "generated"),
+            source=_text(state.get("source"), "unknown"),
+            change_type="lock" if locked else "unlock",
+            change_summary=[{"paths": sorted(normalized)}],
+        )
     return serialize_creation_artifact(session, stage)
 
 
@@ -749,7 +796,7 @@ def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[st
     """Restore the most recent artifact checkpoint without reviving stale dependents."""
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
-    checkpoints = _dict(session.checkpoints_json)
+    checkpoints = deepcopy(_dict(session.checkpoints_json))
     items = _list(checkpoints.get(stage))
     if not items:
         raise ValueError("当前立项数据没有可撤销的最近修改")
@@ -757,8 +804,20 @@ def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[st
     data = checkpoint.get("data")
     if not isinstance(data, dict):
         raise ValueError("最近检查点不包含可恢复的结构化数据")
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     current = _dict(_dict(draft.get("stages")).get(stage))
+    from app.services.novel_creation_versions import record_artifact_version
+
+    if isinstance(current.get("data"), dict):
+        record_artifact_version(
+            session,
+            stage,
+            current["data"],
+            revision=int(session.revision or 0),
+            status=_text(current.get("status"), "generated"),
+            source=_text(current.get("source"), "unknown"),
+            change_type="checkpoint_baseline",
+        )
     affected = _invalidate_after(draft, stage)
     draft["stages"][stage] = {
         "status": _text(checkpoint.get("status"), "generated"),
@@ -773,6 +832,25 @@ def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[st
     session.revision = int(session.revision or 0) + 1
     session.current_stage = stage
     session.status = "reviewing"
+    record_artifact_version(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        status=_text(checkpoint.get("status"), "generated"),
+        source="restored_checkpoint",
+        change_type="undo",
+        change_summary=[{"restored_revision": checkpoint.get("revision")}],
+    )
+    from app.services.novel_creation_entities import sync_creation_entities
+
+    sync_creation_entities(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        source="restored_checkpoint",
+    )
     return {
         "artifact": serialize_creation_artifact(session, stage),
         "undone_source": current.get("source"),
@@ -835,6 +913,29 @@ def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[
     session.genre = _text(draft["form"].get("genre")) or None
     session.target_audience = _text(draft["form"].get("target_audience")) or None
     session.platform = _text(draft["form"].get("platform")) or None
+    from app.services.novel_creation_versions import record_artifact_version
+
+    if draft["form"] != before_form:
+        record_artifact_version(
+            session,
+            "constraints",
+            draft["form"],
+            revision=int(session.revision or 0),
+            status="generated",
+            source="author",
+            change_type="session_patch",
+        )
+    concept_stage = _dict(draft.get("stages", {}).get("concepts"))
+    if after_author_source != before_author_source and isinstance(concept_stage.get("data"), dict):
+        record_artifact_version(
+            session,
+            "concepts",
+            concept_stage["data"],
+            revision=int(session.revision or 0),
+            status=_text(concept_stage.get("status"), "stale"),
+            source=_text(concept_stage.get("source"), "unknown"),
+            change_type="upstream_stale",
+        )
     return draft
 
 
@@ -1112,7 +1213,7 @@ def _checkpoint(
     status: str = "generated",
     source: str = "unknown",
 ) -> None:
-    checkpoints = _dict(session.checkpoints_json)
+    checkpoints = deepcopy(_dict(session.checkpoints_json))
     items = _list(checkpoints.get(stage))
     items.append({
         "revision": int(session.revision or 0),
@@ -1144,11 +1245,25 @@ def _invalidate_after(draft: dict[str, Any], stage: str) -> list[dict[str, str]]
     return affected
 
 
-def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], *, confirm: bool = False, source: str = "generated") -> dict[str, Any]:
+def save_stage(
+    session: NovelCreationSession,
+    stage: str,
+    data: dict[str, Any],
+    *,
+    confirm: bool = False,
+    source: str = "generated",
+    change_type: str = "save",
+    change_summary: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
+    operation_id: str | None = None,
+    restored_from_version_id: str | None = None,
+) -> dict[str, Any]:
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     previous = _dict(draft["stages"].get(stage))
+    from app.services.novel_creation_versions import record_artifact_version
+
     if previous.get("data") is not None:
         _checkpoint(
             session,
@@ -1156,6 +1271,15 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
             previous.get("data"),
             status=_text(previous.get("status"), "generated"),
             source=_text(previous.get("source"), "unknown"),
+        )
+        record_artifact_version(
+            session,
+            stage,
+            previous.get("data"),
+            revision=int(session.revision or 0),
+            status=_text(previous.get("status"), "generated"),
+            source=_text(previous.get("source"), "unknown"),
+            change_type="baseline",
         )
     changed = previous.get("data") != data
     draft["stages"][stage] = {
@@ -1188,6 +1312,28 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"
     session.last_error_json = clear_stage_failure(session.last_error_json, stage)
+    record_artifact_version(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        status="confirmed" if confirm else "generated",
+        source=source,
+        change_type=change_type,
+        change_summary=change_summary,
+        run_id=run_id,
+        operation_id=operation_id,
+        restored_from_version_id=restored_from_version_id,
+    )
+    from app.services.novel_creation_entities import sync_creation_entities
+
+    sync_creation_entities(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        source=source,
+    )
     return draft["stages"][stage]
 
 

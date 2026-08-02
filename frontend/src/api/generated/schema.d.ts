@@ -1089,6 +1089,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/artifact-versions/{version_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Artifact Version */
+        get: operations["get_creation_artifact_version_api_v1_novel_creation_artifact_versions__version_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/artifact-versions/{version_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Creation Artifact Version */
+        post: operations["restore_creation_artifact_version_api_v1_novel_creation_artifact_versions__version_id__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/conversation-command": {
         parameters: {
             query?: never;
@@ -1121,6 +1155,25 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/entities/{entity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Entity Endpoint */
+        get: operations["get_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Creation Entity Endpoint */
+        delete: operations["delete_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__delete"];
+        options?: never;
+        head?: never;
+        /** Patch Creation Entity Endpoint */
+        patch: operations["patch_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__patch"];
         trace?: never;
     };
     "/api/v1/novel-creation/imported-files": {
@@ -1453,6 +1506,40 @@ export interface paths {
         put?: never;
         /** Undo Creation Artifact Endpoint */
         post: operations["undo_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/artifacts/{stage}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Artifact Versions */
+        get: operations["get_creation_artifact_versions_api_v1_novel_creation_sessions__session_id__artifacts__stage__versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/entities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Entities */
+        get: operations["get_creation_entities_api_v1_novel_creation_sessions__session_id__entities_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6395,6 +6482,11 @@ export interface components {
              */
             source: string;
         };
+        /** NovelCreationArtifactRestoreRequest */
+        NovelCreationArtifactRestoreRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** NovelCreationArtifactUndoRequest */
         NovelCreationArtifactUndoRequest: {
             /** Expected Revision */
@@ -6452,6 +6544,20 @@ export interface components {
              * @default
              */
             user_brief: string;
+        };
+        /** NovelCreationEntityDeleteRequest */
+        NovelCreationEntityDeleteRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** NovelCreationEntityPatchRequest */
+        NovelCreationEntityPatchRequest: {
+            /** Changes */
+            changes: {
+                [key: string]: unknown;
+            }[];
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** NovelCreationInterviewNextRequest */
         NovelCreationInterviewNextRequest: {
@@ -10392,6 +10498,74 @@ export interface operations {
             };
         };
     };
+    get_creation_artifact_version_api_v1_novel_creation_artifact_versions__version_id__get: {
+        parameters: {
+            query?: {
+                against_version_id?: string | null;
+            };
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_creation_artifact_version_api_v1_novel_creation_artifact_versions__version_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationArtifactRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     creation_conversation_command_api_v1_novel_creation_conversation_command_post: {
         parameters: {
             query?: never;
@@ -10435,6 +10609,107 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationEntityDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_creation_entity_endpoint_api_v1_novel_creation_entities__entity_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationEntityPatchRequest"];
             };
         };
         responses: {
@@ -11174,6 +11449,75 @@ export interface operations {
                 "application/json": components["schemas"]["NovelCreationArtifactUndoRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_artifact_versions_api_v1_novel_creation_sessions__session_id__artifacts__stage__versions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_entities_api_v1_novel_creation_sessions__session_id__entities_get: {
+        parameters: {
+            query?: {
+                artifact?: string | null;
+                entity_type?: string | null;
+                include_deleted?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
