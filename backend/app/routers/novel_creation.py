@@ -29,6 +29,10 @@ from ..schemas.novel_creation import (
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_claims import creation_idempotency_key, claim_or_replay_creation_run
+from ..services.novel_creation_consistency import (
+    creation_dependency_graph,
+    validate_creation_consistency,
+)
 from ..services.novel_creation_imports import (
     IMPORTABLE_ARTIFACTS,
     MAX_UPLOAD_BYTES,
@@ -43,6 +47,7 @@ from ..services.novel_creation_imports import (
     serialize_material_import,
 )
 from ..services.novel_creation_entities import (
+    ENTITY_TYPES_BY_ARTIFACT,
     delete_creation_entity,
     get_creation_entity,
     list_creation_entities,
@@ -354,6 +359,11 @@ class NovelCreationStageRunRequest(BaseModel):
     instruction: str | None = Field(default=None, min_length=1, max_length=2000)
     session_patch: dict[str, Any] | None = None
     expected_revision: int | None = None
+    entity_id: str | None = None
+    entity_type: Literal[
+        "worldbuilding", "character", "relationship", "location", "faction",
+        "world_relation", "volume", "chapter_outline", "scene_outline",
+    ] | None = None
 
     @field_validator("operation", mode="before")
     @classmethod
@@ -375,6 +385,10 @@ class NovelCreationStageRunRequest(BaseModel):
     def require_refinement_instruction(self) -> "NovelCreationStageRunRequest":
         if self.operation == "refine" and not self.instruction:
             raise ValueError("refine operation requires an instruction")
+        if self.entity_id and self.entity_type:
+            raise ValueError("entity_id and entity_type are mutually exclusive")
+        if (self.entity_id or self.entity_type) and self.stage == "all":
+            raise ValueError("entity-level generation requires one artifact stage")
         return self
 
 
@@ -451,6 +465,32 @@ async def get_creation_artifacts(session_id: str, db: Session = Depends(get_db))
         "revision": int(session.revision or 0),
         "artifacts": list_creation_artifacts(session),
     })
+
+
+@router.get("/novel-creation/sessions/{session_id}/dependency-graph")
+async def get_creation_dependency_graph(session_id: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    result = creation_dependency_graph(session)
+    commit_session(db)
+    return ApiResponse.success(data=result)
+
+
+@router.post("/novel-creation/sessions/{session_id}/validate-consistency")
+async def validate_creation_session_consistency(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    result = validate_creation_consistency(session)
+    commit_session(db)
+    return ApiResponse.success(
+        data=result,
+        message="一致性检查通过" if result["valid"] else "发现需要处理的一致性问题",
+    )
 
 
 @router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}")
@@ -733,6 +773,14 @@ async def start_creation_stage_run(
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.stage not in {*STAGE_ORDER, "all"}:
         raise HTTPException(status_code=400, detail="未知立项阶段")
+    if payload.entity_id:
+        entity = get_creation_entity(db, payload.entity_id)
+        if not entity or entity.session_id != session_id or entity.status == "deleted":
+            raise HTTPException(status_code=404, detail="目标实体不存在或已删除")
+        if entity.artifact_key != payload.stage:
+            raise HTTPException(status_code=400, detail="目标实体不属于当前立项对象")
+    if payload.entity_type and payload.entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(payload.stage, frozenset()):
+        raise HTTPException(status_code=400, detail="目标实体类型不属于当前立项对象")
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
         raise HTTPException(
             status_code=409,
@@ -775,10 +823,15 @@ async def start_creation_stage_run(
         input_snapshot_hash=snapshot_hash,
         explicit_key=idempotency_key,
     )
+    artifact_claim_key = payload.stage
+    if payload.entity_id:
+        artifact_claim_key = f"{payload.stage}:entity:{payload.entity_id}"
+    elif payload.entity_type:
+        artifact_claim_key = f"{payload.stage}:new:{payload.entity_type}"
     claim, replayed = claim_or_replay_creation_run(
         db,
         session_id=session_id,
-        artifact_key=payload.stage,
+        artifact_key=artifact_claim_key,
         idempotency_key=request_key,
         input_revision=input_revision,
         input_snapshot_hash=snapshot_hash,
@@ -1202,6 +1255,21 @@ async def creation_conversation_command(
             "summary": f"已打开{STAGE_LABELS.get(payload.stage, payload.stage)}完整编辑器",
         })
     operation = "refine" if payload.action == "refine_artifact" else "generate"
+    entity_id: str | None = None
+    if operation == "refine" and payload.stage in {"characters", "locations", "macro_outline", "opening_outline", "world_style"}:
+        candidates = []
+        for item in list_creation_entities(session, artifact=payload.stage):
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            labels = {
+                str(data.get("name") or "").strip(),
+                str(data.get("title") or "").strip(),
+                str(data.get("role") or data.get("role_type") or "").strip(),
+            }
+            labels.discard("")
+            if any(label in payload.instruction for label in labels):
+                candidates.append(item)
+        if len(candidates) == 1:
+            entity_id = str(candidates[0]["id"])
     request = {
         "session_id": session.id,
         "stage": payload.stage,
@@ -1209,6 +1277,7 @@ async def creation_conversation_command(
         "instruction": payload.instruction,
         "model": payload.model,
         "expected_revision": int(session.revision or 0),
+        "entity_id": entity_id,
     }
     snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
     command_key = creation_idempotency_key(
@@ -1219,10 +1288,11 @@ async def creation_conversation_command(
         input_revision=int(session.revision or 0),
         input_snapshot_hash=snapshot_hash,
     )
+    artifact_claim_key = f"{payload.stage}:entity:{entity_id}" if entity_id else payload.stage
     claim, replayed = claim_or_replay_creation_run(
         db,
         session_id=session.id,
-        artifact_key=payload.stage,
+        artifact_key=artifact_claim_key,
         idempotency_key=command_key,
         input_revision=int(session.revision or 0),
         input_snapshot_hash=snapshot_hash,
@@ -1243,7 +1313,11 @@ async def creation_conversation_command(
     return ApiResponse.success(data={
         "run": serialize_run(run),
         "ui_directive": {"navigate": False},
-        "summary": f"已开始{STAGE_LABELS.get(payload.stage, payload.stage)}{('调整' if operation == 'refine' else '生成')}，你可以继续在对话中补充要求。",
+        "summary": (
+            f"已开始定向调整{candidates[0]['data'].get('name') or candidates[0]['data'].get('title')}，其他对象会保持不变。"
+            if entity_id else
+            f"已开始{STAGE_LABELS.get(payload.stage, payload.stage)}{('调整' if operation == 'refine' else '生成')}，你可以继续在对话中补充要求。"
+        ),
     })
 
 

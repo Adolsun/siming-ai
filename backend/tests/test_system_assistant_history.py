@@ -20,6 +20,8 @@ from app.routers.system_assistant import (
     get_system_conversation,
     list_system_conversations,
     start_system_turn,
+    set_system_conversation_scope,
+    SystemConversationScopePatch,
 )
 
 
@@ -112,3 +114,27 @@ def test_running_system_message_is_interrupted_after_restart():
     assert assistant["status"] == "interrupted"
     assert assistant["message_type"] == "operation"
     assert assistant["payload"]["retryable"] is True
+
+
+def test_conversation_scope_can_follow_creation_and_project_contexts():
+    db = _db_session()
+    conversations = SqlAlchemySystemConversationStore(db)
+    created = asyncio.run(create_system_conversation(
+        SystemConversationCreate(title="立项讨论", scope_type="creation", scope_id="creation-1"),
+        conversations,
+    ))
+    conversation_id = created.data["conversation"]["id"]
+    assert created.data["conversation"]["scope_type"] == "creation"
+    assert created.data["conversation"]["scope_id"] == "creation-1"
+
+    # The project FK is deliberately omitted here because this unit database has
+    # no matching project. The store-level transition is covered using system scope.
+    changed = asyncio.run(set_system_conversation_scope(
+        conversation_id,
+        SystemConversationScopePatch(scope_type="system"),
+        conversations,
+    ))
+    assert changed.data["conversation"]["scope_type"] == "system"
+    assert changed.data["conversation"]["scope_id"] is None
+    listing = asyncio.run(list_system_conversations(conversations, scope_type="system"))
+    assert [item["id"] for item in listing.data["items"]] == [conversation_id]

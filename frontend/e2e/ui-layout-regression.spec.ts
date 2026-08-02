@@ -319,6 +319,15 @@ async function mockUiApi(page: Page) {
         { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
       ],
     } })
+    if (path === '/api/v1/novel-creation/sessions/running-creation/validate-consistency') return fulfill(route, {
+      code: 0,
+      data: {
+        valid: false,
+        revision: 3,
+        summary: { blocking: 0, warnings: 1, total: 1 },
+        issues: [{ code: 'stale_artifact', severity: 'warning', artifact: 'opening_outline', message: '开篇细纲基于旧版上游数据，建议重新校验' }],
+      },
+    })
     if (/^\/api\/v1\/novel-creation\/sessions\/running-creation\/artifacts\/[^/]+\/versions$/.test(path)) {
       return fulfill(route, { code: 0, data: { versions: [
         {
@@ -588,6 +597,7 @@ for (const viewport of creationViewports) {
     await page.goto('/gui', { waitUntil: 'networkidle' })
 
     await expect(page.getByText('立项任务')).toBeVisible()
+    await expect(page.getByText('0 个错误 · 1 个提醒')).toBeVisible()
     await expect(page.getByRole('heading', { name: '主线与卷纲' })).toBeVisible()
     await expect(page.getByText('正在调整第 3—8 卷，并保留主角设定')).toBeVisible()
     await expect(page.getByText('模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()

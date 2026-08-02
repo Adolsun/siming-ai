@@ -70,6 +70,9 @@ class SystemAssistantConversation(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     title = Column(String(200), nullable=False, default="新对话")
+    scope_type = Column(String(30), nullable=False, default="system")
+    scope_id = Column(String(36), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     creation_session_id = Column(String(36), nullable=True)
     user_brief = Column(Text, nullable=True)
     blueprint_json = Column(JSON, nullable=True)
@@ -79,6 +82,10 @@ class SystemAssistantConversation(Base):
         "SystemAssistantMessage",
         back_populates="conversation",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_system_assistant_conversation_scope", "scope_type", "scope_id", "updated_at"),
     )
 
 
@@ -97,6 +104,7 @@ class SystemAssistantMessage(Base):
     operation_id = Column(
         String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
     )
+
     message_type = Column(String(30), nullable=False, default="text")
     payload_json = Column(JSON, nullable=True)
     status = Column(String(20), nullable=False, default="completed")

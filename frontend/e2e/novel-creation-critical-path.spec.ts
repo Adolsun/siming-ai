@@ -217,6 +217,12 @@ async function mockApi(page: Page, options: {
       const sessions = options.sessions ?? (options.session ? [options.session] : [])
       return fulfill(route, { code: 0, data: { sessions } })
     }
+    if (/^\/api\/v1\/novel-creation\/sessions\/[^/]+\/validate-consistency$/.test(path) && method === 'POST') {
+      return fulfill(route, {
+        code: 0,
+        data: { valid: true, revision: 1, summary: { blocking: 0, warnings: 0, total: 0 }, issues: [] },
+      })
+    }
     if (path === '/api/v1/novel-creation/start' && method === 'POST') {
       const session = options.session ?? { id: 'draft-1', status: 'drafting', revision: 1, current_stage: 'constraints', draft: { form: baseForm, concepts: [], stages: {} } }
       startedSession = session

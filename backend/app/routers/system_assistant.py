@@ -1,7 +1,7 @@
 """Persisted system-level assistant conversations."""
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -17,6 +17,13 @@ router = APIRouter(tags=["system-assistant"])
 
 class SystemConversationCreate(BaseModel):
     title: str = ""
+    scope_type: Literal["system", "creation", "project"] = "system"
+    scope_id: str | None = None
+
+
+class SystemConversationScopePatch(BaseModel):
+    scope_type: Literal["system", "creation", "project"]
+    scope_id: str | None = None
 
 
 class SystemTurnCreate(BaseModel):
@@ -30,6 +37,9 @@ class SystemTurnCreate(BaseModel):
     run_id: str | None = None
     operation_id: str | None = None
     message_type: str = "text"
+    scope_type: Literal["system", "creation", "project"] | None = None
+    scope_id: str | None = None
+    project_id: str | None = None
 
 
 class SystemTurnFinish(BaseModel):
@@ -42,6 +52,9 @@ class SystemTurnFinish(BaseModel):
     run_id: str | None = None
     operation_id: str | None = None
     message_type: str | None = None
+    scope_type: Literal["system", "creation", "project"] | None = None
+    scope_id: str | None = None
+    project_id: str | None = None
 
 
 @router.get("/ai/system-assistant/conversations")
@@ -50,8 +63,10 @@ async def list_system_conversations(
         SystemConversationStore,
         Depends(get_system_conversation_store),
     ],
+    scope_type: Literal["system", "creation", "project"] | None = None,
+    scope_id: str | None = None,
 ):
-    return ApiResponse.success(data=conversations.list())
+    return ApiResponse.success(data=conversations.list(scope_type=scope_type, scope_id=scope_id))
 
 
 @router.post("/ai/system-assistant/conversations")
@@ -62,7 +77,23 @@ async def create_system_conversation(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(data=conversations.create(payload.title))
+    return ApiResponse.success(data=conversations.create(
+        payload.title,
+        scope_type=payload.scope_type,
+        scope_id=payload.scope_id,
+    ))
+
+
+@router.patch("/ai/system-assistant/conversations/{conversation_id}/scope")
+async def set_system_conversation_scope(
+    conversation_id: str,
+    payload: SystemConversationScopePatch,
+    conversations: Annotated[
+        SystemConversationStore,
+        Depends(get_system_conversation_store),
+    ],
+):
+    return ApiResponse.success(data=conversations.set_scope(conversation_id, payload.model_dump()))
 
 
 @router.get("/ai/system-assistant/conversations/{conversation_id}")

@@ -110,6 +110,11 @@ class GenerateNovelCreationStageInput(CompatibleInput):
     use_model: bool = True
     auto_confirm: bool = False
     session_patch: dict[str, Any] = Field(default_factory=dict)
+    operation: str = "generate"
+    instruction: str = ""
+    expected_revision: int | None = None
+    entity_id: str = ""
+    entity_type: str = ""
 
 
 class SubmitNovelCreationStageInput(CompatibleInput):
@@ -128,6 +133,8 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "get_creation_artifact": CreationArtifactInput,
     "list_creation_artifacts": ListCreationArtifactsInput,
     "get_creation_dependencies": CreationArtifactInput,
+    "get_creation_dependency_graph": ListCreationArtifactsInput,
+    "validate_creation_consistency": ListCreationArtifactsInput,
     "patch_creation_artifact": PatchCreationArtifactInput,
     "lock_creation_fields": CreationArtifactLockInput,
     "unlock_creation_fields": CreationArtifactLockInput,

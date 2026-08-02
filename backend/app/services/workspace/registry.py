@@ -366,6 +366,8 @@ _TOOL_REGISTRATION_ORDER = (
     "get_creation_artifact",
     "list_creation_artifacts",
     "get_creation_dependencies",
+    "get_creation_dependency_graph",
+    "validate_creation_consistency",
     "patch_creation_artifact",
     "lock_creation_fields",
     "unlock_creation_fields",

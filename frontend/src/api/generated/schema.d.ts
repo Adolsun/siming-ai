@@ -57,6 +57,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ai/system-assistant/conversations/{conversation_id}/scope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set System Conversation Scope */
+        patch: operations["set_system_conversation_scope_api_v1_ai_system_assistant_conversations__conversation_id__scope_patch"];
+        trace?: never;
+    };
     "/api/v1/ai/system-assistant/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -1529,6 +1546,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/sessions/{session_id}/dependency-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Dependency Graph */
+        get: operations["get_creation_dependency_graph_api_v1_novel_creation_sessions__session_id__dependency_graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/sessions/{session_id}/entities": {
         parameters: {
             query?: never;
@@ -1626,6 +1660,23 @@ export interface paths {
         put?: never;
         /** Confirm Creation Stage */
         post: operations["confirm_creation_stage_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/validate-consistency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate Creation Session Consistency */
+        post: operations["validate_creation_session_consistency_api_v1_novel_creation_sessions__session_id__validate_consistency_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6679,6 +6730,10 @@ export interface components {
              * @default false
              */
             auto_confirm: boolean;
+            /** Entity Id */
+            entity_id?: string | null;
+            /** Entity Type */
+            entity_type?: ("worldbuilding" | "character" | "relationship" | "location" | "faction" | "world_relation" | "volume" | "chapter_outline" | "scene_outline") | null;
             /** Expected Revision */
             expected_revision?: number | null;
             /** Instruction */
@@ -7975,11 +8030,29 @@ export interface components {
         };
         /** SystemConversationCreate */
         SystemConversationCreate: {
+            /** Scope Id */
+            scope_id?: string | null;
+            /**
+             * Scope Type
+             * @default system
+             * @enum {string}
+             */
+            scope_type: "system" | "creation" | "project";
             /**
              * Title
              * @default
              */
             title: string;
+        };
+        /** SystemConversationScopePatch */
+        SystemConversationScopePatch: {
+            /** Scope Id */
+            scope_id?: string | null;
+            /**
+             * Scope Type
+             * @enum {string}
+             */
+            scope_type: "system" | "creation" | "project";
         };
         /** SystemTurnCreate */
         SystemTurnCreate: {
@@ -8005,8 +8078,14 @@ export interface components {
             payload?: {
                 [key: string]: unknown;
             } | null;
+            /** Project Id */
+            project_id?: string | null;
             /** Run Id */
             run_id?: string | null;
+            /** Scope Id */
+            scope_id?: string | null;
+            /** Scope Type */
+            scope_type?: ("system" | "creation" | "project") | null;
             /**
              * Status
              * @default completed
@@ -8038,8 +8117,14 @@ export interface components {
             payload?: {
                 [key: string]: unknown;
             } | null;
+            /** Project Id */
+            project_id?: string | null;
             /** Run Id */
             run_id?: string | null;
+            /** Scope Id */
+            scope_id?: string | null;
+            /** Scope Type */
+            scope_type?: ("system" | "creation" | "project") | null;
             /**
              * Status
              * @default completed
@@ -8360,7 +8445,10 @@ export interface operations {
     };
     list_system_conversations_api_v1_ai_system_assistant_conversations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                scope_type?: ("system" | "creation" | "project") | null;
+                scope_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8374,6 +8462,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8452,6 +8549,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_system_conversation_scope_api_v1_ai_system_assistant_conversations__conversation_id__scope_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemConversationScopePatch"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -11504,6 +11636,37 @@ export interface operations {
             };
         };
     };
+    get_creation_dependency_graph_api_v1_novel_creation_sessions__session_id__dependency_graph_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_creation_entities_api_v1_novel_creation_sessions__session_id__entities_get: {
         parameters: {
             query?: {
@@ -11728,6 +11891,37 @@ export interface operations {
                 "application/json": components["schemas"]["NovelCreationStageConfirmRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_creation_session_consistency_api_v1_novel_creation_sessions__session_id__validate_consistency_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

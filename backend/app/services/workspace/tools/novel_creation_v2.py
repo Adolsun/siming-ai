@@ -47,6 +47,10 @@ from ....services.novel_creation_entities import (
     patch_creation_entity as patch_creation_entity_record,
     serialize_creation_entity,
 )
+from ....services.novel_creation_consistency import (
+    creation_dependency_graph,
+    validate_creation_consistency,
+)
 from ....services.novel_creation_versions import (
     artifact_version_diff,
     get_artifact_version,
@@ -868,6 +872,29 @@ async def get_creation_dependencies(db: Session, project_id: str, args: dict[str
         }
     except ValueError as exc:
         return {"tool": "get_creation_dependencies", "status": "error", "detail": str(exc), "data": None}
+
+
+async def get_creation_dependency_graph_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "get_creation_dependency_graph", "status": "skipped", "detail": "Session not found", "data": None}
+    data = creation_dependency_graph(session)
+    commit_session(db)
+    return {"tool": "get_creation_dependency_graph", "status": "ok", "detail": "Dependency graph loaded", "data": data}
+
+
+async def validate_creation_consistency_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "validate_creation_consistency", "status": "skipped", "detail": "Session not found", "data": None}
+    data = validate_creation_consistency(session)
+    commit_session(db)
+    return {
+        "tool": "validate_creation_consistency",
+        "status": "ok" if data["valid"] else "warning",
+        "detail": "Creation data is consistent" if data["valid"] else "Creation data needs attention",
+        "data": data,
+    }
 
 
 def _revision_error(tool: str, session: NovelCreationSession) -> dict[str, Any]:

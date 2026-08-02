@@ -109,6 +109,7 @@ from .novel_creation_v2 import (
     get_creation_artifact,
     get_creation_entity_tool,
     get_creation_dependencies,
+    get_creation_dependency_graph_tool,
     get_novel_creation_session,
     list_creation_artifact_versions_tool,
     list_creation_artifacts_tool,
@@ -121,6 +122,7 @@ from .novel_creation_v2 import (
     submit_novel_creation_stage,
     undo_creation_artifact_tool,
     unlock_creation_fields,
+    validate_creation_consistency_tool,
 )
 from .narrative_governance import (
     apply_narrative_governance_candidates,
@@ -253,6 +255,7 @@ __all__ = [
     "get_creation_artifact",
     "list_creation_artifacts_tool",
     "get_creation_dependencies",
+    "get_creation_dependency_graph_tool",
     "patch_creation_artifact_tool",
     "lock_creation_fields",
     "unlock_creation_fields",
@@ -268,6 +271,7 @@ __all__ = [
     "list_creation_artifact_versions_tool",
     "get_creation_artifact_diff_tool",
     "restore_creation_artifact_version_tool",
+    "validate_creation_consistency_tool",
     "submit_novel_creation_stage",
     "get_narrative_governance",
     "apply_narrative_governance_candidates",

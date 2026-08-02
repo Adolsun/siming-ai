@@ -82,6 +82,8 @@ interface Conversation {
   project_id?: string
   title: string
   scope?: string
+  scope_type?: 'system' | 'creation' | 'project'
+  scope_id?: string
   creation_session_id?: string
   user_brief?: string
   blueprints?: NovelBlueprint[]
@@ -154,6 +156,13 @@ interface CreationArtifactSummary {
     soft_dependencies?: Array<{ stage: string; label: string; reason: string; message: string }>
   }
   running_operation?: NovelCreationRunSummary | null
+}
+
+interface CreationConsistencyReport {
+  valid: boolean
+  revision: number
+  summary: { blocking: number; warnings: number; total: number }
+  issues: Array<{ code: string; severity: 'error' | 'warning'; message: string; artifact?: string; entity_id?: string }>
 }
 
 interface CreationArtifactVersionSummary {
@@ -389,6 +398,8 @@ function GuiAssistantChat() {
   const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'retry' | null>(null)
   const [creationArtifacts, setCreationArtifacts] = useState<CreationArtifactSummary[]>([])
   const [creationArtifactsLoading, setCreationArtifactsLoading] = useState(false)
+  const [creationConsistency, setCreationConsistency] = useState<CreationConsistencyReport | null>(null)
+  const [creationConsistencyLoading, setCreationConsistencyLoading] = useState(false)
   const [creationPanelOpen, setCreationPanelOpen] = useState(true)
   const [artifactAction, setArtifactAction] = useState<string | null>(null)
   const [versionHistoryArtifact, setVersionHistoryArtifact] = useState<CreationArtifactSummary | null>(null)
@@ -463,9 +474,29 @@ function GuiAssistantChat() {
     }
   }, [systemSessionId])
 
+  const checkCreationConsistency = useCallback(async (showToast = false) => {
+    if (!systemSessionId) return
+    setCreationConsistencyLoading(true)
+    try {
+      const response = await apiClient.post<ApiResponse<CreationConsistencyReport>>(
+        `/novel-creation/sessions/${systemSessionId}/validate-consistency`,
+      )
+      setCreationConsistency(response.data.data)
+      if (showToast) {
+        if (response.data.data.valid) message.success('立项数据一致性检查通过')
+        else message.warning(`发现 ${response.data.data.summary.total} 项需要处理的内容`)
+      }
+    } catch (error: unknown) {
+      if (showToast) message.error(error instanceof Error ? error.message : '一致性检查失败')
+    } finally {
+      setCreationConsistencyLoading(false)
+    }
+  }, [systemSessionId])
+
   useEffect(() => {
     void fetchCreationArtifacts()
-  }, [fetchCreationArtifacts, activeCreationRun?.status])
+    void checkCreationConsistency()
+  }, [fetchCreationArtifacts, checkCreationConsistency, activeCreationRun?.status])
 
   useEffect(() => {
     if (!systemSessionId) {
@@ -896,7 +927,11 @@ function GuiAssistantChat() {
     if (!conversationId) {
       const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
         '/ai/system-assistant/conversations',
-        { title: userContent.slice(0, 36) },
+        {
+          title: userContent.slice(0, 36),
+          scope_type: state.creationSessionId ? 'creation' : 'system',
+          scope_id: state.creationSessionId || null,
+        },
       )
       conversationId = createRes.data.data.conversation.id
       setSystemConversationId(conversationId)
@@ -908,6 +943,8 @@ function GuiAssistantChat() {
         creation_session_id: state.creationSessionId || null,
         user_brief: state.userBrief || '',
         message_type: state.messageType || 'text',
+        scope_type: state.creationSessionId ? 'creation' : 'system',
+        scope_id: state.creationSessionId || null,
       },
     )
     if (!activeProjectId) {
@@ -947,6 +984,8 @@ function GuiAssistantChat() {
         run_id: state.run?.id || state.run?.run_id || null,
         operation_id: state.run?.operation_id || null,
         message_type: state.messageType || (state.run ? 'operation' : state.question ? 'question' : 'text'),
+        scope_type: state.creationSessionId ? 'creation' : 'system',
+        scope_id: state.creationSessionId || null,
         payload: state.run ? { run: state.run } : state.question ? { question: state.question } : null,
       },
     )
@@ -967,7 +1006,11 @@ function GuiAssistantChat() {
       if (!conversationId) {
         const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
           '/ai/system-assistant/conversations',
-          { title: userContent.slice(0, 36) },
+          {
+            title: userContent.slice(0, 36),
+            scope_type: state.creationSessionId ? 'creation' : 'system',
+            scope_id: state.creationSessionId || null,
+          },
         )
         conversationId = createRes.data.data.conversation.id
         setSystemConversationId(conversationId)
@@ -981,6 +1024,8 @@ function GuiAssistantChat() {
           creation_session_id: state.creationSessionId || null,
           user_brief: state.userBrief || '',
           blueprints: state.blueprints || [],
+          scope_type: state.creationSessionId ? 'creation' : 'system',
+          scope_id: state.creationSessionId || null,
         },
       )
       if (!activeProjectId) {
@@ -2679,6 +2724,17 @@ function GuiAssistantChat() {
             <Title level={5}>立项数据</Title>
           </div>
           <Space size={4}>
+            <Tooltip title="检查引用、失效数据和对象关系">
+              <Button
+                size="small"
+                type="text"
+                loading={creationConsistencyLoading}
+                aria-label="检查立项数据一致性"
+                onClick={() => void checkCreationConsistency(true)}
+              >
+                校验
+              </Button>
+            </Tooltip>
             <Tooltip title="刷新立项数据">
               <Button
                 size="small"
@@ -2702,6 +2758,20 @@ function GuiAssistantChat() {
         </div>
         <div className="gui-chat-creation-panel-summary">
           <Text type="secondary">结构化数据是当前立项的事实来源。聊天修改完成后会自动同步到这里。</Text>
+          {creationConsistency && (
+            <div className={`gui-chat-consistency-summary${creationConsistency.valid ? ' is-valid' : ' has-issues'}`}>
+              <Tag color={creationConsistency.valid ? 'success' : creationConsistency.summary.blocking ? 'error' : undefined}>
+                {creationConsistency.valid
+                  ? '一致性通过'
+                  : `${creationConsistency.summary.blocking} 个错误 · ${creationConsistency.summary.warnings} 个提醒`}
+              </Tag>
+              {!creationConsistency.valid && creationConsistency.issues[0] && (
+                <Text type="secondary" ellipsis={{ tooltip: creationConsistency.issues[0].message }}>
+                  {creationConsistency.issues[0].message}
+                </Text>
+              )}
+            </div>
+          )}
         </div>
         <div className="gui-chat-creation-artifacts">
           {creationArtifactsLoading && creationArtifacts.length === 0 ? (

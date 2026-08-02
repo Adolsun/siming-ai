@@ -19,6 +19,14 @@ ENTITY_COLLECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "opening_outline": (("chapters", "chapter_outline"), ("sections", "scene_outline")),
 }
 
+ENTITY_TYPES_BY_ARTIFACT: dict[str, frozenset[str]] = {
+    "world_style": frozenset({"worldbuilding"}),
+    "characters": frozenset({"character", "relationship"}),
+    "locations": frozenset({"location", "faction", "world_relation"}),
+    "macro_outline": frozenset({"volume"}),
+    "opening_outline": frozenset({"chapter_outline", "scene_outline"}),
+}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -303,6 +311,7 @@ def delete_creation_entity(
 
 __all__ = [
     "ENTITY_COLLECTIONS",
+    "ENTITY_TYPES_BY_ARTIFACT",
     "delete_creation_entity",
     "ensure_creation_entities",
     "get_creation_entity",

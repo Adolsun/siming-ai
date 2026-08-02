@@ -62,6 +62,8 @@ WORKSPACE_TOOL_NAMES = frozenset(
     get_creation_artifact
     get_creation_artifact_diff
     get_creation_dependencies
+    get_creation_dependency_graph
+    validate_creation_consistency
     get_creation_entity
     get_cataloging_control_state
     get_cataloging_job

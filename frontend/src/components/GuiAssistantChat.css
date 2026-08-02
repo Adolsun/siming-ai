@@ -140,6 +140,25 @@
   line-height: 1.6;
 }
 
+.gui-chat-consistency-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.gui-chat-consistency-summary .ant-typography {
+  min-width: 0;
+  margin: 0;
+}
+
+.gui-chat-consistency-summary.has-issues .ant-tag:not(.ant-tag-error) {
+  color: #714400;
+  border-color: #d7aa63;
+  background: #fff7e8;
+}
+
 .gui-chat-creation-artifacts {
   flex: 1;
   overflow-y: auto;

@@ -16,6 +16,11 @@ from app.services.novel_creation_authoring import (
     _validate_author_requirements,
     _validate_stage,
 )
+from app.services.novel_creation_entities import (
+    ENTITY_TYPES_BY_ARTIFACT,
+    _extract_records,
+    get_creation_entity,
+)
 from app.services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from app.services.novel_creation_runs import block_run_for_context
 from app.services.novel_creation_workspace import (
@@ -32,7 +37,6 @@ from app.services.novel_creation_workspace import (
     serialize_run,
     serialize_session,
 )
-from app.services.observability.run_events import classify_failure
 
 
 def _text(value: Any) -> str:
@@ -65,6 +69,7 @@ class StageExecution:
     enhance_with_model: Any
     model_response_error: type[Exception]
     expected_revision: int
+    entity_target: dict[str, Any] | None = None
     active_stage: str = ""
     generated: dict[str, Any] = field(default_factory=dict)
     run_metadata: list[dict[str, Any]] = field(default_factory=list)
@@ -169,6 +174,27 @@ def _prepare_execution(
     instruction = _text(args.get("instruction"))
     if instruction:
         working_draft["_refinement_instruction"] = instruction
+    entity_target: dict[str, Any] | None = None
+    entity_id = _text(args.get("entity_id"))
+    entity_type = _text(args.get("entity_type"))
+    if entity_id:
+        entity = get_creation_entity(db, entity_id)
+        if not entity or entity.session_id != session.id or entity.status == "deleted":
+            raise ValueError("目标实体不存在或已删除")
+        if entity.artifact_key != stage:
+            raise ValueError("目标实体不属于当前立项对象")
+        entity_target = {
+            "id": entity.id,
+            "entity_type": entity.entity_type,
+            "entity_key": entity.entity_key,
+            "mode": "existing",
+        }
+    elif entity_type:
+        if entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(stage, frozenset()):
+            raise ValueError("目标实体类型不属于当前立项对象")
+        entity_target = {"entity_type": entity_type, "mode": "new"}
+    if entity_target:
+        working_draft["_entity_target"] = deepcopy(entity_target)
     orchestrator = ContextOrchestrator(db)
     manifest_id = _text(args.get("context_manifest_id")) or _text(
         getattr(run, "context_manifest_id", "")
@@ -233,9 +259,118 @@ def _prepare_execution(
         normalize_stage=normalize_stage,
         enhance_with_model=enhance_with_model,
         model_response_error=model_response_error,
-        expected_revision=int(run.input_revision if run.input_revision is not None else session.revision or 0),
+        expected_revision=int(
+            run.input_revision if run.input_revision is not None else session.revision or 0
+        ),
+        entity_target=entity_target,
         active_stage=stage,
     ), None
+
+
+def _merge_entity_generation(
+    context: StageExecution,
+    stage: str,
+    baseline: dict[str, Any],
+    generated: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Keep unrelated rows byte-for-byte stable during entity-level generation."""
+    target = context.entity_target
+    if not target:
+        return generated, None
+    baseline_records = _extract_records(stage, baseline)
+    generated_records = _extract_records(stage, generated)
+    entity_type = target["entity_type"]
+    candidates = [item for item in generated_records if item["entity_type"] == entity_type]
+    if not candidates:
+        raise ValueError(f"模型没有返回可用的 {entity_type} 实体")
+
+    merged = deepcopy(baseline)
+    if target["mode"] == "existing":
+        current = next(
+            (
+                item for item in baseline_records
+                if item["entity_type"] == entity_type and item["entity_key"] == target["entity_key"]
+            ),
+            None,
+        )
+        if not current:
+            raise ValueError("目标实体已不在当前立项数据中")
+        replacement = next(
+            (item for item in candidates if item["entity_key"] == target["entity_key"]),
+            candidates[0],
+        )
+        replacement_data = deepcopy(replacement["data"])
+        locks = context.working_draft.get("artifact_locks")
+        locked_paths = (
+            locks.get(stage)
+            if isinstance(locks, dict) and isinstance(locks.get(stage), list)
+            else []
+        )
+        entity_prefix = f"/{current['field']}/{current['index']}"
+        for locked_path in locked_paths:
+            if locked_path == entity_prefix:
+                replacement_data = deepcopy(current["data"])
+                break
+            if not str(locked_path).startswith(entity_prefix + "/"):
+                continue
+            parts = [
+                part.replace("~1", "/").replace("~0", "~")
+                for part in str(locked_path)[len(entity_prefix) + 1:].split("/")
+            ]
+            source: Any = current["data"]
+            destination: Any = replacement_data
+            try:
+                for part in parts[:-1]:
+                    source = source[int(part)] if isinstance(source, list) else source[part]
+                    destination = (
+                        destination[int(part)]
+                        if isinstance(destination, list)
+                        else destination[part]
+                    )
+                leaf = parts[-1]
+                value = source[int(leaf)] if isinstance(source, list) else source[leaf]
+                if isinstance(destination, list):
+                    destination[int(leaf)] = deepcopy(value)
+                else:
+                    destination[leaf] = deepcopy(value)
+            except (KeyError, IndexError, TypeError, ValueError):
+                # A missing generated container cannot safely carry the lock;
+                # retain the complete entity instead of weakening author intent.
+                replacement_data = deepcopy(current["data"])
+                break
+        merged[current["field"]][current["index"]] = replacement_data
+        summary = {
+            "mode": context.operation,
+            "entity_id": target["id"],
+            "entity_type": entity_type,
+            "entity_key": target["entity_key"],
+            "preserved_entity_count": max(0, len(baseline_records) - 1),
+        }
+    else:
+        existing_keys = {
+            (item["entity_type"], item["entity_key"]) for item in baseline_records
+        }
+        addition = next(
+            (
+                item for item in candidates
+                if (item["entity_type"], item["entity_key"]) not in existing_keys
+            ),
+            None,
+        )
+        if addition is None:
+            raise ValueError(f"模型没有生成新的 {entity_type} 对象；现有数据保持不变")
+        collection = addition["field"]
+        merged.setdefault(collection, [])
+        if not isinstance(merged[collection], list):
+            raise ValueError("目标实体集合格式不正确")
+        merged[collection].append(deepcopy(addition["data"]))
+        summary = {
+            "mode": "generate",
+            "entity_type": entity_type,
+            "entity_key": addition["entity_key"],
+            "preserved_entity_count": len(baseline_records),
+        }
+    return merged, summary
 
 
 async def _generate_concept_stage(context: StageExecution) -> None:
@@ -337,7 +472,8 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         existing_stage = ((context.working_draft.get("stages") or {}).get(name) or {})
         baseline = (
             deepcopy(existing_stage.get("data"))
-            if context.operation == "refine" and isinstance(existing_stage.get("data"), dict)
+            if (context.operation == "refine" or context.entity_target)
+            and isinstance(existing_stage.get("data"), dict)
             else derive_stage(context.session, name, context.working_draft)
         )
         data, source, metadata = await stage_data_with_fallback(
@@ -356,20 +492,33 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         context.ensure_not_cancelled(context.db, context.run)
         context.run_metadata.append(metadata)
         data = context.normalize_stage(name, data, baseline)
+        data, entity_summary = _merge_entity_generation(context, name, baseline, data)
         _validate_stage(name, data)
         _validate_author_requirements(name, data, baseline, context.working_draft)
         preserve = context.operation == "refine" and source == "contract_fallback"
+        if preserve:
+            data = deepcopy(baseline)
+            entity_summary = None
         if not preserve:
-            _save_with_revision_cas(
-                context,
-                lambda: save_stage(
+            def save_generated_stage(
+                stage_name: str = name,
+                stage_data: dict[str, Any] = data,
+                stage_source: str = source,
+                summary: dict[str, Any] | None = entity_summary,
+            ) -> dict[str, Any]:
+                return save_stage(
                     context.session,
-                    name,
-                    data,
+                    stage_name,
+                    stage_data,
                     confirm=context.auto_confirm,
-                    source=source,
-                ),
-            )
+                    source=stage_source,
+                    change_type=(f"entity_{context.operation}" if summary else context.operation),
+                    change_summary=([summary] if summary else None),
+                    run_id=context.run.id,
+                    operation_id=context.run.operation_id,
+                )
+
+            _save_with_revision_cas(context, save_generated_stage)
         context.working_draft.setdefault("stages", {})[name] = {
             "status": existing_stage.get("status", "generated") if preserve else (
                 "confirmed" if context.auto_confirm else "generated"
@@ -378,6 +527,8 @@ async def _generate_regular_stages(context: StageExecution) -> None:
             "source": existing_stage.get("source", source) if preserve else source,
         }
         context.generated[name] = deepcopy(data)
+        if entity_summary:
+            context.generated["entity_change"] = entity_summary
         add_run_event(
             context.db,
             context.run,
