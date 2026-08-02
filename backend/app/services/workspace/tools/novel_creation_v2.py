@@ -104,6 +104,7 @@ def _repair_provenance(raw: str, method: str, warning: str) -> dict[str, Any]:
         "warning": warning,
         "repair_method": method,
         "original_response_excerpt": raw[:12_000],
+        "_diagnostic_raw": raw,
     }
 
 
@@ -175,7 +176,7 @@ def _ensure_stage_not_cancelled(
     if run is None:
         return
     db.refresh(run)
-    if run.status == "cancelled":
+    if run.status in {"cancelled", "paused"}:
         raise asyncio.CancelledError
     if run.operation_id:
         operation = (
@@ -696,6 +697,7 @@ async def _generate_compact_concepts(
                     "repair_method": "safe_partial_draft",
                     "repair_error": str(repair_error)[:1000],
                     "original_response_excerpt": raw[:12_000],
+                    "_diagnostic_raw": raw,
                 }
             raise StageModelResponseError(
                 f"{parse_error}；同模型结构修复失败：{repair_error}",
@@ -818,6 +820,7 @@ async def _enhance_with_model(
                     "repair_method": "safe_partial_draft",
                     "repair_error": str(repair_error)[:1000],
                     "original_response_excerpt": raw[:12_000],
+                    "_diagnostic_raw": raw,
                 }
             raise StageModelResponseError(
                 f"{parse_error}；同模型结构修复失败：{repair_error}",

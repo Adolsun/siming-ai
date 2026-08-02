@@ -140,6 +140,7 @@ export interface StageRun {
   attempt?: number
   result_mode?: 'model' | 'repaired' | 'deterministic_fallback'
   warning?: string
+  diagnostic_count?: number
   result?: {
     attempt?: number
     result_mode?: 'model' | 'repaired' | 'deterministic_fallback'
@@ -158,7 +159,7 @@ export interface StageRun {
 
 export const CORE_STAGES = ['world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review']
 export const ACTIVE_RUN_STATUSES = new Set(['queued', 'running'])
-export const TERMINAL_RUN_STATUSES = new Set(['completed', 'waiting_author', 'failed', 'cancelled', 'interrupted', 'superseded'])
+export const TERMINAL_RUN_STATUSES = new Set(['completed', 'waiting_user', 'waiting_author', 'failed', 'cancelled', 'interrupted', 'superseded'])
 export type CreationPath = 'author_led' | 'explore'
 
 export function runAttempt(run: StageRun) {
@@ -175,7 +176,8 @@ export function runResultModeLabel(run: StageRun) {
 
 export function runSaveResult(run: StageRun) {
   if (run.status === 'completed') return '阶段内容已由作者确认'
-  if (run.status === 'waiting_author') return '阶段结果已保存，等待作者确认'
+  if (run.status === 'waiting_user' || run.status === 'waiting_author') return '阶段结果已保存，等待作者确认'
+  if (run.status === 'paused') return '任务已暂停，检查点和已有草稿均已保留'
   if (run.status === 'cancelled') return '已保留取消前保存的内容，未覆盖原草稿'
   if (run.status === 'interrupted') return '任务在应用关闭或服务重启时中断，可按原输入重新生成'
   return '失败结果未写入，原草稿保持不变'

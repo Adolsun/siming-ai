@@ -48,6 +48,7 @@ export function useNovelCreationRun({
 }: UseNovelCreationRunOptions) {
   const [activeRunState, setActiveRunState] = useState<StageRun | null>(null)
   const [cancellingRun, setCancellingRun] = useState(false)
+  const [pausingRun, setPausingRun] = useState(false)
   const activeRunRef = useRef<StageRun | null>(null)
   const watchRef = useRef<ActiveWatch | null>(null)
   const generationRef = useRef(0)
@@ -73,6 +74,7 @@ export function useNovelCreationRun({
     watchRef.current = null
     cancelInFlightRef.current = false
     setCancellingRun(false)
+    setPausingRun(false)
   }, [])
 
   const clearRunState = useCallback(() => {
@@ -226,11 +228,13 @@ export function useNovelCreationRun({
       && (!localRun.session_id || localRun.session_id === session.id)
     const authoritativeLocalRun = localRunBelongsToSession
       && (ACTIVE_RUN_STATUSES.has(localRun.status)
+        || localRun.status === 'paused'
         || (TERMINAL_RUN_STATUSES.has(localRun.status) && requestedRunId === localRun.id))
       ? localRun
       : undefined
     const requestedRun = requestedRunId ? runs.find((run) => run.id === requestedRunId) : undefined
     const fallbackRun = newestFirst.find((run) => ACTIVE_RUN_STATUSES.has(run.status))
+      || newestFirst.find((run) => run.status === 'paused')
       || newestFirst.find((run) => TERMINAL_RUN_STATUSES.has(run.status))
     const localTarget = authoritativeLocalRun || requestedRun || (!requestedRunId ? fallbackRun : undefined)
     if (localTarget) {
@@ -274,11 +278,48 @@ export function useNovelCreationRun({
     }
   }, [setRunMessage])
 
+  const pauseActiveRun = useCallback(async () => {
+    const run = activeRunRef.current
+    if (!run?.operation_id || run.status !== 'running' || pausingRun) return
+    setPausingRun(true)
+    try {
+      await apiClient.post(`/operations/${run.operation_id}/pause`)
+      setActiveRun((current) => current ? { ...current, status: 'paused', current_message: '任务已暂停；检查点和已有草稿均已保留' } : current)
+      setBusy(false)
+      setRunMessage('')
+      message.info('任务已暂停')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '暂停任务失败，请重试')
+    } finally {
+      setPausingRun(false)
+    }
+  }, [pausingRun, setActiveRun, setBusy, setRunMessage])
+
+  const resumeActiveRun = useCallback(async () => {
+    const run = activeRunRef.current
+    if (!run?.operation_id || run.status !== 'paused' || pausingRun) return
+    setPausingRun(true)
+    try {
+      await apiClient.post(`/operations/${run.operation_id}/continue`)
+      setActiveRun((current) => current ? { ...current, status: 'running', current_message: '正在从最近检查点继续' } : current)
+      setBusy(true)
+      setRunMessage('正在从最近检查点继续')
+      watchRun(run.id, run.session_id)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '继续任务失败，请重试')
+    } finally {
+      setPausingRun(false)
+    }
+  }, [pausingRun, setActiveRun, setBusy, setRunMessage, watchRun])
+
   return {
     activeRun: activeRunState,
     setActiveRun,
     cancellingRun,
+    pausingRun,
     cancelActiveRun,
+    pauseActiveRun,
+    resumeActiveRun,
     watchRun,
     disposeRunWatch,
     clearRunState,

@@ -230,7 +230,7 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
     assert session.blueprint_json is None
     assert len(session.draft_json["concepts"]) == 3
     assert len(session.draft_json["concept_seeds"]) == 3
-    assert result["data"]["run"]["status"] == "waiting_author"
+    assert result["data"]["run"]["status"] == "waiting_user"
 
 
 def test_compact_concepts_never_switch_models_on_quota_failure():
@@ -271,7 +271,7 @@ def test_invalid_concepts_create_safe_draft_then_a_retry_can_succeed():
             "use_model": True,
         }))
     assert recovered["status"] == "ok"
-    assert recovered["data"]["run"]["status"] == "waiting_author"
+    assert recovered["data"]["run"]["status"] == "waiting_user"
     assert recovered["data"]["run"]["result_mode"] == "deterministic_fallback"
     assert session.draft_json["stages"]["concepts"]["source"] == "model_repaired"
     assert session.draft_json["stages"]["concepts"]["data"]["options"][0]["title"] == _concepts()[0]["title"]

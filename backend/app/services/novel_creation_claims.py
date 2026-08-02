@@ -13,6 +13,19 @@ from app.architecture.uow import commit_session
 from app.database.models import NovelCreationRunClaim
 
 
+def get_creation_claim_by_idempotency_key(
+    db: Session,
+    *,
+    session_id: str,
+    idempotency_key: str,
+) -> NovelCreationRunClaim | None:
+    """Return a durable creation claim without leaking ORM access into HTTP routers."""
+    return db.query(NovelCreationRunClaim).filter(
+        NovelCreationRunClaim.session_id == session_id,
+        NovelCreationRunClaim.idempotency_key == idempotency_key,
+    ).first()
+
+
 def creation_idempotency_key(
     *,
     session_id: str,

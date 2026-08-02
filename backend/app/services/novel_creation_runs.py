@@ -69,7 +69,7 @@ def create_run(
         model_source=model,
         tool_mode="session_stage",
         resume_url=f"/novel-creation?session={session.id}&run={run.id}",
-        can_pause=False,
+        can_pause=True,
         can_cancel=True,
         can_retry=False,
         input_revision=revision,
@@ -169,7 +169,7 @@ def _complete_claim(
 def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]) -> None:
     # Saving generated output is a successful checkpoint, but the author still
     # owns the decision to accept it. Keep that state distinct from a failure.
-    run.status = "waiting_author"
+    run.status = "waiting_user"
     run.result_json = deepcopy(result)
     run.current_message = "阶段结果已保存到立项草稿，等待作者确认"
     run.next_action = "审阅并确认本阶段，或编辑后重新生成"
@@ -177,8 +177,8 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
     add_run_event(
         db,
         run,
-        "waiting_author",
-        "waiting_author",
+        "waiting_user",
+        "waiting_user",
         run.current_message,
         {"storage_target": run.storage_target, "next_action": run.next_action},
     )
@@ -222,7 +222,7 @@ def confirm_run(db: Session, run: NovelCreationStageRun) -> bool:
     """Complete the exact generated run after an author confirmation."""
     if run.status == "completed":
         return True
-    if run.status != "waiting_author":
+    if run.status not in {"waiting_user", "waiting_author"}:
         return False
 
     run.status = "completed"
@@ -350,7 +350,7 @@ def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> di
         "session_id": run.session_id,
         "stage": run.stage,
         "operation": run.operation,
-        "status": run.status,
+        "status": "waiting_user" if run.status == "waiting_author" else run.status,
         "model_source": run.model_source,
         "tool_mode": run.tool_mode,
         "failure_class": run.failure_class,
@@ -364,6 +364,7 @@ def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> di
         "attempt": int((result or {}).get("attempt") or 0),
         "result_mode": (result or {}).get("result_mode"),
         "warning": (result or {}).get("warning"),
+        "diagnostic_count": len(run.diagnostics_json or []),
         "current_message": run.current_message,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
@@ -402,12 +403,12 @@ def mark_interrupted_novel_creation_runs(db: Session) -> int:
         # Startup has no surviving producer. A saved result remains available
         # for author review; every other active producer becomes recoverable.
         if isinstance(run.result_json, dict):
-            run.status = "waiting_author"
+            run.status = "waiting_user"
             run.failure_class = None
             run.current_message = "阶段结果已保存，等待作者确认"
             run.next_action = "审阅并确认本阶段，或编辑后重新生成"
-            event_type = "recovered_waiting_author"
-            event_status = "waiting_author"
+            event_type = "recovered_waiting_user"
+            event_status = "waiting_user"
         else:
             run.status = "interrupted"
             run.failure_class = "interrupted"
@@ -437,8 +438,8 @@ def mark_interrupted_novel_creation_runs(db: Session) -> int:
             db,
             run,
             result=deepcopy(run.result_json) if isinstance(run.result_json, dict) else None,
-            error=None if run.status == "waiting_author" else run.current_message,
-            status="completed" if run.status == "waiting_author" else "interrupted",
+            error=None if run.status == "waiting_user" else run.current_message,
+            status="completed" if run.status == "waiting_user" else "interrupted",
         )
     if runs:
         db.flush()

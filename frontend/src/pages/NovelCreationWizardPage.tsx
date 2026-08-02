@@ -203,7 +203,10 @@ function NovelCreationWizardPage() {
     activeRun,
     setActiveRun,
     cancellingRun,
+    pausingRun,
     cancelActiveRun,
+    pauseActiveRun,
+    resumeActiveRun,
     watchRun,
     clearRunState,
   } = useNovelCreationRun({
@@ -514,6 +517,34 @@ function NovelCreationWizardPage() {
     setBusy(true)
     setStageActionError('')
     try {
+      if (continueToNext) {
+        const response = await apiClient.post<ApiResponse<{
+          action_type: 'confirm_and_generate_recommended'
+          session: CreationSession
+          run: StageRun | null
+          recommended_stage?: string | null
+        }>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm-and-generate-recommended`, {
+          data: currentStageState.data,
+          confirm: true,
+          source: 'author',
+          expected_revision: session.revision,
+          model: selectedModel || null,
+          use_model: true,
+        }, { headers: { 'Idempotency-Key': `confirm-next:${session.id}:${currentStage}:${session.revision}` } })
+        const refreshed = response.data.data.session
+        setSession(refreshed)
+        setBusy(false)
+        const nextRun = response.data.data.run
+        if (nextRun) {
+          viewStage(nextRun.stage)
+          setActiveRun(nextRun)
+          watchRun(nextRun.id, nextRun.session_id || refreshed.id)
+        } else {
+          viewStage(currentStage, true)
+          focusStageHeading()
+        }
+        return
+      }
       const response = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm`, {
         data: currentStageState.data,
         confirm: true,
@@ -523,20 +554,8 @@ function NovelCreationWizardPage() {
       const refreshed = response.data.data
       setSession(refreshed)
       setBusy(false)
-      if (!continueToNext) {
-        viewStage(currentStage, true)
-        focusStageHeading()
-        return
-      }
-      const next = refreshed.stage_flow?.recommended_stage || refreshed.current_stage
-      if (next && CORE_STAGES.includes(next)) {
-        viewStage(next)
-        const started = await startStageRun(next, false, refreshed)
-        if (!started) {
-          setStageActionError(`${stageLabels[currentStage] || currentStage}已确认，但${stageLabels[next] || next}尚未开始生成。你可以安全重试下一阶段。`)
-          viewStage(currentStage, true)
-        }
-      }
+      viewStage(currentStage, true)
+      focusStageHeading()
     } catch (error) {
       setBusy(false)
       setStageActionError(errorText(error))
@@ -989,8 +1008,11 @@ function NovelCreationWizardPage() {
           runProgress={runProgress}
           editedDuringRun={editedDuringRunRef.current}
           cancellingRun={cancellingRun}
+          pausingRun={pausingRun}
           resultRevisionNotice={resultRevisionNotice}
           onCancel={() => void cancelActiveRun()}
+          onPause={() => void pauseActiveRun()}
+          onResume={() => void resumeActiveRun()}
           onAcceptResult={() => { editedDuringRunRef.current = false; setResultRevisionNotice('') }}
           onRegenerateLatest={() => activeRun?.stage === 'concepts'
             ? void generateConcepts()

@@ -111,7 +111,12 @@ class SqlAlchemyOperationService(OperationServicePort):
             if not allowed:
                 return "unsupported", None
 
-        if not await invoke_operation_action(operation_id, action):
+        invoked = await invoke_operation_action(operation_id, action)
+        if not invoked and operation.source_kind == "novel_creation":
+            from app.services.novel_creation_task_runtime import invoke_durable_creation_action
+
+            invoked = await invoke_durable_creation_action(operation_id, action)
+        if not invoked:
             return "unsupported", None
 
         with SqlAlchemyUnitOfWork(SessionLocal) as uow:

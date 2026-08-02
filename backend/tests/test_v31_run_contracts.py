@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
@@ -22,11 +23,14 @@ from app.services.novel_creation_claims import (
     creation_idempotency_key,
 )
 from app.services.novel_creation_runs import (
+    create_run,
     complete_run,
     confirm_run,
     mark_interrupted_novel_creation_runs,
     serialize_run,
 )
+from app.services.novel_creation_stage_execution import _capture_model_diagnostic
+from app.services.novel_creation_task_runtime import invoke_durable_creation_action
 from app.services.novel_creation_workspace import serialize_session
 from app.services.workspace.run_log import resolve_assistant_model
 from app.routers.novel_creation import (
@@ -70,6 +74,7 @@ def test_creation_artifact_openapi_exposes_query_patch_lock_and_confirm_routes()
     assert "delete" in paths[lock_path]
     assert "post" in paths[artifact_path + "/undo"]
     assert "post" in paths["/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm"]
+    assert "post" in paths["/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm-and-generate-recommended"]
 
     patch_schema = paths[artifact_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]
     assert "NovelCreationArtifactPatchRequest" in patch_schema["$ref"]
@@ -143,6 +148,53 @@ def test_chat_command_starts_targeted_creation_run_without_navigation() -> None:
     assert db.query(NovelCreationRunClaim).filter_by(session_id=session.id).count() == 1
 
 
+def test_creation_run_supports_durable_pause_and_checkpoint_resume() -> None:
+    db = _db()
+    Session = sessionmaker(bind=db.bind)
+    session = NovelCreationSession(mode="internal_llm", status="drafting", draft_json={"stages": {}})
+    db.add(session)
+    db.flush()
+    run = create_run(db, session, "characters", {"model": "openai:test"})
+    db.commit()
+
+    assert db.get(OperationRun, run.operation_id).can_pause is True
+    with patch("app.services.novel_creation_task_runtime.SessionLocal", Session):
+        assert asyncio.run(invoke_durable_creation_action(run.operation_id, "pause")) is True
+    db.expire_all()
+    assert db.get(NovelCreationStageRun, run.id).status == "paused"
+
+    with (
+        patch("app.services.novel_creation_task_runtime.SessionLocal", Session),
+        patch("app.services.novel_creation_task_runtime.schedule_creation_stage") as schedule,
+    ):
+        assert asyncio.run(invoke_durable_creation_action(run.operation_id, "continue")) is True
+    db.expire_all()
+    resumed = db.get(NovelCreationStageRun, run.id)
+    assert resumed.status == "running"
+    assert resumed.events[-1].event_type == "continued"
+    assert schedule.call_args.args[:2] == (run.id, session.id)
+    assert schedule.call_args.args[2]["_resume"] is True
+
+
+def test_repaired_model_reply_is_kept_in_full_diagnostics_only() -> None:
+    run = SimpleNamespace(diagnostics_json=None)
+    context = SimpleNamespace(run=run)
+    raw = "x" * 20_000
+    metadata = {
+        "result_mode": "repaired",
+        "repair_method": "model_json",
+        "warning": "结构已修复",
+        "original_response_excerpt": raw[:12_000],
+        "_diagnostic_raw": raw,
+    }
+
+    _capture_model_diagnostic(context, "characters", metadata)
+
+    assert "_diagnostic_raw" not in metadata
+    assert len(metadata["original_response_excerpt"]) == 12_000
+    assert run.diagnostics_json[0]["raw_response"] == raw
+
+
 def test_completed_generation_waits_for_author_confirmation() -> None:
     db = _db()
     session = NovelCreationSession(mode="internal_llm", status="drafting")
@@ -171,8 +223,8 @@ def test_completed_generation_waits_for_author_confirmation() -> None:
     db.flush()
     db.refresh(run)
 
-    assert run.status == "waiting_author"
-    assert run.events[-1].event_type == "waiting_author"
+    assert run.status == "waiting_user"
+    assert run.events[-1].event_type == "waiting_user"
     operation = db.get(OperationRun, run.operation_id)
     assert operation is not None
     assert operation.status == "waiting_user"

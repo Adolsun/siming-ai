@@ -1666,6 +1666,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm-and-generate-recommended": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm And Generate Recommended
+         * @description Confirm exactly one artifact and start only the newly recommended artifact.
+         */
+        post: operations["confirm_and_generate_recommended_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_and_generate_recommended_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/sessions/{session_id}/validate-consistency": {
         parameters: {
             query?: never;
@@ -6543,6 +6563,32 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
         };
+        /** NovelCreationConfirmAndGenerateRequest */
+        NovelCreationConfirmAndGenerateRequest: {
+            /**
+             * Confirm
+             * @default true
+             */
+            confirm: boolean;
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Model */
+            model?: string | null;
+            /**
+             * Source
+             * @default author
+             */
+            source: string;
+            /**
+             * Use Model
+             * @default true
+             */
+            use_model: boolean;
+        };
         /** NovelCreationDraftRequest */
         NovelCreationDraftRequest: {
             /** Answers */
@@ -6776,6 +6822,11 @@ export interface components {
             created_at?: string | null;
             /** Current Message */
             current_message?: string | null;
+            /**
+             * Diagnostic Count
+             * @default 0
+             */
+            diagnostic_count: number;
             /** Events */
             events?: components["schemas"]["NovelCreationStageEventResponse"][];
             /** Failure Class */
@@ -11899,6 +11950,44 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationStageConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_and_generate_recommended_api_v1_novel_creation_sessions__session_id__stages__stage__confirm_and_generate_recommended_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                session_id: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationConfirmAndGenerateRequest"];
             };
         };
         responses: {

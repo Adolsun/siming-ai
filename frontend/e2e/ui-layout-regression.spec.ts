@@ -414,6 +414,12 @@ async function mockUiApi(page: Page) {
     if (path === '/api/v1/operations/operation-running/cancel' && route.request().method() === 'POST') {
       return fulfill(route, { code: 0, data: { status: 'cancelling' } })
     }
+    if (path === '/api/v1/operations/operation-running/pause' && route.request().method() === 'POST') {
+      return fulfill(route, { code: 0, data: { status: 'paused' } })
+    }
+    if (path === '/api/v1/operations/operation-running/continue' && route.request().method() === 'POST') {
+      return fulfill(route, { code: 0, data: { status: 'running' } })
+    }
     if (path === '/api/v1/config/getting-started') {
       return fulfill(route, { code: 0, data: {
         free_models: [], recommended_model: null, platform_supported: true, configured: true,
@@ -745,6 +751,27 @@ for (const viewport of creationViewports) {
     await expect(cancelButton).toBeEnabled()
     await expectViewportSafe(page)
     await expectVisualSnapshot(page, `creation-author-running-${viewport.name}.png`)
+
+    const pauseRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/api/v1/operations/operation-running/pause'
+      && request.method() === 'POST'
+    ))
+    await page.getByRole('button', { name: /暂停/ }).click()
+    await pauseRequest
+    const pausedOutcome = page.getByText('本轮立项任务已暂停')
+    await expect(pausedOutcome).toBeVisible()
+    await expect(page.getByText('任务已暂停；检查点和已有草稿均已保留')).toBeVisible()
+    await pausedOutcome.scrollIntoViewIfNeeded()
+    await expectViewportSafe(page)
+    await expectVisualSnapshot(page, `creation-author-paused-${viewport.name}.png`)
+
+    const continueRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/api/v1/operations/operation-running/continue'
+      && request.method() === 'POST'
+    ))
+    await page.getByRole('button', { name: /继续任务/ }).click()
+    await continueRequest
+    await expect(page.getByText('正在从最近检查点继续')).toBeVisible()
 
     const cancelRequest = page.waitForRequest((request) => (
       new URL(request.url()).pathname === '/api/v1/operations/operation-running/cancel'

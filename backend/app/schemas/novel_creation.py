@@ -88,6 +88,7 @@ class NovelCreationStageRunResponse(BaseModel):
     attempt: int = 0
     result_mode: Optional[str] = None
     warning: Optional[str] = None
+    diagnostic_count: int = 0
     current_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

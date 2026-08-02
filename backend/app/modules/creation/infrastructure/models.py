@@ -94,6 +94,7 @@ class NovelCreationStageRun(Base):
     next_action = Column(Text, nullable=True)
     request_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)
+    diagnostics_json = Column(JSON, nullable=True)
     current_message = Column(Text, nullable=True)
     idempotency_key = Column(String(128), nullable=True)
     # Kept as a durable identifier rather than a database FK to avoid a cycle:

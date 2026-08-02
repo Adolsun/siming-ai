@@ -471,7 +471,7 @@
   content: '';
 }
 
-.gui-chat-creation-run-waiting_author::before {
+.gui-chat-creation-run-waiting_user::before {
   background: var(--ant-color-warning);
 }
 

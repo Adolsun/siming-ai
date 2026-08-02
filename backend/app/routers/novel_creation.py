@@ -28,7 +28,11 @@ from ..schemas.novel_creation import (
 )
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
-from ..services.novel_creation_claims import creation_idempotency_key, claim_or_replay_creation_run
+from ..services.novel_creation_claims import (
+    claim_or_replay_creation_run,
+    creation_idempotency_key,
+    get_creation_claim_by_idempotency_key,
+)
 from ..services.novel_creation_consistency import (
     creation_dependency_graph,
     validate_creation_consistency,
@@ -65,6 +69,7 @@ from ..services.novel_creation_versions import (
 from ..services.novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
+    add_run_event,
     create_run,
     confirm_run,
     generation_blockers,
@@ -97,7 +102,8 @@ from ..services.workspace.tools.novel_creation import (
     review_novel_blueprint,
     start_novel_creation_session,
 )
-from ..services.workspace.tools.novel_creation_v2 import _validate_stage, generate_novel_creation_stage, submit_novel_creation_stage
+from ..services.workspace.tools.novel_creation_v2 import _validate_stage, submit_novel_creation_stage
+from ..services.novel_creation_task_runtime import schedule_creation_stage
 
 router = APIRouter(tags=["novel-creation"])
 
@@ -397,6 +403,11 @@ class NovelCreationStageConfirmRequest(BaseModel):
     confirm: bool = True
     source: str = "author"
     expected_revision: int | None = None
+
+
+class NovelCreationConfirmAndGenerateRequest(NovelCreationStageConfirmRequest):
+    model: str | None = None
+    use_model: bool = True
 
 
 class NovelCreationStagePatchRequest(BaseModel):
@@ -718,45 +729,6 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
     return ApiResponse.success(data={"deleted": True})
 
 
-async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
-    db = SessionLocal()
-    heartbeat_task: asyncio.Task | None = None
-    run: Any | None = None
-    try:
-        run = novel_creation_session_store(db).run(run_id)
-        operation_id = run.operation_id if run else None
-        if operation_id:
-            heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
-        with activate_operation(operation_id):
-            await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
-    except asyncio.CancelledError:
-        run = novel_creation_session_store(db).run(run_id)
-        if run and run.status == "running":
-            run.status = "cancelled"
-            run.current_message = "立项任务已取消，已保存内容不会丢失"
-            run.next_action = "检查当前草稿后可重新生成本阶段"
-            run.completed_at = datetime.utcnow()
-            from ..services.novel_creation_claims import complete_creation_claim
-
-            complete_creation_claim(
-                db,
-                run.claim_id,
-                error=run.current_message,
-                status="cancelled",
-            )
-            commit_session(db)
-            if run.operation_id:
-                finish_operation(run.operation_id, message=run.current_message, status="cancelled")
-        raise
-    finally:
-        if heartbeat_task:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
-        if run and run.operation_id:
-            unregister_operation_actions(run.operation_id)
-        db.close()
-
-
 @router.post(
     "/novel-creation/sessions/{session_id}/runs",
     response_model=ApiResponse[NovelCreationStageRunStartData],
@@ -857,9 +829,7 @@ async def start_creation_stage_run(
     )
     commit_session(db)
     run_id = run.id
-    task = asyncio.create_task(_run_creation_stage(run_id, session_id, request))
-    if run.operation_id:
-        register_operation_actions(run.operation_id, cancel=task.cancel)
+    schedule_creation_stage(run_id, session_id, request, operation_id=run.operation_id)
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
@@ -915,7 +885,7 @@ async def stream_creation_stage_run(
                     }
                     yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 sent = max([int(event.sequence or 0) for event in rows] or [sent])
-                if run.status in {"completed", "waiting_author", "failed", "cancelled", "interrupted"}:
+                if run.status in {"completed", "waiting_user", "waiting_author", "failed", "cancelled", "interrupted"}:
                     yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
                     return
             finally:
@@ -982,9 +952,7 @@ async def retry_creation_stage_run(
     )
     run.retry_of_run_id = previous.id
     commit_session(db)
-    task = asyncio.create_task(_run_creation_stage(run.id, session.id, request))
-    if run.operation_id:
-        register_operation_actions(run.operation_id, cancel=task.cancel)
+    schedule_creation_stage(run.id, session.id, request, operation_id=run.operation_id)
     return ApiResponse.success(
         data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run.id}/stream"},
         message="已创建重试任务",
@@ -1047,6 +1015,86 @@ async def update_creation_stage(session_id: str, stage: str, payload: NovelCreat
         "expected_revision": payload.expected_revision,
     })
     return _tool_response(result)
+
+
+@router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm-and-generate-recommended")
+async def confirm_and_generate_recommended(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationConfirmAndGenerateRequest,
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    """Confirm exactly one artifact and start only the newly recommended artifact."""
+    if idempotency_key:
+        existing_claim = get_creation_claim_by_idempotency_key(
+            db,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing_claim and existing_claim.run_id:
+            existing_run = novel_creation_session_store(db).run(existing_claim.run_id)
+            existing_session = novel_creation_session_store(db).session(session_id)
+            if existing_run and existing_session:
+                return ApiResponse.success(
+                    data={
+                        "action_type": "confirm_and_generate_recommended",
+                        "session": serialize_session(existing_session),
+                        "run": serialize_run(existing_run),
+                        "recommended_stage": existing_run.stage,
+                    },
+                    message="已恢复同一次确认并继续任务",
+                )
+    await confirm_creation_stage(session_id, stage, payload, db)
+    store = novel_creation_session_store(db)
+    session = store.session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    serialized = serialize_session(session)
+    recommended = (serialized.get("stage_flow") or {}).get("recommended_stage")
+    producing_run = store.latest_stage_operation(session_id, stage)
+    if producing_run:
+        add_run_event(
+            db,
+            producing_run,
+            "confirm_and_generate_recommended",
+            "completed",
+            "已确认当前内容并请求生成推荐对象",
+            {"action_type": "confirm_and_generate_recommended", "recommended_stage": recommended},
+        )
+        commit_session(db)
+    if not recommended or recommended == stage or recommended not in STAGE_ORDER:
+        return ApiResponse.success(
+            data={
+                "action_type": "confirm_and_generate_recommended",
+                "session": serialize_session(session),
+                "run": None,
+                "recommended_stage": recommended,
+            },
+            message="当前内容已确认；没有需要自动生成的下一对象",
+        )
+    start_payload = NovelCreationStageRunRequest(
+        stage=recommended,
+        model=payload.model,
+        use_model=payload.use_model,
+        expected_revision=int(session.revision or 0),
+    )
+    stable_key = idempotency_key or f"confirm-next:{session_id}:{stage}:{int(session.revision or 0)}:{recommended}"
+    started = await start_creation_stage_run(
+        session_id,
+        start_payload,
+        db,
+        idempotency_key=stable_key,
+    )
+    return ApiResponse.success(
+        data={
+            "action_type": "confirm_and_generate_recommended",
+            "session": serialize_session(session),
+            "run": started.data.get("run") if isinstance(started.data, dict) else None,
+            "recommended_stage": recommended,
+        },
+        message=f"已确认当前内容，并开始生成{STAGE_LABELS.get(recommended, recommended)}",
+    )
 
 
 def _require_creation_revision(session: Any, expected_revision: int) -> None:
@@ -1307,9 +1355,7 @@ async def creation_conversation_command(
             })
     run = create_run(db, session, payload.stage, request, claim_id=claim.id, idempotency_key=command_key)
     commit_session(db)
-    task = asyncio.create_task(_run_creation_stage(run.id, session.id, request))
-    if run.operation_id:
-        register_operation_actions(run.operation_id, cancel=task.cancel)
+    schedule_creation_stage(run.id, session.id, request, operation_id=run.operation_id)
     return ApiResponse.success(data={
         "run": serialize_run(run),
         "ui_directive": {"navigate": False},

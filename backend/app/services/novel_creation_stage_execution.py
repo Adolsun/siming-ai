@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import update
@@ -79,6 +80,22 @@ class StageRevisionConflict(ValueError):
     """A user edit won the race with a long-running stage generation."""
 
     failure_class = "revision_conflict"
+
+
+def _capture_model_diagnostic(context: StageExecution, stage: str, metadata: dict[str, Any]) -> None:
+    """Persist the complete raw model reply while keeping public events bounded."""
+    raw = metadata.pop("_diagnostic_raw", None)
+    if not isinstance(raw, str) or not raw:
+        return
+    diagnostics = list(context.run.diagnostics_json or [])
+    diagnostics.append({
+        "stage": stage,
+        "repair_method": metadata.get("repair_method"),
+        "warning": metadata.get("warning"),
+        "raw_response": raw,
+        "captured_at": datetime.utcnow().isoformat(),
+    })
+    context.run.diagnostics_json = diagnostics
 
 
 def _revision_conflict(expected: int, actual: int) -> StageRevisionConflict:
@@ -169,8 +186,11 @@ def _prepare_execution(
     )
     run_request = run.request_json if run and isinstance(run.request_json, dict) else {}
     current_draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    is_resume = bool(args.get("_resume") or run_request.get("_resume"))
     snapshot = run_request.get("input_snapshot")
-    working_draft = deepcopy(snapshot) if isinstance(snapshot, dict) else deepcopy(current_draft)
+    working_draft = deepcopy(current_draft) if is_resume else (
+        deepcopy(snapshot) if isinstance(snapshot, dict) else deepcopy(current_draft)
+    )
     instruction = _text(args.get("instruction"))
     if instruction:
         working_draft["_refinement_instruction"] = instruction
@@ -260,7 +280,9 @@ def _prepare_execution(
         enhance_with_model=enhance_with_model,
         model_response_error=model_response_error,
         expected_revision=int(
-            run.input_revision if run.input_revision is not None else session.revision or 0
+            session.revision or 0
+            if is_resume
+            else (run.input_revision if run.input_revision is not None else session.revision or 0)
         ),
         entity_target=entity_target,
         active_stage=stage,
@@ -423,6 +445,7 @@ async def _generate_concept_stage(context: StageExecution) -> None:
             {"stage": "concepts", **metadata, "storage_target": "session_draft"},
         )
         commit_session(context.db)
+    _capture_model_diagnostic(context, "concepts", metadata)
     context.run_metadata.append(metadata)
     preserve = context.operation == "refine" and source == "contract_fallback"
     if not preserve:
@@ -451,7 +474,17 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         if context.stage == "all"
         else [context.stage]
     )
+    completed_stages = {
+        str((event.payload_json or {}).get("stage"))
+        for event in (context.run.events or [])
+        if event.event_type == "stage_completed" and isinstance(event.payload_json, dict)
+    } if context.args.get("_resume") else set()
     for name in stages:
+        if name in completed_stages:
+            existing = ((context.working_draft.get("stages") or {}).get(name) or {}).get("data")
+            if isinstance(existing, dict):
+                context.generated[name] = deepcopy(existing)
+            continue
         context.active_stage = name
         context.ensure_not_cancelled(context.db, context.run)
         label = STAGE_LABELS.get(name, name)
@@ -490,6 +523,7 @@ async def _generate_regular_stages(context: StageExecution) -> None:
             enhance=context.enhance_with_model,
         )
         context.ensure_not_cancelled(context.db, context.run)
+        _capture_model_diagnostic(context, name, metadata)
         context.run_metadata.append(metadata)
         data = context.normalize_stage(name, data, baseline)
         data, entity_summary = _merge_entity_generation(context, name, baseline, data)
@@ -541,7 +575,15 @@ async def _generate_regular_stages(context: StageExecution) -> None:
 
 
 def _finish_execution(context: StageExecution) -> dict[str, Any]:
-    if context.stage == "all":
+    if context.stage == "all" and not (
+        context.args.get("_resume")
+        and any(
+            event.event_type == "stage_completed"
+            and isinstance(event.payload_json, dict)
+            and event.payload_json.get("stage") == "final_review"
+            for event in (context.run.events or [])
+        )
+    ):
         context.ensure_not_cancelled(context.db, context.run)
         final = derive_stage(context.session, "final_review", context.working_draft)
         context.ensure_not_cancelled(context.db, context.run)

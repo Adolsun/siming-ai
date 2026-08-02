@@ -37,6 +37,8 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PlusOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
   ReloadOutlined,
   RocketOutlined,
   RobotOutlined,
@@ -395,7 +397,7 @@ function GuiAssistantChat() {
   const [importStrategy, setImportStrategy] = useState<'merge' | 'overwrite_unconfirmed' | 'skip_conflicts'>('merge')
   const [importActionLoading, setImportActionLoading] = useState(false)
   const [activeCreationRun, setActiveCreationRun] = useState<NovelCreationRunSummary | null>(null)
-  const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'retry' | null>(null)
+  const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'pause' | 'resume' | 'retry' | null>(null)
   const [creationArtifacts, setCreationArtifacts] = useState<CreationArtifactSummary[]>([])
   const [creationArtifactsLoading, setCreationArtifactsLoading] = useState(false)
   const [creationConsistency, setCreationConsistency] = useState<CreationConsistencyReport | null>(null)
@@ -582,6 +584,8 @@ function GuiAssistantChat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const activeProjectOperationRef = useRef<string | null>(null)
+  const projectStopRequestedRef = useRef(false)
   const creationRunMessageRef = useRef<{ conversationId: string; assistantMessageId: string } | null>(null)
 
   // Elapsed timer for "running" status messages
@@ -608,7 +612,7 @@ function GuiAssistantChat() {
             ? { ...item, run: nextRun, content: nextRun.current_message || item.content }
             : item
         )))
-        if (['waiting_author', 'completed', 'failed', 'cancelled', 'interrupted'].includes(nextRun.status)) {
+        if (['waiting_user', 'waiting_author', 'completed', 'failed', 'cancelled', 'interrupted'].includes(nextRun.status)) {
           const binding = creationRunMessageRef.current
           if (binding) {
             const messageStatus = nextRun.status === 'failed'
@@ -1076,6 +1080,46 @@ function GuiAssistantChat() {
     }
 
     try {
+      const controlText = (originalText || text).trim().replace(/[。！!？?\s]+/g, '')
+      const controlAction = /^(停止|取消)$/.test(controlText)
+        ? 'cancel'
+        : /^(暂停)$/.test(controlText)
+          ? 'pause'
+          : /^(继续|恢复|继续生成)$/.test(controlText)
+            ? 'continue'
+            : /^(重试|切换模型后重试|用当前模型重试)$/.test(controlText)
+              ? 'retry'
+              : null
+      if (controlAction && activeCreationRun?.operation_id) {
+        if (controlAction === 'retry') {
+          const runId = activeCreationRun.id || activeCreationRun.run_id
+          if (!runId) throw new Error('缺少可重试的立项任务')
+          const response = await apiClient.post<ApiResponse<{ run: NovelCreationRunSummary }>>(
+            `/novel-creation/runs/${runId}/retry`,
+            { use_latest_draft: true, model: selectedModel || null },
+          )
+          setActiveCreationRun(response.data.data.run)
+          finish('已按最新草稿和当前模型创建重试任务。', 'running', { run: response.data.data.run })
+        } else {
+          const endpoint = controlAction === 'continue' ? 'continue' : controlAction
+          const response = await apiClient.post<ApiResponse<NovelCreationRunSummary>>(
+            `/operations/${activeCreationRun.operation_id}/${endpoint}`,
+          )
+          const nextStatus = controlAction === 'pause' ? 'paused' : controlAction === 'continue' ? 'running' : 'cancelled'
+          const nextRun = { ...activeCreationRun, status: nextStatus }
+          setActiveCreationRun(nextRun)
+          finish(
+            controlAction === 'pause' ? '任务已暂停，检查点和已有草稿均已保留。'
+              : controlAction === 'continue' ? '正在从最近检查点继续。'
+                : '任务已取消，已有草稿保持不变。',
+            controlAction === 'continue' ? 'running' : 'completed',
+            { run: nextRun },
+          )
+          void response
+        }
+        return
+      }
+
       const selectedBlueprintIndex = parseBlueprintIndex(text)
       if (selectedBlueprintIndex != null && systemBlueprints[selectedBlueprintIndex]) {
         if (!systemSessionId) throw new Error('缺少新书创建会话，请重新生成方案。')
@@ -1704,6 +1748,10 @@ function GuiAssistantChat() {
             .join('\n')
           if (!data || data === '[DONE]') continue
           const event = normalizeProjectSseEvent(JSON.parse(data))
+          if (event.type === 'run' && event.run?.operation_id) {
+            activeProjectOperationRef.current = event.run.operation_id
+            durableProjectRun = event.run
+          }
           if (event.type === 'complete') {
             durableProjectReply = event.data?.reply?.trim() || EMPTY_ASSISTANT_REPLY
             durableProjectRun = event.data?.run
@@ -1721,6 +1769,10 @@ function GuiAssistantChat() {
           .join('\n')
         if (data && data !== '[DONE]') {
           const event = normalizeProjectSseEvent(JSON.parse(data))
+          if (event.type === 'run' && event.run?.operation_id) {
+            activeProjectOperationRef.current = event.run.operation_id
+            durableProjectRun = event.run
+          }
           if (event.type === 'complete') {
             durableProjectReply = event.data?.reply?.trim() || EMPTY_ASSISTANT_REPLY
             durableProjectRun = event.data?.run
@@ -1777,6 +1829,8 @@ function GuiAssistantChat() {
     } finally {
       setStreaming(false)
       abortRef.current = null
+      activeProjectOperationRef.current = null
+      projectStopRequestedRef.current = false
     }
   }
 
@@ -1814,7 +1868,61 @@ function GuiAssistantChat() {
     }
   }
 
-  const stopGeneration = () => {
+  const pauseCreationRun = async () => {
+    if (!activeCreationRun?.operation_id || creationRunAction) return
+    setCreationRunAction('pause')
+    try {
+      await apiClient.post(`/operations/${activeCreationRun.operation_id}/pause`)
+      setActiveCreationRun((current) => current ? { ...current, status: 'paused', current_message: '任务已暂停；检查点和已有草稿均已保留' } : current)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '暂停任务失败')
+    } finally {
+      setCreationRunAction(null)
+    }
+  }
+
+  const resumeCreationRun = async () => {
+    if (!activeCreationRun?.operation_id || creationRunAction) return
+    setCreationRunAction('resume')
+    try {
+      await apiClient.post(`/operations/${activeCreationRun.operation_id}/continue`)
+      setActiveCreationRun((current) => current ? { ...current, status: 'running', current_message: '正在从最近检查点继续' } : current)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '继续任务失败')
+    } finally {
+      setCreationRunAction(null)
+    }
+  }
+
+  const stopGeneration = async () => {
+    projectStopRequestedRef.current = true
+    const operationId = activeProjectOperationRef.current
+    if (operationId) {
+      try {
+        await apiClient.post(`/operations/${operationId}/cancel`)
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '停止后台任务失败')
+        projectStopRequestedRef.current = false
+        return
+      }
+    } else {
+      for (let attempt = 0; attempt < 20 && !activeProjectOperationRef.current; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100))
+      }
+      if (activeProjectOperationRef.current) {
+        try {
+          await apiClient.post(`/operations/${activeProjectOperationRef.current}/cancel`)
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '停止后台任务失败')
+          projectStopRequestedRef.current = false
+          return
+        }
+      } else {
+        message.warning('任务标识尚未返回，后台仍在建立任务，请稍后再次停止')
+        projectStopRequestedRef.current = false
+        return
+      }
+    }
     abortRef.current?.abort()
     setStreaming(false)
     setRunningStartTime(null)
@@ -2561,12 +2669,15 @@ function GuiAssistantChat() {
     if (!activeCreationRun) return null
     const runId = activeCreationRun.id || activeCreationRun.run_id
     const isRunning = ['queued', 'running'].includes(activeCreationRun.status)
-    const isWaiting = activeCreationRun.status === 'waiting_author'
+    const isWaiting = ['waiting_user', 'waiting_author'].includes(activeCreationRun.status)
+    const isPaused = activeCreationRun.status === 'paused'
     const canRetry = ['failed', 'cancelled', 'interrupted'].includes(activeCreationRun.status)
     const statusLabels: Record<string, string> = {
       queued: '排队中',
       running: '正在生成',
+      waiting_user: '等待确认',
       waiting_author: '等待确认',
+      paused: '已暂停',
       completed: '已完成',
       failed: '失败',
       cancelled: '已取消',
@@ -2603,10 +2714,16 @@ function GuiAssistantChat() {
         </Space>
         <div className="gui-chat-creation-run-actions">
           {isRunning && (
-            <Button danger icon={<StopOutlined />} loading={creationRunAction === 'cancel'} onClick={() => void cancelCreationRun()}>
-              停止
-            </Button>
+            <>
+              <Button icon={<PauseCircleOutlined />} loading={creationRunAction === 'pause'} onClick={() => void pauseCreationRun()}>
+                暂停
+              </Button>
+              <Button danger icon={<StopOutlined />} loading={creationRunAction === 'cancel'} onClick={() => void cancelCreationRun()}>
+                停止
+              </Button>
+            </>
           )}
+          {isPaused && <Button type="primary" icon={<PlayCircleOutlined />} loading={creationRunAction === 'resume'} onClick={() => void resumeCreationRun()}>继续</Button>}
           {canRetry && (
             <Button icon={<ReloadOutlined />} loading={creationRunAction === 'retry'} onClick={() => void retryCreationRun()}>
               用当前模型重试

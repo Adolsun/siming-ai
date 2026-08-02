@@ -130,6 +130,7 @@ async function mockApi(page: Page, options: {
   onInterview?: (route: Route, call: number) => Promise<void>
   onApply?: (route: Route) => Promise<void>
   onStageConfirm?: (route: Route, stage: string) => Promise<void>
+  onConfirmAndGenerate?: (route: Route, stage: string) => Promise<void>
   onStageRun?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
@@ -237,6 +238,16 @@ async function mockApi(page: Page, options: {
     if (stageConfirm && method === 'POST') {
       if (options.onStageConfirm) return options.onStageConfirm(route, stageConfirm[1])
       return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
+    }
+    const confirmAndGenerate = path.match(/^\/api\/v1\/novel-creation\/sessions\/[^/]+\/stages\/([^/]+)\/confirm-and-generate-recommended$/)
+    if (confirmAndGenerate && method === 'POST') {
+      if (options.onConfirmAndGenerate) return options.onConfirmAndGenerate(route, confirmAndGenerate[1])
+      return fulfill(route, { code: 0, data: {
+        action_type: 'confirm_and_generate_recommended',
+        session: options.session ?? startedSession ?? conceptSession(),
+        run: null,
+        recommended_stage: null,
+      } })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'PATCH') {
       return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
@@ -584,19 +595,19 @@ test('keeps a generated world stage visible until confirmation and only then sta
       },
     },
   }
-  let confirmBody: Record<string, unknown> | undefined
-  let runBody: Record<string, unknown> | undefined
+  let actionBody: Record<string, unknown> | undefined
   await mockApi(page, {
     session,
     sessions: [session],
-    onStageConfirm: async (route, stage) => {
+    onConfirmAndGenerate: async (route, stage) => {
       expect(stage).toBe('world_style')
-      confirmBody = route.request().postDataJSON()
-      return fulfill(route, { code: 0, data: confirmed })
-    },
-    onStageRun: async (route) => {
-      runBody = route.request().postDataJSON()
-      return fulfill(route, { code: 0, data: { run: { id: 'run-characters', session_id: 'session-1', stage: 'characters', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' } } })
+      actionBody = route.request().postDataJSON()
+      return fulfill(route, { code: 0, data: {
+        action_type: 'confirm_and_generate_recommended',
+        session: confirmed,
+        run: { id: 'run-characters', session_id: 'session-1', stage: 'characters', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' },
+        recommended_stage: 'characters',
+      } })
     },
   })
   await page.goto('/novel-creation?session=session-1&stage=characters', { waitUntil: 'domcontentloaded' })
@@ -617,7 +628,7 @@ test('keeps a generated world stage visible until confirmation and only then sta
   }
   const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' })
   await expect(confirmAndContinue).toBeEnabled()
-  expect(runBody).toBeUndefined()
+  expect(actionBody).toBeUndefined()
 
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(confirmAndContinue).toBeVisible()
@@ -639,7 +650,6 @@ test('keeps a generated world stage visible until confirmation and only then sta
   }
 
   await confirmAndContinue.click()
-  await expect.poll(() => runBody).toBeTruthy()
-  expect(confirmBody).toMatchObject({ confirm: true, expected_revision: 5 })
-  expect(runBody).toMatchObject({ stage: 'characters', expected_revision: 6, auto_confirm: false })
+  await expect.poll(() => actionBody).toBeTruthy()
+  expect(actionBody).toMatchObject({ confirm: true, expected_revision: 5, use_model: true })
 })
