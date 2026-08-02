@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { message } from 'antd'
 
 const { mockGet, mockPost, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -34,6 +35,10 @@ vi.mock('react-router-dom', async () => {
 import GuiAssistantChat from '../components/GuiAssistantChat'
 
 describe('GuiAssistantChat new-book handoff', () => {
+  afterEach(() => {
+    message.destroy()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     modelState.defaultModel = 'openai:test'
@@ -362,5 +367,57 @@ describe('GuiAssistantChat new-book handoff', () => {
       expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('opencode_cli:free-model')
       expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('45 \u79d2')
     })
+  })
+
+  it('uploads creation material as a durable binary import and applies a selected preview', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url === '/ai/system-assistant/conversations') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url === '/novel-creation/sessions/session-1/imports') return Promise.resolve({ data: { data: { imports: [] } } })
+      if (url === '/novel-creation/sessions/session-1/artifacts') return Promise.resolve({ data: { data: { artifacts: [{ artifact: 'characters', label: '角色与关系', status: 'pending', revision: 1 }] } } })
+      if (url === '/novel-creation/imports/import-1') return Promise.resolve({ data: { data: {
+        id: 'import-1', source_file_id: 'import-1', session_id: 'session-1', operation_id: 'operation-import-1',
+        filename: '八卷大纲.md', status: 'waiting_user', text_length: 32000, chunk_count: 5, processed_chunks: 5, input_revision: 1,
+        preview: {
+          detected: { characters: 12, factions: 4, locations: 19, volumes: 8, chapter_summaries: 146 },
+          artifact_counts: { characters: 12, locations: 23, macro_outline: 8, opening_outline: 146 },
+          available_artifacts: ['characters', 'locations', 'macro_outline', 'opening_outline'],
+          conflicts: [{ kind: 'existing_artifact', artifact: 'characters', status: 'generated' }],
+        },
+      } } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
+      if (url === '/novel-creation/sessions/session-1/imports') return Promise.resolve({ data: { data: {
+        id: 'import-1', source_file_id: 'import-1', session_id: 'session-1', operation_id: 'operation-import-1',
+        filename: '八卷大纲.md', status: 'running', text_length: 0, chunk_count: 0, processed_chunks: 0, input_revision: 1,
+      } } })
+      if (url === '/novel-creation/imports/import-1/apply') return Promise.resolve({ data: { data: {
+        applied: [{ artifact: 'characters', count: 12 }, { artifact: 'macro_outline', count: 8 }], skipped: [], revision: 3,
+      } } })
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    const user = userEvent.setup()
+    const { container } = render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    const upload = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement)
+    const file = new File(['# 第一卷\n卷纲内容'], '八卷大纲.md', { type: 'text/markdown' })
+    await user.upload(upload, file)
+    expect((await screen.findAllByText(/八卷大纲.md/)).length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('资料导入')).toBeInTheDocument()
+    expect(await screen.findByText('卷纲 8')).toBeInTheDocument()
+    expect(await screen.findByText('导入预览 · 八卷大纲.md')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '应用所选数据' }))
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/imports/import-1/apply', expect.objectContaining({
+        selected_artifacts: expect.arrayContaining(['characters', 'macro_outline']),
+        strategy: 'merge',
+        expected_revision: 1,
+      }))
+    })
+    expect(await screen.findByText(/导入已完成/)).toBeInTheDocument()
   })
 })

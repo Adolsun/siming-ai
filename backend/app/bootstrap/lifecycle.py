@@ -38,6 +38,7 @@ def _run_legacy_startup_recovery() -> None:
         recover_content_sync_queue,
     )
     from ..services.operation_runtime import mark_interrupted_operations
+    from ..services.novel_creation_imports import mark_interrupted_material_imports
     from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
     from ..modules.assistant.infrastructure.system_conversations import (
@@ -56,6 +57,7 @@ def _run_legacy_startup_recovery() -> None:
         # Creation runs own their durable result state. Reconcile them before
         # projecting generic operations so saved output remains reviewable.
         mark_interrupted_novel_creation_runs(uow.session)
+        mark_interrupted_material_imports(uow.session)
         mark_interrupted_operations(uow.session)
         SqlAlchemySystemConversationStore(uow.session).interrupt_running_messages()
         uow.commit()

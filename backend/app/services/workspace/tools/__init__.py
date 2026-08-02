@@ -101,13 +101,16 @@ from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
 from .novel_creation_v2 import (
+    apply_creation_import,
     generate_novel_creation_stage,
+    import_creation_material,
     get_creation_artifact,
     get_creation_dependencies,
     get_novel_creation_session,
     list_creation_artifacts_tool,
     lock_creation_fields,
     patch_creation_artifact_tool,
+    preview_creation_import,
     submit_novel_creation_stage,
     undo_creation_artifact_tool,
     unlock_creation_fields,
@@ -248,6 +251,9 @@ __all__ = [
     "unlock_creation_fields",
     "undo_creation_artifact_tool",
     "generate_novel_creation_stage",
+    "import_creation_material",
+    "preview_creation_import",
+    "apply_creation_import",
     "submit_novel_creation_stage",
     "get_narrative_governance",
     "apply_narrative_governance_candidates",

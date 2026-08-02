@@ -9,6 +9,7 @@ import re
 import time
 from contextlib import nullcontext
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object_detailed
-from ....database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
+from ....database.models import NovelCreationMaterialImport, NovelCreationSession, NovelCreationStageRun, OperationRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
 from ....services.novel_creation_authoring import (
     AuthorLockViolation,
@@ -33,6 +34,13 @@ from ....services.novel_creation_authoring import (
     _validate_stage,
 )
 from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
+from ....services.novel_creation_imports import (
+    apply_material_import,
+    create_material_import,
+    run_material_import,
+    serialize_material_import,
+)
+from ....services.operation_runtime import register_operation_actions
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
     STAGE_LABELS,
@@ -919,6 +927,75 @@ async def undo_creation_artifact_tool(db: Session, project_id: str, args: dict[s
     except Exception as exc:
         db.rollback()
         return {"tool": "undo_creation_artifact", "status": "error", "detail": str(exc), "data": None}
+
+
+async def import_creation_material(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "import_creation_material", "status": "skipped", "detail": "Session not found", "data": None}
+    file_path = Path(_text(args.get("file_path"))).expanduser()
+    if not file_path.exists() or not file_path.is_file():
+        return {"tool": "import_creation_material", "status": "error", "detail": "导入文件不存在", "data": None}
+    try:
+        import_run, replayed = create_material_import(
+            db,
+            session,
+            filename=file_path.name,
+            raw=file_path.read_bytes(),
+            model=_text(args.get("model")) or None,
+            source_message_id=_text(args.get("source_message_id")) or None,
+        )
+        commit_session(db)
+        if not replayed and import_run.status == "queued":
+            task = asyncio.create_task(run_material_import(import_run.id, _text(args.get("model")) or None))
+            if import_run.operation_id:
+                register_operation_actions(import_run.operation_id, cancel=task.cancel)
+        return {
+            "tool": "import_creation_material",
+            "status": "ok",
+            "detail": "已恢复同一文件导入" if replayed else "原始文件已保存，持久导入任务已开始",
+            "data": serialize_material_import(import_run),
+        }
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "import_creation_material", "status": "error", "detail": str(exc), "data": None}
+
+
+async def preview_creation_import(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    import_run = db.get(NovelCreationMaterialImport, _text(args.get("import_id")))
+    if not import_run:
+        return {"tool": "preview_creation_import", "status": "skipped", "detail": "Import run not found", "data": None}
+    session_id = _text(args.get("session_id"))
+    if session_id and import_run.session_id != session_id:
+        return {"tool": "preview_creation_import", "status": "error", "detail": "导入任务不属于当前立项会话", "data": None}
+    return {
+        "tool": "preview_creation_import",
+        "status": "ok",
+        "detail": "导入预览已就绪" if import_run.status == "waiting_user" else "导入状态已加载",
+        "data": serialize_material_import(import_run),
+    }
+
+
+async def apply_creation_import(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    import_run = db.get(NovelCreationMaterialImport, _text(args.get("import_id")))
+    if not import_run:
+        return {"tool": "apply_creation_import", "status": "skipped", "detail": "Import run not found", "data": None}
+    try:
+        result = apply_material_import(
+            db,
+            import_run,
+            selected_artifacts=[_text(value) for value in (args.get("selected_artifacts") or [])],
+            strategy=_text(args.get("strategy")) or "merge",
+            expected_revision=int(args.get("expected_revision")),
+        )
+        return {"tool": "apply_creation_import", "status": "ok", "detail": "所选导入内容已原子写入", "data": result}
+    except RuntimeError as exc:
+        if str(exc) == "revision_conflict":
+            return {"tool": "apply_creation_import", "status": "conflict", "detail": "立项 revision 已变化，请刷新预览", "data": None}
+        return {"tool": "apply_creation_import", "status": "error", "detail": str(exc), "data": None}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "apply_creation_import", "status": "error", "detail": str(exc), "data": None}
 
 
 async def generate_novel_creation_stage(db: Session, project_id: str, args: dict[str, Any]) -> dict:

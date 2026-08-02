@@ -4,15 +4,17 @@ from __future__ import annotations
 from app.architecture.uow import commit_session
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
@@ -27,6 +29,19 @@ from ..schemas.novel_creation import (
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_claims import creation_idempotency_key, claim_or_replay_creation_run
+from ..services.novel_creation_imports import (
+    IMPORTABLE_ARTIFACTS,
+    MAX_UPLOAD_BYTES,
+    SUPPORTED_EXTENSIONS,
+    apply_material_import,
+    claim_material_import_retry,
+    create_material_import as create_material_import_record,
+    find_material_import_by_file,
+    get_material_import_record,
+    list_material_import_records,
+    run_material_import,
+    serialize_material_import,
+)
 from ..services.novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
@@ -1040,6 +1055,167 @@ async def creation_conversation_command(
 class SaveImportedFileRequest(BaseModel):
     filename: str
     content: str
+
+
+class CreationImportApplyRequest(BaseModel):
+    selected_artifacts: list[str] = Field(default_factory=list)
+    strategy: Literal["merge", "overwrite_unconfirmed", "skip_conflicts"] = "merge"
+    expected_revision: int
+
+    @field_validator("selected_artifacts")
+    @classmethod
+    def validate_artifacts(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(IMPORTABLE_ARTIFACTS))
+        if unknown:
+            raise ValueError("不支持的导入对象：" + "、".join(unknown))
+        return list(dict.fromkeys(value))
+
+
+def _launch_material_import(import_run: Any, model: str | None) -> None:
+    task = asyncio.create_task(run_material_import(import_run.id, model))
+    if import_run.operation_id:
+        register_operation_actions(import_run.operation_id, cancel=task.cancel)
+
+
+@router.post("/novel-creation/sessions/{session_id}/imports")
+async def create_material_import(
+    session_id: str,
+    file: UploadFile = File(...),
+    model: str | None = Form(default=None),
+    source_message_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项会话不存在")
+    filename = (file.filename or "").strip()
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持 txt、md、docx 和 json 文件")
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件超过 25MB 上限")
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        import_run, replayed = create_material_import_record(
+            db,
+            session,
+            filename=filename,
+            raw=raw,
+            model=model,
+            source_message_id=source_message_id,
+            media_type=file.content_type or extension,
+        )
+        commit_session(db)
+    except IntegrityError:
+        db.rollback()
+        existing = find_material_import_by_file(db, session_id=session_id, file_sha256=digest)
+        if existing:
+            return ApiResponse.success(data=serialize_material_import(existing), message="已恢复同一文件的导入任务")
+        raise
+    if replayed:
+        return ApiResponse.success(data=serialize_material_import(import_run), message="已恢复同一文件的导入任务")
+    _launch_material_import(import_run, model)
+    return ApiResponse.success(data=serialize_material_import(import_run), message="文件已保存，导入任务已开始")
+
+
+@router.get("/novel-creation/sessions/{session_id}/imports")
+async def list_material_imports(session_id: str, db: Session = Depends(get_db)):
+    if not novel_creation_session_store(db).session(session_id):
+        raise HTTPException(status_code=404, detail="立项会话不存在")
+    rows = list_material_import_records(db, session_id)
+    return ApiResponse.success(data={"imports": [serialize_material_import(row, include_preview=False) for row in rows]})
+
+
+@router.get("/novel-creation/imports/{import_id}")
+async def get_material_import(import_id: str, db: Session = Depends(get_db)):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return ApiResponse.success(data=serialize_material_import(import_run))
+
+
+@router.post("/novel-creation/imports/{import_id}/retry")
+async def retry_material_import(
+    import_id: str,
+    model: str | None = None,
+    db: Session = Depends(get_db),
+):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    if import_run.status in {"queued", "running", "waiting_user", "completed"}:
+        return ApiResponse.success(data=serialize_material_import(import_run), message="已恢复现有导入状态")
+    claimed = claim_material_import_retry(db, import_id)
+    if not claimed:
+        db.rollback()
+        current = get_material_import_record(db, import_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="导入任务不存在")
+        return ApiResponse.success(data=serialize_material_import(current), message="已恢复现有导入状态")
+    commit_session(db)
+    import_run = get_material_import_record(db, import_id)
+    session = novel_creation_session_store(db).session(import_run.session_id)
+    model_source, tool_mode = _operation_model_identity(model)
+    try:
+        operation = ensure_operation(
+            db,
+            source_kind="novel_creation_import",
+            source_id=import_run.id,
+            title=f"重试导入 · {import_run.filename}",
+            status="queued",
+            phase="resuming_checkpoint",
+            message="正在从已保存的分块检查点继续",
+            model_source=model_source,
+            tool_mode=tool_mode if model else "deterministic_import",
+            resume_url=f"/gui?creationSession={import_run.session_id}&import={import_run.id}",
+            can_cancel=True,
+            can_retry=True,
+            progress_mode="steps",
+            progress_current=int(import_run.processed_chunks or 0),
+            progress_total=int(import_run.chunk_count or 0) or None,
+            input_revision=int(session.revision or 0) if session else import_run.input_revision,
+            snapshot_hash=import_run.file_sha256,
+        )
+    except Exception as exc:
+        import_run.status = "failed"
+        import_run.error = f"无法恢复 Operation：{exc}"[:4000]
+        commit_session(db)
+        raise
+    import_run.operation_id = operation.id
+    import_run.status = "queued"
+    import_run.updated_at = datetime.utcnow()
+    commit_session(db)
+    _launch_material_import(import_run, model)
+    return ApiResponse.success(data=serialize_material_import(import_run), message="已从分块检查点重试")
+
+
+@router.post("/novel-creation/imports/{import_id}/apply")
+async def apply_material_import_endpoint(
+    import_id: str,
+    payload: CreationImportApplyRequest,
+    db: Session = Depends(get_db),
+):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    try:
+        result = apply_material_import(
+            db,
+            import_run,
+            selected_artifacts=payload.selected_artifacts,
+            strategy=payload.strategy,
+            expected_revision=payload.expected_revision,
+        )
+    except RuntimeError as exc:
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新预览后再应用") from exc
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ApiResponse.success(data=result, message="已按选择写入立项数据")
 
 
 @router.post("/novel-creation/save-imported-file")

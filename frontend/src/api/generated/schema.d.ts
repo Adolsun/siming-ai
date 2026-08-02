@@ -1163,6 +1163,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/imports/{import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Material Import */
+        get: operations["get_material_import_api_v1_novel_creation_imports__import_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/imports/{import_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Material Import Endpoint */
+        post: operations["apply_material_import_endpoint_api_v1_novel_creation_imports__import_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/imports/{import_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Material Import */
+        post: operations["retry_material_import_api_v1_novel_creation_imports__import_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/presets": {
         parameters: {
             query?: never;
@@ -1402,6 +1453,24 @@ export interface paths {
         put?: never;
         /** Undo Creation Artifact Endpoint */
         post: operations["undo_creation_artifact_endpoint_api_v1_novel_creation_sessions__session_id__artifacts__stage__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Material Imports */
+        get: operations["list_material_imports_api_v1_novel_creation_sessions__session_id__imports_get"];
+        put?: never;
+        /** Create Material Import */
+        post: operations["create_material_import_api_v1_novel_creation_sessions__session_id__imports_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5060,6 +5129,15 @@ export interface components {
              */
             prompt: string;
         };
+        /** Body_create_material_import_api_v1_novel_creation_sessions__session_id__imports_post */
+        Body_create_material_import_api_v1_novel_creation_sessions__session_id__imports_post: {
+            /** File */
+            file: string;
+            /** Model */
+            model?: string | null;
+            /** Source Message Id */
+            source_message_id?: string | null;
+        };
         /** Body_import_file_api_v1_projects__project_id__import_file_post */
         Body_import_file_api_v1_projects__project_id__import_file_post: {
             /** File */
@@ -5606,6 +5684,19 @@ export interface components {
             session_id: string;
             /** Stage */
             stage: string;
+        };
+        /** CreationImportApplyRequest */
+        CreationImportApplyRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Selected Artifacts */
+            selected_artifacts?: string[];
+            /**
+             * Strategy
+             * @default merge
+             * @enum {string}
+             */
+            strategy: "merge" | "overwrite_unconfirmed" | "skip_conflicts";
         };
         /** DatasetCreateRequest */
         DatasetCreateRequest: {
@@ -10418,6 +10509,105 @@ export interface operations {
             };
         };
     };
+    get_material_import_api_v1_novel_creation_imports__import_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_material_import_endpoint_api_v1_novel_creation_imports__import_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreationImportApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_material_import_api_v1_novel_creation_imports__import_id__retry_post: {
+        parameters: {
+            query?: {
+                model?: string | null;
+            };
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     novel_creation_presets_api_v1_novel_creation_presets_get: {
         parameters: {
             query?: never;
@@ -10982,6 +11172,72 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NovelCreationArtifactUndoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_material_imports_api_v1_novel_creation_sessions__session_id__imports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_material_import_api_v1_novel_creation_sessions__session_id__imports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_create_material_import_api_v1_novel_creation_sessions__session_id__imports_post"];
             };
         };
         responses: {

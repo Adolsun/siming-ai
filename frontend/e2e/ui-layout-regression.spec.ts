@@ -319,6 +319,22 @@ async function mockUiApi(page: Page) {
         { artifact: 'final_review', label: '完整性检查', status: 'pending', source: 'unknown', revision: 3, locked_paths: [], flow: { can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '开篇细纲', reason: '等待确认' }] } },
       ],
     } })
+    if (path === '/api/v1/novel-creation/sessions/running-creation/imports') return fulfill(route, { code: 0, data: { imports: [] } })
+    if (path === '/api/v1/novel-creation/imports/import-preview') return fulfill(route, { code: 0, data: {
+      id: 'import-preview', source_file_id: 'import-preview', session_id: 'running-creation', operation_id: 'operation-import-preview',
+      filename: '仙侠悬疑八卷大纲.docx', status: 'waiting_user', input_revision: 3,
+      text_length: 32876, chunk_count: 5, processed_chunks: 5,
+      preview: {
+        detected: { characters: 12, factions: 4, locations: 19, volumes: 8, chapter_summaries: 146 },
+        artifact_counts: { world_style: 6, characters: 12, locations: 23, macro_outline: 8, opening_outline: 146 },
+        available_artifacts: ['world_style', 'characters', 'locations', 'macro_outline', 'opening_outline'],
+        conflicts: [
+          { kind: 'existing_artifact', artifact: 'characters', status: 'confirmed' },
+          { kind: 'existing_artifact', artifact: 'macro_outline', status: 'generated' },
+          { kind: 'duplicate', artifact: 'locations' },
+        ],
+      },
+    } })
     const creationSessionMatch = path.match(/^\/api\/v1\/novel-creation\/sessions\/([^/]+)$/)
     if (creationSessionMatch && route.request().method() === 'GET') {
       const creationSession = creationSessions[decodeURIComponent(creationSessionMatch[1])]
@@ -375,6 +391,15 @@ async function expectViewportSafe(page: Page) {
 }
 
 async function expectNoSeriousAccessibilityViolations(page: Page) {
+  await page.evaluate(() => {
+    for (const animation of document.getAnimations()) {
+      try {
+        animation.finish()
+      } catch {
+        animation.cancel()
+      }
+    }
+  })
   const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
   expect(result.violations.filter((item) => ['serious', 'critical'].includes(item.impact || ''))).toEqual([])
 }
@@ -479,6 +504,28 @@ const creationViewports = [
 ]
 
 for (const viewport of creationViewports) {
+  test(`keeps the material import preview usable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.goto('/gui?creationSession=running-creation&import=import-preview', { waitUntil: 'networkidle' })
+
+    await expect(page.getByText('资料导入')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '仙侠悬疑八卷大纲.docx' })).toBeVisible()
+    await expect(page.getByText('人物 12')).toBeVisible()
+    await expect(page.getByText('卷纲 8')).toBeVisible()
+    await expect(page.getByText('冲突 3')).toBeVisible()
+    await page.getByRole('button', { name: '预览并选择导入' }).click()
+    await expect(page.getByText('导入预览 · 仙侠悬疑八卷大纲.docx')).toBeVisible()
+    await expect(page.getByText(/已处理 5\/5 个分块/)).toBeVisible()
+    await expect(page.getByText(/文风与世界观 · 6 项/)).toBeVisible()
+    await expect(page.getByText(/开篇细纲（需至少15章摘要） · 146 项/)).toBeVisible()
+    await expect(page.getByText('发现 3 处可能冲突')).toBeVisible()
+    await expect(page.getByRole('button', { name: '应用所选数据' })).toBeEnabled()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectVisualSnapshot(page, `assistant-import-preview-${viewport.name}.png`)
+  })
+
   test(`keeps the conversational creation task controllable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
@@ -555,6 +602,9 @@ for (const viewport of creationViewports) {
 
     const refineDialog = page.getByRole('dialog', { name: '让 AI 调整：文风与世界观' })
     await expect(refineDialog).toBeVisible()
+    await refineDialog.evaluate(async (element) => {
+      await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)))
+    })
     await expect(refineDialog.getByText('只修改当前阶段')).toBeVisible()
     await refineDialog.getByPlaceholder(/例如：改成六卷结构/).fill('保留周遥和温室花展；将全书调整为六卷，但不要改变结局。')
     await expect(refineDialog.getByRole('button', { name: '按要求调整' })).toBeEnabled()

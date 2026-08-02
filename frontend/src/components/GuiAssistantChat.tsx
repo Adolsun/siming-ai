@@ -6,16 +6,18 @@
  * system-level assistant that can help users create the first novel project.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Collapse,
   Empty,
   Modal,
   Input,
   Popover,
+  Progress,
   Select,
   Space,
   Spin,
@@ -47,6 +49,7 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import {
   defaultInterviewRuntime,
+  startNovelCreationSession,
   type InterviewQuestion,
   type InterviewQuestionAnswer,
   useNovelCreationInterviewController,
@@ -149,6 +152,34 @@ interface CreationArtifactSummary {
     soft_dependencies?: Array<{ stage: string; label: string; reason: string; message: string }>
   }
   running_operation?: NovelCreationRunSummary | null
+}
+
+interface MaterialImportSummary {
+  id: string
+  source_file_id: string
+  session_id: string
+  operation_id?: string
+  filename: string
+  status: 'queued' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  text_length: number
+  chunk_count: number
+  processed_chunks: number
+  input_revision: number
+  error?: string
+  preview?: {
+    detected?: { characters?: number; factions?: number; locations?: number; volumes?: number; chapter_summaries?: number }
+    artifact_counts?: Record<string, number>
+    available_artifacts?: string[]
+    conflicts?: Array<{ kind?: string; artifact?: string; status?: string }>
+  }
+  result?: { applied?: Array<{ artifact: string; count: number }>; skipped?: Array<{ artifact: string; reason: string }>; revision?: number }
+}
+
+interface PendingMaterialFile {
+  name: string
+  size: number
+  file: File
+  content: string
 }
 
 interface NovelBlueprint {
@@ -297,6 +328,7 @@ function parseCreationArtifactCommand(text: string) {
 
 function GuiAssistantChat() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string>()
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -323,7 +355,12 @@ function GuiAssistantChat() {
   const [otherText, setOtherText] = useState('')
   const [showQAEditor, setShowQAEditor] = useState(false)
   const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
-  const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
+  const [pendingFiles, setPendingFiles] = useState<PendingMaterialFile[]>([])
+  const [activeMaterialImport, setActiveMaterialImport] = useState<MaterialImportSummary | null>(null)
+  const [importPreviewOpen, setImportPreviewOpen] = useState(false)
+  const [selectedImportArtifacts, setSelectedImportArtifacts] = useState<string[]>([])
+  const [importStrategy, setImportStrategy] = useState<'merge' | 'overwrite_unconfirmed' | 'skip_conflicts'>('merge')
+  const [importActionLoading, setImportActionLoading] = useState(false)
   const [activeCreationRun, setActiveCreationRun] = useState<NovelCreationRunSummary | null>(null)
   const [creationRunAction, setCreationRunAction] = useState<'cancel' | 'retry' | null>(null)
   const [creationArtifacts, setCreationArtifacts] = useState<CreationArtifactSummary[]>([])
@@ -360,6 +397,26 @@ function GuiAssistantChat() {
     novelInterview.replaceQuestion(nextQuestion)
   }
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const resumedSessionId = params.get('creationSession') || ''
+    const resumedImportId = params.get('import') || ''
+    if (resumedSessionId && resumedSessionId !== systemSessionId) {
+      adoptNovelInterviewSession(resumedSessionId)
+    }
+    if (resumedImportId) {
+      void apiClient.get<ApiResponse<MaterialImportSummary>>(`/novel-creation/imports/${resumedImportId}`)
+        .then((response) => {
+          const importRun = response.data.data
+          setActiveMaterialImport(importRun)
+          if (importRun.status === 'waiting_user') {
+            setSelectedImportArtifacts(importRun.preview?.available_artifacts || [])
+          }
+        })
+        .catch(() => message.error('无法恢复资料导入状态，请从任务中心重试'))
+    }
+  }, [adoptNovelInterviewSession, location.search, systemSessionId])
+
   const fetchCreationArtifacts = useCallback(async () => {
     if (!systemSessionId) {
       setCreationArtifacts([])
@@ -381,6 +438,65 @@ function GuiAssistantChat() {
   useEffect(() => {
     void fetchCreationArtifacts()
   }, [fetchCreationArtifacts, activeCreationRun?.status])
+
+  useEffect(() => {
+    if (!systemSessionId) {
+      setActiveMaterialImport(null)
+      return
+    }
+    let disposed = false
+    const restoreLatestImport = async () => {
+      try {
+        const list = await apiClient.get<ApiResponse<{ imports: MaterialImportSummary[] }>>(
+          `/novel-creation/sessions/${systemSessionId}/imports`,
+        )
+        const latest = list.data.data.imports?.[0]
+        if (!latest || disposed) return
+        const detail = await apiClient.get<ApiResponse<MaterialImportSummary>>(`/novel-creation/imports/${latest.id}`)
+        if (!disposed) {
+          const importRun = detail.data.data
+          setActiveMaterialImport(importRun)
+          if (importRun.status === 'waiting_user') {
+            setSelectedImportArtifacts(importRun.preview?.available_artifacts || [])
+          }
+        }
+      } catch {
+        // A session created before durable imports legitimately has no imports.
+      }
+    }
+    void restoreLatestImport()
+    return () => { disposed = true }
+  }, [systemSessionId])
+
+  useEffect(() => {
+    const importId = activeMaterialImport?.id
+    if (!importId || !['queued', 'running'].includes(activeMaterialImport.status)) return
+    let disposed = false
+    const refresh = async () => {
+      try {
+        const response = await apiClient.get<ApiResponse<MaterialImportSummary>>(`/novel-creation/imports/${importId}`)
+        if (disposed) return
+        const next = response.data.data
+        setActiveMaterialImport(next)
+        if (next.status === 'waiting_user') {
+          const available = next.preview?.available_artifacts || []
+          setSelectedImportArtifacts(available)
+          setImportPreviewOpen(true)
+          message.success('资料已整理完成，请预览并选择要导入的数据')
+        } else if (next.status === 'failed') {
+          message.error(next.error || '资料导入失败，已完成的分块仍然保留')
+        }
+      } catch {
+        // Operation and import state are durable; a later poll can recover.
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 1200)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [activeMaterialImport?.id, activeMaterialImport?.status])
   const interviewRuntime = {
     ...defaultInterviewRuntime(selectedModel, interviewModelSource),
     ...novelInterview.state.runtime,
@@ -770,7 +886,11 @@ function GuiAssistantChat() {
       setActiveConvId(conversationId)
       upsertConversation(response.data.data.conversation)
     }
-    return { conversationId, assistantMessageId: response.data.data.messages[1]?.id }
+    return {
+      conversationId,
+      userMessageId: response.data.data.messages[0]?.id,
+      assistantMessageId: response.data.data.messages[1]?.id,
+    }
   }
 
   const finishSystemTurn = async (
@@ -1101,19 +1221,145 @@ function GuiAssistantChat() {
 
   const handleFileImport = async (file: File) => {
     try {
-      // Read file client-side
-      const text = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(reader.result as string)
-        reader.onerror = () => reject(new Error('文件读取失败'))
-        reader.readAsText(file, 'utf-8')
-      })
-
-      // Add to pending files list (don't send yet)
-      setPendingFiles((prev) => [...prev, { name: file.name, content: text }])
-      message.success(`已添加文件「${file.name}」（${text.length}字）`)
+      const extension = file.name.split('.').pop()?.toLowerCase()
+      if (!extension || !['txt', 'md', 'docx', 'json'].includes(extension)) {
+        throw new Error('仅支持 txt、md、docx 和 json 文件')
+      }
+      if (file.size > 25 * 1024 * 1024) throw new Error('文件超过 25MB 上限')
+      let text = ''
+      if (extension !== 'docx') {
+        text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result || ''))
+          reader.onerror = () => reject(new Error('文件读取失败'))
+          reader.readAsText(file, 'utf-8')
+        })
+      }
+      setPendingFiles([{ name: file.name, size: file.size, file, content: text }])
+      message.success(`已添加「${file.name}」（${Math.max(1, Math.round(file.size / 1024))} KB）`)
     } catch {
-      message.error('文件读取失败，请确认文件格式正确后重试。')
+      message.error('文件读取失败，请确认格式和大小后重试。')
+    }
+  }
+
+  const handleMaterialImport = async (pending: PendingMaterialFile, userText: string) => {
+    const displayText = userText || `导入资料：${pending.name}`
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: displayText, status: 'completed', created_at: new Date().toISOString() },
+      { role: 'assistant', content: '正在保存原始文件并创建持久导入任务…', status: 'running', created_at: new Date().toISOString() },
+    ])
+    setInputValue('')
+    setStreaming(true)
+    let sessionId = systemSessionId
+    let durableTurn: Awaited<ReturnType<typeof startSystemTurn>> | null = null
+    try {
+      if (!sessionId) {
+        const created = await startNovelCreationSession({
+          userBrief: displayText,
+          creationMode: 'author_led',
+          authorBrief: displayText,
+        })
+        sessionId = created.id
+        adoptNovelInterviewSession(created.id, displayText)
+      }
+      try {
+        durableTurn = await startSystemTurn(displayText, {
+          creationSessionId: sessionId,
+          userBrief: displayText,
+          messageType: 'operation',
+        })
+      } catch {
+        message.warning('对话消息暂未绑定，但文件导入任务仍会持久保存')
+      }
+      const form = new FormData()
+      form.append('file', pending.file, pending.name)
+      if (selectedModel) form.append('model', selectedModel)
+      if (durableTurn?.userMessageId) form.append('source_message_id', durableTurn.userMessageId)
+      const response = await apiClient.post<ApiResponse<MaterialImportSummary>>(
+        `/novel-creation/sessions/${sessionId}/imports`,
+        form,
+        { timeout: 0 },
+      )
+      const importRun = response.data.data
+      setActiveMaterialImport(importRun)
+      setLastAssistantMessage(`已保存《${pending.name}》，正在按分块整理人物、地点、势力、卷纲和章节摘要。关闭页面不会取消任务。`, 'completed')
+      if (durableTurn) {
+        await finishSystemTurn(
+          durableTurn.conversationId,
+          durableTurn.assistantMessageId,
+          `已保存《${pending.name}》，正在生成可恢复的导入预览。`,
+          'completed',
+          {
+            creationSessionId: sessionId,
+            userBrief: displayText,
+            messageType: 'operation',
+            run: {
+              id: importRun.id,
+              session_id: sessionId,
+              stage: 'material_import',
+              status: importRun.status,
+              operation_id: importRun.operation_id,
+            },
+          },
+        )
+      }
+      await fetchCreationArtifacts()
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : '资料导入任务创建失败'
+      setLastAssistantMessage(`导入未开始：${detail}。原有立项数据没有变化。`, 'error')
+    } finally {
+      setStreaming(false)
+      setPendingFiles([])
+    }
+  }
+
+  const applyMaterialImportPreview = async () => {
+    if (!activeMaterialImport || selectedImportArtifacts.length === 0) return
+    setImportActionLoading(true)
+    try {
+      const revision = creationArtifacts[0]?.revision ?? activeMaterialImport.input_revision
+      const response = await apiClient.post<ApiResponse<MaterialImportSummary['result']>>(
+        `/novel-creation/imports/${activeMaterialImport.id}/apply`,
+        {
+          selected_artifacts: selectedImportArtifacts,
+          strategy: importStrategy,
+          expected_revision: revision,
+        },
+      )
+      const result = response.data.data || {}
+      setActiveMaterialImport((previous) => previous ? { ...previous, status: 'completed', result } : previous)
+      setImportPreviewOpen(false)
+      await fetchCreationArtifacts()
+      const applied = (result.applied || []).map((item) => `${item.artifact}（${item.count}）`).join('、') || '无'
+      const skipped = result.skipped?.length ? `；跳过 ${result.skipped.length} 项冲突` : ''
+      setMessages((previous) => [
+        ...previous,
+        { role: 'assistant', content: `导入已完成：${applied}${skipped}。所有写入均保留文件、分块和导入运行来源。`, status: 'completed', created_at: new Date().toISOString() },
+      ])
+      message.success('所选资料已写入立项数据')
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '应用导入预览失败；原有数据未改变')
+    } finally {
+      setImportActionLoading(false)
+    }
+  }
+
+  const retryMaterialImport = async () => {
+    if (!activeMaterialImport) return
+    setImportActionLoading(true)
+    try {
+      const response = await apiClient.post<ApiResponse<MaterialImportSummary>>(
+        `/novel-creation/imports/${activeMaterialImport.id}/retry`,
+        null,
+        { params: selectedModel ? { model: selectedModel } : undefined },
+      )
+      setActiveMaterialImport(response.data.data)
+      message.success('已从上一个分块检查点继续导入')
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '重试失败')
+    } finally {
+      setImportActionLoading(false)
     }
   }
 
@@ -1132,7 +1378,7 @@ function GuiAssistantChat() {
             onClose={() => removePendingFile(i)}
             color="blue"
           >
-            📎 {f.name} ({f.content.length}字)
+            📎 {f.name} ({Math.max(1, Math.round(f.size / 1024))} KB)
           </Tag>
         ))}
       </div>
@@ -1219,6 +1465,16 @@ function GuiAssistantChat() {
     if ((!text && pendingFiles.length === 0) || streaming) return
     // If only files without text, use a default message
     const effectiveText = text || '请帮我处理这些文件'
+
+    const requestsCreationImport = pendingFiles.length > 0 && (
+      !activeProjectId
+      || Boolean(systemSessionId)
+      || /立项|大纲|设定|人物|角色|世界观|卷纲|整理成司命/.test(effectiveText)
+    )
+    if (requestsCreationImport) {
+      await handleMaterialImport(pendingFiles[0], effectiveText)
+      return
+    }
 
     // Detect if user wants to import files as a new project
     const isImportAsProject = pendingFiles.length > 0 && /导入|作为新作品|创建为新作品|导入为新作品/.test(text)
@@ -2198,6 +2454,83 @@ function GuiAssistantChat() {
     )
   }
 
+  const renderMaterialImportCard = () => {
+    if (!activeMaterialImport) return null
+    const running = ['queued', 'running'].includes(activeMaterialImport.status)
+    const retryable = ['failed', 'cancelled', 'interrupted'].includes(activeMaterialImport.status)
+    const preview = activeMaterialImport.preview
+    const detected = preview?.detected || {}
+    const progress = activeMaterialImport.chunk_count > 0
+      ? Math.round((activeMaterialImport.processed_chunks / activeMaterialImport.chunk_count) * 100)
+      : running ? 4 : 0
+    const statusLabels: Record<string, string> = {
+      queued: '等待处理', running: '正在整理', waiting_user: '等待预览确认',
+      completed: '已导入', failed: '导入失败', cancelled: '已取消', interrupted: '已中断',
+    }
+    return (
+      <Card className={`gui-chat-creation-run gui-chat-creation-run-${activeMaterialImport.status}`} variant="outlined">
+        <div className="gui-chat-creation-run-head">
+          <div>
+            <Text type="secondary" className="gui-chat-creation-run-kicker">资料导入</Text>
+            <Title level={5}>{activeMaterialImport.filename}</Title>
+          </div>
+          <Tag color={running ? 'processing' : activeMaterialImport.status === 'waiting_user' ? 'gold' : activeMaterialImport.status === 'failed' ? 'error' : 'default'}>
+            {statusLabels[activeMaterialImport.status] || activeMaterialImport.status}
+          </Tag>
+        </div>
+        {running && (
+          <Progress
+            percent={progress}
+            size="small"
+            status="active"
+            format={() => activeMaterialImport.chunk_count > 0
+              ? `${activeMaterialImport.processed_chunks}/${activeMaterialImport.chunk_count} 块`
+              : '读取中'}
+          />
+        )}
+        {preview && (
+          <Space size={[6, 6]} wrap>
+            <Tag>人物 {detected.characters || 0}</Tag>
+            <Tag>势力 {detected.factions || 0}</Tag>
+            <Tag>地点 {detected.locations || 0}</Tag>
+            <Tag>卷纲 {detected.volumes || 0}</Tag>
+            <Tag>章节摘要 {detected.chapter_summaries || 0}</Tag>
+            <Tag color={preview.conflicts?.length ? 'orange' : 'green'}>冲突 {preview.conflicts?.length || 0}</Tag>
+          </Space>
+        )}
+        {activeMaterialImport.error && (
+          <Alert
+            type="error"
+            showIcon
+            message="发生了什么"
+            description={`${activeMaterialImport.error}；原始文件和已完成分块仍已保存，立项数据没有写入。`}
+          />
+        )}
+        <div className="gui-chat-creation-run-actions">
+          {activeMaterialImport.status === 'waiting_user' && (
+            <Button type="primary" icon={<DatabaseOutlined />} onClick={() => setImportPreviewOpen(true)}>
+              预览并选择导入
+            </Button>
+          )}
+          {retryable && (
+            <Button icon={<ReloadOutlined />} loading={importActionLoading} onClick={() => void retryMaterialImport()}>
+              从检查点重试
+            </Button>
+          )}
+          {running && activeMaterialImport.operation_id && (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={() => void apiClient.post(`/operations/${activeMaterialImport.operation_id}/cancel`)}
+            >
+              停止
+            </Button>
+          )}
+        </div>
+      </Card>
+    )
+  }
+
   const confirmArtifactFromPanel = async (artifact: CreationArtifactSummary) => {
     if (!systemSessionId || artifactAction) return
     setArtifactAction(artifact.artifact)
@@ -2609,6 +2942,7 @@ function GuiAssistantChat() {
                 </div>
               ))}
               {renderBlueprintCards()}
+              {renderMaterialImportCard()}
               {renderCreationRunCard()}
               <div ref={messagesEndRef} />
             </>
@@ -2635,7 +2969,7 @@ function GuiAssistantChat() {
             ) : (
               <>
                 <Upload
-                  accept=".txt,.docx"
+                  accept=".txt,.md,.docx,.json"
                   maxCount={1}
                   showUploadList={false}
                   beforeUpload={(file) => {
@@ -2660,6 +2994,85 @@ function GuiAssistantChat() {
       </main>
       {renderCreationDataPanel()}
       {renderSlotEditorModal()}
+      <Modal
+        title={`导入预览 · ${activeMaterialImport?.filename || ''}`}
+        open={importPreviewOpen}
+        onCancel={() => setImportPreviewOpen(false)}
+        width={680}
+        styles={{ body: { maxHeight: 'min(640px, calc(100vh - 250px))', overflowY: 'auto', paddingRight: 6 } }}
+        footer={[
+          <Button key="cancel" onClick={() => setImportPreviewOpen(false)}>稍后处理</Button>,
+          <Button
+            key="apply"
+            type="primary"
+            loading={importActionLoading}
+            disabled={selectedImportArtifacts.length === 0}
+            onClick={() => void applyMaterialImportPreview()}
+          >
+            应用所选数据
+          </Button>,
+        ]}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message={`已处理 ${activeMaterialImport?.processed_chunks || 0}/${activeMaterialImport?.chunk_count || 0} 个分块`}
+            description="写入前可按对象选择；已确认或锁定的数据不会被静默覆盖。每条导入数据都保留原文件、分块、消息与导入运行来源。"
+          />
+          <div>
+            <Text strong>选择导入内容</Text>
+            <div style={{ marginTop: 10 }}>
+              <Checkbox.Group
+                className="gui-chat-import-options"
+                value={selectedImportArtifacts}
+                onChange={(values) => setSelectedImportArtifacts(values.map(String))}
+                options={[
+                  ['world_style', '文风与世界观'],
+                  ['characters', '角色与关系'],
+                  ['locations', '地点与势力'],
+                  ['macro_outline', '主线与卷纲'],
+                  ['opening_outline', '开篇细纲（需至少15章摘要）'],
+                ].filter(([value]) => activeMaterialImport?.preview?.available_artifacts?.includes(value)).map(([value, label]) => ({
+                  value,
+                  label: `${label} · ${activeMaterialImport?.preview?.artifact_counts?.[value] || 0} 项`,
+                }))}
+              />
+              {(activeMaterialImport?.preview?.available_artifacts?.length || 0) === 0 && (
+                <Alert
+                  style={{ marginTop: 10 }}
+                  type="warning"
+                  showIcon
+                  message="没有识别到可直接写入的结构化对象"
+                  description="原始文件和分块仍已保存。可以切换模型后从检查点重试，或在聊天中说明资料结构。"
+                />
+              )}
+            </div>
+          </div>
+          <div>
+            <Text strong>冲突处理</Text>
+            <Select
+              aria-label="导入冲突处理方式"
+              style={{ width: '100%', marginTop: 8 }}
+              value={importStrategy}
+              onChange={setImportStrategy}
+              options={[
+                { value: 'merge', label: '与现有数据合并（推荐）' },
+                { value: 'overwrite_unconfirmed', label: '覆盖未确认数据' },
+                { value: 'skip_conflicts', label: '跳过所有冲突对象' },
+              ]}
+            />
+          </div>
+          {(activeMaterialImport?.preview?.conflicts?.length || 0) > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`发现 ${activeMaterialImport?.preview?.conflicts?.length} 处可能冲突`}
+              description="合并会保留现有条目并追加新条目；覆盖未确认数据仍会跳过已确认或锁定内容。"
+            />
+          )}
+        </Space>
+      </Modal>
     </div>
   )
 }

@@ -169,9 +169,86 @@ class NovelCreationStageEvent(Base):
     )
 
 
+class NovelCreationMaterialImport(Base):
+    """Durable source-file ingestion run for a creation session."""
+
+    __tablename__ = "novel_creation_material_imports"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_id = Column(String(36), nullable=True)
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(Text, nullable=False)
+    media_type = Column(String(100), nullable=True)
+    file_sha256 = Column(String(64), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="queued")
+    input_revision = Column(Integer, nullable=False)
+    text_length = Column(Integer, nullable=False, default=0)
+    chunk_count = Column(Integer, nullable=False, default=0)
+    processed_chunks = Column(Integer, nullable=False, default=0)
+    checkpoint_json = Column(JSON, nullable=True)
+    preview_json = Column(JSON, nullable=True)
+    selection_json = Column(JSON, nullable=True)
+    result_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    chunks = relationship(
+        "NovelCreationImportChunk",
+        back_populates="import_run",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationImportChunk.chunk_index",
+    )
+
+    __table_args__ = (
+        Index("ix_novel_creation_import_session", "session_id", "created_at"),
+        Index("ix_novel_creation_import_status", "status", "updated_at"),
+        UniqueConstraint("session_id", "file_sha256", name="uq_novel_creation_import_file"),
+    )
+
+
+class NovelCreationImportChunk(Base):
+    """Checkpointed text chunk and its extracted candidate data."""
+
+    __tablename__ = "novel_creation_import_chunks"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    import_run_id = Column(
+        String(36), ForeignKey("novel_creation_material_imports.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index = Column(Integer, nullable=False)
+    char_start = Column(Integer, nullable=False)
+    char_end = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    text = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    extraction_json = Column(JSON, nullable=True)
+    confidence = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    import_run = relationship("NovelCreationMaterialImport", back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint("import_run_id", "chunk_index", name="uq_novel_creation_import_chunk_index"),
+        Index("ix_novel_creation_import_chunk_status", "import_run_id", "status"),
+    )
+
+
 __all__ = [
     "NovelCreationSession",
     "NovelCreationStageRun",
     "NovelCreationRunClaim",
     "NovelCreationStageEvent",
+    "NovelCreationMaterialImport",
+    "NovelCreationImportChunk",
 ]

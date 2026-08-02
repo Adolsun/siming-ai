@@ -81,6 +81,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     get_tool_playbook
     get_writing_stats_history
     import_deconstruct_report
+    import_creation_material
     import_file_as_chapters
     import_file_as_project
     import_text_as_chapters
@@ -114,6 +115,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     prepare_task_context
     preview_character_merge
     preview_deconstruct_source
+    preview_creation_import
     preview_import_splits
     preview_rag_context
     preview_skill_match
@@ -160,6 +162,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     submit_context_evidence
     submit_novel_creation_stage
     patch_creation_artifact
+    apply_creation_import
     lock_creation_fields
     unlock_creation_fields
     undo_creation_artifact

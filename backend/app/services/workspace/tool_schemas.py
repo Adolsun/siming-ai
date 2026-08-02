@@ -183,6 +183,9 @@ KEYWORD_TOOL_GROUPS: tuple[tuple[tuple[str, ...], set[str]], ...] = (
         "get_project_archive_status",
     }),
     (("导入", "分章", "拆章", "txt", "docx", "文件"), {
+        "import_creation_material",
+        "preview_creation_import",
+        "apply_creation_import",
         "list_imported_files",
         "read_imported_file",
         "preview_import_splits",
