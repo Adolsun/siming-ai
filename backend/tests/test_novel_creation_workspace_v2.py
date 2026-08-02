@@ -42,6 +42,8 @@ from app.services.workspace.tools.novel_creation_v2 import (
     _normalize_stage_data,
     _validate_stage,
     generate_novel_creation_stage,
+    get_creation_snapshot,
+    patch_creation_session_tool,
     submit_novel_creation_stage,
 )
 
@@ -491,9 +493,53 @@ def test_v2_apply_is_idempotent_and_persists_profiles_relations_and_sections():
 
 
 def test_v2_workspace_tools_are_registered():
-    assert registry.get("get_novel_creation_session") is not None
-    assert registry.get("generate_novel_creation_stage") is not None
-    assert registry.get("submit_novel_creation_stage") is not None
+    expected = {
+        "get_novel_creation_session",
+        "get_creation_session",
+        "get_creation_snapshot",
+        "get_creation_operation",
+        "patch_creation_session",
+        "confirm_creation_artifact",
+        "generate_creation_artifact",
+        "refine_creation_artifact",
+        "regenerate_creation_artifact",
+        "cancel_creation_operation",
+        "pause_creation_operation",
+        "resume_creation_operation",
+        "retry_creation_operation",
+        "validate_creation_session",
+        "finalize_creation_session",
+        "generate_novel_creation_stage",
+        "submit_novel_creation_stage",
+    }
+    assert all(registry.get(name) is not None for name in expected)
+
+
+def test_creation_snapshot_and_session_patch_are_revision_protected():
+    db = _db()
+    session = _ready_session(db)
+    initial_revision = int(session.revision or 0)
+
+    patched = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session.id,
+        "expected_revision": initial_revision,
+        "changes": {"user_brief": "只保留悬疑主线，目标八卷"},
+    }))
+    assert patched["status"] == "ok"
+    assert patched["data"]["revision"] > initial_revision
+
+    conflict = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session.id,
+        "expected_revision": initial_revision,
+        "changes": {"user_brief": "不应覆盖"},
+    }))
+    assert conflict["status"] == "error"
+    assert conflict["data"]["failure_class"] == "revision_conflict"
+
+    snapshot = asyncio.run(get_creation_snapshot(db, "", {"session_id": session.id}))
+    assert snapshot["status"] == "ok"
+    assert snapshot["data"]["revision"] == patched["data"]["revision"]
+    assert len(snapshot["data"]["artifacts"]) == len(STAGE_ORDER)
 
 
 def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():

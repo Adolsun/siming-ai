@@ -8218,6 +8218,11 @@ export interface components {
              * @default true
              */
             auto_apply: boolean;
+            /**
+             * Canonical Conversation Id
+             * @description Canonical scoped conversation ID used to reuse the internal execution thread
+             */
+            canonical_conversation_id?: string | null;
             /** Conversation Id */
             conversation_id?: string | null;
             /** History */
@@ -8290,6 +8295,11 @@ export interface components {
             assistant_message_id?: string | null;
             /** Assistant Mode */
             assistant_mode?: string | null;
+            /**
+             * Canonical Conversation Id
+             * @description Canonical scoped conversation ID used to reuse the internal execution thread
+             */
+            canonical_conversation_id?: string | null;
             /** Completed At */
             completed_at?: string | null;
             /** Conversation Id */

@@ -370,7 +370,7 @@ function GuiAssistantChat() {
   const [inputValue, setInputValue] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectsLoading, setProjectsLoading] = useState(true)
   const [conversationsLoading, setConversationsLoading] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => {
@@ -712,15 +712,22 @@ function GuiAssistantChat() {
   const fetchConversations = useCallback(async (projectId = activeProjectId) => {
     setConversationsLoading(true)
     try {
-      const res = projectId
-        ? await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
-            `/projects/${projectId}/ai/assistant/conversations`,
-            { scope: 'project' },
-          )
-        : await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
+      const responses = projectId
+        ? [await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
             '/ai/system-assistant/conversations',
-          )
-      const items = res.data?.data?.items || []
+            { scope_type: 'project', scope_id: projectId },
+          )]
+        : await Promise.all([
+            apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
+              '/ai/system-assistant/conversations', { scope_type: 'system' },
+            ),
+            apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
+              '/ai/system-assistant/conversations', { scope_type: 'creation' },
+            ),
+          ])
+      const items = responses
+        .flatMap((res) => res.data?.data?.items || [])
+        .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')))
       setConversations(items)
       return items
     } catch {
@@ -734,13 +741,9 @@ function GuiAssistantChat() {
   const fetchMessages = useCallback(async (convId: string) => {
     setLoading(true)
     try {
-      const res = activeProjectId
-        ? await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
-            `/projects/${activeProjectId}/ai/assistant/conversations/${convId}`,
-          )
-        : await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
-            `/ai/system-assistant/conversations/${convId}`,
-          )
+      const res = await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
+        `/ai/system-assistant/conversations/${convId}`,
+      )
       const loadedMessages = (res.data?.data?.messages || []).map((item) => ({
         id: item.id,
         role: item.role,
@@ -759,9 +762,9 @@ function GuiAssistantChat() {
         ? { conversationId: convId, assistantMessageId: restoredMessage.id }
         : null
       setActiveConvId(res.data.data.conversation.id)
+      setSystemConversationId(res.data.data.conversation.id)
       if (!activeProjectId) {
         const conversation = res.data.data.conversation
-        setSystemConversationId(conversation.id)
         if (conversation.creation_session_id) {
           adoptNovelInterviewSession(conversation.creation_session_id, conversation.user_brief || '')
         } else {
@@ -781,8 +784,10 @@ function GuiAssistantChat() {
   }, [fetchProjects])
 
   useEffect(() => {
+    if (projectsLoading) return
     if (!activeProjectId) {
       setActiveConvId(null)
+      setSystemConversationId(undefined)
       setMessages([])
       localStorage.removeItem(PROJECT_STORAGE_KEY)
       localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
@@ -794,11 +799,12 @@ function GuiAssistantChat() {
     localStorage.setItem(PROJECT_STORAGE_KEY, activeProjectId)
     localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
     setActiveConvId(null)
+    setSystemConversationId(undefined)
     setMessages([])
     fetchConversations(activeProjectId).then((items) => {
       if (items[0]) fetchMessages(items[0].id)
     })
-  }, [activeProjectId, fetchConversations, fetchMessages])
+  }, [activeProjectId, fetchConversations, fetchMessages, projectsLoading])
 
   const startNewConversation = () => {
     abortRef.current?.abort()
@@ -820,11 +826,7 @@ function GuiAssistantChat() {
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          if (activeProjectId) {
-            await apiClient.delete(`/projects/${activeProjectId}/ai/assistant/conversations/${convId}`)
-          } else {
-            await apiClient.delete(`/ai/system-assistant/conversations/${convId}`)
-          }
+          await apiClient.delete(`/ai/system-assistant/conversations/${convId}`)
           setConversations((prev) => prev.filter((item) => item.id !== convId))
           if (activeConvId === convId) startNewConversation()
           message.success('对话已删除')
@@ -1613,7 +1615,56 @@ function GuiAssistantChat() {
     setInputValue('')
     setStreaming(true)
 
+    let durableProjectTurn: { conversationId: string; assistantMessageId?: string } | null = null
+    let durableProjectReply = ''
+    let durableProjectRun: NovelCreationRunSummary | undefined
+    const normalizeProjectSseEvent = (event: any) => {
+      if (!durableProjectTurn) return event
+      const canonicalConversation = (conversation?: Conversation) => ({
+        ...(conversation || {}),
+        id: durableProjectTurn!.conversationId,
+        scope_type: 'project' as const,
+        scope_id: activeProjectId,
+        project_id: activeProjectId,
+      })
+      if (event.type === 'conversation') {
+        return { ...event, conversation: canonicalConversation(event.conversation) }
+      }
+      if (event.type === 'complete' && event.data) {
+        return {
+          ...event,
+          data: { ...event.data, conversation: canonicalConversation(event.data.conversation) },
+        }
+      }
+      return event
+    }
     try {
+      let conversationId = systemConversationId || activeConvId || undefined
+      if (!conversationId) {
+        const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
+          '/ai/system-assistant/conversations',
+          { title: text.slice(0, 36), scope_type: 'project', scope_id: activeProjectId },
+        )
+        conversationId = createRes.data.data.conversation.id
+        setSystemConversationId(conversationId)
+        setActiveConvId(conversationId)
+        upsertConversation(createRes.data.data.conversation)
+      }
+      const turnRes = await apiClient.post<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
+        `/ai/system-assistant/conversations/${conversationId}/turns/start`,
+        {
+          user_content: text,
+          message_type: 'text',
+          scope_type: 'project',
+          scope_id: activeProjectId,
+        },
+      )
+      durableProjectTurn = {
+        conversationId,
+        assistantMessageId: turnRes.data.data.messages[1]?.id,
+      }
+      upsertConversation(turnRes.data.data.conversation)
+
       abortRef.current = new AbortController()
       const res = await fetch(`/api/v1/projects/${activeProjectId}/ai/workspace-assistant/stream`, {
         method: 'POST',
@@ -1621,7 +1672,8 @@ function GuiAssistantChat() {
         body: JSON.stringify({
           scope: 'project',
           message: text,
-          conversation_id: activeConvId || undefined,
+          conversation_id: undefined,
+          canonical_conversation_id: durableProjectTurn.conversationId,
           model: selectedModel,
           assistant_mode: 'fast',
           temperature: 0.3,
@@ -1651,7 +1703,12 @@ function GuiAssistantChat() {
             .map((line) => line.replace(/^data:\s?/, ''))
             .join('\n')
           if (!data || data === '[DONE]') continue
-          handleSseEvent(JSON.parse(data))
+          const event = normalizeProjectSseEvent(JSON.parse(data))
+          if (event.type === 'complete') {
+            durableProjectReply = event.data?.reply?.trim() || EMPTY_ASSISTANT_REPLY
+            durableProjectRun = event.data?.run
+          }
+          handleSseEvent(event)
         }
       }
 
@@ -1662,10 +1719,49 @@ function GuiAssistantChat() {
           .filter((line) => line.startsWith('data:'))
           .map((line) => line.replace(/^data:\s?/, ''))
           .join('\n')
-        if (data && data !== '[DONE]') handleSseEvent(JSON.parse(data))
+        if (data && data !== '[DONE]') {
+          const event = normalizeProjectSseEvent(JSON.parse(data))
+          if (event.type === 'complete') {
+            durableProjectReply = event.data?.reply?.trim() || EMPTY_ASSISTANT_REPLY
+            durableProjectRun = event.data?.run
+          }
+          handleSseEvent(event)
+        }
+      }
+      if (durableProjectTurn?.assistantMessageId) {
+        await apiClient.patch(
+          `/ai/system-assistant/conversations/${durableProjectTurn.conversationId}/turns/${durableProjectTurn.assistantMessageId}`,
+          {
+            assistant_content: durableProjectReply || EMPTY_ASSISTANT_REPLY,
+            status: 'completed',
+            message_type: durableProjectRun ? 'operation' : 'text',
+            run_id: durableProjectRun?.id || durableProjectRun?.run_id || null,
+            operation_id: durableProjectRun?.operation_id || null,
+            payload: durableProjectRun ? { run: durableProjectRun } : null,
+            scope_type: 'project',
+            scope_id: activeProjectId,
+          },
+        )
       }
       fetchConversations(activeProjectId)
     } catch (err: any) {
+      if (durableProjectTurn?.assistantMessageId) {
+        const cancelled = err.name === 'AbortError'
+        try {
+          await apiClient.patch(
+            `/ai/system-assistant/conversations/${durableProjectTurn.conversationId}/turns/${durableProjectTurn.assistantMessageId}`,
+            {
+              assistant_content: cancelled ? '任务已取消，未完成内容不会写入。' : (err.message || '项目助手执行失败'),
+              status: cancelled ? 'cancelled' : 'error',
+              message_type: cancelled ? 'operation' : 'error',
+              scope_type: 'project',
+              scope_id: activeProjectId,
+            },
+          )
+        } catch {
+          message.warning('项目助手结果已返回，但统一会话状态保存失败')
+        }
+      }
       if (err.name !== 'AbortError') {
         setMessages((prev) => {
           const next = [...prev]

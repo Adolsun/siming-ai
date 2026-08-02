@@ -118,6 +118,26 @@ SCOPE_TOOL_NAMES: dict[str, set[str]] = {
 }
 
 KEYWORD_TOOL_GROUPS: tuple[tuple[tuple[str, ...], set[str]], ...] = (
+    (("立项", "创意", "卷纲", "世界观", "确认当前内容", "重新生成", "暂停生成", "取消生成", "创建作品"), {
+        "get_creation_session",
+        "get_creation_snapshot",
+        "get_creation_artifact",
+        "list_creation_artifacts",
+        "get_creation_dependencies",
+        "get_creation_operation",
+        "patch_creation_session",
+        "patch_creation_artifact",
+        "confirm_creation_artifact",
+        "generate_creation_artifact",
+        "refine_creation_artifact",
+        "regenerate_creation_artifact",
+        "cancel_creation_operation",
+        "pause_creation_operation",
+        "resume_creation_operation",
+        "retry_creation_operation",
+        "validate_creation_session",
+        "finalize_creation_session",
+    }),
     (("写", "正文", "章节", "续写", "改写", "扩写", "润色", "重写", "对话", "质量", "评估"), {
         "search_outline",
         "search_outline_tree",

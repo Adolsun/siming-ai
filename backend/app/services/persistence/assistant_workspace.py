@@ -114,6 +114,12 @@ class SqlAlchemyAssistantWorkspace:
             AssistantConversation.project_id == project_id,
         ).first()
 
+    def conversation_by_canonical(self, project_id: str, canonical_conversation_id: str):
+        return self.db.query(AssistantConversation).filter(
+            AssistantConversation.canonical_conversation_id == canonical_conversation_id,
+            AssistantConversation.project_id == project_id,
+        ).first()
+
     def create_conversation(self, **values: Any):
         conversation = AssistantConversation(**values)
         self.db.add(conversation)

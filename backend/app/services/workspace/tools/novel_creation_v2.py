@@ -60,12 +60,14 @@ from ....services.novel_creation_versions import (
     serialize_artifact_version,
 )
 from ....services.operation_runtime import register_operation_actions
+from ....modules.operations.interfaces.dependencies import get_operation_service
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
     add_run_event,
     complete_run,
+    confirm_run,
     create_run,
     creation_artifact_dependencies,
     derive_stage,
@@ -836,6 +838,55 @@ async def get_novel_creation_session(db: Session, project_id: str, args: dict[st
     }
 
 
+async def get_creation_session(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    """Stable conversational alias for the resumable creation session contract."""
+    result = await get_novel_creation_session(db, project_id, args)
+    return {**result, "tool": "get_creation_session"}
+
+
+async def get_creation_snapshot(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "get_creation_snapshot", "status": "skipped", "detail": "Session not found", "data": None}
+    return {
+        "tool": "get_creation_snapshot",
+        "status": "ok",
+        "detail": "Creation snapshot loaded",
+        "data": {
+            "revision": int(session.revision or 0),
+            "session": serialize_session(session),
+            "artifacts": list_creation_artifacts(session),
+        },
+    }
+
+
+async def get_creation_operation(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    operation_id = _text(args.get("operation_id"))
+    if not operation_id and _text(args.get("run_id")):
+        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == _text(args.get("run_id"))).first()
+        operation_id = _text(getattr(run, "operation_id", ""))
+    operation = get_operation_service().get(operation_id, include_events=True) if operation_id else None
+    if not operation:
+        return {"tool": "get_creation_operation", "status": "skipped", "detail": "Operation not found", "data": None}
+    return {"tool": "get_creation_operation", "status": "ok", "detail": "Creation operation loaded", "data": operation}
+
+
+async def patch_creation_session_tool(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    session = _session(db, _text(args.get("session_id")))
+    if not session:
+        return {"tool": "patch_creation_session", "status": "skipped", "detail": "Session not found", "data": None}
+    if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
+        return _revision_error("patch_creation_session", session)
+    changes = args.get("changes") if isinstance(args.get("changes"), dict) else {}
+    try:
+        patch_session(session, changes)
+        commit_session(db)
+        return {"tool": "patch_creation_session", "status": "ok", "detail": "Creation session patched", "data": serialize_session(session)}
+    except Exception as exc:
+        db.rollback()
+        return {"tool": "patch_creation_session", "status": "error", "detail": str(exc), "data": None}
+
+
 async def get_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
     session = _session(db, _text(args.get("session_id")))
     stage = _text(args.get("artifact"))
@@ -1223,3 +1274,120 @@ async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[s
     except Exception as exc:
         db.rollback()
         return {"tool": "submit_novel_creation_stage", "status": "error", "detail": str(exc), "data": None}
+
+
+async def confirm_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    """Confirm exactly one artifact without implicitly generating another artifact."""
+    session_id = _text(args.get("session_id"))
+    artifact = _text(args.get("artifact"))
+    session = _session(db, session_id)
+    if not session:
+        return {"tool": "confirm_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
+    data = args.get("data")
+    if not isinstance(data, dict):
+        current = serialize_creation_artifact(session, artifact)
+        data = current.get("data") if isinstance(current.get("data"), dict) else None
+    if not isinstance(data, dict):
+        return {"tool": "confirm_creation_artifact", "status": "conflict", "detail": "Artifact has no generated data to confirm", "data": None}
+    result = await submit_novel_creation_stage(db, project_id, {
+        "session_id": session_id,
+        "stage": artifact,
+        "data": data,
+        "confirm": True,
+        "source": _text(args.get("source")) or "author",
+        "expected_revision": args.get("expected_revision"),
+    })
+    if result.get("status") == "ok":
+        run = (
+            db.query(NovelCreationStageRun)
+            .filter(NovelCreationStageRun.session_id == session_id, NovelCreationStageRun.stage == artifact)
+            .order_by(NovelCreationStageRun.created_at.desc())
+            .first()
+        )
+        if run and confirm_run(db, run):
+            commit_session(db)
+        if run and run.operation_id:
+            get_operation_service().complete_author_confirmation(run.operation_id)
+    return {**result, "tool": "confirm_creation_artifact"}
+
+
+async def _generate_creation_artifact(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+    *,
+    operation: str,
+    tool: str,
+) -> dict[str, Any]:
+    payload = {
+        **args,
+        "stage": _text(args.get("artifact") or args.get("stage")),
+        "operation": operation,
+        "use_model": bool(args.get("use_model", True)),
+        "auto_confirm": False,
+    }
+    if operation == "refine" and not _text(payload.get("instruction")):
+        return {"tool": tool, "status": "error", "detail": "instruction is required for refinement", "data": None}
+    result = await generate_novel_creation_stage(db, project_id, payload)
+    return {**result, "tool": tool}
+
+
+async def generate_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _generate_creation_artifact(db, project_id, args, operation="generate", tool="generate_creation_artifact")
+
+
+async def refine_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _generate_creation_artifact(db, project_id, args, operation="refine", tool="refine_creation_artifact")
+
+
+async def regenerate_creation_artifact(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _generate_creation_artifact(db, project_id, args, operation="regenerate", tool="regenerate_creation_artifact")
+
+
+async def _creation_operation_action(args: dict[str, Any], *, action: str, tool: str) -> dict[str, Any]:
+    operation_id = _text(args.get("operation_id"))
+    if not operation_id:
+        return {"tool": tool, "status": "error", "detail": "operation_id is required", "data": None}
+    status, payload = await get_operation_service().action(operation_id, action)
+    if status == "not_found":
+        return {"tool": tool, "status": "skipped", "detail": "Operation not found", "data": None}
+    if status != "ok":
+        return {"tool": tool, "status": "conflict", "detail": "Operation does not support this action in its current state", "data": payload}
+    return {"tool": tool, "status": "ok", "detail": f"Operation action completed: {action}", "data": payload}
+
+
+async def cancel_creation_operation(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _creation_operation_action(args, action="cancel", tool="cancel_creation_operation")
+
+
+async def pause_creation_operation(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _creation_operation_action(args, action="pause", tool="pause_creation_operation")
+
+
+async def resume_creation_operation(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _creation_operation_action(args, action="continue", tool="resume_creation_operation")
+
+
+async def retry_creation_operation(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    return await _creation_operation_action(args, action="retry_current_unit", tool="retry_creation_operation")
+
+
+async def validate_creation_session(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    result = await validate_creation_consistency_tool(db, project_id, args)
+    return {**result, "tool": "validate_creation_session"}
+
+
+async def finalize_creation_session(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+    """Validate a session and idempotently create its formal project."""
+    validation = await validate_creation_consistency_tool(db, project_id, args)
+    if validation.get("status") not in {"ok"}:
+        return {
+            "tool": "finalize_creation_session",
+            "status": "conflict",
+            "detail": "Creation session has unresolved consistency issues",
+            "data": validation.get("data"),
+        }
+    from .novel_creation import apply_novel_blueprint
+
+    result = await apply_novel_blueprint(db, project_id, {**args, "mode": "auto"})
+    return {**result, "tool": "finalize_creation_session"}

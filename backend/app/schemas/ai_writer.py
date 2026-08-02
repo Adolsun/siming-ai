@@ -10,6 +10,10 @@ class WorkspaceAssistantRequest(BaseModel):
     scope: Literal["outline", "characters", "worldbuilding", "project"] = Field(..., description="Management scope")
     message: str = Field(..., min_length=1)
     conversation_id: Optional[str] = None
+    canonical_conversation_id: Optional[str] = Field(
+        None,
+        description="Canonical scoped conversation ID used to reuse the internal execution thread",
+    )
     selected_outline_node_id: Optional[str] = None
     selected_character_id: Optional[str] = None
     selected_text: Optional[str] = Field(None, description="User-selected text in the editor")
@@ -37,6 +41,10 @@ class WorkspaceAssistantRunResponse(BaseModel):
 
     project_id: str
     conversation_id: Optional[str] = None
+    canonical_conversation_id: Optional[str] = Field(
+        None,
+        description="Canonical scoped conversation ID used to reuse the internal execution thread",
+    )
     assistant_message_id: Optional[str] = None
     phase: Optional[str] = None
     scope: Optional[str] = None

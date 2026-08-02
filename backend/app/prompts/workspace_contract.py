@@ -59,7 +59,11 @@ WORKSPACE_TOOL_NAMES = frozenset(
     finish_agent_run
     forget
     generate_novel_creation_stage
+    generate_creation_artifact
     get_creation_artifact
+    get_creation_operation
+    get_creation_session
+    get_creation_snapshot
     get_creation_artifact_diff
     get_creation_dependencies
     get_creation_dependency_graph
@@ -168,7 +172,17 @@ WORKSPACE_TOOL_NAMES = frozenset(
     start_novel_creation_session
     submit_context_evidence
     submit_novel_creation_stage
+    confirm_creation_artifact
+    refine_creation_artifact
+    regenerate_creation_artifact
+    cancel_creation_operation
+    pause_creation_operation
+    resume_creation_operation
+    retry_creation_operation
+    validate_creation_session
+    finalize_creation_session
     patch_creation_artifact
+    patch_creation_session
     patch_creation_entity
     delete_creation_entity
     apply_creation_import

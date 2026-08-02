@@ -53,6 +53,6 @@ def test_rehearsal_preserves_richer_legacy_story_data(tmp_path: Path) -> None:
     assert report["success"] is True
     assert report["source_unchanged"] is True
     assert report["core_rows_preserved"] is True
-    assert report["migration"]["schema_revision"] == "300a8_unified_conversation_scope"
+    assert report["migration"]["schema_revision"] == "300a9_canonical_conversation_bridge"
     assert source.read_bytes() == source_before
     assert report["after"]["core_row_counts"] == report["before"]["core_row_counts"]

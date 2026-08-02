@@ -15,6 +15,10 @@ from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.assistant.application.system_conversations import SystemConversationStore
+from ..modules.assistant.interfaces.system_conversation_dependencies import (
+    get_system_conversation_store,
+)
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
 from ..services.context_builders import (
     _build_chapter_detail_context,
@@ -1125,9 +1129,19 @@ async def workspace_assistant_stream(
     project_id: str,
     payload: WorkspaceAssistantRequest,
     db: Session = Depends(get_db),
+    system_conversations: SystemConversationStore = Depends(get_system_conversation_store),
 ):
     """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     get_project_or_404(db, project_id)
+    if payload.canonical_conversation_id:
+        try:
+            canonical = system_conversations.get(payload.canonical_conversation_id)["conversation"]
+        except NotFoundError as exc:
+            raise ValidationError(
+                "Canonical project conversation does not belong to this project"
+            ) from exc
+        if canonical.get("scope_type") != "project" or canonical.get("scope_id") != project_id:
+            raise ValidationError("Canonical project conversation does not belong to this project")
     # Pin the selected default at submission time. This makes the initial SSE
     # event/query expose the real model and prevents a global-model change from
     # switching a task between iterations.
@@ -1135,6 +1149,21 @@ async def workspace_assistant_stream(
 
     async def event_generator(run_db: Session):
         db = run_db
+        if payload.canonical_conversation_id and not payload.conversation_id:
+            workspace = assistant_workspace(db)
+            execution_conversation = workspace.conversation_by_canonical(
+                project_id,
+                payload.canonical_conversation_id,
+            )
+            if not execution_conversation:
+                execution_conversation = workspace.create_conversation(
+                    project_id=project_id,
+                    title=_assistant_title_from_message(payload.message),
+                    scope=payload.scope,
+                    canonical_conversation_id=payload.canonical_conversation_id,
+                )
+                commit_session(db)
+            payload.conversation_id = execution_conversation.id
         # --- Plan path: detect intent and delegate to plan orchestrator ---
         plan_gen = await detect_and_stream_plan(
             db, project_id,

@@ -273,10 +273,21 @@ async function mockUiApi(page: Page) {
   })
 
   await page.route('**/api/v1/**', async (route) => {
-    const path = new URL(route.request().url()).pathname
+    const requestUrl = new URL(route.request().url())
+    const path = requestUrl.pathname
     if (path === '/api/v1/novel-creation/presets') return fulfill(route, { code: 0, data: creationPresets })
     if (path === '/api/v1/novel-creation/sessions') return fulfill(route, { code: 0, data: { sessions: [] } })
-    if (path === '/api/v1/projects') return fulfill(route, { code: 0, data: { items: [], total: 0 } })
+    if (path === '/api/v1/projects') return fulfill(route, { code: 0, data: { items: [project], total: 1 } })
+    if (
+      path === '/api/v1/ai/system-assistant/conversations'
+      && requestUrl.searchParams.get('scope_type') === 'project'
+    ) return fulfill(route, { code: 0, data: {
+      items: [{
+        id: 'conversation-project', title: '\u4e3b\u89d2\u52a8\u673a\u8c03\u6574', scope_type: 'project', scope_id: 'p1', project_id: 'p1',
+        created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
+      }],
+      total: 1,
+    } })
     if (path === '/api/v1/ai/system-assistant/conversations') return fulfill(route, { code: 0, data: {
       items: [{
         id: 'conversation-running', title: '八卷仙侠悬疑立项', creation_session_id: 'running-creation',
@@ -302,6 +313,22 @@ async function mockUiApi(page: Page) {
             operation_id: 'operation-running', model_source: 'opencode_cli:opencode/deepseek-v4-flash-free',
             attempt: 1, current_message: '正在调整第 3—8 卷，并保留主角设定',
           } },
+        },
+      ],
+    } })
+    if (path === '/api/v1/ai/system-assistant/conversations/conversation-project') return fulfill(route, { code: 0, data: {
+      conversation: {
+        id: 'conversation-project', title: '\u4e3b\u89d2\u52a8\u673a\u8c03\u6574', scope_type: 'project', scope_id: 'p1', project_id: 'p1',
+        created_at: '2026-07-27T09:00:00Z', updated_at: '2026-07-27T10:00:00Z',
+      },
+      messages: [
+        {
+          id: 'message-project-user', role: 'user', content: '\u8c03\u6574\u4e3b\u89d2\u52a8\u673a\uff0c\u4f46\u4e0d\u6539\u53d8\u5df2\u9501\u5b9a\u7684\u7ed3\u5c40\u3002',
+          status: 'completed', message_type: 'text', created_at: '2026-07-27T09:59:00Z', payload: {},
+        },
+        {
+          id: 'message-project-assistant', role: 'assistant', content: '\u5df2\u8c03\u6574\u4e3b\u89d2\u52a8\u673a\uff0c\u9501\u5b9a\u7ed3\u5c40\u4fdd\u6301\u4e0d\u53d8\u3002',
+          status: 'completed', message_type: 'artifact_change', created_at: '2026-07-27T10:00:00Z', payload: {},
         },
       ],
     } })
@@ -552,6 +579,22 @@ const creationViewports = [
 ]
 
 for (const viewport of creationViewports) {
+  test(`restores project-scoped assistant history at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockUiApi(page)
+    await page.addInitScript(() => {
+      localStorage.setItem('siming.gui.assistant.projectId', 'p1')
+    })
+    await page.goto('/gui', { waitUntil: 'networkidle' })
+
+    await expect(page.getByText(/\u4f5c\u54c1\u6a21\u5f0f/)).toBeVisible()
+    await expect(page.getByText(/\u4e3b\u89d2\u52a8\u673a\u8c03\u6574/).first()).toBeVisible()
+    await expect(page.getByText(/\u5df2\u8c03\u6574\u4e3b\u89d2\u52a8\u673a/)).toBeVisible()
+    await expectViewportSafe(page)
+    await expectNoSeriousAccessibilityViolations(page)
+    await expectVisualSnapshot(page, `assistant-project-history-${viewport.name}.png`)
+  })
+
   test(`keeps immutable artifact history reviewable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)

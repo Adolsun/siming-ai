@@ -4,16 +4,17 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { message } from 'antd'
 
-const { mockGet, mockPost, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockPatch, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
+  mockPatch: vi.fn(),
   mockDelete: vi.fn(),
   mockNavigate: vi.fn(),
   modelState: { defaultModel: 'openai:test' },
 }))
 
 vi.mock('../api/client', () => ({
-  apiClient: { get: mockGet, post: mockPost, delete: mockDelete },
+  apiClient: { get: mockGet, post: mockPost, patch: mockPatch, delete: mockDelete },
 }))
 
 vi.mock('../hooks/useModelOptions', () => ({
@@ -37,6 +38,8 @@ import GuiAssistantChat from '../components/GuiAssistantChat'
 describe('GuiAssistantChat new-book handoff', () => {
   afterEach(() => {
     message.destroy()
+    vi.unstubAllGlobals()
+    localStorage.clear()
   })
 
   beforeEach(() => {
@@ -175,6 +178,61 @@ describe('GuiAssistantChat new-book handoff', () => {
       }
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
+    mockPatch.mockResolvedValue({ data: { data: {} } })
+  })
+
+  it('persists project assistant turns in the canonical project-scoped conversation', async () => {
+    localStorage.setItem('siming.gui.assistant.projectId', 'project-1')
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects') {
+        return Promise.resolve({ data: { data: { items: [{ id: 'project-1', title: '测试作品' }], total: 1 } } })
+      }
+      if (url === '/ai/system-assistant/conversations') {
+        return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPost.mockImplementation((url: string, body: any) => {
+      if (url === '/ai/system-assistant/conversations') {
+        expect(body).toMatchObject({ scope_type: 'project', scope_id: 'project-1' })
+        return Promise.resolve({ data: { data: { conversation: { id: 'project-conversation-1', title: '讨论' } } } })
+      }
+      if (url === '/ai/system-assistant/conversations/project-conversation-1/turns/start') {
+        expect(body).toMatchObject({ scope_type: 'project', scope_id: 'project-1', user_content: '调整主角动机' })
+        return Promise.resolve({ data: { data: {
+          conversation: { id: 'project-conversation-1', title: '讨论', scope_type: 'project', scope_id: 'project-1' },
+          messages: [{ id: 'user-1' }, { id: 'assistant-1' }],
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    const stream = [
+      'data: ' + JSON.stringify({ type: 'complete', data: { reply: '已调整主角动机', run: { id: 'run-1', operation_id: 'operation-1' } } }),
+      'data: [DONE]',
+      '',
+    ].join('\n\n')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })))
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByText(/作品模式/)).toBeInTheDocument())
+    await user.type(screen.getByRole('textbox', { name: '给司命的消息' }), '调整主角动机')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/ai/system-assistant/conversations/project-conversation-1/turns/assistant-1',
+      expect.objectContaining({
+        assistant_content: '已调整主角动机',
+        status: 'completed',
+        scope_type: 'project',
+        scope_id: 'project-1',
+        run_id: 'run-1',
+        operation_id: 'operation-1',
+      }),
+    ))
   })
 
   it('offers the free setup flow when no model is configured', async () => {

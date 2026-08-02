@@ -28,6 +28,8 @@ from app.database.models import (
     AssistantMessage,
     AssistantRun,
     AssistantRunStep,
+    SystemAssistantConversation,
+    SystemAssistantMessage,
     APIConfig,
     OutlineNode,
     OutlineNodeCharacter,
@@ -88,6 +90,8 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             db.query(AgentPlan).delete()
             db.query(AssistantMessage).delete()
             db.query(AssistantConversation).delete()
+            db.query(SystemAssistantMessage).delete()
+            db.query(SystemAssistantConversation).delete()
             db.query(APIConfig).delete()
             db.query(CharacterTimeline).delete()
             db.query(CharacterChangeLog).delete()
@@ -262,6 +266,54 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("已读取当前大纲", response.text)
         self.assertNotIn("not bound to a Session", response.text)
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_reuses_the_canonical_execution_bridge(self, mock_stream, mock_supports):
+        project_id = self.create_project("Canonical Project Conversation")
+        db = SessionLocal()
+        try:
+            canonical = SystemAssistantConversation(
+                title="Project scope",
+                scope_type="project",
+                scope_id=project_id,
+                project_id=project_id,
+            )
+            db.add(canonical)
+            db.commit()
+            canonical_id = canonical.id
+        finally:
+            db.close()
+
+        for message in ("First project turn", "Second project turn"):
+            mock_stream.return_value = async_chunks("Project reply")
+            response = self.client.post(
+                f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+                json={
+                    "scope": "project",
+                    "message": message,
+                    "canonical_conversation_id": canonical_id,
+                    "model": "claude_cli:claude-code",
+                    "auto_apply": True,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        db = SessionLocal()
+        try:
+            bridges = db.query(AssistantConversation).filter(
+                AssistantConversation.canonical_conversation_id == canonical_id,
+            ).all()
+            self.assertEqual(len(bridges), 1)
+            self.assertEqual(bridges[0].project_id, project_id)
+            self.assertEqual(
+                db.query(AssistantMessage).filter(
+                    AssistantMessage.conversation_id == bridges[0].id,
+                ).count(),
+                4,
+            )
+        finally:
+            db.close()
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")

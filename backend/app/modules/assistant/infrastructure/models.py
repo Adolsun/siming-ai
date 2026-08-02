@@ -30,6 +30,7 @@ class AssistantConversation(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(200), nullable=False, default="新对话")
     scope = Column(String(50), nullable=False, default="writer")
+    canonical_conversation_id = Column(String(36), nullable=True, unique=True, index=True)
     current_chapter_id = Column(
         String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
