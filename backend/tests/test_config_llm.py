@@ -290,6 +290,45 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
         list_resp = self.client.get(f"{API_PREFIX}/config/models")
         self.assertEqual(list_resp.json()["data"]["total"], 1)
 
+    def test_update_existing_config_reuses_saved_api_key(self):
+        self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={"provider": "openai", "api_key": "sk-saved-key", "default_model": "gpt-4o"},
+        )
+
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={"provider": "openai", "default_model": "gpt-4.1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        db = SessionLocal()
+        try:
+            config = db.query(APIConfig).filter(APIConfig.provider == "openai").one()
+            self.assertEqual(decrypt(config.api_key_encrypted), "sk-saved-key")
+            self.assertEqual(config.default_model, "gpt-4.1")
+        finally:
+            db.close()
+
+    @patch("app.routers.config.get_model_verification")
+    def test_model_discovery_reuses_saved_api_key(self, verification_factory):
+        self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={"provider": "openai", "api_key": "sk-saved-key", "default_model": "gpt-4o"},
+        )
+        verification = MagicMock()
+        verification.list_models = AsyncMock(return_value=[{"id": "gpt-new", "display_name": "GPT New"}])
+        verification_factory.return_value = verification
+
+        response = self.client.post(
+            f"{API_PREFIX}/config/models/list",
+            json={"provider": "openai"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["models"][0]["id"], "gpt-new")
+        self.assertEqual(verification.list_models.await_args.args[0].api_key, "sk-saved-key")
+
     # ------------------------------------------------------------------
     # TC-08: Create custom provider without base URL
     # ------------------------------------------------------------------
@@ -370,7 +409,7 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
             f"{API_PREFIX}/config/models",
             json={"provider": "openai", "default_model": "gpt-4o"},
         )
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
 
     def test_create_missing_default_model(self):
         """POST /config/models without default_model returns validation error."""
@@ -397,7 +436,7 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
             f"{API_PREFIX}/config/models",
             json={"provider": "openai", "api_key": "", "default_model": "gpt-4o"},
         )
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
 
     def test_create_empty_default_model(self):
         """POST /config/models with empty default_model returns validation error."""
@@ -430,6 +469,24 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
             json={"provider": "openai", "api_key": long_key, "default_model": "gpt-4o"},
         )
         self.assertEqual(response.status_code, 200)
+
+    def test_create_accepts_long_model_identifier(self):
+        """Provider-qualified model ids up to 512 characters are preserved."""
+        long_model = "vendor/" + "model-segment-" * 35
+        self.assertLessEqual(len(long_model), 512)
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={"provider": "openai", "api_key": "sk-long-model", "default_model": long_model},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["default_model"], long_model)
+
+    def test_create_rejects_model_identifier_over_512_characters(self):
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={"provider": "openai", "api_key": "sk-long-model", "default_model": "m" * 513},
+        )
+        self.assertEqual(response.status_code, 422)
 
 
 class TestAPIConfigDetailAPI(unittest.TestCase):

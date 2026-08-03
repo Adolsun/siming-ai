@@ -66,6 +66,8 @@ import './GuiAssistantChat.css'
 
 const { Title, Paragraph, Text } = Typography
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
+const CHAT_MESSAGE_CHAR_LIMIT = 1_000_000
+const LONG_CREATION_TEXT_THRESHOLD = 20_000
 
 interface ApiResponse<T> {
   code: number
@@ -1298,7 +1300,7 @@ function GuiAssistantChat() {
         const items = res.data?.data?.items || []
         setProjects(items)
         if (!items.length) {
-          finish('当前还没有作品。你可以直接说“我想写克苏鲁+修仙+规则怪谈”，我会先生成三套新书方案。')
+          finish('当前还没有作品。你可以直接说“我想写克苏鲁+修仙+规则怪谈”，我会先生成一套创意方向，再按你的反馈持续调整。')
           return
         }
         const projectList = items.map((project, index) => `${index + 1}. ${project.title}`).join('\n')
@@ -1385,7 +1387,11 @@ function GuiAssistantChat() {
   }
 
   const handleMaterialImport = async (pending: PendingMaterialFile, userText: string) => {
-    const displayText = userText || `导入资料：${pending.name}`
+    const sourceText = userText || `导入资料：${pending.name}`
+    const pastedLongText = pending.name === '聊天长文本.txt'
+    const displayText = pastedLongText
+      ? `已提交长文本（${sourceText.length.toLocaleString('zh-CN')} 字）\n${sourceText.slice(0, 240)}${sourceText.length > 240 ? '……' : ''}`
+      : sourceText
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: displayText, status: 'completed', created_at: new Date().toISOString() },
@@ -1397,18 +1403,21 @@ function GuiAssistantChat() {
     let durableTurn: Awaited<ReturnType<typeof startSystemTurn>> | null = null
     try {
       if (!sessionId) {
+        const creationSeed = sourceText.length > 5000
+          ? `用户通过聊天提交了 ${sourceText.length.toLocaleString('zh-CN')} 字立项资料，原文已进入持久化分块导入任务。`
+          : sourceText
         const created = await startNovelCreationSession({
-          userBrief: displayText,
+          userBrief: creationSeed,
           creationMode: 'author_led',
-          authorBrief: displayText,
+          authorBrief: creationSeed,
         })
         sessionId = created.id
-        adoptNovelInterviewSession(created.id, displayText)
+        adoptNovelInterviewSession(created.id, creationSeed)
       }
       try {
-        durableTurn = await startSystemTurn(displayText, {
+        durableTurn = await startSystemTurn(sourceText, {
           creationSessionId: sessionId,
-          userBrief: displayText,
+          userBrief: sourceText.length > 5000 ? `已导入 ${sourceText.length.toLocaleString('zh-CN')} 字长文本` : sourceText,
           messageType: 'operation',
         })
       } catch {
@@ -1607,6 +1616,15 @@ function GuiAssistantChat() {
     if ((!text && pendingFiles.length === 0) || streaming) return
     // If only files without text, use a default message
     const effectiveText = text || '请帮我处理这些文件'
+
+    const isLongCreationText = pendingFiles.length === 0
+      && effectiveText.length > LONG_CREATION_TEXT_THRESHOLD
+      && (!activeProjectId || Boolean(systemSessionId) || shouldUseNovelCreation(effectiveText, Boolean(activeProjectId)))
+    if (isLongCreationText) {
+      const file = new File([effectiveText], '聊天长文本.txt', { type: 'text/plain;charset=utf-8' })
+      await handleMaterialImport({ name: file.name, size: file.size, file, content: effectiveText }, effectiveText)
+      return
+    }
 
     const requestsCreationImport = pendingFiles.length > 0 && (
       !activeProjectId
@@ -2057,7 +2075,7 @@ function GuiAssistantChat() {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = '采访已完成，正在进入立项工作台生成三套轻量创意。'
+            last.content = '采访已完成，正在生成一套可持续调整的创意方向。'
             last.questions = undefined
             last.status = 'completed'
           }
@@ -2133,7 +2151,7 @@ function GuiAssistantChat() {
       const transition = await novelInterview.skip()
       if (transition.kind === 'error') throw new Error(transition.error || '动态采访失败。')
       setRunningStartTime(null)
-      setLastAssistantMessage('采访已结束，正在进入立项工作台生成三套轻量创意。', 'completed')
+      setLastAssistantMessage('采访已结束，正在生成一套可持续调整的创意方向。', 'completed')
       const run = await novelInterview.startConceptRun(transition.state.sessionId)
       setActiveCreationRun(run)
       if (durableTurn) {
@@ -2374,7 +2392,7 @@ function GuiAssistantChat() {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '采访已完成，正在进入立项工作台生成三套轻量创意。'
+          last.content = '采访已完成，正在生成一套可持续调整的创意方向。'
           last.status = 'completed'
         }
         return [...next]
@@ -3374,6 +3392,8 @@ function GuiAssistantChat() {
             onKeyDown={handleKeyDown}
             placeholder={pendingFiles.length > 0 ? '描述你想怎么处理这些文件...' : '告诉司命你想创作或处理什么...'}
             autoSize={{ minRows: 2, maxRows: 6 }}
+            maxLength={CHAT_MESSAGE_CHAR_LIMIT}
+            showCount={{ formatter: ({ count }) => `${count.toLocaleString('zh-CN')} / 100 万字` }}
             disabled={streaming}
           />
           <div className="gui-chat-composer-actions">

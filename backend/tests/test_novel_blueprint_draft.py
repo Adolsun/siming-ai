@@ -485,7 +485,7 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         blueprints = result["data"]["blueprints"]
-        self.assertEqual(len(blueprints), 3)
+        self.assertEqual(len(blueprints), 1)
         first = blueprints[0]
         self.assertGreaterEqual(len(first["selling_points"]), 4)
         self.assertGreaterEqual(len(first["characters"]), 5)
@@ -686,16 +686,16 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         blueprints = result["data"]["blueprints"]
         names = [bp["protagonist"]["name"] for bp in blueprints]
         titles = [bp["title"] for bp in blueprints]
-        self.assertEqual(len(set(names)), 3)
+        self.assertEqual(len(set(names)), 1)
         self.assertNotIn("未命名主角", names)
-        self.assertEqual(len(set(titles)), 3)
+        self.assertEqual(len(set(titles)), 1)
         self.assertTrue(all("克苏鲁+规则怪谈" not in title for title in titles))
         self.assertTrue(any("旧神" in title or "规则" in title or "怪谈" in title for title in titles))
         self.assertTrue(all(bp["requirement_coverage"]["score"] >= 90 for bp in blueprints))
-        self.assertEqual(len({bp["subtitle"] for bp in blueprints}), 3)
-        self.assertEqual(len({bp["core_conflict"] for bp in blueprints}), 3)
-        self.assertEqual(len({bp["protagonist"]["goal"] for bp in blueprints}), 3)
-        self.assertEqual(len({bp["golden_three"]["chapter_1"] for bp in blueprints}), 3)
+        self.assertEqual(len({bp["subtitle"] for bp in blueprints}), 1)
+        self.assertEqual(len({bp["core_conflict"] for bp in blueprints}), 1)
+        self.assertEqual(len({bp["protagonist"]["goal"] for bp in blueprints}), 1)
+        self.assertEqual(len({bp["golden_three"]["chapter_1"] for bp in blueprints}), 1)
 
     def test_template_regenerate_rotates_to_new_story_engines(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
@@ -773,7 +773,7 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
 
         blueprints = result["data"]["blueprints"]
         names = [bp["protagonist"]["name"] for bp in blueprints]
-        self.assertEqual(len(set(names)), 3)
+        self.assertEqual(len(set(names)), 1)
         self.assertNotIn("未命名主角", names)
         for bp in blueprints:
             forbidden_text = " ".join(bp["forbidden_patterns"])

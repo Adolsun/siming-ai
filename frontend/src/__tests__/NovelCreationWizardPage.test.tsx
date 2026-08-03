@@ -131,7 +131,7 @@ describe('NovelCreationWizardPage', () => {
       runs: [{
         id: 'run-1', session_id: 'session-1', stage: 'concepts', status: 'running',
         operation_id: 'operation-1', model_source: 'openai:test', attempt: 1,
-        current_message: '正在生成三套轻量创意',
+        current_message: '正在生成一套创意方向',
       }],
       draft: {
         form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
@@ -156,7 +156,7 @@ describe('NovelCreationWizardPage', () => {
     await waitFor(() => {
       expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-1/stream')
     })
-    expect(screen.getByText('正在生成三套轻量创意')).toBeInTheDocument()
+    expect(screen.getByText('正在生成一套创意方向')).toBeInTheDocument()
     expect(screen.getByText('实际模型：openai:test')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建立项' })).toBeDisabled()
     const pauseButton = screen.getByRole('button', { name: /暂停/ })
@@ -223,7 +223,7 @@ describe('NovelCreationWizardPage', () => {
   it('finalizes a run from REST when the SSE connection closes after completion', async () => {
     const persistedSessionRun = {
       id: 'run-1', session_id: 'session-1', stage: 'concepts', status: 'running',
-      operation_id: 'operation-1', current_message: '正在生成三套轻量创意',
+      operation_id: 'operation-1', current_message: '正在生成一套创意方向',
     }
     let currentRun = persistedSessionRun
     const session = {
@@ -249,7 +249,7 @@ describe('NovelCreationWizardPage', () => {
       if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
       if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: { ...session, runs: [{ ...persistedSessionRun }] } } })
       if (url === '/novel-creation/runs/run-1') {
-        currentRun = { ...currentRun, status: 'completed', current_message: '三套创意已保存' }
+        currentRun = { ...currentRun, status: 'completed', current_message: '创意方向已保存' }
         return Promise.resolve({ data: { data: currentRun } })
       }
       return Promise.reject(new Error(`unexpected GET ${url}`))
@@ -260,7 +260,7 @@ describe('NovelCreationWizardPage', () => {
     act(() => sourceInstance?.onerror?.(new Event('error')))
 
     expect(await screen.findByText('本轮立项任务已完成')).toBeInTheDocument()
-    expect(screen.getByText('三套创意已保存')).toBeInTheDocument()
+    expect(screen.getByText('创意方向已保存')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /取消任务/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建立项' })).toBeEnabled()
     expect(sourceInstance?.close).toHaveBeenCalled()

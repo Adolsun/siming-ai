@@ -39,7 +39,7 @@ class AgentPlan(Base):
         String(30), nullable=False, default="pending"
     )  # pending/running/completed/error/cancelled
     graph_json = Column(Text, nullable=False)  # serialized PlanGraph
-    model = Column(String(200), nullable=True)
+    model = Column(String(512), nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

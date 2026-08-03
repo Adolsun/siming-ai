@@ -384,6 +384,7 @@ def _config_payload(cfg: Any, include_masked_key: bool = False) -> dict:
         "provider_type": getattr(cfg, "provider_type", None) or _normalize_provider_type(cfg.provider),
         "cli_command": getattr(cfg, "cli_command", None),
         "cli_args": getattr(cfg, "cli_args", None),
+        "api_key_configured": bool(getattr(cfg, "api_key_encrypted", None)),
         "created_at": cfg.created_at.isoformat() if cfg.created_at else None,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
     }
@@ -456,6 +457,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
     _require_provider_available(payload.provider, provider_type)
     is_cli = provider_type == LOCAL_CLI_PROVIDER_TYPE or is_local_cli_provider(payload.provider)
     is_runtime = provider_type == LOCAL_RUNTIME_PROVIDER_TYPE or payload.provider == "local_llama_cpp"
+    crud = model_config_crud(db)
+    existing = crud.get_provider(payload.provider)
     if is_runtime and local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
 
@@ -476,17 +479,22 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         cli_command = None
         cli_args = None
     else:
-        if not payload.api_key:
+        if payload.api_key:
+            api_key = payload.api_key
+        elif existing:
+            api_key = decrypt(existing.api_key_encrypted)
+        else:
             raise ValidationError("API Key is required for API providers")
-        _resolve_base_url(payload.provider, payload.base_url_override)
-        api_key = payload.api_key
-        base_url_override = payload.base_url_override
+        base_url_override = (
+            payload.base_url_override
+            if payload.base_url_override is not None
+            else getattr(existing, "base_url_override", None)
+        )
+        _resolve_base_url(payload.provider, base_url_override)
         cli_command = None
         cli_args = None
 
     default_model = _normalize_model_for_provider(payload.provider, payload.default_model)
-    crud = model_config_crud(db)
-    existing = crud.get_provider(payload.provider)
     encrypted_key = encrypt(api_key)
 
     if existing:
@@ -549,17 +557,24 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
         raise ValidationError(local_runtime_disabled_message())
     warning = None
     manual_entry_required = False
-    if not is_local_cli_provider(payload.provider) and payload.provider != "local_llama_cpp" and not payload.api_key:
-        raise ValidationError("API Key is required")
+    saved = model_config_crud(db).get_provider(payload.provider) if hasattr(db, "query") else None
+    api_key = payload.api_key
+    if not is_local_cli_provider(payload.provider) and payload.provider != "local_llama_cpp" and not api_key:
+        if not saved:
+            raise ValidationError("API Key is required")
+        api_key = decrypt(saved.api_key_encrypted)
     base_url = ""
     if payload.provider != "local_llama_cpp" and not is_local_cli_provider(payload.provider):
-        base_url = _resolve_base_url(payload.provider, payload.base_url_override)
+        base_url = _resolve_base_url(
+            payload.provider,
+            payload.base_url_override if payload.base_url_override is not None else getattr(saved, "base_url_override", None),
+        )
     request = ModelProbeRequest(
         provider=payload.provider,
-        api_key=payload.api_key or "",
+        api_key=api_key or "",
         base_url=base_url,
-        cli_command=payload.cli_command,
-        cli_args=payload.cli_args,
+        cli_command=payload.cli_command or getattr(saved, "cli_command", None),
+        cli_args=payload.cli_args or getattr(saved, "cli_args", None),
     )
     try:
         models = await get_model_verification().list_models(request)
@@ -589,30 +604,37 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
 
 
 @router.post("/config/models/test")
-async def test_connection(payload: ConnectionTestRequest):
+async def test_connection(payload: ConnectionTestRequest, db: Session = Depends(get_db)):
     _require_provider_available(payload.provider)
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     is_cli = is_local_cli_provider(payload.provider)
     is_runtime = payload.provider == "local_llama_cpp"
-    command = payload.cli_command or _default_cli_command(payload.provider) if is_cli else None
+    saved = model_config_crud(db).get_provider(payload.provider) if hasattr(db, "query") else None
+    command = payload.cli_command or getattr(saved, "cli_command", None) or _default_cli_command(payload.provider) if is_cli else None
     if is_cli:
         _validate_cli_command(command)
-    if not is_cli and not is_runtime and not payload.api_key:
-        raise ValidationError("API Key is required")
+    api_key = payload.api_key
+    if not is_cli and not is_runtime and not api_key:
+        if not saved:
+            raise ValidationError("API Key is required")
+        api_key = decrypt(saved.api_key_encrypted)
     model = (payload.model or "").strip()
     if not model:
         raise ValidationError("请先填写要实际调用的模型名")
-    base_url = "" if is_cli or is_runtime else _resolve_base_url(payload.provider, payload.base_url_override)
+    base_url = "" if is_cli or is_runtime else _resolve_base_url(
+        payload.provider,
+        payload.base_url_override if payload.base_url_override is not None else getattr(saved, "base_url_override", None),
+    )
     test_data = await get_model_verification().verify(
         ModelProbeRequest(
             provider=payload.provider,
             model=model,
-            api_key=payload.api_key or "",
+            api_key=api_key or "",
             base_url=base_url,
             api_protocol=payload.api_protocol,
             cli_command=command,
-            cli_args=payload.cli_args or (_default_cli_args(payload.provider) if is_cli else None),
+            cli_args=payload.cli_args or getattr(saved, "cli_args", None) or (_default_cli_args(payload.provider) if is_cli else None),
             timeout_seconds=payload.timeout_seconds,
             content_root=resolve_content_root(),
         )
@@ -658,7 +680,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
         model=config.default_model,
     )
     try:
-        test_result = await test_connection(payload)
+        test_result = await test_connection(payload, db)
     except Exception as exc:
         if not mark_model_failure(config, exc, source="manual_verify"):
             mark_model_unavailable(config, exc, source="manual_verify")

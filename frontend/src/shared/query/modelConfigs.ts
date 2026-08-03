@@ -25,6 +25,7 @@ export interface SharedModelConfig {
   cli_command?: string | null
   cli_args?: string | null
   api_key_masked?: string
+  api_key_configured?: boolean
   max_output_tokens?: number | null
   effective_max_output_tokens?: number
   deconstruct_input_char_limit?: number | null

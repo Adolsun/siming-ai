@@ -69,7 +69,7 @@ describe('GettingStartedPanel', () => {
     expect(api.get).toHaveBeenCalledTimes(1)
   })
 
-  it('creates a session and starts three concept generation from one idea', async () => {
+  it('creates a session and starts one adjustable concept direction from one idea', async () => {
     api.get.mockResolvedValue({ data: { data: {
       ...baseStatus, needs_setup: false, is_global_default: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
@@ -82,7 +82,7 @@ describe('GettingStartedPanel', () => {
 
     renderPanel()
     fireEvent.change(await screen.findByLabelText('你想写什么故事？'), { target: { value: '午夜客栈里的修仙少女' } })
-    fireEvent.click(screen.getByRole('button', { name: /生成三套小说创意/ }))
+    fireEvent.click(screen.getByRole('button', { name: /生成小说创意/ }))
 
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/novel-creation/start', expect.objectContaining({
       mode: 'internal_llm', user_brief: '午夜客栈里的修仙少女',

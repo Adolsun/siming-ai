@@ -95,7 +95,7 @@ def _concepts():
             "differentiators": ["Memory evidence", f"Reversal route {index}"],
             "risks": ["Keep the memory rules observable"],
         }
-        for index in range(1, 4)
+        for index in range(1, 2)
     ]
 
 
@@ -229,8 +229,8 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
     assert completion.call_args.kwargs["max_tokens"] == 3200
     assert completion.call_args.kwargs["retry"] == 0
     assert session.blueprint_json is None
-    assert len(session.draft_json["concepts"]) == 3
-    assert len(session.draft_json["concept_seeds"]) == 3
+    assert len(session.draft_json["concepts"]) == 1
+    assert len(session.draft_json["concept_seeds"]) == 1
     assert result["data"]["run"]["status"] == "waiting_user"
 
 
@@ -260,7 +260,7 @@ def test_compact_concepts_never_switch_models_on_quota_failure():
 def test_invalid_concepts_create_safe_draft_then_a_retry_can_succeed():
     db = _db()
     session = _session(db)
-    invalid = json.dumps({"concepts": _concepts()[:2]})
+    invalid = json.dumps({"concepts": []})
     with patch(
         "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
         new=_streaming_completion({"content": invalid}),
@@ -274,8 +274,8 @@ def test_invalid_concepts_create_safe_draft_then_a_retry_can_succeed():
     assert recovered["status"] == "ok"
     assert recovered["data"]["run"]["status"] == "waiting_user"
     assert recovered["data"]["run"]["result_mode"] == "deterministic_fallback"
-    assert session.draft_json["stages"]["concepts"]["source"] == "model_repaired"
-    assert session.draft_json["stages"]["concepts"]["data"]["options"][0]["title"] == _concepts()[0]["title"]
+    assert session.draft_json["stages"]["concepts"]["source"] == "contract_fallback"
+    assert session.draft_json["stages"]["concepts"]["data"]["options"][0]["title"]
 
     valid = json.dumps({"concepts": _concepts()})
     with patch(
@@ -492,7 +492,7 @@ def test_author_locks_cannot_be_hidden_in_unrelated_concept_fields():
 def test_invalid_json_is_repaired_once_and_refine_failure_keeps_current_concepts():
     db = _db()
     session = _session(db)
-    invalid = json.dumps({"concepts": _concepts()[:2]})
+    invalid = json.dumps({"concepts": []})
     valid = json.dumps({"concepts": _concepts()})
     with patch(
         "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
@@ -573,7 +573,7 @@ def test_long_stage_save_uses_revision_cas_and_preserves_manual_edit():
     assert run.failure_class == "revision_conflict"
     assert run.result_json["status"] == "conflict"
     assert run.result_json["candidate_artifact"] == "concepts"
-    assert len(run.result_json["candidate_data"]["options"]) == 3
+    assert len(run.result_json["candidate_data"]["options"]) == 1
     assert session.draft_json["author_brief"] == manual_brief
     assert session.draft_json.get("concepts") == []
     artifact = serialize_creation_artifact(session, "concepts")

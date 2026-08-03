@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { message } from 'antd'
@@ -618,5 +618,41 @@ describe('GuiAssistantChat new-book handoff', () => {
       }))
     })
     expect(await screen.findByText(/导入已完成/)).toBeInTheDocument()
+  })
+
+  it('accepts up to one million characters and turns long creation text into a durable import', async () => {
+    const longText = `长篇设定：${'宗门与人物关系。'.repeat(2500)}`
+    mockPost.mockImplementation((url: string, body: any) => {
+      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
+      if (url === '/ai/system-assistant/conversations') return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '长文本' } } } })
+      if (url === '/ai/system-assistant/conversations/conversation-1/turns/start') {
+        expect(body.user_content).toBe(longText)
+        return Promise.resolve({ data: { data: {
+          conversation: { id: 'conversation-1', title: '长文本' },
+          messages: [{ id: 'user-long' }, { id: 'assistant-long' }],
+        } } })
+      }
+      if (url === '/novel-creation/sessions/session-1/imports') {
+        expect(body).toBeInstanceOf(FormData)
+        return Promise.resolve({ data: { data: {
+          id: 'import-long', source_file_id: 'file-long', session_id: 'session-1', operation_id: 'operation-long',
+          filename: '聊天长文本.txt', status: 'running', text_length: longText.length,
+          chunk_count: 3, processed_chunks: 0, input_revision: 1,
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    const input = await screen.findByRole('textbox', { name: '给司命的消息' })
+    expect(input).toHaveAttribute('maxlength', '1000000')
+    fireEvent.change(input, { target: { value: longText } })
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText(/已提交长文本/)).toHaveTextContent(longText.length.toLocaleString('zh-CN'))
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      '/novel-creation/sessions/session-1/imports', expect.any(FormData), { timeout: 0 },
+    ))
   })
 })

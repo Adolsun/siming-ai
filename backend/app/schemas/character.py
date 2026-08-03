@@ -138,7 +138,7 @@ class CharacterAIConfigUpdate(BaseModel):
     catchphrases: Optional[list[str]] = Field(None, description="口头禅列表")
     verbosity: Optional[str] = Field(None, max_length=50, description="话量偏好 brief/moderate/verbose")
     emotion_tendency: Optional[str] = Field(None, max_length=100, description="情感倾向")
-    model_override: Optional[str] = Field(None, max_length=200, description="角色专用模型覆盖")
+    model_override: Optional[str] = Field(None, max_length=512, description="角色专用模型覆盖")
     custom_system_prompt: Optional[str] = Field(None, description="自定义额外系统提示词")
 
 

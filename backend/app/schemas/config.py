@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 PROVIDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -22,6 +22,7 @@ LOCAL_CLI_PROVIDER_IDS = {
 }
 LOCAL_RUNTIME_PROVIDER_IDS = {"local_llama_cpp"}
 APIProtocol = Literal["auto", "chat_completions", "responses"]
+MODEL_IDENTIFIER_MAX_LENGTH = 512
 
 
 def validate_provider_id(provider: str) -> str:
@@ -36,7 +37,7 @@ class APIConfigCreate(BaseModel):
 
     provider: str = Field(..., min_length=1, max_length=50, description="Provider id")
     api_key: Optional[str] = Field(None, description="API key; not required for local CLI providers")
-    default_model: str = Field(..., min_length=1, max_length=100, description="Default model name")
+    default_model: str = Field(..., min_length=1, max_length=MODEL_IDENTIFIER_MAX_LENGTH, description="Default model name")
     base_url_override: Optional[str] = Field(None, max_length=500, description="Custom API endpoint")
     api_protocol: APIProtocol = Field("auto", description="OpenAI-compatible wire protocol")
     provider_type: Optional[str] = Field(None, max_length=20, description="api, local_cli, or local_runtime")
@@ -55,23 +56,11 @@ class APIConfigCreate(BaseModel):
     def _validate_provider(cls, provider: str) -> str:
         return validate_provider_id(provider)
 
-    @model_validator(mode="after")
-    def _validate_api_key_for_api_provider(self):
-        provider_type = self.provider_type or (
-            "local_cli" if self.provider in LOCAL_CLI_PROVIDER_IDS
-            else "local_runtime" if self.provider in LOCAL_RUNTIME_PROVIDER_IDS
-            else "api"
-        )
-        if provider_type == "api" and not (self.api_key or "").strip():
-            raise ValueError("API Key is required for API providers")
-        return self
-
-
 class GlobalModelSetting(BaseModel):
     """Schema for global default model setting."""
 
     provider: str = Field(..., description="Global default provider")
-    model: str = Field(..., description="Global default model name")
+    model: str = Field(..., min_length=1, max_length=MODEL_IDENTIFIER_MAX_LENGTH, description="Global default model name")
 
     @field_validator("provider")
     @classmethod
@@ -93,13 +82,6 @@ class ModelListRequest(BaseModel):
     def _validate_provider(cls, provider: str) -> str:
         return validate_provider_id(provider)
 
-    @model_validator(mode="after")
-    def _validate_api_key_for_api_provider(self):
-        if self.provider not in LOCAL_CLI_PROVIDER_IDS | LOCAL_RUNTIME_PROVIDER_IDS and not (self.api_key or "").strip():
-            raise ValueError("API Key is required for API providers")
-        return self
-
-
 class ConnectionTestRequest(BaseModel):
     """Schema for testing provider connection."""
 
@@ -109,16 +91,10 @@ class ConnectionTestRequest(BaseModel):
     api_protocol: APIProtocol = Field("auto", description="OpenAI-compatible wire protocol")
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(None, max_length=2000, description="Local CLI args")
-    model: Optional[str] = Field(None, max_length=200, description="Model used by the real generation smoke test")
+    model: Optional[str] = Field(None, max_length=MODEL_IDENTIFIER_MAX_LENGTH, description="Model used by the real generation smoke test")
     timeout_seconds: Optional[int] = Field(None, ge=15, le=180, description="Optional shorter CLI smoke-test timeout")
 
     @field_validator("provider")
     @classmethod
     def _validate_provider(cls, provider: str) -> str:
         return validate_provider_id(provider)
-
-    @model_validator(mode="after")
-    def _validate_api_key_for_api_provider(self):
-        if self.provider not in LOCAL_CLI_PROVIDER_IDS | LOCAL_RUNTIME_PROVIDER_IDS and not (self.api_key or "").strip():
-            raise ValueError("API Key is required for API providers")
-        return self

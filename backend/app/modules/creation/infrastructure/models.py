@@ -79,7 +79,7 @@ class NovelCreationStageRun(Base):
     stage = Column(String(50), nullable=False)
     operation = Column(String(30), nullable=False, default="generate")
     status = Column(String(30), nullable=False, default="queued")
-    model_source = Column(String(100), nullable=True)
+    model_source = Column(String(512), nullable=True)
     tool_mode = Column(String(50), nullable=True)
     failure_class = Column(String(50), nullable=True)
     storage_target = Column(String(50), nullable=False, default="session_draft")

@@ -27,7 +27,7 @@ class SystemConversationScopePatch(BaseModel):
 
 
 class SystemTurnCreate(BaseModel):
-    user_content: str = Field(min_length=1)
+    user_content: str = Field(min_length=1, max_length=1_000_000)
     assistant_content: str = ""
     status: str = "completed"
     payload: dict[str, Any] | None = None

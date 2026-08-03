@@ -8,7 +8,7 @@ class WorkspaceAssistantRequest(BaseModel):
     """Conversational assistant for project planning modules."""
 
     scope: Literal["outline", "characters", "worldbuilding", "project"] = Field(..., description="Management scope")
-    message: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=1_000_000)
     conversation_id: Optional[str] = None
     canonical_conversation_id: Optional[str] = Field(
         None,

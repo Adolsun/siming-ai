@@ -211,6 +211,67 @@ describe('SettingsPage startup and update controls', () => {
     expect(await screen.findByText('Vendor Model')).toBeInTheDocument()
   })
 
+  it('reuses a saved API key when opening and saving another model', async () => {
+    mockCustomModelConfig()
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'vendor-config', provider: 'vendor', default_model: 'legacy-model',
+        base_url_override: 'https://api.vendor.example', api_protocol: 'auto', provider_type: 'api',
+        readiness_status: 'unverified', readiness_message: '待验证', is_usable: false,
+        is_global_default: false, api_key_configured: true,
+      }] } } })
+      if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
+      if (url === '/config/content-root') return Promise.resolve({ data: { data: { current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true, exists: true, is_empty: true } } })
+      if (url === '/config/launcher') return Promise.resolve({ data: { data: launcherSettings } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') return Promise.resolve({ data: { data: { models: [{ id: 'vendor-new', display_name: 'Vendor New' }] } } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/list', {
+      provider: 'vendor', api_key: undefined, base_url_override: 'https://api.vendor.example',
+    }))
+    expect(screen.getByPlaceholderText('已保存，留空继续使用')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({ provider: 'vendor' })))
+    const saveCall = api.post.mock.calls.find(([url]) => url === '/config/models')
+    expect(saveCall?.[1]?.api_key).toBeFalsy()
+  })
+
+  it('asks OpenCode CLI itself for available models', async () => {
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'opencode', provider: 'opencode_cli', default_model: 'opencode/current', provider_type: 'local_cli',
+        cli_command: 'opencode', cli_args: '', readiness_status: 'unverified', readiness_message: '待验证',
+        is_usable: false, is_global_default: false,
+      }] } } })
+      if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
+      if (url === '/config/content-root') return Promise.resolve({ data: { data: { current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true, exists: true, is_empty: true } } })
+      if (url === '/config/launcher') return Promise.resolve({ data: { data: launcherSettings } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') return Promise.resolve({ data: { data: { models: [{ id: 'opencode/new-model', display_name: 'opencode/new-model' }] } } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+
+    expect(await screen.findByText(/已由司命运行 OpenCode CLI/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /刷新 OpenCode 模型/ })).toBeInTheDocument()
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/list', expect.objectContaining({
+      provider: 'opencode_cli', cli_command: 'opencode',
+    })))
+  })
+
   it('allows manual custom model entry only after automatic discovery fails', async () => {
     mockCustomModelConfig()
     api.post.mockImplementation((url: string) => {

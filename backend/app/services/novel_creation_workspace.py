@@ -384,7 +384,7 @@ def save_compact_concepts(
         cards.append(card)
         seeds[concept_id] = deepcopy(card)
 
-    expected_count = 1 if draft.get("creation_mode") == "author_led" else 3
+    expected_count = 1
     if len(cards) != expected_count:
         label = "作者方案" if expected_count == 1 else "轻量创意"
         raise ValueError(f"{label}必须恰好包含{expected_count}张有效创意卡")
@@ -989,7 +989,7 @@ def _selected_blueprint(session: NovelCreationSession, draft_override: dict[str,
     blueprints = session.blueprint_json if isinstance(session.blueprint_json, list) else [session.blueprint_json]
     index = int(selected.get("source_index") or 0)
     if index >= len(blueprints) or not isinstance(blueprints[index], dict):
-        raise ValueError("所选创意方向缺少完整方案来源，请重新生成三案")
+        raise ValueError("当前创意方向缺少完整方案来源，请重新生成方向")
     return deepcopy(blueprints[index])
 
 

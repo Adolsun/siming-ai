@@ -8,7 +8,7 @@ import json
 import os
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func
@@ -34,6 +34,15 @@ _ACTION_HANDLERS: dict[str, dict[str, Callable[[], Any]]] = {}
 
 def utcnow() -> datetime:
     return datetime.utcnow()
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    """Serialize database UTC timestamps with an explicit offset for clients."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _write_with_uow(callback: Callable[[Session], None], db: Session | None = None) -> None:
@@ -524,19 +533,13 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "input_snapshot_hash": operation.input_snapshot_hash,
         "process_metrics": deepcopy(operation.process_metrics_json),
         "elapsed_seconds": elapsed,
-        "heartbeat_at": operation.heartbeat_at.isoformat() if operation.heartbeat_at else None,
-        "last_activity_at": operation.last_activity_at.isoformat()
-        if operation.last_activity_at
-        else None,
-        "last_output_at": operation.last_output_at.isoformat()
-        if operation.last_output_at
-        else None,
-        "last_checkpoint_at": operation.last_checkpoint_at.isoformat()
-        if operation.last_checkpoint_at
-        else None,
-        "created_at": operation.created_at.isoformat() if operation.created_at else None,
-        "updated_at": operation.updated_at.isoformat() if operation.updated_at else None,
-        "completed_at": operation.completed_at.isoformat() if operation.completed_at else None,
+        "heartbeat_at": _utc_iso(operation.heartbeat_at),
+        "last_activity_at": _utc_iso(operation.last_activity_at),
+        "last_output_at": _utc_iso(operation.last_output_at),
+        "last_checkpoint_at": _utc_iso(operation.last_checkpoint_at),
+        "created_at": _utc_iso(operation.created_at),
+        "updated_at": _utc_iso(operation.updated_at),
+        "completed_at": _utc_iso(operation.completed_at),
     }
     if include_events:
         data["result"] = result
@@ -547,7 +550,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
                 "status": event.status,
                 "message": event.message,
                 "payload": deepcopy(event.payload_json),
-                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "created_at": _utc_iso(event.created_at),
             }
             for event in operation.events
         ]

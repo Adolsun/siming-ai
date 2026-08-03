@@ -584,7 +584,7 @@ async def _generate_compact_concepts(
     interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
     author = _author_context(draft)
     author_led = author["creation_mode"] == "author_led"
-    expected_count = 1 if author_led else 3
+    expected_count = 1
     instruction = _text(draft.get("_refinement_instruction"))
     context = {
         "brief": _text(session.user_brief),
@@ -598,11 +598,11 @@ async def _generate_compact_concepts(
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
     system = render_creation_prompt(
-        task_kind="整理作者方案" if author_led else "生成三套轻量创意方向",
+        task_kind="整理作者方案" if author_led else "生成一套可持续调整的创意方向",
         task_rules=(
             ("只生成恰好一张作者方案卡，不生成替代故事。作者原文、专名、因果、结局方向和锁定要求都是不可改写的事实；只补全空白。"
              if author_led else
-             "只生成恰好三张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。三张卡必须遵守作者约束，并在故事发动机、冲突结构和开篇压力上有实质差异。")
+             "只生成恰好一张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。方案必须遵守作者约束，并适合作者随后通过对话持续局部调整。")
             + "如果提供了调整要求，只调整当前创意阶段，不影响其他阶段。"
         ),
     )
@@ -622,7 +622,7 @@ async def _generate_compact_concepts(
     }
     user = (
         f"请严格返回恰好{expected_count}张{'作者方案卡' if author_led else '创意卡'}，字段必须与下列 JSON 结构一致。"
-        + ("方案必须忠实整理作者已经想好的内容，不得随机替换故事。\n" if author_led else "每张卡应在数百字内可读完，三张卡不得只是改标题。\n")
+        + ("方案必须忠实整理作者已经想好的内容，不得随机替换故事。\n" if author_led else "创意卡应在数百字内可读完，并保留通过后续对话调整的空间。\n")
         + f"输出结构：{json.dumps(shape, ensure_ascii=False)}\n"
         f"作者上下文：{json.dumps(context, ensure_ascii=False)}"
     )

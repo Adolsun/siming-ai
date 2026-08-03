@@ -414,7 +414,7 @@ function NovelCreationWizardPage() {
     const authorLed = (creationPath || session?.draft?.creation_mode) === 'author_led'
     setRunMessage(operation === 'refine'
       ? '正在按你的要求调整当前方案...'
-      : authorLed ? '正在忠实整理作者方案...' : '正在理解创作约束并生成三套轻量创意...')
+      : authorLed ? '正在忠实整理作者方案...' : '正在理解创作约束并生成一套创意方向...')
     setRunProgress(0)
     setResultRevisionNotice('')
     editedDuringRunRef.current = false
@@ -720,8 +720,8 @@ function NovelCreationWizardPage() {
               <button type="button" className="creation-path-card" onClick={() => setCreationPath('explore')}>
                 <span className="creation-path-icon"><CompassOutlined /></span>
                 <strong>帮我探索创意</strong>
-                <span>从一个画面或念头出发，生成三种不同的故事发动机供你比较。</span>
-                <em>探索三个方向</em>
+                <span>从一个画面或念头出发，生成一套故事方向；之后可随时通过对话局部调整。</span>
+                <em>生成一个方向</em>
               </button>
               <button type="button" className="creation-path-card" onClick={() => navigate('/dashboard?create=import')}>
                 <span className="creation-path-icon"><UploadOutlined /></span>
@@ -828,7 +828,7 @@ function NovelCreationWizardPage() {
                 }]} />
                 <div className="creation-primary-actions">
                   <Button size="large" icon={<SaveOutlined />} loading={busy} onClick={saveIntake}>只保存草稿</Button>
-                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} disabled={!hasModels || !selectedModel} onClick={() => void generateConcepts('generate')}>{authorLed ? '整理为作者方案' : '生成三套轻量创意'}</Button>
+                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} disabled={!hasModels || !selectedModel} onClick={() => void generateConcepts('generate')}>{authorLed ? '整理为作者方案' : '生成创意方向'}</Button>
                 </div>
               </Form>
             </main>
@@ -856,7 +856,7 @@ function NovelCreationWizardPage() {
                 <Space wrap>{session.draft.locked_requirements?.map((item) => <Tag key={item}>{item}</Tag>)}</Space>
               </section>
             )}
-            <div className="creation-section-heading"><div><Title level={3}>{authorLed ? '检查作者方案' : '先选故事发动机'}</Title><Paragraph>{authorLed ? 'AI 只整理和补全了你的方案。继续前可手动编辑，或写明要求让 AI 定向调整。' : '这里只展示足够做方向判断的内容。选中后再生成完整角色、世界和全书规划。'}</Paragraph></div><Space wrap><Button onClick={() => openEditor('concepts')} disabled={busy}>编辑方案内容</Button><Button icon={<EditOutlined />} onClick={() => openRefine('concepts')} disabled={busy}>让 AI 按要求调整</Button><Button icon={<ReloadOutlined />} onClick={() => void generateConcepts('regenerate')} loading={busy}>{authorLed ? '重新整理方案' : '重新生成三案'}</Button></Space></div>
+            <div className="creation-section-heading"><div><Title level={3}>{authorLed ? '检查作者方案' : '完善故事发动机'}</Title><Paragraph>{authorLed ? 'AI 只整理和补全了你的方案。继续前可手动编辑，或写明要求让 AI 定向调整。' : '这里先形成一套清晰方向。你可以继续对话调整，不需要在多套方案之间抽选。'}</Paragraph></div><Space wrap><Button onClick={() => openEditor('concepts')} disabled={busy}>编辑方案内容</Button><Button icon={<EditOutlined />} onClick={() => openRefine('concepts')} disabled={busy}>让 AI 按要求调整</Button><Button icon={<ReloadOutlined />} onClick={() => void generateConcepts('regenerate')} loading={busy}>{authorLed ? '重新整理方案' : '重新生成方向'}</Button></Space></div>
             <div className={`creation-concept-grid ${authorLed ? 'is-author-led' : ''}`}>
               {concepts.map((concept, index) => (
                 <Card key={concept.id} className="creation-concept-card" title={<Space><Badge count={index + 1} color="var(--ant-color-primary)" /><span>{concept.title}</span></Space>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>

@@ -37,7 +37,7 @@ class OperationRun(Base):
     progress_mode = Column(String(20), nullable=False, default="indeterminate")
     progress_current = Column(Integer, nullable=True)
     progress_total = Column(Integer, nullable=True)
-    model_source = Column(String(200), nullable=True)
+    model_source = Column(String(512), nullable=True)
     tool_mode = Column(String(80), nullable=True)
     failure_class = Column(String(80), nullable=True)
     next_action = Column(Text, nullable=True)

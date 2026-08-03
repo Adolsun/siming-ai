@@ -331,7 +331,7 @@ test('does not treat a detected Claude CLI as a usable writing model', async ({ 
   await expect(page.getByText(zh.noModel)).toBeVisible()
   await page.getByRole('button', { name: /帮我探索创意/ }).click()
   await expect(page.getByRole('combobox', { name: '\u9009\u62e9\u672c\u9636\u6bb5\u6a21\u578b' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f/ })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /\u751f\u6210\u521b\u610f\u65b9\u5411/ })).toBeDisabled()
 })
 
 test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) => {
@@ -482,7 +482,7 @@ test('automatically guides a first-time user to one-click OpenCode setup', async
   await expect(page.getByText('\u65e0\u9700\u6253\u5f00\u547d\u4ee4\u884c')).toBeVisible()
 })
 
-test('turns one story sentence into the first three-concept run after setup', async ({ page }) => {
+test('turns one story sentence into the first adjustable concept run after setup', async ({ page }) => {
   await mockApi(page, {
     gettingStarted: {
       needs_setup: false,
@@ -495,7 +495,7 @@ test('turns one story sentence into the first three-concept run after setup', as
   })
   await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })
   await page.getByLabel('\u4f60\u60f3\u5199\u4ec0\u4e48\u6545\u4e8b\uff1f').fill('\u4e00\u5bb6\u53ea\u5728\u5348\u591c\u8425\u4e1a\u7684\u4fee\u4ed9\u5ba2\u6808')
-  await page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u5c0f\u8bf4\u521b\u610f/ }).click()
+  await page.getByRole('button', { name: /\u751f\u6210\u5c0f\u8bf4\u521b\u610f/ }).click()
   await expect(page).toHaveURL(/\/novel-creation\?session=draft-1&run=run-1/)
 })
 

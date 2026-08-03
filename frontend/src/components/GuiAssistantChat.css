@@ -673,6 +673,10 @@
   flex-shrink: 0;
 }
 
+.gui-chat-composer .ant-input-textarea-show-count {
+  margin-bottom: 14px;
+}
+
 .gui-chat-composer-actions {
   align-items: center;
   display: flex;

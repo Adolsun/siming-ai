@@ -37,7 +37,7 @@ class AssistantConversation(Base):
     current_outline_node_id = Column(
         String(36), ForeignKey("outline_nodes.id", ondelete="SET NULL"), nullable=True
     )
-    model = Column(String(200), nullable=True)
+    model = Column(String(512), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -136,7 +136,7 @@ class AssistantRun(Base):
     phase = Column(String(50), nullable=True)
     scope = Column(String(50), nullable=True)
     assistant_mode = Column(String(20), nullable=True)
-    model = Column(String(200), nullable=True)
+    model = Column(String(512), nullable=True)
     current_iteration = Column(Integer, default=0)
     error = Column(Text, nullable=True)
     final_reply = Column(Text, nullable=True)

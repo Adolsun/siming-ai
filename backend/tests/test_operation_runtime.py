@@ -110,6 +110,8 @@ def test_operation_projects_legacy_status_and_exposes_attention_and_result():
     assert payload["attention"]["kind"] == "confirmation"
     assert payload["result_summary"] == "阶段内容已保存"
     assert payload["result"]["incomplete"] == ["作者确认"]
+    assert payload["created_at"].endswith("+00:00")
+    assert payload["events"][0]["created_at"].endswith("+00:00")
 
 
 def test_waiting_user_operation_survives_restart_as_author_attention():

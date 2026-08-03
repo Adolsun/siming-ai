@@ -240,7 +240,7 @@ def _validate_opening_outline(data: dict[str, Any]) -> None:
 def _validate_compact_concepts(
     concepts: Any,
     *,
-    expected_count: int = 3,
+    expected_count: int = 1,
 ) -> list[dict[str, Any]]:
     if not isinstance(concepts, list) or len(concepts) != expected_count:
         label = "作者方案" if expected_count == 1 else "轻量创意卡"
@@ -263,7 +263,7 @@ def _validate_compact_concepts(
             raise ValueError(f"第{index + 1}张创意卡缺少：{'、'.join(missing)}")
         title = _text(raw.get("title"))
         if title in titles:
-            raise ValueError("三张轻量创意卡必须具有不同标题")
+            raise ValueError("创意方向标题不得重复")
         titles.add(title)
         cards.append(raw)
     return cards
@@ -493,13 +493,4 @@ def _safe_compact_concepts(draft: dict[str, Any]) -> list[dict[str, Any]]:
         "differentiators": author["locked_requirements"] or ["保留作者原始设定"],
         "risks": ["这是模型格式异常后的安全草稿，请在继续前检查"],
     }
-    if author["creation_mode"] == "author_led":
-        return [base]
-    return [
-        {
-            **deepcopy(base),
-            "title": f"{title_seed} · 方向{index}",
-            "subtitle": f"安全草稿方向 {index}，请编辑后确认",
-        }
-        for index in range(1, 4)
-    ]
+    return [base]

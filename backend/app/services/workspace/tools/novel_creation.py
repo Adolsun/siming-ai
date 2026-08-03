@@ -2275,21 +2275,21 @@ def _build_multi_variant_prompt(
     session_context: dict[str, str],
     session_id: str = "",
 ) -> list[dict[str, str]]:
-    """Build LLM messages for regenerating 3 blueprint variants with original concepts."""
+    """Build LLM messages for regenerating one blueprint that remains conversationally editable."""
     target = session_context.get("target_audience", "")
     platform = session_context.get("platform", "")
     seed = session_id[:8] if session_id else str(int(time.time() * 1000))[-8:]
 
     if feedback:
-        task_desc = "用户对当前方案不满意，请从零构思3套全新的方案。不要沿用之前方案的任何创意元素。"
+        task_desc = "用户要求重新生成当前方案，请从零构思一套全新的方向。不要沿用之前方案的创意元素。"
         feedback_section = f"## 用户反馈\n{feedback}\n\n"
         requirement_extra = f"- 反馈中的每一条具体要求都要在方案中体现\n"
-        user_msg = f"请根据反馈构思3套全新的方案（种子：{seed}），直接返回JSON。"
+        user_msg = f"请根据反馈构思一套全新的方案（种子：{seed}），直接返回JSON。"
     else:
-        task_desc = "用户想看到不同的方向，请从零构思3套全新的方案。不要沿用之前方案的任何创意元素。"
+        task_desc = "用户想重新探索方向，请从零构思一套全新的方案。不要沿用之前方案的任何创意元素。"
         feedback_section = ""
         requirement_extra = ""
-        user_msg = f"请构思3套全新的方案（种子：{seed}），直接返回JSON。"
+        user_msg = f"请构思一套全新的方案（种子：{seed}），直接返回JSON。"
 
     genre_profile = _get_genre_profile(genre_label)
 
@@ -2297,29 +2297,22 @@ def _build_multi_variant_prompt(
         f"你是顶级小说策划编辑。{task_desc}\n\n"
         f"{genre_profile}\n"
         f"## 核心原则\n"
-        f"你必须从零创造3套完全不同的方案。不要参考任何已有方案的内容。\n"
-        f"每套方案的标题、主角、世界观、核心冲突必须是全新的。\n\n"
+        f"你必须从零创造一套完整且可持续对话调整的方案。不要参考任何已有方案的内容。\n"
+        f"方案的标题、主角、世界观、核心冲突必须是全新的。\n\n"
         f"## 用户原始需求\n{user_brief}\n\n"
         f"{feedback_section}"
         f"## 目标读者：{target}\n"
         f"## 发布平台：{platform}\n"
         f"## 创意种子：{seed}\n\n"
-        f"## 3套方案必须满足\n"
-        f"1. 每套方案的标题风格不同\n"
-        f"2. 每套方案的核心设定不同\n"
-        f"3. 每套方案的主角类型不同\n"
-        f"4. 每套方案的冲突模式不同\n"
-        f"5. 每套方案的世界观不同\n\n"
-        f"## 方案定位（三种不同的叙事策略）\n"
-        f"1. 稳态长线版：以主角成长、设定展开和关系积累为主线\n"
-        f"2. 强悬念暗线版：悬念驱动，暗线和伏笔前置\n"
-        f"3. 强冲突爽点版：高对抗密度，即时反馈\n\n"
+        f"## 方案必须满足\n"
+        f"1. 标题、核心设定、主角、冲突模式和世界观相互支撑\n"
+        f"2. 具备清晰的长线故事发动机\n"
+        f"3. 保留用户随后通过对话局部调整的空间\n\n"
         f"## 要求\n"
-        f"- 每套方案的主角、配角、关系、世界观、大纲都要有实质性差异\n"
-        f"- 3套方案之间要有实质性差异，不能只有标题不同\n"
+        f"- 方案中的主角、配角、关系、世界观和大纲必须形成一致方向\n"
         f"{requirement_extra}"
         f"## 输出格式\n"
-        f'{{"blueprints": [方案1, 方案2, 方案3]}}\n'
+        f'{{"blueprints": [方案1]}}\n'
         f"每个方案的字段结构：\n{_BLUEPRINT_SCHEMA_DESC}\n"
         f"只输出JSON，不要Markdown，不要解释。"
     )
@@ -4729,7 +4722,7 @@ async def draft_novel_blueprint(
                     "failure_reasons": llm_diagnostics.get("failure_reasons", []),
                 },
             }
-        blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
+        blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)][:1]
 
         session.blueprint_json = blueprints
         concept_draft = attach_concepts(session, blueprints) if depth == "concept" else None
@@ -4750,7 +4743,7 @@ async def draft_novel_blueprint(
         if revision_mode == "refine":
             detail = f"Refined {len(blueprints)} blueprint options from current direction"
             recommendation = (
-                "已用模板与模型按反馈调整三套方案；请重点检查主角动机、弱点、开局压力和黄金三章。"
+                "已用模板与模型按反馈调整当前方案；请重点检查主角动机、弱点、开局压力和黄金三章。"
                 if llm_succeeded
                 else "模型深化暂时不可用，已保留模板调整结果；可以稍后再次深度优化。"
             )
@@ -4759,14 +4752,14 @@ async def draft_novel_blueprint(
             recommendation = (
                 "已用模型重新生成原创方案；建议比较标题、核心冲突、主角压力和黄金三章。"
                 if llm_succeeded
-                else "模型深化暂时不可用，已用模板重新生成三套方案；可以稍后再次深度优化。"
+                else "模型深化暂时不可用，已用模板重新生成当前方案；可以稍后再次深度优化。"
             )
         elif llm_succeeded:
             detail = f"Generated {len(blueprints)} original LLM blueprint options"
-            recommendation = "已用模型生成原创方案；每套方案的标题、角色和世界观都由当前模型即时构思，优先选择最打动你的一套。"
+            recommendation = "已用模型生成一套原创方案；标题、角色和世界观均由当前模型即时构思，可继续通过对话定向调整。"
         else:
             detail = f"Generated {len(blueprints)} API-free blueprint options"
-            recommendation = "已用快速创意编译器生成三套方案；优先选择需求覆盖率最高且黄金三章最顺眼的一套。"
+            recommendation = "已用快速创意编译器生成一套方案；可继续通过对话调整主角、冲突或开篇钩子。"
         return {
             "tool": "draft_novel_blueprint",
             "status": "ok",

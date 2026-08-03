@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -29,6 +32,13 @@ def _db_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine)()
+
+
+def test_system_turn_accepts_large_creation_text_with_an_explicit_safety_limit():
+    payload = SystemTurnCreate(user_content="设定" * 50_000)
+    assert len(payload.user_content) == 100_000
+    with pytest.raises(ValidationError):
+        SystemTurnCreate(user_content="设" * 1_000_001)
 
 
 def test_system_conversation_persists_messages_and_blueprint_state():

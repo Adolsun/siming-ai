@@ -409,7 +409,7 @@ def _merge_entity_generation(
 async def _generate_concept_stage(context: StageExecution) -> None:
     draft = context.working_draft
     author_led = draft.get("creation_mode") == "author_led"
-    concept_label = "作者方案" if author_led else "三套轻量创意"
+    concept_label = "作者方案" if author_led else "创意方向"
     action = "按要求调整" if context.operation == "refine" else "生成"
     add_run_event(
         context.db,
