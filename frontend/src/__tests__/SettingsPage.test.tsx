@@ -247,7 +247,7 @@ describe('SettingsPage startup and update controls', () => {
   it('asks OpenCode CLI itself for available models', async () => {
     api.get.mockImplementation((url: string) => {
       if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
-        id: 'opencode', provider: 'opencode_cli', default_model: 'opencode/current', provider_type: 'local_cli',
+        id: 'opencode', provider: 'opencode_cli', default_model: 'opencode/deepseek-v4-flash-free', provider_type: 'local_cli',
         cli_command: 'opencode', cli_args: '', readiness_status: 'unverified', readiness_message: '待验证',
         is_usable: false, is_global_default: false,
       }] } } })
@@ -257,7 +257,15 @@ describe('SettingsPage startup and update controls', () => {
       return Promise.resolve({ data: { data: {} } })
     })
     api.post.mockImplementation((url: string) => {
-      if (url === '/config/models/list') return Promise.resolve({ data: { data: { models: [{ id: 'opencode/new-model', display_name: 'opencode/new-model' }] } } })
+      if (url === '/config/models/list') return Promise.resolve({ data: { data: { models: [
+        { id: 'opencode/deepseek-v4-flash-free', display_name: 'opencode/deepseek-v4-flash-free' },
+        { id: 'opencode/mimo-v2.5-free', display_name: 'opencode/mimo-v2.5-free' },
+        { id: 'opencode/laguna-s-2.1-free', display_name: 'opencode/laguna-s-2.1-free' },
+        { id: 'opencode/north-mini-code-free', display_name: 'opencode/north-mini-code-free' },
+        { id: 'opencode/nemotron-3-ultra-free', display_name: 'opencode/nemotron-3-ultra-free' },
+        { id: 'opencode/big-pickle', display_name: 'opencode/big-pickle' },
+        { id: 'opencode/glm-4.7-free', display_name: 'opencode/glm-4.7-free' },
+      ] } } })
       return Promise.resolve({ data: { data: {} } })
     })
 
@@ -270,6 +278,8 @@ describe('SettingsPage startup and update controls', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/list', expect.objectContaining({
       provider: 'opencode_cli', cli_command: 'opencode',
     })))
+    fireEvent.mouseDown(screen.getByLabelText('默认模型'))
+    expect(await screen.findByText('opencode/mimo-v2.5-free')).toBeInTheDocument()
   })
 
   it('allows manual custom model entry only after automatic discovery fails', async () => {

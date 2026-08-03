@@ -1225,9 +1225,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   label: m.display_name || m.id,
                 }))}
                 placeholder="输入 CLI 支持的模型名，或选择候选项"
-                filterOption={(input, option) =>
-                  String(option?.label || option?.value || '').toLowerCase().includes(input.toLowerCase())
-                }
+                // In combobox mode AutoComplete uses the current value as its search text.
+                // Keep every discovered model visible when an existing configuration is opened.
+                filterOption={false}
                 onChange={(modelName) => {
                   const provider = resolveProviderForSubmit(form.getFieldsValue())
                   form.setFieldsValue(defaultSafetyLimits(provider, modelName))
