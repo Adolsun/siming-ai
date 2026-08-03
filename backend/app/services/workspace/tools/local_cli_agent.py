@@ -129,6 +129,17 @@ async def start_local_cli_agent_run(
     args: dict[str, Any],
 ) -> dict:
     """Start Claude/Codex/opencode as a Siming-managed CLI Agent worker."""
+    if str(args.get("_context_execution_route") or "").strip() == "external_mcp":
+        return {
+            "tool": "start_local_cli_agent_run",
+            "status": "skipped",
+            "detail": (
+                "当前已经在外部 MCP Agent 中，不能递归启动第二个 CLI。"
+                "请使用 prepare_external_writing_context、start_agent_run、"
+                "report_context_selected 和写入工具完成当前任务。"
+            ),
+            "data": None,
+        }
     task_type = str(args.get("task_type") or args.get("mode") or "general").strip().lower()
     if task_type not in {"general", "cataloging", "writing"}:
         task_type = "general"

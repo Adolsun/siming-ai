@@ -86,6 +86,7 @@ interface Project {
 interface CreationSessionContext {
   id: string
   user_brief?: string
+  display_title?: string
   status: string
   revision: number
   created_project_id?: string | null
@@ -423,7 +424,6 @@ function GuiAssistantChat() {
   const [artifactVersions, setArtifactVersions] = useState<CreationArtifactVersionSummary[]>([])
   const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<CreationArtifactVersionDetail | null>(null)
   const [versionHistoryLoading, setVersionHistoryLoading] = useState(false)
-  const [artifactDetail, setArtifactDetail] = useState<CreationArtifactDetail | null>(null)
   const [artifactDetailLoading, setArtifactDetailLoading] = useState(false)
   const [expandedArtifact, setExpandedArtifact] = useState<CreationArtifactDetail | null>(null)
   const [expandedArtifactSessionId, setExpandedArtifactSessionId] = useState<string | null>(null)
@@ -506,21 +506,6 @@ function GuiAssistantChat() {
         .catch(() => message.error('无法恢复资料导入状态，请从任务中心重试'))
     }
   }, [adoptNovelInterviewSession, location.search, systemSessionId])
-
-  const openArtifactDetail = async (artifact: CreationArtifactSummary) => {
-    if (!systemSessionId) return
-    setArtifactDetailLoading(true)
-    try {
-      const response = await apiClient.get<ApiResponse<CreationArtifactDetail>>(
-        `/novel-creation/sessions/${systemSessionId}/artifacts/${artifact.artifact}`,
-      )
-      setArtifactDetail(response.data.data)
-    } catch (error: unknown) {
-      message.error(error instanceof Error ? error.message : '读取立项数据失败')
-    } finally {
-      setArtifactDetailLoading(false)
-    }
-  }
 
   const openArtifactEditor = async (artifact: CreationArtifactSummary, sessionIdOverride?: string) => {
     const targetSessionId = sessionIdOverride || systemSessionId || activeCreationRun?.session_id
@@ -835,21 +820,20 @@ function GuiAssistantChat() {
   const assistantContextLabel = activeProject
     ? `作品上下文 · ${activeProject.title}`
     : activeCreationContext
-      ? `立项上下文 · ${(activeCreationContext.user_brief || '未命名立项').slice(0, 28)}`
-      : '未选择上下文 · 发送消息后自动新建立项'
-  const assistantContextOptions = useMemo(() => [
-    {
-      label: '正式作品',
-      options: projects.map((project) => ({ value: `project:${project.id}`, label: project.title })),
-    },
-    {
-      label: '立项数据',
-      options: creationSessions.map((session) => ({
-        value: `creation:${session.id}`,
-        label: `${(session.user_brief || '未命名立项').slice(0, 42)}${session.created_project_id ? ' · 已创建作品' : ''}`,
-      })),
-    },
-  ], [creationSessions, projects])
+      ? `作品上下文 · ${(activeCreationContext.display_title || activeCreationContext.user_brief || '未命名作品').slice(0, 28)}`
+      : '未选择作品 · 发送消息后自动新建'
+  const assistantContextOptions = useMemo(() => {
+    const projectIds = new Set(projects.map((project) => project.id))
+    return [
+      ...projects.map((project) => ({ value: `project:${project.id}`, label: project.title })),
+      ...creationSessions
+        .filter((session) => !session.created_project_id || !projectIds.has(session.created_project_id))
+        .map((session) => ({
+          value: `creation:${session.id}`,
+          label: `${(session.display_title || session.user_brief || '未命名作品').slice(0, 42)} · 筹备中`,
+        })),
+    ]
+  }, [creationSessions, projects])
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
@@ -3223,22 +3207,22 @@ function GuiAssistantChat() {
   const renderCreationDataPanel = () => {
     if (!systemSessionId) return null
     return (
-      <aside className={`gui-chat-creation-panel${creationPanelOpen ? ' gui-chat-creation-panel-open' : ''}${expandedArtifact ? ' gui-chat-creation-panel-editor-open' : ''}`} aria-label="立项数据">
+      <aside className={`gui-chat-creation-panel${creationPanelOpen ? ' gui-chat-creation-panel-open' : ''}${expandedArtifact ? ' gui-chat-creation-panel-editor-open' : ''}`} aria-label="作品资料">
         <div className="gui-chat-creation-panel-head">
           <div>
-            <Text className="gui-chat-creation-panel-kicker">CREATION DATA</Text>
-            <Title level={5}>立项数据</Title>
+            <Text className="gui-chat-creation-panel-kicker">STORY CONTEXT</Text>
+            <Title level={5}>作品资料</Title>
           </div>
           <Space size={4}>
             {expandedArtifact && (
-              <Tooltip title="退出完整编辑器，返回立项数据">
+              <Tooltip title="退出完整编辑器，返回作品资料">
                 <Button
                   size="small"
                   type="text"
                   icon={<ArrowLeftOutlined />}
                   onClick={() => void closeArtifactEditor()}
                 >
-                  返回立项数据
+                  返回作品资料
                 </Button>
               </Tooltip>
             )}
@@ -3247,28 +3231,28 @@ function GuiAssistantChat() {
                 size="small"
                 type="text"
                 loading={creationConsistencyLoading}
-                aria-label="检查立项数据一致性"
+                aria-label="检查作品资料一致性"
                 onClick={() => void checkCreationConsistency(true)}
               >
                 校验
               </Button>
             </Tooltip>
-            <Tooltip title="刷新立项数据">
+            <Tooltip title="刷新作品资料">
               <Button
                 size="small"
                 type="text"
                 icon={<ReloadOutlined />}
                 loading={creationArtifactsLoading}
-                aria-label="刷新立项数据"
+                aria-label="刷新作品资料"
                 onClick={() => void fetchCreationArtifacts()}
               />
             </Tooltip>
-            <Tooltip title="收起立项数据">
+            <Tooltip title="收起作品资料">
               <Button
                 size="small"
                 type="text"
                 icon={<MenuFoldOutlined />}
-                aria-label="收起立项数据"
+                aria-label="收起作品资料"
                 onClick={() => {
                   setCreationPanelOpen(false)
                   void closeArtifactEditor()
@@ -3278,7 +3262,7 @@ function GuiAssistantChat() {
           </Space>
         </div>
         <div className="gui-chat-creation-panel-summary">
-          <Text type="secondary">结构化数据是当前立项的事实来源。聊天修改完成后会自动同步到这里。</Text>
+          <Text type="secondary">结构化资料是当前作品的事实来源。聊天修改完成后会自动同步到这里。</Text>
           {creationConsistency && (
             <div className={`gui-chat-consistency-summary${creationConsistency.valid ? ' is-valid' : ' has-issues'}`}>
               <Tag color={creationConsistency.valid ? 'success' : creationConsistency.summary.blocking ? 'error' : undefined}>
@@ -3331,7 +3315,7 @@ function GuiAssistantChat() {
             <section
               key={artifact.artifact}
               className={`gui-chat-creation-artifact gui-chat-creation-artifact-${artifact.status}`}
-              title="双击打开完整编辑器"
+              title="点击“进入编辑器”，或双击卡片打开完整编辑器"
               onDoubleClick={() => void openArtifactEditor(artifact)}
             >
               <div className="gui-chat-creation-artifact-head">
@@ -3364,16 +3348,14 @@ function GuiAssistantChat() {
                 </Text>
               ) : null}
               <div className="gui-chat-creation-artifact-actions">
-                {artifact.status !== 'pending' && (
-                  <Button
-                    size="small"
-                    icon={<DatabaseOutlined />}
-                    loading={artifactDetailLoading}
-                    onClick={() => void openArtifactDetail(artifact)}
-                  >
-                    查看数据
-                  </Button>
-                )}
+                <Button
+                  size="small"
+                  icon={<DatabaseOutlined />}
+                  loading={artifactDetailLoading}
+                  onClick={() => void openArtifactEditor(artifact)}
+                >
+                  进入编辑器
+                </Button>
                 {artifact.flow?.can_confirm && (
                   <Button
                     size="small"
@@ -3544,7 +3526,7 @@ function GuiAssistantChat() {
             <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
             {systemSessionId && !creationPanelOpen && (
               <Button icon={<DatabaseOutlined />} onClick={() => setCreationPanelOpen(true)}>
-                立项数据
+                作品资料
               </Button>
             )}
             <Button
@@ -3559,12 +3541,15 @@ function GuiAssistantChat() {
               allowClear
               value={activeProjectId ? `project:${activeProjectId}` : systemSessionId ? `creation:${systemSessionId}` : undefined}
               onChange={(value) => void selectAssistantContext(value)}
+              onOpenChange={(open) => {
+                if (open) void fetchCreationSessions()
+              }}
               options={assistantContextOptions}
               loading={projectsLoading}
               optionFilterProp="label"
-              placeholder="选择作品或立项上下文"
+              placeholder="选择作品上下文"
               className="gui-chat-project-select"
-              aria-label="选择作品或立项上下文"
+              aria-label="选择作品上下文"
             />
             <Popover content={runtimePanel} trigger="click" placement="bottomRight">
               <Button
@@ -3729,16 +3714,6 @@ function GuiAssistantChat() {
         </div>
       </main>
       {renderCreationDataPanel()}
-      <Modal
-        title={artifactDetail ? artifactDetail.label : '立项数据'}
-        open={Boolean(artifactDetail)}
-        onCancel={() => setArtifactDetail(null)}
-        footer={<Button onClick={() => setArtifactDetail(null)}>关闭</Button>}
-        width={880}
-      >
-        <Paragraph type="secondary">这里显示聊天正在维护的结构化事实数据；无需进入立项工作台。</Paragraph>
-        <pre className="gui-chat-artifact-detail">{JSON.stringify(artifactDetail?.data || {}, null, 2)}</pre>
-      </Modal>
       {renderSlotEditorModal()}
       <Modal
         title={`版本历史 · ${versionHistoryArtifact?.label || ''}`}

@@ -165,10 +165,11 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
         max_tokens: 128,
       })
       const result = response.data.data
+      const outputKind = result.reasoning_only ? '（模型仅返回思考内容，本次仍计入测速）' : ''
       message.success(
         result.tokens_per_second
-          ? `${result.tokens_estimated ? '约 ' : ''}${result.tokens_per_second} token/s，用时 ${result.elapsed_seconds}s`
-          : `测速完成，用时 ${result.elapsed_seconds}s`,
+          ? `${result.tokens_estimated ? '约 ' : ''}${result.tokens_per_second} token/s，用时 ${result.elapsed_seconds}s${outputKind}`
+          : `测速完成，用时 ${result.elapsed_seconds}s${outputKind}`,
       )
     } catch (error: any) {
       message.error(error.message)

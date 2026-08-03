@@ -343,7 +343,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
-    expect(await screen.findByRole('complementary', { name: '立项数据' })).toBeInTheDocument()
+    expect(await screen.findByRole('complementary', { name: '作品资料' })).toBeInTheDocument()
     expect(await screen.findByText('角色与关系')).toBeInTheDocument()
     expect(screen.getByText('上游创意方案已修改')).toBeInTheDocument()
     expect(screen.getByText('已锁定 1 项')).toBeInTheDocument()
@@ -475,10 +475,12 @@ describe('GuiAssistantChat new-book handoff', () => {
     const input = await screen.findByRole('textbox', { name: '给司命的消息' })
     await user.type(input, '我要创建一本新的小说')
     await user.click(screen.getByRole('button', { name: /发送/ }))
-    const panel = await screen.findByRole('complementary', { name: '立项数据' })
-    await user.click((await screen.findAllByRole('button', { name: /查看数据/ }))[0])
+    const panel = await screen.findByRole('complementary', { name: '作品资料' })
+    await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
 
-    expect(await screen.findByRole('dialog', { name: '创意方案' })).toHaveTextContent('灰港遗忘症')
+    expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('灰港遗忘症')).toBeVisible()
+    expect(screen.getByRole('button', { name: /返回作品资料/ })).toBeInTheDocument()
     expect(panel).toBeInTheDocument()
   })
 

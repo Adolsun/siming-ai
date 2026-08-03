@@ -59,6 +59,19 @@ def _extract_tool_calls(message) -> list[dict] | None:
     return result or None
 
 
+def message_reasoning_content(message: object) -> str:
+    """Extract reasoning text used by OpenAI-compatible local endpoints."""
+    direct = getattr(message, "reasoning_content", None)
+    if direct:
+        return str(direct)
+    dumped = _model_dump(message)
+    for key in ("reasoning_content", "reasoning", "reasoning_text"):
+        value = dumped.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def compact_openai_kwargs(kwargs: dict) -> dict:
     """Remove unset top-level parameters before sending OpenAI-compatible JSON."""
     return {key: value for key, value in kwargs.items() if value is not None}
@@ -201,6 +214,28 @@ def _responses_provider_state(response: object) -> list[dict]:
     return state
 
 
+def responses_reasoning_content(response: object) -> str:
+    """Extract visible reasoning/summary text from Responses-compatible APIs."""
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        dumped = _model_dump(item)
+        if dumped.get("type") != "reasoning":
+            continue
+        for key in ("summary", "content"):
+            values = dumped.get(key)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                value_dump = _model_dump(value)
+                text = value_dump.get("text") or value_dump.get("content")
+                if text:
+                    parts.append(str(text))
+        for key in ("reasoning_content", "text"):
+            if dumped.get(key):
+                parts.append(str(dumped[key]))
+    return "\n".join(part for part in parts if part.strip())
+
+
 def _responses_tool_calls(response: object) -> list[dict] | None:
     calls: list[dict] = []
     for item in getattr(response, "output", None) or []:
@@ -281,6 +316,7 @@ class OpenAIAdapter(BaseAdapter):
         ))
         return {
             "content": str(getattr(response, "output_text", "") or ""),
+            "reasoning_content": responses_reasoning_content(response),
             "model": str(getattr(response, "model", model) or model),
             "usage": _responses_usage(response),
             "tool_calls": _responses_tool_calls(response),
@@ -438,6 +474,7 @@ class OpenAIAdapter(BaseAdapter):
             choice = response.choices[0]
             return {
                 "content": choice.message.content or "",
+                "reasoning_content": message_reasoning_content(choice.message),
                 "model": response.model,
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
@@ -587,6 +624,10 @@ class OpenAIAdapter(BaseAdapter):
                 content = getattr(delta, "content", None)
                 if content:
                     yield {"type": "content_delta", "delta": content}
+
+                reasoning = message_reasoning_content(delta)
+                if reasoning:
+                    yield {"type": "reasoning_delta", "delta": reasoning}
 
                 # Tool call deltas
                 tool_calls = getattr(delta, "tool_calls", None)

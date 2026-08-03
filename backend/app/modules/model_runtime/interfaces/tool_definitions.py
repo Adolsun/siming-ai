@@ -8,7 +8,7 @@ from app.architecture.tool_definition import ToolDef
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
         name="start_local_cli_agent_run",
-        description="Start a Siming-managed local CLI Agent worker (Claude/Codex/opencode). The CLI reads project files directly but must write/delete/update only through Siming MCP tools. Returns an Agent run_id whose events can be streamed in the UI.",
+        description="Start a Siming-managed local CLI Agent worker (Claude/Codex/opencode) only when Siming itself must launch a new process. Never call this from an already-running external MCP client; use start_agent_run and the external writing tools there. Returns an Agent run_id whose events can be streamed in the UI.",
         input_schema={
             "task_type": {"type": "string", "description": "general|cataloging|writing"},
             "user_request": {

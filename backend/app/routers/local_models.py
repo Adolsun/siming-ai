@@ -355,14 +355,18 @@ async def benchmark(payload: BenchmarkRequest):
         timeout=180,
     )
     elapsed = max(0.001, time.perf_counter() - started)
-    reply = result.get("content") or ""
+    reply = str(result.get("content") or "")
+    reasoning = str(result.get("reasoning_content") or "")
+    measured_text = reply or reasoning
     completion_tokens = int((result.get("usage") or {}).get("completion_tokens") or 0)
     tokens_estimated = False
-    if not completion_tokens and reply.strip():
-        completion_tokens = max(1, len(reply.strip()))
+    if not completion_tokens and measured_text.strip():
+        completion_tokens = max(1, len(measured_text.strip()))
         tokens_estimated = True
     return ApiResponse.success(data={
         "reply": reply,
+        "reasoning_preview": reasoning[:500] if reasoning and not reply else "",
+        "reasoning_only": bool(reasoning and not reply),
         "elapsed_seconds": round(elapsed, 2),
         "completion_tokens": completion_tokens,
         "tokens_estimated": tokens_estimated,

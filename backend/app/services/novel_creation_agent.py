@@ -69,6 +69,58 @@ def _tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
+def _cli_tool_bridge_prompt(schemas: list[dict[str, Any]]) -> str:
+    """Expose Siming tools to text-only CLIs through a strict JSON bridge."""
+    catalog = []
+    for schema in schemas:
+        function = schema.get("function") if isinstance(schema, dict) else None
+        if not isinstance(function, dict):
+            continue
+        catalog.append({
+            "name": function.get("name"),
+            "description": function.get("description"),
+            "parameters": function.get("parameters") or {"type": "object"},
+        })
+    return (
+        "当前运行环境是文本型 CLI，但司命提供了一个由应用代为执行的立项工具桥。"
+        "你不需要也不得直接修改数据库或项目文件。每次回复必须只输出一个 JSON 对象，格式为："
+        '{"reply":"给用户的简短中文说明或追问","actions":[{"tool":"工具名","arguments":{}}]}。'
+        "需要读取或写入时把调用放入 actions；司命会校验权限、自动绑定当前 session_id、补充 expected_revision，"
+        "执行后把真实结果交回给你。拿到结果后可以继续调用，也可以返回 actions=[] 并在 reply 中总结。"
+        "不得声称未成功的写入已经保存。可用工具如下：\n"
+        + json.dumps(catalog, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def _parse_cli_tool_bridge(content: str) -> tuple[bool, str, list[dict[str, Any]]]:
+    """Convert the CLI bridge JSON into the same calls used by native tools."""
+    payload = parse_json_object(content)
+    if not isinstance(payload, dict) or "actions" not in payload:
+        return False, content.strip(), []
+    reply = str(payload.get("reply") or "").strip()
+    raw_actions = payload.get("actions")
+    calls: list[dict[str, Any]] = []
+    if isinstance(raw_actions, list):
+        for index, action in enumerate(raw_actions[:12]):
+            if not isinstance(action, dict):
+                continue
+            name = str(action.get("tool") or action.get("name") or "").strip()
+            if not name:
+                continue
+            arguments = action.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            calls.append({
+                "id": f"cli-creation-tool-{index}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            })
+    return True, reply, calls
+
+
 def _system_prompt(session_id: str) -> str:
     return f"""你是司命的对话式立项助手。当前 creation session_id={session_id}。
 所有世界观、角色、关系、地点、势力、分卷、章节细纲、场景细纲和创作约束都必须通过工具读取和修改。
@@ -141,10 +193,14 @@ async def run_creation_agent(
     seen_calls: set[str] = set()
     final_reply = ""
     schemas = _tool_schemas()
+    native_tool_calls = LLMGateway.supports_tool_calling(model)
+    if not native_tool_calls:
+        messages.insert(1, {"role": "system", "content": _cli_tool_bridge_prompt(schemas)})
+    cli_protocol_retries = 0
     for _iteration in range(6):
         result = await _complete_tool_turn(
             messages=messages,
-            tools=schemas,
+            tools=schemas if native_tool_calls else [],
             model=model,
             temperature=0.25,
             # Do not impose a second fixed cap here. The selected provider and
@@ -154,6 +210,22 @@ async def run_creation_agent(
         )
         content = str(result.get("content") or "")
         calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+        if not native_tool_calls:
+            recognized, bridged_reply, bridged_calls = _parse_cli_tool_bridge(content)
+            if recognized:
+                content = bridged_reply
+                calls = bridged_calls
+            elif cli_protocol_retries < 1:
+                cli_protocol_retries += 1
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一条回复没有使用司命 CLI 工具桥协议，因此任何内容都尚未写入。"
+                        "请立即按系统给出的 JSON 格式返回；需要修改立项数据时必须在 actions 中调用对应写入工具。"
+                    ),
+                })
+                continue
         if not calls:
             final_reply = content.strip()
             break

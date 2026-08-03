@@ -341,6 +341,24 @@ def test_legacy_lifecycle_stage_is_projected_as_stale_without_blocking_downstrea
         build_apply_blueprint(session)
 
 
+def test_serialize_incomplete_old_work_keeps_context_selector_available():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="旧立项草稿")
+    db.add(session)
+    initialize_session_draft(session)
+    session.draft_json["stages"]["final_review"] = {
+        "status": "generated",
+        "source": "model",
+        "data": {"ready": False},
+    }
+
+    serialized = serialize_session(session)
+
+    assert serialized["id"] == session.id
+    assert serialized["display_title"] == "旧立项草稿"
+    assert serialized["draft"]["stages"]["final_review"]["data"] == {"ready": False}
+
+
 def test_artifact_undo_restores_latest_checkpoint_and_keeps_dependents_stale():
     db = _db()
     session = _ready_session(db)

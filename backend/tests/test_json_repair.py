@@ -15,6 +15,21 @@ def test_deterministic_json_repair_closes_a_truncated_object():
 
     assert parsed == {"data": {"characters": [{"name": "周遥", "goal": "查明真相"}]}}
     assert method == "deterministic_json"
+
+
+def test_deterministic_json_repair_inserts_missing_nested_object_closer():
+    raw = '{"reply":"ok","actions":[{"tool":"generate_creation_artifact","arguments":{"artifact":"world_style"}]}'
+
+    parsed, method = parse_json_object_detailed(raw)
+
+    assert parsed == {
+        "reply": "ok",
+        "actions": [{
+            "tool": "generate_creation_artifact",
+            "arguments": {"artifact": "world_style"},
+        }],
+    }
+    assert method == "deterministic_json"
     assert parse_json_object(raw) == parsed
 
 

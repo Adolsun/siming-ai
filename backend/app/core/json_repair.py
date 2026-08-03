@@ -38,9 +38,12 @@ def repair_truncated_json(candidate: str) -> Optional[str]:
     if not repaired.startswith("{"):
         return None
     stack: list[str] = []
+    normalized: list[str] = []
     in_string = False
     escape = False
+    changed = False
     for char in repaired:
+        normalized.append(char)
         if in_string:
             if escape:
                 escape = False
@@ -55,9 +58,17 @@ def repair_truncated_json(candidate: str) -> Optional[str]:
             stack.append("}")
         elif char == "[":
             stack.append("]")
-        elif char in "}]" and stack and stack[-1] == char:
-            stack.pop()
-    if not stack and not in_string:
+        elif char in "}]":
+            # Models often close the outer array/object while omitting one
+            # nested object brace, e.g. ..."arguments": {...}]}. Insert only
+            # the closers required to make the existing closer legal.
+            while stack and stack[-1] != char:
+                normalized.insert(len(normalized) - 1, stack.pop())
+                changed = True
+            if stack and stack[-1] == char:
+                stack.pop()
+    repaired = "".join(normalized)
+    if not stack and not in_string and not changed:
         return None
     if in_string:
         repaired += '"'

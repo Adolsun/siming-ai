@@ -504,9 +504,27 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
     projected_stages = _dict(projected_draft.get("stages"))
     projected_final = _dict(projected_stages.get("final_review"))
     if projected_final.get("data") is not None and projected_final.get("status") in {"generated", "confirmed"}:
-        projected_final["data"] = derive_stage(session, "final_review", projected_draft)
+        try:
+            projected_final["data"] = derive_stage(session, "final_review", projected_draft)
+        except ValueError:
+            # Listing work contexts must remain available even when an old or
+            # partially imported draft contains a stale final-review snapshot
+            # without a selected concept. Validation can report that gap when
+            # the user opens the work; it must not erase the whole selector.
+            pass
         projected_stages["final_review"] = projected_final
         projected_draft["stages"] = projected_stages
+    concepts = _dict(_dict(projected_stages.get("concepts")).get("data"))
+    concept_options = _list(concepts.get("options"))
+    selected_concept_id = _text(concepts.get("selected_concept_id"))
+    selected_concept = next(
+        (
+            _dict(option) for option in concept_options
+            if _text(_dict(option).get("id")) == selected_concept_id
+        ),
+        _dict(concept_options[0]) if concept_options else {},
+    )
+    display_title = _text(selected_concept.get("title")) or _text(session.user_brief) or "未命名作品"
     data = {
         "id": session.id,
         "source_project_id": session.source_project_id,
@@ -517,6 +535,7 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
         "current_stage": session.current_stage,
         "revision": int(session.revision or 0),
         "user_brief": session.user_brief,
+        "display_title": display_title,
         "target_audience": session.target_audience,
         "genre": session.genre,
         "platform": session.platform,

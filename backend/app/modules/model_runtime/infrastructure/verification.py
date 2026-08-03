@@ -23,6 +23,8 @@ from openai import (
 )
 
 from ....ai.anthropic_adapter import AnthropicAdapter
+from ....ai.local_runtime_adapter import LocalRuntimeAdapter
+from ....ai.openai_adapter import message_reasoning_content, responses_reasoning_content
 from ....core.exceptions import LLMError, ValidationError
 from ..application.verification import ModelProbeRequest
 from .gateway import LLMGateway
@@ -119,27 +121,31 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                         client.responses.create(
                             model=request.model,
                             input="Reply with exactly: OK",
-                            max_output_tokens=128,
+                            max_output_tokens=512,
                             store=False,
                         ),
                         timeout=30,
                     )
                     reply = str(getattr(response, "output_text", "") or "").strip()
+                    reasoning = responses_reasoning_content(response).strip()
                 else:
                     response = await asyncio.wait_for(
                         client.chat.completions.create(
                             model=request.model,
                             messages=[{"role": "user", "content": "Reply with exactly: OK"}],
-                            max_tokens=32,
+                            max_tokens=512,
                         ),
                         timeout=30,
                     )
-                    reply = str(response.choices[0].message.content or "").strip()
-                if not reply:
+                    message = response.choices[0].message
+                    reply = str(message.content or "").strip()
+                    reasoning = message_reasoning_content(message).strip()
+                if not reply and not reasoning:
                     raise LLMError(f"{_protocol_label(protocol)} returned an empty response")
                 return {
                     "model": request.model,
-                    "reply": reply[:200],
+                    "reply": (reply or reasoning)[:200],
+                    "reasoning_only": bool(reasoning and not reply),
                     "api_protocol": protocol,
                     "base_url": base_url,
                 }
@@ -236,15 +242,26 @@ class ProviderModelVerification:
         if request.provider == "local_llama_cpp":
             if not request.model:
                 raise ValidationError("请选择已安装的本地模型")
-            result = await LLMGateway.chat_completion(
+            # Verification is what changes readiness to ready, so it cannot go
+            # through LLMGateway's ready-provider gate. Start and probe the
+            # managed runtime directly instead.
+            adapter = LocalRuntimeAdapter(api_key="__local_runtime__")
+            result = await adapter.chat_completion(
                 messages=[{"role": "user", "content": "只回复：连接成功"}],
-                model=f"local_llama_cpp:{request.model}",
+                model=request.model,
                 temperature=0,
-                max_tokens=32,
-                retry=0,
-                timeout=180,
+                max_tokens=512,
+                extra_body={"moshu_task_type": "chat"},
             )
-            return {"model": request.model, "reply": str(result.get("content") or "")[:200]}
+            reply = str(result.get("content") or "").strip()
+            reasoning = str(result.get("reasoning_content") or "").strip()
+            if not reply and not reasoning:
+                raise LLMError("司命本地 AI returned an empty response")
+            return {
+                "model": request.model,
+                "reply": (reply or reasoning)[:200],
+                "reasoning_only": bool(reasoning and not reply),
+            }
         if _is_anthropic(request.provider):
             adapter = AnthropicAdapter(api_key=request.api_key, base_url=request.base_url)
             result = await asyncio.wait_for(
