@@ -20,6 +20,7 @@ from app.architecture.uow import commit_session
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.exceptions import ValidationError
+from ..core.crypto import encrypt
 from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
 from ..database.session import get_db
@@ -46,7 +47,10 @@ from ..services.local_runtime.model_jobs import (
     import_custom_model,
     create_runtime_download,
     ensure_catalog_rows,
+    resume_download,
 )
+from ..database.models import APIConfig
+from ..modules.model_runtime.infrastructure.readiness import mark_model_ready
 from ..services.local_runtime.paths import model_root
 from ..services.local_runtime.training import (
     control_training_job,
@@ -67,6 +71,29 @@ def _launcher_settings_path() -> Path:
     if home:
         return Path(home) / "launcher-settings.json"
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
+
+
+def _pick_local_path(*, directory: bool) -> Path | None:
+    try:
+        import tkinter
+        from tkinter import filedialog
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = (
+            filedialog.askdirectory(title="选择本地模型存储文件夹", parent=root)
+            if directory
+            else filedialog.askopenfilename(
+                title="选择本地 GGUF 模型",
+                filetypes=[("GGUF 模型", "*.gguf"), ("所有文件", "*.*")],
+                parent=root,
+            )
+        )
+        root.destroy()
+        return Path(selected).expanduser().resolve() if selected else None
+    except Exception as exc:
+        raise ValidationError(f"无法打开本机选择器：{exc}")
 
 
 def _model_payload(model: Any) -> dict:
@@ -176,6 +203,20 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
     return ApiResponse.success(data={"model_root": str(target)}, message="模型目录已更新")
 
 
+@router.post("/root/pick")
+def pick_model_root():
+    selected = _pick_local_path(directory=True)
+    return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
+
+
+@router.post("/custom/pick")
+def pick_custom_model_file():
+    selected = _pick_local_path(directory=False)
+    if selected and selected.suffix.lower() != ".gguf":
+        raise ValidationError("请选择 .gguf 模型文件")
+    return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
+
+
 @router.post("/runtime/install")
 def install_runtime():
     task_id = create_runtime_download()
@@ -235,8 +276,14 @@ async def download_events(task_id: str):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/downloads/{task_id}/resume")
+def resume_model_download(task_id: str):
+    resume_download(task_id)
+    return ApiResponse.success(message="已从保存的下载进度继续")
+
+
 @router.post("/runtime/start")
-async def start_runtime(payload: RuntimeStartRequest):
+async def start_runtime(payload: RuntimeStartRequest, db: Session = Depends(get_db)):
     _ensure_local_runtime_usage_enabled()
     base_url = await asyncio.to_thread(
         get_runtime_manager().ensure_running,
@@ -245,6 +292,19 @@ async def start_runtime(payload: RuntimeStartRequest):
         task_type=payload.task_type,
         project_id=payload.project_id,
     )
+    config = db.query(APIConfig).filter(APIConfig.provider == "local_llama_cpp").first()
+    if not config:
+        config = APIConfig(
+            provider="local_llama_cpp",
+            api_key_encrypted=encrypt("__local_runtime__"),
+            default_model=payload.model_key,
+            provider_type="local_runtime",
+            max_output_tokens=16384,
+        )
+        db.add(config)
+    config.default_model = payload.model_key
+    mark_model_ready(config, source="local_runtime_started", message="本地模型已成功加载")
+    commit_session(db)
     return ApiResponse.success(data={**get_runtime_manager().status(), "base_url": base_url})
 
 

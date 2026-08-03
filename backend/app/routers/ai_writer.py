@@ -20,6 +20,7 @@ from ..modules.assistant.interfaces.system_conversation_dependencies import (
     get_system_conversation_store,
 )
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
+from ..modules.creation.infrastructure.models import NovelCreationSession
 from ..services.context_builders import (
     _build_chapter_detail_context,
     _build_character_ai_context,
@@ -89,8 +90,6 @@ from ..services.workspace.run_recovery import (
     resume_run,
 )
 from ..services.operation_runtime import record_operation_signal
-from ..services.agent.bridge import detect_and_stream_plan
-from ..services.agent.chapter_intent import has_strong_chapter_writing_intent
 from ..schemas.ai_writer import WorkspaceAssistantRequest, WorkspaceAssistantRunDetailResponse, WorkspaceAssistantRunListResponse
 
 router = APIRouter(tags=["ai-writer"])
@@ -1164,45 +1163,8 @@ async def workspace_assistant_stream(
                 )
                 commit_session(db)
             payload.conversation_id = execution_conversation.id
-        # --- Plan path: detect intent and delegate to plan orchestrator ---
-        plan_gen = await detect_and_stream_plan(
-            db, project_id,
-            message=payload.message,
-            conversation_id=payload.conversation_id,
-            scope=payload.scope,
-            model=payload.model,
-            assistant_mode=payload.assistant_mode,
-            outline_batch_count=payload.outline_batch_count,
-            selected_outline_node_id=payload.selected_outline_node_id,
-        )
-        if plan_gen is None and has_strong_chapter_writing_intent(payload.message):
-            notice = "模型没有执行写章工具，本轮未创建章节。正在切换到确定性写章流程。"
-            yield _sse_event({"type": "status", "message": notice, "tool": "deterministic_chapter_fallback"})
-            plan_gen = await detect_and_stream_plan(
-                db,
-                project_id,
-                message=payload.message,
-                conversation_id=payload.conversation_id,
-                scope=payload.scope,
-                model=payload.model,
-                assistant_mode=payload.assistant_mode,
-                outline_batch_count=payload.outline_batch_count,
-                selected_outline_node_id=payload.selected_outline_node_id,
-                force_chapter_writing=True,
-            )
-            if plan_gen is None:
-                yield _sse_event({
-                    "type": "error",
-                    "message": "未找到可用于写作的章节大纲。请先选择一个章节大纲，或创建后再试。",
-                })
-                yield _sse_event("[DONE]")
-                return
-        if plan_gen is not None:
-            async for event in plan_gen:
-                yield event
-            return
-
-        # --- Fallback: old agentic loop ---
+        # The model sees the authorized workspace tools and decides which data
+        # to read or mutate. Do not pre-route equivalent requests by wording.
         conversation = None
         user_msg_db = None
         assistant_msg_db = None
@@ -1309,6 +1271,21 @@ async def workspace_assistant_stream(
                 local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
+            if payload.creation_session_id:
+                creation_session = (
+                    db.query(NovelCreationSession)
+                    .filter(NovelCreationSession.id == payload.creation_session_id)
+                    .first()
+                )
+                if creation_session and project_id in {
+                    creation_session.created_project_id,
+                    creation_session.source_project_id,
+                }:
+                    selected_context.append(
+                        "当前作品关联的立项数据："
+                        f"creation_session_id={creation_session.id}，revision={int(creation_session.revision or 0)}。"
+                        "当用户询问、补充或修改作品设定时，先读取这份立项数据，再使用立项工具做局部更新。"
+                    )
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
             if selected_character:

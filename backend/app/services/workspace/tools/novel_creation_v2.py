@@ -594,6 +594,7 @@ async def _generate_compact_concepts(
         "interview_history": interview.get("history") or [],
         "interview_reason": _text(interview.get("reason")),
         "refinement_instruction": instruction,
+        "entity_target": draft.get("_entity_target"),
     }
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
@@ -731,6 +732,7 @@ async def _enhance_with_model(
         },
         "baseline": baseline,
         "refinement_instruction": instruction,
+        "entity_target": draft.get("_entity_target"),
     }
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
@@ -740,6 +742,8 @@ async def _enhance_with_model(
             "只深化当前阶段的 baseline，顶层只返回 data 字段；"
             "保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。"
             "调整要求只作用于当前阶段；没有明确授权时不得改动其他内容。"
+            "如果 entity_target 存在，只生成或修改其中指定类型的对象，其他对象必须保持原样；"
+            "新增数量必须根据作者本次调整要求判断，作者未给固定数字时按语义生成最合适的少量对象。"
         ),
     )
     user = (
@@ -751,13 +755,24 @@ async def _enhance_with_model(
     )
     from ....services.content_store import content_root
 
+    # Stage generation used to cap normal artifacts at 6k tokens and opening
+    # outlines at 12k, even when the selected model and context manifest could
+    # safely return much more. Honour the effective model/context allowance;
+    # entity-level runs remain small because their contract asks for one row.
+    manifest_output_limit = int(getattr(context_manifest, "output_reserve_tokens", 0) or 0)
+    max_output_tokens = max(
+        12000 if stage == "opening_outline" else 6000,
+        manifest_output_limit,
+    )
+    max_output_tokens = min(max_output_tokens, 1_000_000)
+
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
         _raise_if_task_cancelled()
         raw, attempt = await _stream_model_text(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=model,
             temperature=0.65,
-            max_tokens=12000 if stage == "opening_outline" else 6000,
+            max_tokens=max_output_tokens,
             extra_body=LLMGateway.local_cli_extra_body(
                 model,
                 cwd=str(content_root()),
@@ -791,7 +806,7 @@ async def _enhance_with_model(
                 error=parse_error,
                 model=model,
                 contract=_stage_contract(stage),
-                max_tokens=12000 if stage == "opening_outline" else 6000,
+                max_tokens=max_output_tokens,
                 extra_body=LLMGateway.local_cli_extra_body(
                     model,
                     cwd=str(content_root()),

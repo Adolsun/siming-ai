@@ -848,6 +848,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-models/custom/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Download Custom Model */
+        post: operations["download_custom_model_api_v1_local_models_custom_download_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/custom/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Existing Custom Model */
+        post: operations["import_existing_custom_model_api_v1_local_models_custom_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/local-models/downloads": {
         parameters: {
             query?: never;
@@ -1084,6 +1118,23 @@ export interface paths {
         post?: never;
         /** Delete Model */
         delete: operations["delete_model_api_v1_local_models__model_key__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/agent-turn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creation Agent Turn */
+        post: operations["creation_agent_turn_api_v1_novel_creation_agent_turn_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1748,6 +1799,23 @@ export interface paths {
         get: operations["list_operations_api_v1_operations_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/attention/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark Operation Attention Read */
+        post: operations["mark_operation_attention_read_api_v1_operations_attention_read_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5821,6 +5889,19 @@ export interface components {
              */
             requirements: string;
         };
+        /** CreationAgentRequest */
+        CreationAgentRequest: {
+            /** History */
+            history?: {
+                [key: string]: string;
+            }[];
+            /** Message */
+            message: string;
+            /** Model */
+            model?: string | null;
+            /** Session Id */
+            session_id: string;
+        };
         /** CreationConversationCommandRequest */
         CreationConversationCommandRequest: {
             /**
@@ -5829,6 +5910,10 @@ export interface components {
              * @enum {string}
              */
             action: "generate_artifact" | "refine_artifact" | "open_editor";
+            /** Entity Count */
+            entity_count?: number | null;
+            /** Entity Type */
+            entity_type?: ("worldbuilding" | "character" | "relationship" | "location" | "faction" | "world_relation" | "volume" | "chapter_outline" | "scene_outline") | null;
             /** Expected Revision */
             expected_revision?: number | null;
             /** Instruction */
@@ -5852,6 +5937,28 @@ export interface components {
              * @enum {string}
              */
             strategy: "merge" | "overwrite_unconfirmed" | "skip_conflicts";
+        };
+        /** CustomModelDownloadRequest */
+        CustomModelDownloadRequest: {
+            /** Context Length */
+            context_length: number;
+            /** Display Name */
+            display_name: string;
+            /** Model Key */
+            model_key: string;
+            /** Source Url */
+            source_url: string;
+        };
+        /** CustomModelImportRequest */
+        CustomModelImportRequest: {
+            /** Context Length */
+            context_length: number;
+            /** Display Name */
+            display_name: string;
+            /** File Path */
+            file_path: string;
+            /** Model Key */
+            model_key: string;
         };
         /** DatasetCreateRequest */
         DatasetCreateRequest: {
@@ -6538,6 +6645,11 @@ export interface components {
         };
         /** NovelCreationArtifactPatchRequest */
         NovelCreationArtifactPatchRequest: {
+            /**
+             * Allow Incomplete
+             * @default false
+             */
+            allow_incomplete: boolean;
             /** Changes */
             changes: {
                 [key: string]: unknown;
@@ -6773,6 +6885,8 @@ export interface components {
              * @default false
              */
             auto_confirm: boolean;
+            /** Entity Count */
+            entity_count?: number | null;
             /** Entity Id */
             entity_id?: string | null;
             /** Entity Type */
@@ -7060,6 +7174,11 @@ export interface components {
              */
             credential: string;
         };
+        /** OperationAttentionReadRequest */
+        OperationAttentionReadRequest: {
+            /** Operation Ids */
+            operation_ids?: string[];
+        };
         /** OperationAttentionResponse */
         OperationAttentionResponse: {
             /** Action Label */
@@ -7117,6 +7236,8 @@ export interface components {
         /** OperationResponse */
         OperationResponse: {
             attention?: components["schemas"]["OperationAttentionResponse"] | null;
+            /** Attention Read At */
+            attention_read_at?: string | null;
             /**
              * Can Cancel
              * @default false
@@ -10155,6 +10276,72 @@ export interface operations {
             };
         };
     };
+    download_custom_model_api_v1_local_models_custom_download_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomModelDownloadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_existing_custom_model_api_v1_local_models_custom_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomModelImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     downloads_api_v1_local_models_downloads_get: {
         parameters: {
             query?: never;
@@ -10634,6 +10821,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    creation_agent_turn_api_v1_novel_creation_agent_turn_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreationAgentRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -12124,6 +12344,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_OperationListData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_operation_attention_read_api_v1_operations_attention_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationAttentionReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

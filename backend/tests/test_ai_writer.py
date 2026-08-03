@@ -403,6 +403,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("你好，我在。", response.text)
         mock_tool_stream.assert_not_called()
 
+    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
     def test_workspace_chapter_plan_missing_outline_reports_preflight(self):
         project_id = self.create_project("Missing Outline Chapter Project")
 
@@ -424,6 +425,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("plan_preflight", response.text)
         self.assertNotIn("plan_created", response.text)
 
+    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
     @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_workspace_outline_plan_infers_missing_chapter_and_creates_outline(self, mock_chat):
         project_id = self.create_project("Create Missing Outline Project")
@@ -612,6 +614,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    @unittest.skip("legacy deterministic chapter preflight removed")
     def test_workspace_selected_outline_reaches_deterministic_chapter_preflight(self):
         project_id = self.create_project("Selected Outline Plan Project")
         outline_id = self.create_outline_node(project_id, "第一章 潮汐来信")
@@ -632,6 +635,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("没有定位到要写的章节大纲节点", response.text)
         self.assertNotIn("模型正在生成回复", response.text)
 
+    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
     @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_workspace_outline_direction_followup_creates_missing_chapter_outline(self, mock_chat):
         project_id = self.create_project("Outline Direction Followup Project")
@@ -720,6 +724,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
     @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_workspace_outline_plan_accepts_plain_json_content(self, mock_chat):
         project_id = self.create_project("Plain JSON Outline Project")
@@ -768,6 +773,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    @unittest.skip("legacy deterministic chapter preflight removed")
     def test_workspace_chapter_plan_local_runtime_reports_preflight(self):
         project_id = self.create_project("Local Runtime Chapter Project")
         self.create_outline_node(project_id, "第151章 新的死线")
@@ -787,6 +793,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("未找到第 151 章的大纲节点", response.text)
         self.assertNotIn("plan_created", response.text)
 
+    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
     def test_workspace_chapter_plan_bare_number_starts_local_cli_agent(self):
         project_id = self.create_project("Bare Chapter Local CLI Project")
         self.create_outline_node(project_id, "第151章 新的死线")
@@ -864,11 +871,11 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             db.close()
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("司命本地 AI", result["detail"])
+        self.assertIn("尚未通过真实对话测试", result["detail"])
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
-    def test_workspace_stream_plan_executes_create_chapter(self, mock_stream, mock_chat):
+    def test_workspace_model_tool_loop_executes_create_chapter(self, mock_stream, mock_chat):
         project_id = self.create_project("Workspace Repair Project")
         outline_id = self.create_outline_node(project_id, "第152章 黑潮漫过石阶")
         db = SessionLocal()
@@ -919,12 +926,9 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("plan_created", response.text)
-        self.assertIn("skills_matched", response.text)
-        self.assertIn("Plan Skill", response.text)
-        self.assertIn("chapter_writer", response.text)
+        self.assertNotIn("plan_created", response.text)
         self.assertIn("create_chapter", response.text)
-        self.assertNotIn("json_repair", response.text)
+        self.assertIn("json_repair", response.text)
 
         db = SessionLocal()
         try:
@@ -932,13 +936,10 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             self.assertEqual(chapter.title, "第152章 黑潮漫过石阶")
             self.assertEqual(chapter.outline_node_id, outline_id)
             self.assertIn("第二道防线", chapter.content)
-            plan = db.query(AgentPlan).filter(AgentPlan.project_id == project_id).one()
-            steps = db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
-            self.assertEqual(plan.status, "completed")
-            self.assertTrue(any(step.tool == "chapter_writer" and step.status == "ok" for step in steps))
-            self.assertTrue(any(step.tool == "create_chapter" and step.status == "ok" for step in steps))
-            writer_step = next(step for step in steps if step.tool == "chapter_writer")
-            self.assertIn("PLAN_SKILL_MARKER", writer_step.args_json)
+            self.assertEqual(
+                db.query(AgentPlan).filter(AgentPlan.project_id == project_id).count(),
+                0,
+            )
         finally:
             db.close()
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...core.crypto import encrypt
-from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask
+from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask, OperationRun
 from ...database.session import SessionLocal
 from ..operation_runtime import ensure_operation, update_operation
 from .downloads import download_with_fallback
@@ -316,6 +316,41 @@ def resume_incomplete_downloads() -> None:
             _start_thread(task_id, _run_runtime_download, task_id)
         elif kind == "model":
             _start_thread(task_id, _run_model_download, task_id, target_key)
+
+
+def resume_download(task_id: str) -> None:
+    """Reconnect an interrupted download to its persisted partial file."""
+    with SessionLocal() as db:
+        task = db.query(ModelDownloadTask).filter(ModelDownloadTask.id == task_id).first()
+        if not task:
+            raise ValueError("下载任务不存在")
+        if task.status == "completed":
+            return
+        task.status = "queued"
+        task.error_message = None
+        task.updated_at = datetime.utcnow()
+        if task.operation_id:
+            operation = db.query(OperationRun).filter(OperationRun.id == task.operation_id).first()
+            if operation:
+                update_operation(
+                    db,
+                    operation,
+                    status="queued",
+                    health_status="active",
+                    phase="queued",
+                    message="正在从已保存进度继续下载",
+                    progress_mode="determinate" if task.total_bytes else "indeterminate",
+                    progress_current=int(task.downloaded_bytes or 0),
+                    progress_total=int(task.total_bytes) if task.total_bytes else None,
+                    output=True,
+                )
+        kind = task.kind
+        target_key = task.target_key
+        commit_session(db)
+    if kind == "runtime":
+        _start_thread(task_id, _run_runtime_download, task_id)
+    elif kind == "model":
+        _start_thread(task_id, _run_model_download, task_id, target_key)
 
 
 def _start_thread(key: str, target, *args) -> None:

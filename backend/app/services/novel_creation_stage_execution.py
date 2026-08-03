@@ -223,7 +223,11 @@ def _prepare_execution(
     elif entity_type:
         if entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(stage, frozenset()):
             raise ValueError("目标实体类型不属于当前立项对象")
-        entity_target = {"entity_type": entity_type, "mode": "new"}
+        entity_target = {
+            "entity_type": entity_type,
+            "mode": "new",
+            "count": max(1, min(int(args["entity_count"]), 20)) if args.get("entity_count") else None,
+        }
     if entity_target:
         working_draft["_entity_target"] = deepcopy(entity_target)
     orchestrator = ContextOrchestrator(db)
@@ -383,24 +387,23 @@ def _merge_entity_generation(
         existing_keys = {
             (item["entity_type"], item["entity_key"]) for item in baseline_records
         }
-        addition = next(
-            (
-                item for item in candidates
-                if (item["entity_type"], item["entity_key"]) not in existing_keys
-            ),
-            None,
-        )
-        if addition is None:
+        additions = [
+            item for item in candidates
+            if (item["entity_type"], item["entity_key"]) not in existing_keys
+        ][: int(target.get("count") or 20)]
+        if not additions:
             raise ValueError(f"模型没有生成新的 {entity_type} 对象；现有数据保持不变")
-        collection = addition["field"]
-        merged.setdefault(collection, [])
-        if not isinstance(merged[collection], list):
-            raise ValueError("目标实体集合格式不正确")
-        merged[collection].append(deepcopy(addition["data"]))
+        for addition in additions:
+            collection = addition["field"]
+            merged.setdefault(collection, [])
+            if not isinstance(merged[collection], list):
+                raise ValueError("目标实体集合格式不正确")
+            merged[collection].append(deepcopy(addition["data"]))
         summary = {
             "mode": "generate",
             "entity_type": entity_type,
-            "entity_key": addition["entity_key"],
+            "entity_keys": [item["entity_key"] for item in additions],
+            "created_entity_count": len(additions),
             "preserved_entity_count": len(baseline_records),
         }
     return merged, summary

@@ -28,6 +28,7 @@ import {
   message,
 } from 'antd'
 import {
+  ArrowLeftOutlined,
   DeleteOutlined,
   DatabaseOutlined,
   FileAddOutlined,
@@ -47,6 +48,7 @@ import {
   UndoOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { StructuredStageEditor } from '../features/novelCreation/StageContent'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import {
@@ -79,6 +81,17 @@ interface Project {
   id: string
   title: string
   updated_at?: string
+}
+
+interface CreationSessionContext {
+  id: string
+  user_brief?: string
+  status: string
+  revision: number
+  created_project_id?: string | null
+  source_project_id?: string | null
+  updated_at?: string | null
+  created_at?: string | null
 }
 
 interface Conversation {
@@ -162,6 +175,24 @@ interface CreationArtifactSummary {
     soft_dependencies?: Array<{ stage: string; label: string; reason: string; message: string }>
   }
   running_operation?: NovelCreationRunSummary | null
+}
+
+interface CreationArtifactDetail extends CreationArtifactSummary {
+  data?: Record<string, unknown> | null
+}
+
+function emptyArtifactData(artifact: string): Record<string, unknown> {
+  const templates: Record<string, Record<string, unknown>> = {
+    concepts: { options: [], selected_concept_id: null },
+    constraints: { special_requirements: [], avoid: [] },
+    world_style: { world_tone: '', story_structure: '', pacing: '', writing_style: '', worldbuilding: [] },
+    characters: { characters: [], relationships: [] },
+    locations: { entries: [], relations: [] },
+    macro_outline: { story_overview: '', core_conflict: '', volumes: [] },
+    opening_outline: { chapters: [], sections: [] },
+    final_review: { ready: false, blocking: [], warnings: [], counts: {} },
+  }
+  return templates[artifact] || {}
 }
 
 interface CreationConsistencyReport {
@@ -267,10 +298,6 @@ interface NovelDraftData {
   hint?: string
 }
 
-interface NovelApplyData {
-  project_id: string
-}
-
 const PROJECT_STORAGE_KEY = 'siming.gui.assistant.projectId'
 const LEGACY_PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'siming.gui.assistant.sidebarCollapsed'
@@ -334,41 +361,19 @@ function shouldUseNovelCreation(text: string, hasActiveProject: boolean) {
   return false
 }
 
-function parseBlueprintIndex(text: string) {
-  const match = text.match(/(?:使用|选|选择|创建|就|采用|用)(?:第)?\s*([123一二三])\s*(?:个|套|号|版|方案)?/)
-  if (!match) return null
-  const map: Record<string, number> = { '1': 0, '2': 1, '3': 2, 一: 0, 二: 1, 三: 2 }
-  return map[match[1]] ?? null
-}
-
-function parseCreationArtifactCommand(text: string) {
-  const normalized = text.trim()
-  if (!normalized) return null
-  const targets: Array<[string, RegExp]> = [
-    ['macro_outline', /卷纲|分卷|\d+\s*卷|主线|大纲/],
-    ['opening_outline', /开篇|前三章|黄金三章|开篇细纲/],
-    ['characters', /角色|人物|主角|反派|配角|人物关系/],
-    ['locations', /地点|场景|势力|宗门|组织/],
-    ['world_style', /世界观|文风|风格|设定体系|力量体系/],
-    ['concepts', /创意|方案|故事方向|核心卖点/],
-    ['final_review', /完整性|一致性|检查立项|校验立项/],
-  ]
-  const target = targets.find(([, pattern]) => pattern.test(normalized))
-  if (!target) return null
-  const requestsChange = /改|调整|重做|重写|删除|去掉|增加|加入|补充|保留|不要|换成|扩成|缩成|重新/.test(normalized)
-  const requestsGeneration = /生成|创建|先做|帮我做|整理/.test(normalized)
-  if (!requestsChange && !requestsGeneration) return null
-  return {
-    stage: target[0],
-    action: requestsChange ? 'refine_artifact' as const : 'generate_artifact' as const,
-    instruction: normalized,
-  }
+function requestsFreshNovelContext(text: string) {
+  return /(一本新的|新的一本|另(?:开|建|写)一本|再(?:创建|开|写)一本|重新(?:创建|立项)|创建.*新(?:小说|作品)|新建.*(?:小说|作品))/.test(text)
 }
 
 function GuiAssistantChat() {
   const navigate = useNavigate()
   const location = useLocation()
+  const requestedCreationSession = new URLSearchParams(location.search).get('creationSession') || ''
+  const requestedConversationId = new URLSearchParams(location.search).get('conversation') || ''
+  const requestedArtifact = new URLSearchParams(location.search).get('artifact') || ''
+  const openedRequestedArtifactRef = useRef<string>('')
   const [projects, setProjects] = useState<Project[]>([])
+  const [creationSessions, setCreationSessions] = useState<CreationSessionContext[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string>()
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
@@ -385,8 +390,10 @@ function GuiAssistantChat() {
     },
   )
   const [systemConversationId, setSystemConversationId] = useState<string>()
+  const systemConversationIdRef = useRef<string>()
+  const creationArtifactRequestRef = useRef(0)
+  const pendingCreationContextRef = useRef<string>()
   const [systemBlueprints, setSystemBlueprints] = useState<NovelBlueprint[]>([])
-  const [applyingBlueprintIndex, setApplyingBlueprintIndex] = useState<number | null>(null)
   const [runningStartTime, setRunningStartTime] = useState<number | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
@@ -416,6 +423,16 @@ function GuiAssistantChat() {
   const [artifactVersions, setArtifactVersions] = useState<CreationArtifactVersionSummary[]>([])
   const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<CreationArtifactVersionDetail | null>(null)
   const [versionHistoryLoading, setVersionHistoryLoading] = useState(false)
+  const [artifactDetail, setArtifactDetail] = useState<CreationArtifactDetail | null>(null)
+  const [artifactDetailLoading, setArtifactDetailLoading] = useState(false)
+  const [expandedArtifact, setExpandedArtifact] = useState<CreationArtifactDetail | null>(null)
+  const [expandedArtifactSessionId, setExpandedArtifactSessionId] = useState<string | null>(null)
+  const [artifactEditorData, setArtifactEditorData] = useState<Record<string, unknown>>({})
+  const [artifactEditorRevision, setArtifactEditorRevision] = useState<number | null>(null)
+  const [artifactEditorDirty, setArtifactEditorDirty] = useState(false)
+  const [artifactEditorSaving, setArtifactEditorSaving] = useState(false)
+  const [artifactEditorError, setArtifactEditorError] = useState<string | null>(null)
+  const [artifactEditorSavedAt, setArtifactEditorSavedAt] = useState<string | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -457,6 +474,20 @@ function GuiAssistantChat() {
   }
 
   useEffect(() => {
+    systemConversationIdRef.current = systemConversationId
+  }, [systemConversationId])
+
+  useEffect(() => {
+    creationArtifactRequestRef.current += 1
+    setCreationArtifacts([])
+    setCreationConsistency(null)
+    setActiveCreationRun(null)
+    setActiveMaterialImport(null)
+    setExpandedArtifact(null)
+    setExpandedArtifactSessionId(null)
+  }, [systemSessionId])
+
+  useEffect(() => {
     const params = new URLSearchParams(location.search)
     const resumedSessionId = params.get('creationSession') || ''
     const resumedImportId = params.get('import') || ''
@@ -476,21 +507,113 @@ function GuiAssistantChat() {
     }
   }, [adoptNovelInterviewSession, location.search, systemSessionId])
 
+  const openArtifactDetail = async (artifact: CreationArtifactSummary) => {
+    if (!systemSessionId) return
+    setArtifactDetailLoading(true)
+    try {
+      const response = await apiClient.get<ApiResponse<CreationArtifactDetail>>(
+        `/novel-creation/sessions/${systemSessionId}/artifacts/${artifact.artifact}`,
+      )
+      setArtifactDetail(response.data.data)
+    } catch (error: unknown) {
+      message.error(error instanceof Error ? error.message : '读取立项数据失败')
+    } finally {
+      setArtifactDetailLoading(false)
+    }
+  }
+
+  const openArtifactEditor = async (artifact: CreationArtifactSummary, sessionIdOverride?: string) => {
+    const targetSessionId = sessionIdOverride || systemSessionId || activeCreationRun?.session_id
+    if (!targetSessionId) {
+      message.error('找不到这项立项数据所属的会话')
+      return
+    }
+    setArtifactDetailLoading(true)
+    setArtifactEditorError(null)
+    setExpandedArtifact({ ...artifact, data: emptyArtifactData(artifact.artifact) })
+    setExpandedArtifactSessionId(targetSessionId)
+    setArtifactEditorData(emptyArtifactData(artifact.artifact))
+    setArtifactEditorRevision(artifact.revision)
+    setArtifactEditorDirty(false)
+    setArtifactEditorSavedAt(null)
+    setCreationPanelOpen(true)
+    if (targetSessionId !== systemSessionId) adoptNovelInterviewSession(targetSessionId)
+    try {
+      const response = await apiClient.get<ApiResponse<CreationArtifactDetail>>(
+        `/novel-creation/sessions/${targetSessionId}/artifacts/${artifact.artifact}`,
+      )
+      const detail = response.data.data
+      setExpandedArtifact(detail)
+      setArtifactEditorData(detail.data || emptyArtifactData(detail.artifact))
+      setArtifactEditorRevision(detail.revision)
+      setArtifactEditorDirty(false)
+    } catch (error: unknown) {
+      setArtifactEditorError(error instanceof Error ? error.message : '未能读取已有数据；你仍可直接补充并自动保存')
+    } finally {
+      setArtifactDetailLoading(false)
+    }
+  }
+
+  const saveExpandedArtifact = useCallback(async () => {
+    const targetSessionId = expandedArtifactSessionId || systemSessionId
+    if (!targetSessionId || !expandedArtifact || artifactEditorRevision == null || !artifactEditorDirty || artifactEditorSaving) return
+    setArtifactEditorSaving(true)
+    setArtifactEditorError(null)
+    try {
+      const response = await apiClient.patch<ApiResponse<{ artifact: CreationArtifactDetail }>>(
+        `/novel-creation/sessions/${targetSessionId}/artifacts/${expandedArtifact.artifact}`,
+        {
+          changes: [{ path: '/', action: 'replace', value: artifactEditorData }],
+          source: 'author',
+          expected_revision: artifactEditorRevision,
+          allow_incomplete: true,
+        },
+      )
+      const saved = response.data.data.artifact
+      setExpandedArtifact((current) => current ? saved : null)
+      setArtifactEditorRevision(saved.revision)
+      setArtifactEditorDirty(false)
+      setArtifactEditorSavedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+      setCreationArtifacts((items) => items.map((item) => item.artifact === saved.artifact ? saved : item))
+    } catch (error: unknown) {
+      setArtifactEditorError(error instanceof Error ? error.message : '自动保存失败；内容仍保留在编辑器中')
+    } finally {
+      setArtifactEditorSaving(false)
+    }
+  }, [artifactEditorData, artifactEditorDirty, artifactEditorRevision, artifactEditorSaving, expandedArtifact, expandedArtifactSessionId, systemSessionId])
+
+  useEffect(() => {
+    if (!artifactEditorDirty) return
+    const timer = window.setTimeout(() => void saveExpandedArtifact(), 5000)
+    return () => window.clearTimeout(timer)
+  }, [artifactEditorData, artifactEditorDirty, saveExpandedArtifact])
+
+  const closeArtifactEditor = useCallback(async () => {
+    if (artifactEditorDirty) await saveExpandedArtifact()
+    setExpandedArtifact(null)
+    setExpandedArtifactSessionId(null)
+    setArtifactEditorError(null)
+  }, [artifactEditorDirty, saveExpandedArtifact])
+
   const fetchCreationArtifacts = useCallback(async () => {
     if (!systemSessionId) {
       setCreationArtifacts([])
       return
     }
+    const requestedSessionId = systemSessionId
+    const requestId = ++creationArtifactRequestRef.current
     setCreationArtifactsLoading(true)
     try {
       const response = await apiClient.get<ApiResponse<{ artifacts: CreationArtifactSummary[] }>>(
-        `/novel-creation/sessions/${systemSessionId}/artifacts`,
+        `/novel-creation/sessions/${requestedSessionId}/artifacts`,
       )
-      setCreationArtifacts(response.data.data.artifacts || [])
+      if (creationArtifactRequestRef.current === requestId) {
+        setCreationArtifacts(response.data.data.artifacts || [])
+      }
     } catch (error: unknown) {
       message.error(error instanceof Error ? error.message : '立项数据同步失败')
     } finally {
-      setCreationArtifactsLoading(false)
+      if (creationArtifactRequestRef.current === requestId) setCreationArtifactsLoading(false)
     }
   }, [systemSessionId])
 
@@ -517,6 +640,14 @@ function GuiAssistantChat() {
     void fetchCreationArtifacts()
     void checkCreationConsistency()
   }, [fetchCreationArtifacts, checkCreationConsistency, activeCreationRun?.status])
+
+  useEffect(() => {
+    if (!requestedArtifact || !systemSessionId || openedRequestedArtifactRef.current === `${systemSessionId}:${requestedArtifact}`) return
+    const artifact = creationArtifacts.find((item) => item.artifact === requestedArtifact)
+    if (!artifact) return
+    openedRequestedArtifactRef.current = `${systemSessionId}:${requestedArtifact}`
+    void openArtifactEditor(artifact)
+  }, [creationArtifacts, requestedArtifact, systemSessionId])
 
   useEffect(() => {
     if (!systemSessionId) {
@@ -697,7 +828,28 @@ function GuiAssistantChat() {
     () => projects.find((project) => project.id === activeProjectId),
     [projects, activeProjectId],
   )
-  const assistantContextLabel = activeProject ? `作品模式 · ${activeProject.title}` : '系统模式 · 可创建新作品'
+  const activeCreationContext = useMemo(
+    () => creationSessions.find((session) => session.id === systemSessionId),
+    [creationSessions, systemSessionId],
+  )
+  const assistantContextLabel = activeProject
+    ? `作品上下文 · ${activeProject.title}`
+    : activeCreationContext
+      ? `立项上下文 · ${(activeCreationContext.user_brief || '未命名立项').slice(0, 28)}`
+      : '未选择上下文 · 发送消息后自动新建立项'
+  const assistantContextOptions = useMemo(() => [
+    {
+      label: '正式作品',
+      options: projects.map((project) => ({ value: `project:${project.id}`, label: project.title })),
+    },
+    {
+      label: '立项数据',
+      options: creationSessions.map((session) => ({
+        value: `creation:${session.id}`,
+        label: `${(session.user_brief || '未命名立项').slice(0, 42)}${session.created_project_id ? ' · 已创建作品' : ''}`,
+      })),
+    },
+  ], [creationSessions, projects])
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
@@ -717,7 +869,7 @@ function GuiAssistantChat() {
 
       const savedProjectId = localStorage.getItem(PROJECT_STORAGE_KEY) || localStorage.getItem(LEGACY_PROJECT_STORAGE_KEY) || undefined
       const nextProject = items.find((item) => item.id === savedProjectId)
-      if (nextProject) {
+      if (nextProject && !requestedCreationSession && !requestedConversationId) {
         setActiveProjectId((current) => current || nextProject.id)
         localStorage.setItem(PROJECT_STORAGE_KEY, nextProject.id)
       } else if (savedProjectId) {
@@ -728,6 +880,21 @@ function GuiAssistantChat() {
       message.error(err.message || '加载作品失败')
     } finally {
       setProjectsLoading(false)
+    }
+  }, [requestedConversationId, requestedCreationSession])
+
+  const fetchCreationSessions = useCallback(async () => {
+    try {
+      const response = await apiClient.get<ApiResponse<{ sessions: CreationSessionContext[] }>>(
+        '/novel-creation/sessions',
+        { include_completed: true },
+      )
+      const items = response.data.data.sessions || []
+      setCreationSessions(items)
+      return items
+    } catch {
+      setCreationSessions([])
+      return []
     }
   }, [])
 
@@ -785,6 +952,7 @@ function GuiAssistantChat() {
         : null
       setActiveConvId(res.data.data.conversation.id)
       setSystemConversationId(res.data.data.conversation.id)
+      systemConversationIdRef.current = res.data.data.conversation.id
       if (!activeProjectId) {
         const conversation = res.data.data.conversation
         if (conversation.creation_session_id) {
@@ -803,18 +971,28 @@ function GuiAssistantChat() {
 
   useEffect(() => {
     fetchProjects()
-  }, [fetchProjects])
+    void fetchCreationSessions()
+  }, [fetchCreationSessions, fetchProjects])
 
   useEffect(() => {
     if (projectsLoading) return
     if (!activeProjectId) {
       setActiveConvId(null)
       setSystemConversationId(undefined)
+      systemConversationIdRef.current = undefined
       setMessages([])
       localStorage.removeItem(PROJECT_STORAGE_KEY)
       localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
+      const pendingCreationSession = pendingCreationContextRef.current
+      if (pendingCreationSession) {
+        adoptNovelInterviewSession(pendingCreationSession)
+      }
       fetchConversations(undefined).then((items) => {
-        if (items[0]) fetchMessages(items[0].id)
+        const requested = items.find((item) => item.id === requestedConversationId)
+          || items.find((item) => item.creation_session_id === requestedCreationSession)
+          || (pendingCreationSession ? items.find((item) => item.creation_session_id === pendingCreationSession) : undefined)
+        if (requested) fetchMessages(requested.id)
+        pendingCreationContextRef.current = undefined
       })
       return
     }
@@ -822,11 +1000,20 @@ function GuiAssistantChat() {
     localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
     setActiveConvId(null)
     setSystemConversationId(undefined)
+    systemConversationIdRef.current = undefined
     setMessages([])
+    void apiClient.get<ApiResponse<{ sessions: CreationSessionContext[] }>>(
+      '/novel-creation/sessions',
+      { include_completed: true, project_id: activeProjectId },
+    ).then((response) => {
+      const linked = response.data.data.sessions?.[0]
+      if (linked) adoptNovelInterviewSession(linked.id, linked.user_brief || '')
+      else resetNovelInterview()
+    }).catch(() => resetNovelInterview())
     fetchConversations(activeProjectId).then((items) => {
       if (items[0]) fetchMessages(items[0].id)
     })
-  }, [activeProjectId, fetchConversations, fetchMessages, projectsLoading])
+  }, [activeProjectId, adoptNovelInterviewSession, fetchConversations, fetchMessages, projectsLoading, requestedConversationId, requestedCreationSession, resetNovelInterview])
 
   const startNewConversation = () => {
     abortRef.current?.abort()
@@ -835,8 +1022,34 @@ function GuiAssistantChat() {
     setMessages([])
     setInputValue('')
     setSystemConversationId(undefined)
-    novelInterview.reset()
+    systemConversationIdRef.current = undefined
     setSystemBlueprints([])
+  }
+
+  const selectAssistantContext = async (value?: string) => {
+    startNewConversation()
+    if (!value) {
+      setActiveProjectId(undefined)
+      resetNovelInterview()
+      return
+    }
+    const [kind, id] = value.split(':', 2)
+    if (kind === 'project') {
+      setActiveProjectId(id)
+      return
+    }
+    if (kind === 'creation') {
+      if (activeProjectId) {
+        pendingCreationContextRef.current = id
+        setActiveProjectId(undefined)
+        return
+      }
+      const session = creationSessions.find((item) => item.id === id)
+      adoptNovelInterviewSession(id, session?.user_brief || '')
+      const items = await fetchConversations(undefined)
+      const existing = items.find((item) => item.creation_session_id === id)
+      if (existing) await fetchMessages(existing.id)
+    }
   }
 
   const deleteConversation = (convId: string) => {
@@ -946,8 +1159,9 @@ function GuiAssistantChat() {
   const startSystemTurn = async (
     userContent: string,
     state: { creationSessionId?: string; userBrief?: string; messageType?: string },
+    forceNewConversation = false,
   ) => {
-    let conversationId = systemConversationId
+    let conversationId = forceNewConversation ? undefined : systemConversationIdRef.current
     if (!conversationId) {
       const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
         '/ai/system-assistant/conversations',
@@ -959,6 +1173,7 @@ function GuiAssistantChat() {
       )
       conversationId = createRes.data.data.conversation.id
       setSystemConversationId(conversationId)
+      systemConversationIdRef.current = conversationId
     }
     const response = await apiClient.post<ApiResponse<{ conversation: Conversation; messages: ChatMessage[] }>>(
       `/ai/system-assistant/conversations/${conversationId}/turns/start`,
@@ -1026,7 +1241,7 @@ function GuiAssistantChat() {
     },
   ) => {
     try {
-      let conversationId = systemConversationId
+      let conversationId = systemConversationIdRef.current
       if (!conversationId) {
         const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
           '/ai/system-assistant/conversations',
@@ -1038,6 +1253,7 @@ function GuiAssistantChat() {
         )
         conversationId = createRes.data.data.conversation.id
         setSystemConversationId(conversationId)
+        systemConversationIdRef.current = conversationId
       }
       const turnRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
         `/ai/system-assistant/conversations/${conversationId}/turns`,
@@ -1062,6 +1278,10 @@ function GuiAssistantChat() {
   }
 
   const handleSystemAssistantMessage = async (text: string, originalText?: string) => {
+    const sourceText = originalText || text
+    const forceFreshCreation = (
+      Boolean(activeProjectId) && shouldUseNovelCreation(sourceText, true)
+    ) || (Boolean(systemSessionId) && requestsFreshNovelContext(sourceText))
     let finalReply = ''
     let finalStatus: ChatMessage['status'] = 'completed'
     let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
@@ -1080,19 +1300,52 @@ function GuiAssistantChat() {
       setLastAssistantMessage(content, status)
     }
 
+    if (forceFreshCreation) {
+      abortRef.current?.abort()
+      setActiveProjectId(undefined)
+      resetNovelInterview()
+      persistedSessionId = undefined
+      persistedBrief = ''
+      persistedBlueprints = []
+      setSystemConversationId(undefined)
+      systemConversationIdRef.current = undefined
+      creationArtifactRequestRef.current += 1
+      setCreationArtifacts([])
+      setCreationConsistency(null)
+      setActiveCreationRun(null)
+    }
+
     setMessages((prev) => [
-      ...prev,
-      { role: 'user', content: originalText || text, status: 'completed', created_at: new Date().toISOString() },
+      ...(forceFreshCreation ? [] : prev),
+      { role: 'user', content: sourceText, status: 'completed', created_at: new Date().toISOString() },
       { role: 'assistant', content: '正在处理...', status: 'running', created_at: new Date().toISOString() },
     ])
     setInputValue('')
     setStreaming(true)
 
+    if (!persistedSessionId && (!activeProjectId || forceFreshCreation)) {
+      try {
+        const created = await startNovelCreationSession({
+          userBrief: sourceText,
+          creationMode: 'author_led',
+          authorBrief: sourceText.slice(0, 5000),
+        })
+        persistedSessionId = created.id
+        persistedBrief = sourceText
+        adoptNovelInterviewSession(created.id, sourceText)
+        await fetchCreationSessions()
+      } catch (error: unknown) {
+        finish(error instanceof Error ? error.message : '新建立项数据失败，请重试。', 'error')
+        setStreaming(false)
+        return
+      }
+    }
+
     try {
-      durableTurn = await startSystemTurn(originalText || text, {
+      durableTurn = await startSystemTurn(sourceText, {
         creationSessionId: persistedSessionId,
         userBrief: persistedBrief,
-      })
+      }, forceFreshCreation)
     } catch {
       message.warning('本轮消息暂未保存到系统历史，仍会继续处理请求')
     }
@@ -1145,53 +1398,25 @@ function GuiAssistantChat() {
         return
       }
 
-      const selectedBlueprintIndex = parseBlueprintIndex(text)
-      if (selectedBlueprintIndex != null && systemBlueprints[selectedBlueprintIndex]) {
-        if (!systemSessionId) throw new Error('缺少新书创建会话，请重新生成方案。')
-        const blueprint = systemBlueprints[selectedBlueprintIndex]
-        setApplyingBlueprintIndex(selectedBlueprintIndex)
-        setLastAssistantMessage(`正在创建《${blueprint.title}》...`, 'running')
-        await apiClient.post<ApiResponse<unknown>>('/novel-creation/review', {
-          session_id: systemSessionId,
-          execution_mode: 'hybrid',
-          blueprint: systemBlueprints,
-        })
-        const applyRes = await apiClient.post<ApiResponse<NovelApplyData>>('/novel-creation/apply', {
-          session_id: systemSessionId,
-          blueprint_index: selectedBlueprintIndex,
-          mode: 'auto',
-          blueprint,
-        })
-        const projectId = applyRes.data.data.project_id
-        await fetchProjects()
-        setActiveProjectId(projectId)
-        localStorage.setItem(PROJECT_STORAGE_KEY, projectId)
-        setSystemBlueprints([])
-        novelInterview.reset()
-        persistedBlueprints = []
-        persistedSessionId = undefined
-        persistedBrief = ''
-        finish(
-          `已创建新作品《${blueprint.title}》。我已经切换到这个作品上下文，接下来可以继续让我细化大纲、角色、世界观，或直接开始写第一章。`,
-        )
-        return
-      }
-
-      const artifactCommand = systemSessionId ? parseCreationArtifactCommand(originalText || text) : null
-      if (artifactCommand && systemSessionId && !activeQuestion) {
+      if (persistedSessionId) {
         const response = await apiClient.post<ApiResponse<{
-          run: NovelCreationRunSummary
-          summary: string
-        }>>('/novel-creation/conversation-command', {
-          session_id: systemSessionId,
-          stage: artifactCommand.stage,
-          instruction: artifactCommand.instruction,
+          reply: string
+          run?: NovelCreationRunSummary | null
+          tool_results?: Array<Record<string, unknown>>
+        }>>('/novel-creation/agent-turn', {
+          session_id: persistedSessionId,
+          message: sourceText,
           model: selectedModel || null,
-          action: artifactCommand.action,
+          history: messages.slice(-12).map((item) => ({ role: item.role, content: item.content })),
         })
         const run = response.data.data.run
-        setActiveCreationRun(run)
-        finish(response.data.data.summary || run.current_message || '已创建立项调整任务', 'running', { run })
+        if (run) setActiveCreationRun(run)
+        await Promise.all([fetchCreationArtifacts(), fetchCreationSessions()])
+        finish(
+          response.data.data.reply || run?.current_message || '已完成本轮立项工具调用',
+          run ? 'running' : 'completed',
+          run ? { run } : undefined,
+        )
         return
       }
 
@@ -1359,7 +1584,6 @@ function GuiAssistantChat() {
         })
       }
       setStreaming(false)
-      setApplyingBlueprintIndex(null)
     }
   }
 
@@ -1759,6 +1983,7 @@ function GuiAssistantChat() {
           message: text,
           conversation_id: undefined,
           canonical_conversation_id: durableProjectTurn.conversationId,
+          creation_session_id: systemSessionId,
           model: selectedModel,
           assistant_mode: 'fast',
           temperature: 0.3,
@@ -2579,7 +2804,7 @@ function GuiAssistantChat() {
             </Button>
           </Space>
         </div>
-        <div className="gui-chat-blueprint-grid">
+        <div className={`gui-chat-blueprint-grid${systemBlueprints.length === 1 ? ' gui-chat-blueprint-grid-single' : ''}`}>
           {systemBlueprints.map((bp, index) => {
             const score = bp.requirement_coverage?.score
             return (
@@ -2676,8 +2901,8 @@ function GuiAssistantChat() {
                   <Button
                     type="primary"
                     block
-                    loading={applyingBlueprintIndex === index}
-                    disabled={streaming && applyingBlueprintIndex !== index}
+                    loading={streaming}
+                    disabled={streaming}
                     onClick={() => handleSystemAssistantMessage(`使用第${index + 1}个创建`)}
                   >
                     使用这个创建作品
@@ -2708,7 +2933,6 @@ function GuiAssistantChat() {
 
   const renderCreationRunCard = () => {
     if (!activeCreationRun) return null
-    const runId = activeCreationRun.id || activeCreationRun.run_id
     const isRunning = ['queued', 'running'].includes(activeCreationRun.status)
     const isWaiting = ['waiting_user', 'waiting_author'].includes(activeCreationRun.status)
     const isPaused = activeCreationRun.status === 'paused'
@@ -2777,7 +3001,16 @@ function GuiAssistantChat() {
           )}
           <Button
             icon={<FolderOpenOutlined />}
-            onClick={() => navigate(`/novel-creation?session=${activeCreationRun.session_id || systemSessionId}&run=${runId}`)}
+            onClick={() => {
+              setCreationPanelOpen(true)
+              const artifact = creationArtifacts.find((item) => item.artifact === activeCreationRun.stage) || {
+                artifact: activeCreationRun.stage,
+                label: activeCreationRun.stage,
+                status: 'pending' as const,
+                revision: 0,
+              }
+              void openArtifactEditor(artifact, activeCreationRun.session_id)
+            }}
           >
             打开完整编辑器
           </Button>
@@ -2872,7 +3105,19 @@ function GuiAssistantChat() {
         source: 'author',
         expected_revision: artifact.revision,
       })
-      message.success(`${artifact.label}已确认`)
+      if (artifact.artifact === 'final_review') {
+        const applied = await apiClient.post<ApiResponse<{ project_id: string; warnings?: string[] }>>(
+          '/novel-creation/apply',
+          { session_id: systemSessionId, mode: 'auto' },
+        )
+        const projectId = applied.data.data.project_id
+        if (!projectId) throw new Error('最终审阅已确认，但正式作品没有创建成功。')
+        message.success('最终审阅已确认，小说项目已创建。')
+        await Promise.all([fetchProjects(), fetchCreationSessions()])
+        navigate(`/project/${projectId}`)
+      } else {
+        message.success(`${artifact.label}已确认`)
+      }
       await fetchCreationArtifacts()
     } catch (error: unknown) {
       message.error(error instanceof Error ? error.message : '确认失败，立项数据未改变')
@@ -2978,13 +3223,25 @@ function GuiAssistantChat() {
   const renderCreationDataPanel = () => {
     if (!systemSessionId) return null
     return (
-      <aside className={`gui-chat-creation-panel${creationPanelOpen ? ' gui-chat-creation-panel-open' : ''}`} aria-label="立项数据">
+      <aside className={`gui-chat-creation-panel${creationPanelOpen ? ' gui-chat-creation-panel-open' : ''}${expandedArtifact ? ' gui-chat-creation-panel-editor-open' : ''}`} aria-label="立项数据">
         <div className="gui-chat-creation-panel-head">
           <div>
             <Text className="gui-chat-creation-panel-kicker">CREATION DATA</Text>
             <Title level={5}>立项数据</Title>
           </div>
           <Space size={4}>
+            {expandedArtifact && (
+              <Tooltip title="退出完整编辑器，返回立项数据">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ArrowLeftOutlined />}
+                  onClick={() => void closeArtifactEditor()}
+                >
+                  返回立项数据
+                </Button>
+              </Tooltip>
+            )}
             <Tooltip title="检查引用、失效数据和对象关系">
               <Button
                 size="small"
@@ -3012,7 +3269,10 @@ function GuiAssistantChat() {
                 type="text"
                 icon={<MenuFoldOutlined />}
                 aria-label="收起立项数据"
-                onClick={() => setCreationPanelOpen(false)}
+                onClick={() => {
+                  setCreationPanelOpen(false)
+                  void closeArtifactEditor()
+                }}
               />
             </Tooltip>
           </Space>
@@ -3034,11 +3294,46 @@ function GuiAssistantChat() {
             </div>
           )}
         </div>
+        {expandedArtifact && (
+          <div className="gui-chat-creation-inline-editor">
+            <div className="gui-chat-creation-editor-intro">
+              <div>
+                <Text className="gui-chat-creation-editor-kicker">STRUCTURED MANUSCRIPT</Text>
+                <Title level={3}>{expandedArtifact.label}</Title>
+                <Paragraph>直接维护作品事实。停止输入 5 秒后自动保存，也可以在左侧聊天中让司命代为修改。</Paragraph>
+              </div>
+              <Space direction="vertical" align="end" size={8}>
+                <Tag color={creationStatusColor[expandedArtifact.status]}>{creationStatusLabel[expandedArtifact.status]}</Tag>
+                <span className={`gui-chat-creation-save-state${artifactEditorSaving ? ' is-saving' : artifactEditorDirty ? ' is-dirty' : ' is-saved'}`}>
+                  <span className="gui-chat-creation-save-dot" />
+                  {artifactEditorSaving ? '正在保存' : artifactEditorDirty ? '5 秒后自动保存' : artifactEditorSavedAt ? `已保存 ${artifactEditorSavedAt}` : '修改后自动保存'}
+                </span>
+              </Space>
+            </div>
+            {expandedArtifact.flow?.soft_dependencies?.length ? <Alert type="info" showIcon message={`可先编辑；补充 ${expandedArtifact.flow.soft_dependencies.map((item) => item.label).join('、')} 后质量会更稳定`} /> : null}
+            {artifactEditorError ? <Alert type="error" showIcon message="自动保存失败" description={artifactEditorError} /> : null}
+            <div className="gui-chat-creation-form">
+              <StructuredStageEditor
+                data={artifactEditorData}
+                onChange={(data) => {
+                  setArtifactEditorData(data)
+                  setArtifactEditorDirty(true)
+                  setArtifactEditorError(null)
+                }}
+              />
+            </div>
+          </div>
+        )}
         <div className="gui-chat-creation-artifacts">
           {creationArtifactsLoading && creationArtifacts.length === 0 ? (
             <div className="gui-chat-creation-panel-loading"><Spin size="small" /> 正在同步…</div>
           ) : creationArtifacts.map((artifact) => (
-            <section key={artifact.artifact} className={`gui-chat-creation-artifact gui-chat-creation-artifact-${artifact.status}`}>
+            <section
+              key={artifact.artifact}
+              className={`gui-chat-creation-artifact gui-chat-creation-artifact-${artifact.status}`}
+              title="双击打开完整编辑器"
+              onDoubleClick={() => void openArtifactEditor(artifact)}
+            >
               <div className="gui-chat-creation-artifact-head">
                 <Text strong ellipsis={{ tooltip: artifact.label }}>{artifact.label}</Text>
                 <Tag color={creationStatusColor[artifact.status]}>{creationStatusLabel[artifact.status]}</Tag>
@@ -3069,6 +3364,16 @@ function GuiAssistantChat() {
                 </Text>
               ) : null}
               <div className="gui-chat-creation-artifact-actions">
+                {artifact.status !== 'pending' && (
+                  <Button
+                    size="small"
+                    icon={<DatabaseOutlined />}
+                    loading={artifactDetailLoading}
+                    onClick={() => void openArtifactDetail(artifact)}
+                  >
+                    查看数据
+                  </Button>
+                )}
                 {artifact.flow?.can_confirm && (
                   <Button
                     size="small"
@@ -3114,11 +3419,6 @@ function GuiAssistantChat() {
             </section>
           ))}
         </div>
-        <div className="gui-chat-creation-panel-footer">
-          <Button block icon={<FolderOpenOutlined />} onClick={() => navigate(`/novel-creation?session=${systemSessionId}`)}>
-            打开完整编辑器
-          </Button>
-        </div>
       </aside>
     )
   }
@@ -3159,7 +3459,7 @@ function GuiAssistantChat() {
   )
 
   return (
-    <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}${systemSessionId && creationPanelOpen ? ' gui-chat-with-creation-panel' : ''}`}>
+    <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}${systemSessionId && creationPanelOpen ? ' gui-chat-with-creation-panel' : ''}${systemSessionId && creationPanelOpen && expandedArtifact ? ' gui-chat-with-creation-editor' : ''}`}>
       <aside className="gui-chat-sidebar">
         <div className="gui-chat-sidebar-head">
           {!sidebarCollapsed && (
@@ -3257,14 +3557,14 @@ function GuiAssistantChat() {
             <Select
               showSearch
               allowClear
-              value={activeProjectId}
-              onChange={setActiveProjectId}
-              options={projects.map((project) => ({ value: project.id, label: project.title }))}
+              value={activeProjectId ? `project:${activeProjectId}` : systemSessionId ? `creation:${systemSessionId}` : undefined}
+              onChange={(value) => void selectAssistantContext(value)}
+              options={assistantContextOptions}
               loading={projectsLoading}
               optionFilterProp="label"
-              placeholder="选择作品上下文"
+              placeholder="选择作品或立项上下文"
               className="gui-chat-project-select"
-              aria-label="选择作品上下文"
+              aria-label="选择作品或立项上下文"
             />
             <Popover content={runtimePanel} trigger="click" placement="bottomRight">
               <Button
@@ -3429,6 +3729,16 @@ function GuiAssistantChat() {
         </div>
       </main>
       {renderCreationDataPanel()}
+      <Modal
+        title={artifactDetail ? artifactDetail.label : '立项数据'}
+        open={Boolean(artifactDetail)}
+        onCancel={() => setArtifactDetail(null)}
+        footer={<Button onClick={() => setArtifactDetail(null)}>关闭</Button>}
+        width={880}
+      >
+        <Paragraph type="secondary">这里显示聊天正在维护的结构化事实数据；无需进入立项工作台。</Paragraph>
+        <pre className="gui-chat-artifact-detail">{JSON.stringify(artifactDetail?.data || {}, null, 2)}</pre>
+      </Modal>
       {renderSlotEditorModal()}
       <Modal
         title={`版本历史 · ${versionHistoryArtifact?.label || ''}`}

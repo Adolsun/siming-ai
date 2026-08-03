@@ -28,7 +28,7 @@ import {
   ExperimentOutlined,
   FileTextOutlined,
   LockOutlined,
-  PlayCircleOutlined,
+  RobotOutlined,
   ReloadOutlined,
   RocketOutlined,
   SaveOutlined,
@@ -110,6 +110,10 @@ function NovelCreationWizardPage() {
   const requestedRunId = searchParams.get('run')
   const requestedModel = searchParams.get('model') || undefined
   const requestedStage = searchParams.get('stage') || undefined
+  const requestedConversationId = searchParams.get('conversation') || undefined
+  const assistantReturnUrl = requestedConversationId
+    ? `/gui?creationSession=${requestedSessionId || session?.id || ''}&conversation=${requestedConversationId}`
+    : `/gui?creationSession=${requestedSessionId || session?.id || ''}`
 
   const watchedPresetId = Form.useWatch('preset_id', form)
   const activePreset = useMemo(() => catalog?.categories.find((item) => item.id === watchedPresetId), [catalog, watchedPresetId])
@@ -481,13 +485,13 @@ function NovelCreationWizardPage() {
     }
   }
 
-  const chooseConcept = async (conceptId: string, quickMode: boolean) => {
+  const confirmConceptOnly = async (conceptId: string) => {
     if (!session) return
     setBusy(true)
     try {
       const selection = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
         selected_concept_id: conceptId,
-        quick_mode: quickMode,
+        quick_mode: false,
         expected_revision: session.revision,
       })
       const constraints = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/constraints/confirm`, {
@@ -496,19 +500,18 @@ function NovelCreationWizardPage() {
         source: 'author',
         expected_revision: selection.data.data.revision,
       })
-      const conceptConfirmation = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, {
+      const confirmation = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, {
         data: { options: concepts, selected_concept_id: conceptId },
         confirm: true,
         source: 'author',
         expected_revision: constraints.data.data.revision,
       })
-      setSession(conceptConfirmation.data.data)
-      viewStage('world_style', true)
-      setBusy(false)
-      await startStageRun(quickMode ? 'all' : 'world_style', quickMode, conceptConfirmation.data.data)
+      setSession(confirmation.data.data)
+      message.success('当前创意方向已确认；不会自动生成其他数据')
     } catch (error) {
-      setBusy(false)
       message.error(errorText(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -688,6 +691,7 @@ function NovelCreationWizardPage() {
             <Paragraph>{authorLed ? '从你的原始设定出发，只补全空白，再逐步确认世界、角色与全书结构。' : '先比较创意，再逐步确认世界、角色与全书结构。'}正式作品只在最终确认时创建。</Paragraph>
           </div>
           <Space wrap>
+            {session && <Button icon={<RobotOutlined />} onClick={() => navigate(assistantReturnUrl)}>返回原对话</Button>}
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
             {saveNotice && <Tag color={saveNotice.includes('失败') ? 'warning' : 'default'}>{saveNotice}</Tag>}
             {!inWorkbench && hasModels && modelOptions.length > 1 && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="切换可用模型" style={{ minWidth: 260 }} />}
@@ -857,9 +861,9 @@ function NovelCreationWizardPage() {
               </section>
             )}
             <div className="creation-section-heading"><div><Title level={3}>{authorLed ? '检查作者方案' : '完善故事发动机'}</Title><Paragraph>{authorLed ? 'AI 只整理和补全了你的方案。继续前可手动编辑，或写明要求让 AI 定向调整。' : '这里先形成一套清晰方向。你可以继续对话调整，不需要在多套方案之间抽选。'}</Paragraph></div><Space wrap><Button onClick={() => openEditor('concepts')} disabled={busy}>编辑方案内容</Button><Button icon={<EditOutlined />} onClick={() => openRefine('concepts')} disabled={busy}>让 AI 按要求调整</Button><Button icon={<ReloadOutlined />} onClick={() => void generateConcepts('regenerate')} loading={busy}>{authorLed ? '重新整理方案' : '重新生成方向'}</Button></Space></div>
-            <div className={`creation-concept-grid ${authorLed ? 'is-author-led' : ''}`}>
-              {concepts.map((concept, index) => (
-                <Card key={concept.id} className="creation-concept-card" title={<Space><Badge count={index + 1} color="var(--ant-color-primary)" /><span>{concept.title}</span></Space>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
+            <div className={`creation-concept-grid is-single ${authorLed ? 'is-author-led' : ''}`}>
+              {concepts.map((concept) => (
+                <Card key={concept.id} className="creation-concept-card" title={<span>{concept.title}</span>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
                   <Text type="secondary">{concept.subtitle}</Text>
                   <Paragraph className="creation-logline">{concept.logline}</Paragraph>
                   <Descriptions column={1} size="small">
@@ -872,8 +876,8 @@ function NovelCreationWizardPage() {
                   <Space className="creation-differentiators" wrap>{concept.differentiators?.map((item) => <Tag color="blue" key={item}>{item}</Tag>)}</Space>
                   {concept.risks?.length > 0 && <Alert className="creation-risk" type="warning" message={concept.risks.join('；')} />}
                   <div className="creation-concept-actions">
-                    <Button icon={<PlayCircleOutlined />} onClick={() => void chooseConcept(concept.id, true)} disabled={busy}>快速生成到最终审阅</Button>
-                    <Button type="primary" onClick={() => void chooseConcept(concept.id, false)} disabled={busy}>进入完整向导</Button>
+                    <Button icon={<RobotOutlined />} onClick={() => navigate(assistantReturnUrl)} disabled={busy}>返回聊天继续调整</Button>
+                    <Button type="primary" onClick={() => void confirmConceptOnly(concept.id)} disabled={busy}>确认当前方向</Button>
                   </div>
                 </Card>
               ))}

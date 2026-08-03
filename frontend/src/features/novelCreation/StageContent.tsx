@@ -1,6 +1,7 @@
 import {
   Alert,
   Badge,
+  Button,
   Card,
   Collapse,
   Descriptions,
@@ -20,6 +21,9 @@ const { Paragraph, Text } = Typography
 const { TextArea } = Input
 
 const stageFieldLabels: Record<string, string> = {
+  brief: '创作构想', preset_id: '创作模式', theme_id: '题材方向', genre: '作品类型',
+  target_audience: '目标读者', platform: '发布平台', target_words: '目标字数', opening_chapters: '开篇细纲章数',
+  special_requirements: '特别要求', avoid: '需要避开的内容', selected_concept_id: '当前创意', options: '创意方案',
   writing_style: '正文风格', world_tone: '世界基调', story_structure: '剧情结构', pacing: '叙事节奏',
   style_rules: '文风规则', forbidden_patterns: '避雷项', worldbuilding: '世界设定', display_groups: '展示分组',
   characters: '角色', relationships: '角色关系', entries: '地点与势力', relations: '稳定关系',
@@ -80,6 +84,18 @@ function collectionItemLabel(value: unknown, index: number) {
   return String(value.title || value.name || value.client_id || value.source_title || `第 ${index + 1} 项`)
 }
 
+function blankCollectionItem(fieldKey: string): Record<string, unknown> | string {
+  if (fieldKey === 'characters') return { name: '', role_type: 'supporting', background: '', goal: '' }
+  if (fieldKey === 'relationships') return { source: '', target: '', relation_type: '', description: '' }
+  if (fieldKey === 'worldbuilding') return { title: '', dimension: 'culture', content: '' }
+  if (fieldKey === 'entries') return { title: '', description: '' }
+  if (fieldKey === 'relations') return { source_title: '', target_title: '', relation_type: '', description: '' }
+  if (fieldKey === 'volumes') return { title: '', summary: '', start_chapter: 1, end_chapter: 1 }
+  if (fieldKey === 'chapters') return { client_id: '', title: '', summary: '' }
+  if (fieldKey === 'sections') return { client_id: '', parent_client_id: '', title: '', summary: '' }
+  return ''
+}
+
 function StructuredPreviewValue({ value }: { value: unknown }) {
   if (value == null || value === '') return <Text type="secondary">未提供</Text>
   if (typeof value === 'boolean') return <span className="creation-preview-value">{value ? '是' : '否'}</span>
@@ -106,10 +122,13 @@ function StructuredValueEditor({ fieldKey, value, onChange }: { fieldKey: string
     return multiline ? <TextArea aria-label={label} value={text} rows={3} onChange={(event) => onChange(event.target.value)} /> : <Input aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} />
   }
   if (Array.isArray(value)) {
+    const addItem = () => onChange([...value, blankCollectionItem(fieldKey)])
+    if (value.length === 0 && typeof blankCollectionItem(fieldKey) === 'object') {
+      return <Button size="small" onClick={addItem}>添加一项</Button>
+    }
     const onlySimpleValues = value.every((item) => ['string', 'number', 'boolean'].includes(typeof item))
     if (onlySimpleValues) return <TextArea aria-label={label} value={value.map(String).join('\n')} rows={Math.min(6, Math.max(2, value.length + 1))} placeholder="每行一项" onChange={(event) => onChange(splitLines(event.target.value))} />
-    if (value.length === 0) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本组暂无内容，可在高级编辑中补充" />
-    return <Collapse size="small" className="creation-structured-collection" items={value.map((item, index) => ({ key: `${fieldKey}-${index}`, label: collectionItemLabel(item, index), children: <StructuredValueEditor fieldKey={`${fieldKey}_${index + 1}`} value={item} onChange={(next) => { const updated = [...value]; updated[index] = next; onChange(updated) }} /> }))} />
+    return <Space direction="vertical" size={8} style={{ width: '100%' }}><Collapse size="small" className="creation-structured-collection" items={value.map((item, index) => ({ key: `${fieldKey}-${index}`, label: collectionItemLabel(item, index), children: <StructuredValueEditor fieldKey={`${fieldKey}_${index + 1}`} value={item} onChange={(next) => { const updated = [...value]; updated[index] = next; onChange(updated) }} /> }))} /><Button size="small" onClick={addItem}>添加一项</Button></Space>
   }
   if (isRecord(value)) {
     return <div className="creation-structured-fields">{Object.entries(value).map(([key, child]) => <div className="creation-structured-field" key={key}><Text strong>{fieldLabel(key)}</Text><StructuredValueEditor fieldKey={key} value={child} onChange={(next) => onChange({ ...value, [key]: next })} /></div>)}</div>

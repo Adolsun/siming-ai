@@ -5,6 +5,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from ..core.response import ApiResponse
 from ..modules.operations.interfaces.contracts import OperationListData, OperationResponse
@@ -14,6 +15,10 @@ from ..modules.operations.interfaces.dependencies import get_operation_service
 router = APIRouter(tags=["operations"])
 
 
+class OperationAttentionReadRequest(BaseModel):
+    operation_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 @router.get("/operations", response_model=ApiResponse[OperationListData])
 def list_operations(
     active_only: bool = False,
@@ -21,6 +26,12 @@ def list_operations(
 ):
     items = get_operation_service().list(active_only=active_only, limit=limit)
     return ApiResponse.success(data={"items": items})
+
+
+@router.post("/operations/attention/read")
+def mark_operation_attention_read(payload: OperationAttentionReadRequest):
+    count = get_operation_service().mark_attention_read(payload.operation_ids)
+    return ApiResponse.success(data={"marked": count})
 
 
 @router.get("/operations/{operation_id}", response_model=ApiResponse[OperationResponse])

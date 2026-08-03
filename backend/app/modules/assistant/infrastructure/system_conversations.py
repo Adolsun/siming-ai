@@ -101,7 +101,10 @@ class SqlAlchemySystemConversationStore:
     def list(self, *, scope_type: str | None = None, scope_id: str | None = None) -> dict[str, Any]:
         query = self._session.query(SystemAssistantConversation)
         if scope_type:
-            normalized, identifier = self._normalize_scope(scope_type, scope_id)
+            normalized = scope_type.strip().lower()
+            if normalized not in {"system", "creation", "project"}:
+                raise ValueError("scope_type must be system, creation, or project")
+            identifier = (scope_id or "").strip() or None
             query = query.filter(SystemAssistantConversation.scope_type == normalized)
             if identifier:
                 query = query.filter(SystemAssistantConversation.scope_id == identifier)

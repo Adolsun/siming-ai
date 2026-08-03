@@ -370,6 +370,7 @@ class NovelCreationStageRunRequest(BaseModel):
         "worldbuilding", "character", "relationship", "location", "faction",
         "world_relation", "volume", "chapter_outline", "scene_outline",
     ] | None = None
+    entity_count: int | None = Field(default=None, ge=1, le=20)
 
     @field_validator("operation", mode="before")
     @classmethod
@@ -420,6 +421,7 @@ class NovelCreationArtifactPatchRequest(BaseModel):
     changes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
     source: str = "author"
     expected_revision: int
+    allow_incomplete: bool = False
 
 
 class NovelCreationArtifactLockRequest(BaseModel):
@@ -450,11 +452,20 @@ async def novel_creation_presets():
 
 
 @router.get("/novel-creation/sessions")
-async def list_creation_sessions(include_completed: bool = False, db: Session = Depends(get_db)):
+async def list_creation_sessions(
+    include_completed: bool = False,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+):
     sessions = novel_creation_session_store(db).sessions(
-        include_completed=include_completed,
+        include_completed=include_completed or bool(project_id),
         limit=30,
     )
+    if project_id:
+        sessions = [
+            item for item in sessions
+            if item.created_project_id == project_id or item.source_project_id == project_id
+        ]
     return ApiResponse.success(data={"sessions": [serialize_session(item, include_runs=False) for item in sessions]})
 
 
@@ -1126,7 +1137,7 @@ async def patch_creation_artifact_endpoint(
             stage,
             payload.changes,
             source=payload.source,
-            validator=_validate_stage,
+            validator=None if payload.allow_incomplete else _validate_stage,
         )
         commit_session(db)
         return ApiResponse.success(data=result, message=f"{STAGE_LABELS[stage]}已局部更新")
@@ -1281,7 +1292,44 @@ class CreationConversationCommandRequest(BaseModel):
     instruction: str | None = None
     model: str | None = None
     expected_revision: int | None = None
+    entity_type: Literal[
+        "worldbuilding", "character", "relationship", "location", "faction",
+        "world_relation", "volume", "chapter_outline", "scene_outline",
+    ] | None = None
+    entity_count: int | None = Field(default=None, ge=1, le=20)
     action: Literal["generate_artifact", "refine_artifact", "open_editor"] = "refine_artifact"
+
+    @model_validator(mode="after")
+    def validate_entity_target(self) -> "CreationConversationCommandRequest":
+        if self.entity_type and self.entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(self.stage, frozenset()):
+            raise ValueError("目标实体类型不属于当前立项对象")
+        if self.entity_type and self.action != "generate_artifact":
+            raise ValueError("新增实体只能使用 generate_artifact")
+        return self
+
+
+class CreationAgentRequest(BaseModel):
+    session_id: str
+    message: str = Field(min_length=1, max_length=1_000_000)
+    model: str | None = None
+    history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/novel-creation/agent-turn")
+async def creation_agent_turn(payload: CreationAgentRequest, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(payload.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    from ..services.novel_creation_agent import run_creation_agent
+
+    result = await run_creation_agent(
+        db,
+        session=session,
+        message=payload.message,
+        model=payload.model,
+        history=payload.history,
+    )
+    return ApiResponse.success(data=result)
 
 
 @router.post("/novel-creation/conversation-command")
@@ -1326,6 +1374,8 @@ async def creation_conversation_command(
         "model": payload.model,
         "expected_revision": int(session.revision or 0),
         "entity_id": entity_id,
+        "entity_type": payload.entity_type,
+        "entity_count": payload.entity_count,
     }
     snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
     command_key = creation_idempotency_key(
@@ -1336,7 +1386,13 @@ async def creation_conversation_command(
         input_revision=int(session.revision or 0),
         input_snapshot_hash=snapshot_hash,
     )
-    artifact_claim_key = f"{payload.stage}:entity:{entity_id}" if entity_id else payload.stage
+    artifact_claim_key = (
+        f"{payload.stage}:entity:{entity_id}"
+        if entity_id else
+        f"{payload.stage}:new:{payload.entity_type}"
+        if payload.entity_type else
+        payload.stage
+    )
     claim, replayed = claim_or_replay_creation_run(
         db,
         session_id=session.id,
@@ -1362,6 +1418,8 @@ async def creation_conversation_command(
         "summary": (
             f"已开始定向调整{candidates[0]['data'].get('name') or candidates[0]['data'].get('title')}，其他对象会保持不变。"
             if entity_id else
+            f"已开始按你的描述新增{ {'character': '角色', 'relationship': '人物关系', 'location': '地点', 'faction': '势力', 'volume': '分卷', 'chapter_outline': '章节细纲', 'scene_outline': '场景细纲', 'worldbuilding': '世界设定', 'world_relation': '世界关系'}.get(payload.entity_type, '立项对象') }，数量由本次对话要求决定，现有内容会保持不变。"
+            if payload.entity_type else
             f"已开始{STAGE_LABELS.get(payload.stage, payload.stage)}{('调整' if operation == 'refine' else '生成')}，你可以继续在对话中补充要求。"
         ),
     })

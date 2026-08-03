@@ -140,10 +140,11 @@ describe('GlobalOperationCenter', () => {
     expect(screen.queryByText('正在等待下一条真实活动，不估算完成百分比')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '全部标为已读' }))
-    expect(screen.getByRole('button', { name: /全局任务中心，0 项未读提醒/ })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /全局任务中心，0 项未读提醒/ })).toBeInTheDocument())
     expect(screen.getByRole('button', { name: '全部标为已读' })).toBeDisabled()
     expect(screen.getByRole('heading', { name: '待你处理' })).toBeInTheDocument()
-    expect(localStorage.getItem('siming.operation-center.read-attention.v1')).toContain('operation-1')
+    expect(api.post).toHaveBeenCalledWith('/operations/attention/read', { operation_ids: ['operation-1'] })
+    expect(localStorage.getItem('siming.operation-center.read-attention.v1')).toBeNull()
   })
 
   it('groups repeated attempts for the same source under one current task', async () => {

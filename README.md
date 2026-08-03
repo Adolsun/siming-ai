@@ -21,7 +21,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **3.1.11** 将创意方向收敛为一套可持续对话调整的方案；聊天单条消息支持最多 100 万字符，超过 2 万字符的立项资料自动进入持久化分块导入；任务时间按用户设备时区显示；模型配置可复用已保存密钥，并由司命直接运行 OpenCode CLI 获取可用模型。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **3.1.13 测试版** 将立项数据纳入作品上下文：多个对话可共享同一份立项，旧对话恢复自己的立项数据，正式作品可继续编辑来源立项；未选择上下文时首次发言会自动新建立项。AI 会先读取现有结构化数据，边追问边增量补充，而不是采访结束后一次性生成。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 

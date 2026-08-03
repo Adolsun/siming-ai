@@ -7,6 +7,7 @@ import { CheckOutlined, CloseCircleOutlined, ClockCircleOutlined, PauseOutlined,
 import { PersistentOutcome } from '../../../components/interaction'
 import {
   operationKeys,
+  markOperationAttentionRead,
   toInteractionProjection,
   updateOperationInCache,
   useOperationAction,
@@ -19,7 +20,6 @@ const { Paragraph, Text, Title } = Typography
 
 const NON_TERMINAL_STATUSES = new Set<OperationRun['status']>(['queued', 'running', 'waiting_user', 'paused'])
 const COMPUTING_STATUSES = new Set<OperationRun['status']>(['queued', 'running'])
-const READ_ATTENTION_STORAGE_KEY = 'siming.operation-center.read-attention.v1'
 
 export interface OperationAttemptGroup {
   latest: OperationRun
@@ -75,15 +75,6 @@ export function activityTimestamp(value?: string) {
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
     `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
   ].join(' ')
-}
-
-function loadReadAttentionIds() {
-  try {
-    const value = JSON.parse(localStorage.getItem(READ_ATTENTION_STORAGE_KEY) || '[]')
-    return new Set<string>(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [])
-  } catch {
-    return new Set<string>()
-  }
 }
 
 function hoursSince(value?: string | null) {
@@ -206,9 +197,9 @@ export default function GlobalOperationCenter() {
     variables: actionVariables,
   } = useOperationAction(30)
   const [open, setOpen] = useState(false)
-  const [readAttentionIds, setReadAttentionIds] = useState<Set<string>>(loadReadAttentionIds)
   const [navTarget, setNavTarget] = useState<HTMLElement | null>(null)
   const [streamDisconnected, setStreamDisconnected] = useState(false)
+  const [locallyReadOperationIds, setLocallyReadOperationIds] = useState<Set<string>>(() => new Set())
   const streamRef = useRef<EventSource | null>(null)
   const operations = useMemo(() => operationItems || [], [operationItems])
   const actionId = actionPending ? actionVariables?.operationId : undefined
@@ -233,8 +224,8 @@ export default function GlobalOperationCenter() {
     [groupedOperations],
   )
   const unreadAttentionOperations = useMemo(
-    () => attentionOperations.filter((group) => !readAttentionIds.has(group.latest.id)),
-    [attentionOperations, readAttentionIds],
+    () => attentionOperations.filter((group) => !group.latest.attention_read_at && !locallyReadOperationIds.has(group.latest.id)),
+    [attentionOperations, locallyReadOperationIds],
   )
   const runningOperations = useMemo(
     () => groupedOperations.filter((group) => COMPUTING_STATUSES.has(group.latest.status) && !operationNeedsAttention(group.latest)),
@@ -292,15 +283,24 @@ export default function GlobalOperationCenter() {
     setOpen(false)
   }, [navigate])
 
-  const markAllAttentionRead = useCallback(() => {
-    setReadAttentionIds((current) => {
-      const next = new Set(current)
-      attentionOperations.forEach((group) => next.add(group.latest.id))
-      const persisted = Array.from(next).slice(-200)
-      localStorage.setItem(READ_ATTENTION_STORAGE_KEY, JSON.stringify(persisted))
-      return new Set(persisted)
-    })
-  }, [attentionOperations])
+  const markAllAttentionRead = useCallback(async () => {
+    const ids = unreadAttentionOperations.map((group) => group.latest.id)
+    if (!ids.length) return
+    const readAt = new Date().toISOString()
+    setLocallyReadOperationIds((current) => new Set([...current, ...ids]))
+    queryClient.setQueryData<OperationRun[]>(operationKeys.list(30), (current) => (
+      current?.map((operation) => ids.includes(operation.id)
+        ? { ...operation, attention_read_at: readAt }
+        : operation)
+    ))
+    try {
+      await markOperationAttentionRead(ids)
+      await refetchOperations()
+    } catch (error) {
+      await refetchOperations()
+      message.error(error instanceof Error ? error.message : '标记已读失败')
+    }
+  }, [queryClient, refetchOperations, unreadAttentionOperations])
 
   const trigger = (
     <Tooltip title="查看待处理、运行中和最近任务">
@@ -350,7 +350,7 @@ export default function GlobalOperationCenter() {
                 icon={<CheckOutlined />}
                 aria-label="全部标为已读"
                 disabled={unreadAttentionOperations.length === 0}
-                onClick={markAllAttentionRead}
+                onClick={() => void markAllAttentionRead()}
               >
                 全部标为已读
               </Button>

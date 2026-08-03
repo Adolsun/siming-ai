@@ -19,6 +19,7 @@ import {
   CloudDownloadOutlined,
   DeleteOutlined,
   ExperimentOutlined,
+  FolderOpenOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
   ThunderboltOutlined,
@@ -52,7 +53,7 @@ interface Props {
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
   const [customModel, setCustomModel] = useState({
-    modelKey: '', displayName: '', sourceUrl: '', filePath: '', contextLength: 32768,
+    modelKey: '', displayName: '', sourceUrl: '', filePath: '', contextLength: 262144,
   })
   const { setGlobalModel } = useGlobalModelActions()
   const usageEnabled = catalog?.usage_enabled !== false
@@ -72,6 +73,44 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     try {
       await apiClient.put('/local-models/root', { path: modelRoot })
       message.success('模型目录已更新')
+      await onRefresh()
+    } catch (error: any) {
+      message.error(error.message)
+    }
+  }
+
+  const pickModelRoot = async () => {
+    try {
+      const response = await apiClient.post<{ data: { path?: string | null; cancelled?: boolean } }>('/local-models/root/pick')
+      const path = response.data.data.path
+      if (path) setModelRoot(path)
+    } catch (error: any) {
+      message.error(error.message)
+    }
+  }
+
+  const pickCustomModel = async () => {
+    try {
+      const response = await apiClient.post<{ data: { path?: string | null; cancelled?: boolean } }>('/local-models/custom/pick')
+      const path = response.data.data.path
+      if (path) {
+        const filename = path.split(/[\\/]/).pop() || ''
+        setCustomModel((current) => ({
+          ...current,
+          filePath: path,
+          modelKey: current.modelKey || filename.replace(/\.gguf$/i, '').replace(/[^A-Za-z0-9_.-]+/g, '-'),
+          displayName: current.displayName || filename.replace(/\.gguf$/i, ''),
+        }))
+      }
+    } catch (error: any) {
+      message.error(error.message)
+    }
+  }
+
+  const resumeDownload = async (taskId: string) => {
+    try {
+      await apiClient.post(`/local-models/downloads/${taskId}/resume`)
+      message.success('已从保存的进度继续下载')
       await onRefresh()
     } catch (error: any) {
       message.error(error.message)
@@ -222,6 +261,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
       <Card size="small" title="模型存储目录">
         <Space.Compact style={{ width: '100%' }}>
           <Input value={modelRoot} onChange={(event) => setModelRoot(event.target.value)} />
+          <Button icon={<FolderOpenOutlined />} onClick={pickModelRoot}>选择文件夹</Button>
           <Button onClick={saveModelRoot}>保存</Button>
         </Space.Compact>
       </Card>
@@ -276,6 +316,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
               value={customModel.filePath}
               onChange={(event) => setCustomModel((current) => ({ ...current, filePath: event.target.value }))}
             />
+            <Button icon={<FolderOpenOutlined />} onClick={pickCustomModel}>选择 GGUF</Button>
             <Button onClick={importCustomModel}>登记本机文件</Button>
           </Space.Compact>
         </Space>
@@ -297,7 +338,10 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                       {formatBytes(task.downloaded_bytes)} / {formatBytes(task.total_bytes)}
                     </Text>
                   </Space>
-                  <Progress percent={percent} status={task.status === 'failed' ? 'exception' : 'active'} />
+                  <Space.Compact style={{ width: '100%' }}>
+                    <Progress percent={percent} status={task.status === 'failed' ? 'exception' : 'active'} />
+                    <Button onClick={() => resumeDownload(task.id)}>继续下载</Button>
+                  </Space.Compact>
                 </div>
               )
             })}

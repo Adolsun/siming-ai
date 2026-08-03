@@ -103,7 +103,7 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.getByRole('button', { name: '免费开始' })).toBeInTheDocument()
   })
 
-  it('restores a concept session and offers both guided and quick tracks', async () => {
+  it('restores a single concept as a direct result without candidate-track actions', async () => {
     const session = {
       id: 'session-1', status: 'reviewing', revision: 2, current_stage: 'concepts',
       draft: {
@@ -120,8 +120,9 @@ describe('NovelCreationWizardPage', () => {
     })
     renderPage('/novel-creation?session=session-1')
     expect(await screen.findByText('灰港遗忘症')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '进入完整向导' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /快速生成到最终审阅/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认当前方向' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /返回聊天继续调整/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /快速生成到最终审阅/ })).not.toBeInTheDocument()
   })
 
   it('reconnects to the active lightweight-concept run after a handoff', async () => {
@@ -173,7 +174,7 @@ describe('NovelCreationWizardPage', () => {
     expect(closeSource).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps a newly started stage run authoritative over an old run URL', async () => {
+  it('confirms a concept without automatically starting the next stage', async () => {
     const user = userEvent.setup()
     const oldRun = {
       id: 'run-old', session_id: 'session-1', stage: 'concepts', status: 'completed',
@@ -212,12 +213,14 @@ describe('NovelCreationWizardPage', () => {
     })
 
     renderPage('/novel-creation?session=session-1&run=run-old')
-    await user.click(await screen.findByRole('button', { name: '进入完整向导' }))
+    await user.click(await screen.findByRole('button', { name: '确认当前方向' }))
 
-    await waitFor(() => expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-new/stream'))
-    expect(screen.getByRole('button', { name: /取消任务/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: '新建立项' })).toBeDisabled()
-    expect(screen.queryByText('旧创意任务已完成')).not.toBeInTheDocument()
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      '/novel-creation/sessions/session-1/stages/concepts/confirm',
+      expect.objectContaining({ confirm: true }),
+    ))
+    expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.anything())
+    expect(eventSource).not.toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-new/stream')
   })
 
   it('finalizes a run from REST when the SSE connection closes after completion', async () => {
@@ -435,7 +438,7 @@ describe('NovelCreationWizardPage', () => {
     expect(mockPost).not.toHaveBeenCalled()
   })
 
-  it('starts only the first stage when the author chooses the guided track', async () => {
+  it('does not bulk-generate later artifacts after confirming the single direction', async () => {
     const session = {
       id: 'session-1', status: 'reviewing', revision: 2, current_stage: 'world_style',
       draft: {
@@ -461,15 +464,15 @@ describe('NovelCreationWizardPage', () => {
 
     const user = userEvent.setup()
     renderPage('/novel-creation?session=session-1')
-    await user.click(await screen.findByRole('button', { name: '进入完整向导' }))
+    await user.click(await screen.findByRole('button', { name: '确认当前方向' }))
 
     await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
-        stage: 'world_style',
-        auto_confirm: false,
-        expected_revision: 2,
-      }))
+      expect(mockPost).toHaveBeenCalledWith(
+        '/novel-creation/sessions/session-1/stages/concepts/confirm',
+        expect.objectContaining({ confirm: true }),
+      )
     })
+    expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.anything())
   })
 
   it('keeps local form text and retries against the latest revision after a conflict', async () => {

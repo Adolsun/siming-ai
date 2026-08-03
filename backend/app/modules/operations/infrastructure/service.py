@@ -11,7 +11,7 @@ from app.modules.operations.application.ports import OperationServicePort
 from app.modules.operations.domain.state import ACTIVE_STATUSES, TERMINAL_STATUSES
 
 from .models import OperationRun
-from .runtime import invoke_operation_action, serialize_operation, update_operation
+from .runtime import invoke_operation_action, serialize_operation, update_operation, utcnow
 
 
 class SqlAlchemyOperationService(OperationServicePort):
@@ -62,6 +62,18 @@ class SqlAlchemyOperationService(OperationServicePort):
             )
             uow.commit()
             return True
+
+    def mark_attention_read(self, operation_ids: list[str]) -> int:
+        identifiers = list(dict.fromkeys(item for item in operation_ids if item))[:100]
+        if not identifiers:
+            return 0
+        with SqlAlchemyUnitOfWork(SessionLocal) as uow:
+            rows = uow.session.query(OperationRun).filter(OperationRun.id.in_(identifiers)).all()
+            read_at = utcnow()
+            for operation in rows:
+                operation.attention_read_at = read_at
+            uow.commit()
+            return len(rows)
 
     async def stream(
         self,

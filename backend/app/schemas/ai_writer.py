@@ -14,6 +14,10 @@ class WorkspaceAssistantRequest(BaseModel):
         None,
         description="Canonical scoped conversation ID used to reuse the internal execution thread",
     )
+    creation_session_id: Optional[str] = Field(
+        None,
+        description="Creation data linked to this project and available to the assistant as structured context",
+    )
     selected_outline_node_id: Optional[str] = None
     selected_character_id: Optional[str] = None
     selected_text: Optional[str] = Field(None, description="User-selected text in the editor")

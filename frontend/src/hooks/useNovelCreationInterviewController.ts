@@ -195,7 +195,10 @@ export function useNovelCreationInterviewController({
   modelSource?: InterviewModelSource
   navigate?: NavigateFunction
 }) {
-  const requestedModel = modelSource === 'conversation_override' ? model : undefined
+  // Pin the effective model for the whole interview and its first concept run.
+  // A global default is just as valid as a per-conversation override; omitting
+  // it made the first run fail while a manual retry succeeded.
+  const requestedModel = model
   const [state, setState] = useState<NovelCreationInterviewState>({
     userBrief: '',
     questionHistory: [],

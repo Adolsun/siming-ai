@@ -362,6 +362,13 @@
   justify-content: center;
 }
 
+.creation-concept-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 1120px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
 .creation-concept-card {
   border-radius: 8px;
 }

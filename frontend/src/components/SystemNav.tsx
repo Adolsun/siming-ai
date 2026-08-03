@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Button, Space, Tooltip, Typography } from 'antd'
-import { BookOutlined, HomeOutlined, PlusOutlined, RocketOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
+import { BookOutlined, ExperimentOutlined, HomeOutlined, PlusOutlined, RocketOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 import { useGatewayRuntime } from './GatewayRuntimeContext'
 
@@ -8,7 +8,7 @@ const { Text } = Typography
 
 interface SystemNavProps {
   /** Highlight the current page */
-  current?: 'dashboard' | 'creation' | 'assistant' | 'getting-started' | 'settings' | 'external-agent'
+  current?: 'dashboard' | 'creation' | 'assistant' | 'getting-started' | 'settings' | 'external-agent' | 'models'
 }
 
 /**
@@ -27,6 +27,7 @@ function SystemNav({ current }: SystemNavProps) {
     if (location.pathname === '/getting-started') return 'getting-started'
     if (location.pathname === '/settings') return 'settings'
     if (location.pathname === '/external-agent') return 'external-agent'
+    if (location.pathname === '/models') return 'models'
     return ''
   })()
 
@@ -35,6 +36,7 @@ function SystemNav({ current }: SystemNavProps) {
     { key: 'creation', label: '新书立项', icon: <PlusOutlined />, path: '/novel-creation' },
     { key: 'assistant', label: 'AI 助手', icon: <RobotOutlined />, path: '/gui' },
     { key: 'getting-started', label: '快速开始', icon: <RocketOutlined />, path: '/getting-started' },
+    { key: 'models', label: '模型与训练', icon: <ExperimentOutlined />, path: '/models' },
   ].filter((item) => !headless || !['assistant', 'getting-started'].includes(item.key))
 
   return (

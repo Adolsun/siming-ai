@@ -669,11 +669,9 @@ def patch_creation_artifact(
 ) -> dict[str, Any]:
     """Atomically apply validated, lock-aware operations to one artifact."""
     artifact = serialize_creation_artifact(session, stage)
-    if not isinstance(artifact.get("data"), dict):
-        raise ValueError("当前立项数据尚未生成，不能执行局部修改")
     if not changes:
         raise ValueError("changes must contain at least one patch operation")
-    document = deepcopy(artifact["data"])
+    document = deepcopy(artifact["data"]) if isinstance(artifact.get("data"), dict) else {}
     locked_paths = [str(item) for item in artifact.get("locked_paths") or []]
     summary: list[dict[str, Any]] = []
     for change in changes:

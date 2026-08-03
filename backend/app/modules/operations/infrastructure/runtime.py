@@ -228,6 +228,12 @@ def update_operation(
     activity: bool = False,
 ) -> OperationRun:
     now = utcnow()
+    was_attention = (
+        operation.status == "waiting_user"
+        or operation.health_status in {"stalled", "disconnected"}
+        or (operation.status == "failed" and operation.can_retry)
+    )
+    previous_attention = _copy_dict(operation.attention_json)
     if status:
         operation.status = project_lifecycle_status(status)
     if health_status in HEALTH_VALUES:
@@ -252,6 +258,16 @@ def update_operation(
         operation.attention_json = _copy_dict(attention)
     if result is not None or outcome is not None:
         operation.result_json = _result_with_outcome(result, outcome)
+    needs_attention = (
+        operation.status == "waiting_user"
+        or operation.health_status in {"stalled", "disconnected"}
+        or (operation.status == "failed" and operation.can_retry)
+    )
+    if needs_attention and (
+        not was_attention
+        or (attention is not None and _copy_dict(attention) != previous_attention)
+    ):
+        operation.attention_read_at = None
     operation.heartbeat_at = now
     operation.updated_at = now
     health_only_events = {"heartbeat", "quiet", "suspected_stall", "stalled", "disconnected"}
@@ -506,6 +522,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "health_status": _derived_health(operation, now),
         "outcome": outcome,
         "attention": attention,
+        "attention_read_at": _utc_iso(operation.attention_read_at),
         "result": public_result,
         "result_summary": (result or {}).get("summary")
         or (

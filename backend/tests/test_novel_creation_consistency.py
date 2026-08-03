@@ -70,6 +70,48 @@ def test_entity_generation_replaces_only_the_selected_row():
     assert summary["preserved_entity_count"] == 1
 
 
+def test_entity_generation_can_append_several_rows_without_rewriting_existing_data():
+    baseline = {"characters": [{"name": "主角", "goal": "守城"}], "relationships": []}
+    generated = {
+        "characters": [
+            {"name": "主角", "goal": "被模型改写但不应采用"},
+            {"name": "谋士", "goal": "寻找旧主"},
+            {"name": "刺客", "goal": "偿还人情"},
+        ],
+        "relationships": [],
+    }
+    context = SimpleNamespace(
+        operation="generate",
+        working_draft={},
+        entity_target={"entity_type": "character", "mode": "new", "count": 2},
+    )
+
+    merged, summary = _merge_entity_generation(context, "characters", baseline, generated)
+
+    assert merged["characters"] == [
+        {"name": "主角", "goal": "守城"},
+        {"name": "谋士", "goal": "寻找旧主"},
+        {"name": "刺客", "goal": "偿还人情"},
+    ]
+    assert summary["created_entity_count"] == 2
+    assert summary["preserved_entity_count"] == 1
+
+
+def test_entity_generation_uses_all_model_selected_additions_when_count_is_unspecified():
+    baseline = {"characters": [{"name": "主角"}], "relationships": []}
+    generated = {"characters": [{"name": "主角"}, {"name": "同伴甲"}, {"name": "同伴乙"}], "relationships": []}
+    context = SimpleNamespace(
+        operation="generate",
+        working_draft={},
+        entity_target={"entity_type": "character", "mode": "new", "count": None},
+    )
+
+    merged, summary = _merge_entity_generation(context, "characters", baseline, generated)
+
+    assert [item["name"] for item in merged["characters"]] == ["主角", "同伴甲", "同伴乙"]
+    assert summary["created_entity_count"] == 2
+
+
 def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
     db = _db()
     session = _ready_session(db)

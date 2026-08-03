@@ -45,7 +45,7 @@ export default function TrainingPanel({
   const [jobForm] = Form.useForm()
 
   const trainableModels = useMemo(
-    () => (catalog?.items || []).filter((item) => item.model_key !== 'qwen3-14b-q4' || (hardware?.vram_gb || 0) >= 24),
+    () => (catalog?.items || []).filter((item) => item.model_key !== 'qwen3.5-27b-q4' || (hardware?.vram_gb || 0) >= 24),
     [catalog, hardware],
   )
 

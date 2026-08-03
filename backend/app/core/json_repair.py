@@ -10,6 +10,10 @@ from ..modules.model_runtime.application.execution import model_executor as LLMG
 
 def strip_json_fences(text: str) -> str:
     value = (text or "").strip().lstrip("﻿")
+    # Some reasoning models expose their private reasoning as tagged text
+    # before the final answer. Braces inside that section must not become the
+    # start of the JSON candidate.
+    value = re.sub(r"<(?:think|thinking|analysis)>[\s\S]*?</(?:think|thinking|analysis)>", "", value, flags=re.IGNORECASE).strip()
     for _ in range(2):
         if value.startswith("```json"):
             value = value[7:]
@@ -118,20 +122,43 @@ def parse_json_object_detailed(text: str) -> tuple[Optional[dict], Optional[str]
     cleaned = strip_json_fences(text)
 
     def _try_parse(candidate_text: str) -> Optional[dict]:
-        start = candidate_text.find("{")
-        if start < 0:
-            return None
-        for end_offset in range(len(candidate_text), start + 1, -1):
-            end = candidate_text.rfind("}", start, end_offset)
-            if end < 0:
+        starts: list[int] = []
+        depth = 0
+        in_string = False
+        escape = False
+        for index, char in enumerate(candidate_text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
                 continue
-            candidate = candidate_text[start:end + 1]
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                if depth == 0:
+                    starts.append(index)
+                depth += 1
+            elif char == "}" and depth > 0:
+                depth -= 1
+        if not starts:
+            return None
+        # Decode every possible object start and keep the largest valid
+        # object. This skips prose/reasoning braces while preferring the final
+        # top-level payload over nested objects inside it.
+        decoder = json.JSONDecoder(strict=False)
+        decoded: list[tuple[int, dict]] = []
+        for start in starts:
             try:
-                parsed = json.loads(candidate, strict=False)
+                parsed, end = decoder.raw_decode(candidate_text[start:])
                 if isinstance(parsed, dict):
-                    return parsed
+                    decoded.append((end, parsed))
             except (json.JSONDecodeError, ValueError):
                 continue
+        if decoded:
+            return max(decoded, key=lambda item: item[0])[1]
         return None
 
     parsed = _try_parse(cleaned)
