@@ -3831,7 +3831,7 @@ function GuiAssistantChat() {
                   ['characters', '角色与关系'],
                   ['locations', '地点与势力'],
                   ['macro_outline', '主线与卷纲'],
-                  ['opening_outline', '开篇细纲（需至少15章摘要）'],
+                  ['opening_outline', '开篇细纲（需至少3章摘要）'],
                 ].filter(([value]) => activeMaterialImport?.preview?.available_artifacts?.includes(value)).map(([value, label]) => ({
                   value,
                   label: `${label} · ${activeMaterialImport?.preview?.artifact_counts?.[value] || 0} 项`,

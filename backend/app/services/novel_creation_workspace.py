@@ -14,6 +14,8 @@ from typing import Any
 from app.database.models import NovelCreationSession
 from app.services.novel_creation_contract import (
     IMPACT_DEPENDENCIES,
+    LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
+    OPENING_OUTLINE_CHAPTER_COUNT,
     SCHEMA_VERSION,
     SOFT_DEPENDENCIES,
     STAGE_LABELS,
@@ -183,7 +185,7 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
         "platform": _text(values.get("platform") or session.platform),
         "target_words": int(values.get("target_words") or 600000),
         "target_chapters": int(values.get("target_chapters") or 240),
-        "opening_chapters": 15,
+        "opening_chapters": OPENING_OUTLINE_CHAPTER_COUNT,
         "world_tone": _text(values.get("world_tone") or defaults.get("world_tone")),
         "story_structure": _text(values.get("story_structure") or defaults.get("story_structure")),
         "pacing": _text(values.get("pacing") or defaults.get("pacing")),
@@ -204,6 +206,16 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
             if key in form:
                 merged[key] = deepcopy(form[key])
         form = merged
+    existing_opening = _dict(_dict(existing.get("stages")).get("opening_outline")).get("data")
+    existing_opening_chapters = _list(_dict(existing_opening).get("chapters"))
+    # Unstarted drafts move to the new lightweight three-chapter default. A
+    # confirmed/generated historical 15-chapter window keeps its own target so
+    # that users can still review or edit it after upgrading.
+    form["opening_chapters"] = (
+        LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+        if len(existing_opening_chapters) == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+        else OPENING_OUTLINE_CHAPTER_COUNT
+    )
     stages = _dict(existing.get("stages"))
     for stage in STAGE_ORDER:
         stages.setdefault(stage, {"status": "pending", "data": None, "updated_at": None})
@@ -1035,6 +1047,16 @@ def _chapter_title(number: int, value: Any) -> str:
     return f"第{number}章 {title}"
 
 
+def _opening_outline_chapter_count(form: dict[str, Any]) -> int:
+    try:
+        chapter_count = int(form.get("opening_chapters") or 0)
+    except (TypeError, ValueError):
+        chapter_count = 0
+    if chapter_count == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT:
+        return LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+    return OPENING_OUTLINE_CHAPTER_COUNT
+
+
 def _opening_outline(blueprint: dict[str, Any], form: dict[str, Any]) -> dict[str, Any]:
     raw_nodes = [item for item in _list(blueprint.get("outline")) if isinstance(item, dict)]
     chapter_sources = [item for item in raw_nodes if _text(item.get("node_type"), "chapter") == "chapter"]
@@ -1044,7 +1066,8 @@ def _opening_outline(blueprint: dict[str, Any], form: dict[str, Any]) -> dict[st
     location = _text(protagonist.get("current_location"), "故事起点")
     chapters: list[dict[str, Any]] = []
     sections: list[dict[str, Any]] = []
-    for number in range(1, 16):
+    opening_chapter_count = _opening_outline_chapter_count(form)
+    for number in range(1, opening_chapter_count + 1):
         source = chapter_sources[number - 1] if number <= len(chapter_sources) else {}
         summary = _text(source.get("summary") or source.get("planned_summary"), f"主角围绕“{core_conflict}”采取新的行动，并承担由此产生的后果。")
         chapter_id = f"chapter-{number:02d}"
@@ -1087,7 +1110,7 @@ def _opening_outline(blueprint: dict[str, Any], form: dict[str, Any]) -> dict[st
                     "unresolved_actions": ["追踪本场景产生的新问题"],
                 },
             })
-    return {"opening_chapter_count": 15, "chapters": chapters, "sections": sections, "section_rule": "每章3个场景事件，允许作者调整为2至6个"}
+    return {"opening_chapter_count": opening_chapter_count, "chapters": chapters, "sections": sections, "section_rule": "每章3个场景事件，允许作者调整为2至6个"}
 
 
 def derive_stage(
@@ -1185,8 +1208,9 @@ def derive_stage(
         status = _dict(stages.get(required_stage)).get("status")
         if status != "confirmed":
             blocking.append(f"{STAGE_LABELS[required_stage]}尚未确认或需要重新生成")
-    if len(opening.get("chapters", [])) != 15:
-        blocking.append("前15章细纲不完整")
+    opening_chapter_count = _opening_outline_chapter_count(form)
+    if len(opening.get("chapters", [])) != opening_chapter_count:
+        blocking.append(f"前{opening_chapter_count}章细纲不完整")
     section_counts: dict[str, int] = {}
     for section in opening.get("sections", []):
         parent = _text(section.get("parent_client_id"))

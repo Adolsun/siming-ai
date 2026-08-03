@@ -28,6 +28,7 @@ from app.modules.model_runtime.application.execution import model_executor as LL
 from app.modules.operations.infrastructure.models import OperationRun
 from app.services.content_store import content_root
 from app.services.novel_creation_authoring import _validate_stage
+from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
 from app.services.operation_runtime import (
     activate_operation,
@@ -635,8 +636,8 @@ def _artifact_payload(artifact: str, candidates: dict[str, Any], import_run: Nov
         summary = "；".join(_text(row.get("summary")) for row in volumes if _text(row.get("summary")))[:3000]
         return {"story_overview": summary or "按导入资料整理", "core_conflict": "待作者补充", "ending_direction": "待作者补充", "target_chapters": previous_end, "volumes": volumes, "stage_plan": [], "_import_provenance": _source_from(rows, import_run)}
     if artifact == "opening_outline":
-        rows = [row for row in candidates.get("chapters", []) if isinstance(row, dict) and _text(row.get("title"))][:15]
-        if len(rows) < 15:
+        rows = [row for row in candidates.get("chapters", []) if isinstance(row, dict) and _text(row.get("title"))][:OPENING_OUTLINE_CHAPTER_COUNT]
+        if len(rows) < OPENING_OUTLINE_CHAPTER_COUNT:
             return None
         chapters: list[dict[str, Any]] = []
         sections: list[dict[str, Any]] = []
@@ -651,7 +652,7 @@ def _artifact_payload(artifact: str, candidates: dict[str, Any], import_run: Nov
                     "title": f"{title}·场景{scene_number}", "summary": summary,
                     "metadata": {"scene_number": scene_number, "purpose": "按导入摘要拆分，待作者校验", "location": "待作者补充", "timeline": "待作者补充", "pov_character": "待作者补充", "characters": [], "entry_state": "待作者补充", "exit_state": "待作者补充", "emotional_residue": "待作者补充", "unresolved_actions": []},
                 })
-        return {"chapters": chapters, "sections": sections, "_import_provenance": _source_from(rows, import_run)}
+        return {"opening_chapter_count": OPENING_OUTLINE_CHAPTER_COUNT, "chapters": chapters, "sections": sections, "_import_provenance": _source_from(rows, import_run)}
     return None
 
 

@@ -481,7 +481,7 @@ function DashboardPage() {
         <div className="dashboard-empty siming-surface">
           <AuthorEmptyState
             image={<FolderOpenOutlined className="dashboard-empty-icon" />}
-            description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。'}
+            description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 3 章细纲。'}
             actionLabel={searchKeyword ? undefined : '开始新书立项'}
             onAction={searchKeyword ? undefined : openNovelCreation}
           />

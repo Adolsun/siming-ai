@@ -125,7 +125,7 @@ const creationPresets = {
   stage_order: ['constraints', 'concepts', 'world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review'],
   stage_labels: {
     constraints: '创作约束', concepts: '创意方向', world_style: '文风与世界观', characters: '角色与关系',
-    locations: '地点与势力', macro_outline: '全书卷纲', opening_outline: '前15章细纲', final_review: '最终审阅',
+    locations: '地点与势力', macro_outline: '全书卷纲', opening_outline: '前3章细纲', final_review: '最终审阅',
   },
 }
 
@@ -190,8 +190,8 @@ const authorWorkbenchSession = {
       characters: { stage: 'characters', label: '角色与关系', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'world_style', label: '文风与世界观', reason: '等待确认' }], actions: [], next_stage: 'locations' },
       locations: { stage: 'locations', label: '地点与势力', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'characters', label: '角色与关系', reason: '等待确认' }], actions: [], next_stage: 'macro_outline' },
       macro_outline: { stage: 'macro_outline', label: '全书卷纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'locations', label: '地点与势力', reason: '等待确认' }], actions: [], next_stage: 'opening_outline' },
-      opening_outline: { stage: 'opening_outline', label: '前15章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书卷纲', reason: '等待确认' }], actions: [], next_stage: 'final_review' },
-      final_review: { stage: 'final_review', label: '最终审阅', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '前15章细纲', reason: '等待确认' }], actions: [] },
+      opening_outline: { stage: 'opening_outline', label: '前3章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书卷纲', reason: '等待确认' }], actions: [], next_stage: 'final_review' },
+      final_review: { stage: 'final_review', label: '最终审阅', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'opening_outline', label: '前3章细纲', reason: '等待确认' }], actions: [] },
     },
   },
   draft: {
@@ -719,7 +719,7 @@ for (const viewport of creationViewports) {
     await expect(page.getByText('导入预览 · 仙侠悬疑八卷大纲.docx')).toBeVisible()
     await expect(page.getByText(/已处理 5\/5 个分块/)).toBeVisible()
     await expect(page.getByText(/文风与世界观 · 6 项/)).toBeVisible()
-    await expect(page.getByText(/开篇细纲（需至少15章摘要） · 146 项/)).toBeVisible()
+    await expect(page.getByText(/开篇细纲（需至少3章摘要） · 146 项/)).toBeVisible()
     await expect(page.getByText('发现 3 处可能冲突')).toBeVisible()
     await expect(page.getByRole('button', { name: '应用所选数据' })).toBeEnabled()
     await expectViewportSafe(page)

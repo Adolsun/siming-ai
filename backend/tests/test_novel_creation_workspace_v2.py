@@ -18,6 +18,11 @@ from app.database.models import (
     WorldbuildingRelation,
 )
 from app.database.session import Base
+from app.services.novel_creation_authoring import _stage_contract
+from app.services.novel_creation_contract import (
+    LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
+    OPENING_OUTLINE_CHAPTER_COUNT,
+)
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
     attach_concepts,
@@ -129,11 +134,15 @@ def test_v2_draft_migrates_to_v3_as_exploration_without_losing_content():
     assert draft["form"]["brief"] == "旧版悬疑草稿"
 
 
-def test_opening_outline_has_fifteen_chapters_and_two_to_six_sections_each():
+def test_opening_outline_contract_defaults_to_three_chapters():
+    assert "chapters 恰好3章" in _stage_contract("opening_outline")
+
+
+def test_opening_outline_has_three_chapters_and_two_to_six_sections_each():
     db = _db()
     session = _ready_session(db)
     opening = session.draft_json["stages"]["opening_outline"]["data"]
-    assert len(opening["chapters"]) == 15
+    assert len(opening["chapters"]) == OPENING_OUTLINE_CHAPTER_COUNT
     counts = {chapter["client_id"]: 0 for chapter in opening["chapters"]}
     for section in opening["sections"]:
         counts[section["parent_client_id"]] += 1
@@ -142,6 +151,24 @@ def test_opening_outline_has_fifteen_chapters_and_two_to_six_sections_each():
             "characters", "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
         }
     assert all(2 <= count <= 6 for count in counts.values())
+
+
+def test_existing_fifteen_chapter_opening_outline_remains_usable_after_upgrade():
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    draft["form"]["opening_chapters"] = LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+    legacy_opening = derive_stage(session, "opening_outline", draft)
+    draft["stages"]["opening_outline"]["data"] = legacy_opening
+    session.draft_json = draft
+
+    migrated = initialize_session_draft(session)
+    final = derive_stage(session, "final_review", migrated)
+
+    assert migrated["form"]["opening_chapters"] == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+    assert len(legacy_opening["chapters"]) == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+    _validate_stage("opening_outline", legacy_opening)
+    assert final["ready"] is True
 
 
 def test_final_review_uses_actual_chapter_ids_and_self_heals_stale_contract_results():
@@ -466,7 +493,7 @@ def test_world_style_submission_rejects_an_empty_structured_required_field():
     assert "叙事节奏" in result["detail"]
 
 
-def test_build_apply_blueprint_keeps_macro_only_and_first_fifteen_detailed():
+def test_build_apply_blueprint_keeps_macro_only_and_first_three_detailed():
     db = _db()
     session = _ready_session(db)
     draft = deepcopy(session.draft_json)
@@ -482,8 +509,8 @@ def test_build_apply_blueprint_keeps_macro_only_and_first_fifteen_detailed():
     blueprint = build_apply_blueprint(session)
     chapters = [item for item in blueprint["outline"] if item["node_type"] == "chapter"]
     sections = [item for item in blueprint["outline"] if item["node_type"] == "section"]
-    assert len(chapters) == 15
-    assert len(sections) == 45
+    assert len(chapters) == OPENING_OUTLINE_CHAPTER_COUNT
+    assert len(sections) == OPENING_OUTLINE_CHAPTER_COUNT * 3
     assert len(blueprint["volume_outline"]) == 10
     assert blueprint["volume_outline"][-1]["end_chapter"] == 1000
     assert blueprint["protagonist"]["profile"]["core_motivation"]
@@ -504,9 +531,9 @@ def test_v2_apply_is_idempotent_and_persists_profiles_relations_and_sections():
     assert db.query(Project).count() == 1
     assert db.query(Character).filter(Character.profile_json.isnot(None)).count() >= 1
     assert db.query(WorldbuildingRelation).count() >= 1
-    assert db.query(OutlineNode).filter(OutlineNode.node_type == "chapter").count() == 15
+    assert db.query(OutlineNode).filter(OutlineNode.node_type == "chapter").count() == OPENING_OUTLINE_CHAPTER_COUNT
     sections = db.query(OutlineNode).filter(OutlineNode.node_type == "section").all()
-    assert len(sections) == 45
+    assert len(sections) == OPENING_OUTLINE_CHAPTER_COUNT * 3
     assert all(item.parent_id and item.metadata_json for item in sections)
 
 
@@ -736,7 +763,7 @@ def test_stage_normalization_accepts_legacy_character_macro_and_location_shapes(
         })
 
 
-def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_fifteen_chapters():
+def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_three_chapters():
     db = _db()
     session = _ready_session(db)
     baseline = derive_stage(session, "opening_outline")
@@ -755,7 +782,7 @@ def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_fifteen_cha
     normalized = _normalize_stage_data("opening_outline", source, baseline)
 
     _validate_stage("opening_outline", normalized)
-    assert len(normalized["chapters"]) == 15
+    assert len(normalized["chapters"]) == OPENING_OUTLINE_CHAPTER_COUNT
     assert len([item for item in normalized["sections"] if item["parent_client_id"] == normalized["chapters"][0]["client_id"]]) == 2
     assert all("sections" not in chapter for chapter in normalized["chapters"])
     assert all(section["client_id"] and section["metadata"]["purpose"] for section in normalized["sections"])
@@ -764,7 +791,7 @@ def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_fifteen_cha
 def test_opening_outline_validation_names_the_failed_chapters_in_chinese():
     chapters = [
         {"client_id": f"chapter-{number:02d}", "title": f"第{number}章 失真记录"}
-        for number in range(1, 16)
+        for number in range(1, OPENING_OUTLINE_CHAPTER_COUNT + 1)
     ]
 
     with pytest.raises(ValueError) as error:

@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
 from app.database.session import Base
+from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from app.routers.novel_creation import (
     NovelCreationSessionPatchRequest,
     NovelCreationStageRunRequest,
@@ -671,7 +672,8 @@ def test_compact_seed_can_drive_stages_and_final_apply_blueprint():
     blueprint = build_apply_blueprint(session)
     assert blueprint["title"] == "Concept 1"
     assert blueprint["protagonist"]["name"] == "Lead 1"
-    assert len(blueprint["outline"]) >= 15
+    chapters = [item for item in blueprint["outline"] if item.get("node_type") == "chapter"]
+    assert len(chapters) == OPENING_OUTLINE_CHAPTER_COUNT
     with patch("app.services.workspace.tools.novel_creation._is_real_session", return_value=False):
         applied = asyncio.run(apply_novel_blueprint(db, "", {"session_id": session.id, "mode": "auto"}))
     assert applied["status"] == "ok"
