@@ -44,13 +44,20 @@
 - 任务中心：红点代表未读提醒，可一键清零；历史待处理任务不删除；最近活动显示本地绝对时间。
 - Gateway：前端构建固定运行于 `$BUILDPLATFORM`，最终 Python 镜像仍按 `$TARGETPLATFORM` 生成，避免 arm64 QEMU 执行 npm。
 
+## 3.1.11 额外回归项
+
+- 创意方向只生成一套，并允许作者通过聊天持续调整；旧蓝图入口同步为单方案。
+- AI 助手单条消息上限提高到 1,000,000 字符，超过 20,000 字符的立项文本进入持久化分块导入。
+- 已保存 API 密钥可用于模型发现与连接测试；OpenCode 模型由司命运行 `opencode models` 获取。
+- 模型标识上限从 100 提高到 512 字符；任务时间携带 UTC 偏移并按用户本地时区显示绝对时间。
+
 ## Release Gate（尚未完成前不得发布）
 
-- [x] 后端全量测试（1594 项）、迁移演练、架构与性能检查。
-- [x] 前端 lint、131 项单元测试、质量检查、API schema 检查和生产构建。
+- [x] 后端全量测试（1597 项）及 87 项模型配置边界回归。
+- [x] 前端全量单元测试、lint、质量检查、API schema 检查和生产构建。
 - [x] Playwright 全量 E2E（34 项）；1920×1080 与 800×600 实际界面复审及截图。
-- [x] 使用真实 DeepSeek V4 Flash 完成开启思考的普通聊天：接收 1295 字符思考与 99 字符最终正文，正常 `stop`。
+- [x] 本机运行 `opencode models` 并获取 7 个实际可用模型。
 - [x] Windows `Siming.exe` 重新打包、启动烟测、版本/update.json/SHA-256 一致。
-- [x] Android 单测、lint、签名 APK、manifest/签名/zipalign/SHA-256 一致；390×844 与 1080×2400 模拟器复审通过。
+- [x] Android 单测、lint、Debug/Release 构建和模拟器安装复审通过；签名 APK 由标签 Release Gate 使用仓库密钥生成。
 - [ ] Gateway amd64/arm64 镜像构建和非 root、可写数据烟测。
 - [ ] 提交并推送；GitHub Release 上传经验证资产；发布匹配的多架构 Gateway 镜像。
