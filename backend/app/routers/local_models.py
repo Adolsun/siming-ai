@@ -28,6 +28,8 @@ from ..schemas.local_model import (
     AdapterCompareRequest,
     AdapterUpdateRequest,
     BenchmarkRequest,
+    CustomModelDownloadRequest,
+    CustomModelImportRequest,
     DatasetCreateRequest,
     ModelInstallRequest,
     ModelRootUpdateRequest,
@@ -40,6 +42,8 @@ from ..services.local_runtime.hardware import detect_hardware
 from ..services.local_runtime.manifest import model_catalog
 from ..services.local_runtime.model_jobs import (
     create_model_download,
+    create_custom_model_download,
+    import_custom_model,
     create_runtime_download,
     ensure_catalog_rows,
 )
@@ -189,6 +193,18 @@ def install_model(payload: ModelInstallRequest):
     })
 
 
+@router.post("/custom/download")
+def download_custom_model(payload: CustomModelDownloadRequest):
+    task_id = create_custom_model_download(**payload.model_dump())
+    return ApiResponse.success(data={"model_task_id": task_id, "already_installed": not bool(task_id)})
+
+
+@router.post("/custom/import")
+def import_existing_custom_model(payload: CustomModelImportRequest):
+    import_custom_model(**payload.model_dump())
+    return ApiResponse.success(message="自有 GGUF 模型已登记")
+
+
 @router.get("/downloads")
 def downloads(db: Session = Depends(get_db)):
     tasks = local_model_store(db).download_tasks(limit=100)
@@ -240,11 +256,19 @@ def stop_runtime():
 
 @router.delete("/{model_key}")
 def delete_model(model_key: str, db: Session = Depends(get_db)):
-    model = local_model_store(db).model(model_key)
+    store = local_model_store(db)
+    model = store.model(model_key)
     if not model:
         return ApiResponse.success()
     if get_runtime_manager().status().get("model_key") == model_key:
         get_runtime_manager().stop()
+    # A manually registered file belongs to the user. Removing it from the
+    # model center must not erase an arbitrary file outside Siming's model
+    # directory.
+    if model.source == "custom" and not (model.source_urls or []):
+        store.delete(model)
+        commit_session(db)
+        return ApiResponse.success(message="已移除自有 GGUF 的登记，原文件未改动")
     if model.file_path:
         path = Path(model.file_path)
         if path.exists():

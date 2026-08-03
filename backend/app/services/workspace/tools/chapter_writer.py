@@ -238,17 +238,6 @@ async def chapter_writer(
         writing_directives=writing_directives,
     )
 
-    provider = _chapter_writer_provider(model)
-    if provider == "local_llama_cpp":
-        return {
-            "tool": "chapter_writer",
-            "status": "error",
-            "detail": (
-                "当前选择的是司命本地 AI，它适合轻量对话/检索，不适合由内部 chapter_writer 生成整章正文。"
-                "请切换到 API 或本机 CLI 模型后重试，或使用外部写作流程。"
-            ),
-            "data": {},
-        }
     timeout_seconds, max_output_tokens = _chapter_writer_limits(model)
     max_output_tokens = min(max_output_tokens, max(1, context_manifest.output_reserve_tokens))
     gateway_extra = LLMGateway.local_cli_extra_body(

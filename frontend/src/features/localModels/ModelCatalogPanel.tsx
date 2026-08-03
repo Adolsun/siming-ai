@@ -6,6 +6,7 @@ import {
   Descriptions,
   Progress,
   Input,
+  InputNumber,
   Select,
   Space,
   Table,
@@ -50,6 +51,9 @@ interface Props {
 
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
+  const [customModel, setCustomModel] = useState({
+    modelKey: '', displayName: '', sourceUrl: '', filePath: '', contextLength: 32768,
+  })
   const { setGlobalModel } = useGlobalModelActions()
   const usageEnabled = catalog?.usage_enabled !== false
   const usageDisabledReason = catalog?.usage_disabled_reason || '本地 AI 模型暂时已停用，请使用 API 或本机 CLI 模型。'
@@ -134,7 +138,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     }
   }
 
-  const saveTaskModel = async (task: string, modelKey?: string | null) => {
+  const saveTaskModel = async (task: string, modelKey?: string | null, contextLength?: number) => {
     if (!modelKey) {
       await apiClient.delete(`/local-models/task-settings/${task}`)
       message.success('任务模型已清除，将跟随全局默认模型')
@@ -143,11 +147,41 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     }
     await apiClient.put(`/local-models/task-settings/${task}`, {
       model_key: modelKey,
-      context_length: contextForModel(modelKey),
+      context_length: contextLength || contextForModel(modelKey),
       allow_api_fallback: false,
     })
     message.success('任务模型已保存')
     await onRefresh()
+  }
+
+  const downloadCustomModel = async () => {
+    try {
+      await apiClient.post('/local-models/custom/download', {
+        model_key: customModel.modelKey,
+        display_name: customModel.displayName,
+        source_url: customModel.sourceUrl,
+        context_length: customModel.contextLength,
+      })
+      message.success('自有 GGUF 下载已加入任务中心')
+      await onRefresh()
+    } catch (error: any) {
+      message.error(error.message)
+    }
+  }
+
+  const importCustomModel = async () => {
+    try {
+      await apiClient.post('/local-models/custom/import', {
+        model_key: customModel.modelKey,
+        display_name: customModel.displayName,
+        file_path: customModel.filePath,
+        context_length: customModel.contextLength,
+      })
+      message.success('自有 GGUF 已登记，可立即加载')
+      await onRefresh()
+    } catch (error: any) {
+      message.error(error.message)
+    }
   }
 
   const activeDownloads = downloads.filter((item) => !['completed', 'failed', 'cancelled'].includes(item.status))
@@ -190,6 +224,61 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
           <Input value={modelRoot} onChange={(event) => setModelRoot(event.target.value)} />
           <Button onClick={saveModelRoot}>保存</Button>
         </Space.Compact>
+      </Card>
+
+      <Card
+        size="small"
+        title="自有 GGUF 模型"
+        extra={<Text type="secondary">不受内置目录限制</Text>}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Text type="secondary">
+            可以直接登记已下载的 GGUF，或给出其直链下载地址。模型来源、许可证和上下文能力由你确认；司命不会把它复制或移动。
+          </Text>
+          <Space wrap style={{ width: '100%' }}>
+            <Input
+              aria-label="自有模型标识"
+              placeholder="模型标识，例如 qwen36-27b-q4"
+              value={customModel.modelKey}
+              onChange={(event) => setCustomModel((current) => ({ ...current, modelKey: event.target.value }))}
+              style={{ width: 230 }}
+            />
+            <Input
+              aria-label="自有模型名称"
+              placeholder="显示名称"
+              value={customModel.displayName}
+              onChange={(event) => setCustomModel((current) => ({ ...current, displayName: event.target.value }))}
+              style={{ width: 220 }}
+            />
+            <InputNumber
+              aria-label="自有模型上下文"
+              min={1}
+              controls
+              value={customModel.contextLength}
+              onChange={(value) => setCustomModel((current) => ({ ...current, contextLength: Number(value) || 1 }))}
+              addonAfter="tokens"
+              style={{ width: 200 }}
+            />
+          </Space>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              aria-label="GGUF 下载地址"
+              placeholder="https://…/model.gguf（直接下载）"
+              value={customModel.sourceUrl}
+              onChange={(event) => setCustomModel((current) => ({ ...current, sourceUrl: event.target.value }))}
+            />
+            <Button type="primary" onClick={downloadCustomModel}>下载并登记</Button>
+          </Space.Compact>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              aria-label="本机 GGUF 路径"
+              placeholder="D:\\Models\\model.gguf（直接登记，不复制）"
+              value={customModel.filePath}
+              onChange={(event) => setCustomModel((current) => ({ ...current, filePath: event.target.value }))}
+            />
+            <Button onClick={importCustomModel}>登记本机文件</Button>
+          </Space.Compact>
+        </Space>
       </Card>
 
       {activeDownloads.length > 0 && (
@@ -312,11 +401,21 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                   .map((item) => ({ value: item.model_key, label: item.display_name }))}
                 onChange={(value) => saveTaskModel(task, value)}
               />
-              {catalog?.task_settings?.[task]?.context_length ? (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {Math.round((catalog?.task_settings?.[task]?.context_length || 0) / 1024)}K 上下文
-                </Text>
-              ) : null}
+              <InputNumber
+                aria-label={`${label}上下文`}
+                min={1}
+                controls
+                disabled={!usageEnabled || !catalog?.task_settings?.[task]?.model_key}
+                value={catalog?.task_settings?.[task]?.context_length || undefined}
+                placeholder={`${Math.round(contextForModel(catalog?.task_settings?.[task]?.model_key) / 1024)}K 默认`}
+                addonAfter="tokens"
+                style={{ width: '100%', marginTop: 6 }}
+                onChange={(value) => saveTaskModel(
+                  task,
+                  catalog?.task_settings?.[task]?.model_key,
+                  Number(value) || contextForModel(catalog?.task_settings?.[task]?.model_key),
+                )}
+              />
             </div>
           ))}
         </Space>

@@ -1,4 +1,5 @@
 # Runtime data and secrets
+AGENTS.md
 .env
 .env.bak
 .crypto_key
@@ -66,6 +67,7 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/
+.codex/
 
 # Local browser automation and UX audit evidence
 .playwright-cli/

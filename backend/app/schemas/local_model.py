@@ -20,7 +20,10 @@ class ModelRootUpdateRequest(LocalModelBase):
 
 class RuntimeStartRequest(LocalModelBase):
     model_key: str = Field(..., min_length=1, max_length=512)
-    context_length: Optional[int] = Field(None, ge=2048, le=131072)
+    # llama.cpp and the selected model decide the practical limit. Do not
+    # impose a product ceiling: high-memory machines legitimately use much
+    # larger context windows.
+    context_length: Optional[int] = Field(None, ge=1)
     task_type: str = Field("chat", max_length=30)
     project_id: Optional[str] = Field(None, max_length=36)
 
@@ -29,6 +32,20 @@ class BenchmarkRequest(LocalModelBase):
     model_key: str = Field(..., min_length=1, max_length=512)
     prompt: str = Field("请用中文简短介绍你自己。", min_length=1, max_length=2000)
     max_tokens: int = Field(128, ge=8, le=2048)
+
+
+class CustomModelDownloadRequest(LocalModelBase):
+    model_key: str = Field(..., min_length=1, max_length=512, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    display_name: str = Field(..., min_length=1, max_length=200)
+    source_url: str = Field(..., min_length=8, max_length=4000, pattern=r"^https?://")
+    context_length: int = Field(..., ge=1)
+
+
+class CustomModelImportRequest(LocalModelBase):
+    model_key: str = Field(..., min_length=1, max_length=512, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    display_name: str = Field(..., min_length=1, max_length=200)
+    file_path: str = Field(..., min_length=1, max_length=4000)
+    context_length: int = Field(..., ge=1)
 
 
 class AdapterUpdateRequest(LocalModelBase):
