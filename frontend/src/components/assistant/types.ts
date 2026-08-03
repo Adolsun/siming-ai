@@ -91,13 +91,26 @@ export interface WorkspaceRunLog {
   resolvedStepId?: string | null
 }
 
+export type WorkspaceAssistantRunStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'aborted'
+  | 'cancelled'
+  | 'interrupted'
+
 export interface WorkspaceAssistantRun {
   id: string
-  status: string
+  operation_id?: string | null
+  status: WorkspaceAssistantRunStatus
   phase?: string | null
+  model?: string | null
+  error?: string | null
   current_iteration?: number
   created_at?: string | null
   updated_at?: string | null
+  completed_at?: string | null
 }
 
 export interface WorkspaceAssistantRunStep {
@@ -112,7 +125,13 @@ export interface WorkspaceAssistantRunStep {
 
 export interface WorkspaceAssistantRunDetail {
   run: WorkspaceAssistantRun
+  assistant_message?: WorkspacePersistedMessage | null
   steps: WorkspaceAssistantRunStep[]
+}
+
+export interface WorkspaceAssistantModelOption {
+  value: string
+  label: string
 }
 
 export interface WorkspaceAssistantChatProps {
@@ -123,6 +142,10 @@ export interface WorkspaceAssistantChatProps {
   selectedText?: string
   selectedTextChapterId?: string | null
   defaultModel?: string
+  modelOptions?: WorkspaceAssistantModelOption[]
+  modelsLoading?: boolean
+  onGlobalModelChange?: (model: string) => Promise<unknown>
+  onManageModels?: () => void
   onApplied?: () => void | Promise<void>
 }
 

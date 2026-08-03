@@ -9,6 +9,8 @@ import json
 import re
 from typing import Optional
 
+from app.core.json_repair import repair_truncated_json
+
 
 def strip_json_fences(text_result: str) -> str:
     """Remove markdown code fences from model output."""
@@ -37,51 +39,6 @@ def normalize_json_punctuation(text: str) -> str:
         .replace("‘", "'")
         .replace("’", "'")
     )
-
-
-def repair_truncated_json(candidate: str) -> Optional[str]:
-    """Conservatively close a JSON object cut off by token limits."""
-    repaired = candidate.strip()
-    if not repaired.startswith("{"):
-        return None
-
-    stack: list[str] = []
-    in_string = False
-    escape = False
-    for char in repaired:
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            stack.append("}")
-        elif char == "[":
-            stack.append("]")
-        elif char in "}]":
-            if stack and stack[-1] == char:
-                stack.pop()
-
-    if not stack and not in_string:
-        return None
-
-    if in_string:
-        repaired += '"'
-
-    repaired = repaired.rstrip()
-    for _ in range(3):
-        next_text = re.sub(r',?\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*:\s*$', "", repaired).rstrip()
-        if next_text == repaired:
-            break
-        repaired = next_text
-    repaired = re.sub(r"[:,]\s*$", "", repaired).rstrip()
-    repaired += "".join(reversed(stack))
-    return remove_trailing_commas(repaired)
 
 
 def extract_json(text_result: str) -> dict:

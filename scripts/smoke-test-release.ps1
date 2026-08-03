@@ -179,6 +179,23 @@ Write-Host "  Server is ready at $serverBaseUrl (waited $waited seconds)" -Foreg
 Write-Host "[5/6] Verifying API endpoints..." -ForegroundColor Yellow
 
 try {
+    $manifestPath = Join-Path (Split-Path -Parent $exePath) "update.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "update.json is missing beside Siming.exe"
+    }
+    $expectedVersion = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).version
+    $healthResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/health" -TimeoutMs 5000
+    $health = $healthResponse | ConvertFrom-Json
+    if (-not $expectedVersion -or $health.version -ne $expectedVersion) {
+        throw "Packaged runtime version '$($health.version)' does not match update.json '$expectedVersion'"
+    }
+    Write-Host "  Packaged Runtime Version: OK ($expectedVersion)" -ForegroundColor Green
+} catch {
+    Write-Host "  ERROR: Packaged runtime version check failed: $_" -ForegroundColor Red
+    throw
+}
+
+try {
     # Test projects API
     $projectsResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/projects" -TimeoutMs 5000
     $projectsPayload = $projectsResponse | ConvertFrom-Json
@@ -190,15 +207,15 @@ try {
 }
 
 try {
-    # Test the V2 new-book workbench contract bundled in the executable.
+    # Test the V3 new-book workbench contract bundled in the executable.
     $presetsResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/novel-creation/presets" -TimeoutMs 5000
     $presets = ($presetsResponse | ConvertFrom-Json).data
-    if (($presets.schema_version -ne 2) -or (@($presets.categories).Count -lt 10) -or (@($presets.stage_order).Count -lt 8)) {
+    if (($presets.schema_version -ne 3) -or (@($presets.categories).Count -lt 10) -or (@($presets.stage_order).Count -lt 8)) {
         throw "Unexpected novel creation preset contract"
     }
-    Write-Host "  Novel Creation V2 API: OK ($(@($presets.categories).Count) genre presets)" -ForegroundColor Green
+    Write-Host "  Novel Creation V3 API: OK ($(@($presets.categories).Count) genre presets)" -ForegroundColor Green
 } catch {
-    Write-Host "  ERROR: Novel Creation V2 API failed: $_" -ForegroundColor Red
+    Write-Host "  ERROR: Novel Creation V3 API failed: $_" -ForegroundColor Red
     throw
 }
 
@@ -237,7 +254,7 @@ Write-Host "  - Siming.exe: OK" -ForegroundColor Green
 Write-Host "  - MCP Setup Script: OK" -ForegroundColor Green
 Write-Host "  - Server Startup: OK" -ForegroundColor Green
 Write-Host "  - API Endpoints: OK" -ForegroundColor Green
-Write-Host "  - Novel Creation V2: OK" -ForegroundColor Green
+Write-Host "  - Novel Creation V3: OK" -ForegroundColor Green
 Write-Host ""
 Write-Host "All smoke tests passed!" -ForegroundColor Green
 exit 0

@@ -16,7 +16,7 @@ class APIConfig(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     provider = Column(String(50), nullable=False, unique=True)
     api_key_encrypted = Column(Text, nullable=False)
-    default_model = Column(String(100), nullable=False)
+    default_model = Column(String(512), nullable=False)
     is_global_default = Column(Boolean, default=False)
     base_url_override = Column(String(500), nullable=True)
     api_protocol = Column(String(30), nullable=False, default="auto")
@@ -38,7 +38,7 @@ class LocalModelTaskSetting(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_type = Column(String(30), nullable=False, unique=True)
-    model_key = Column(String(120), nullable=False)
+    model_key = Column(String(512), nullable=False)
     adapter_ids = Column(JSON, nullable=True)
     context_length = Column(Integer, nullable=True)
     allow_api_fallback = Column(Boolean, nullable=False, default=False)

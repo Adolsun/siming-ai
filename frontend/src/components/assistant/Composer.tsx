@@ -8,6 +8,7 @@ const { Text } = Typography
 interface ComposerProps {
   input: string
   generating: boolean
+  cancelPending?: boolean
   selectedText?: string
   showSelectionTag: boolean
   messageCount?: number
@@ -20,6 +21,7 @@ interface ComposerProps {
 export function Composer({
   input,
   generating,
+  cancelPending = false,
   selectedText,
   showSelectionTag,
   messageCount,
@@ -64,8 +66,15 @@ export function Composer({
             )}
           </div>
           {generating ? (
-            <Button danger icon={<StopOutlined />} onClick={onStop}>
-              停止
+            <Button
+              aria-label={cancelPending ? '正在取消任务' : '取消当前任务'}
+              danger
+              disabled={cancelPending}
+              icon={<StopOutlined />}
+              loading={cancelPending}
+              onClick={onStop}
+            >
+              {cancelPending ? '正在取消' : '取消任务'}
             </Button>
           ) : (
             <Button type="primary" icon={<SendOutlined />} onClick={onSend} disabled={!input.trim()}>

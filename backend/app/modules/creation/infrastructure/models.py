@@ -53,6 +53,18 @@ class NovelCreationSession(Base):
         cascade="all, delete-orphan",
         order_by="NovelCreationStageRun.created_at",
     )
+    artifact_versions = relationship(
+        "NovelCreationArtifactVersion",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationArtifactVersion.created_at",
+    )
+    entities = relationship(
+        "NovelCreationEntity",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationEntity.position",
+    )
 
     __table_args__ = (Index("ix_novel_creation_sessions_status", "status"),)
 
@@ -67,7 +79,7 @@ class NovelCreationStageRun(Base):
     stage = Column(String(50), nullable=False)
     operation = Column(String(30), nullable=False, default="generate")
     status = Column(String(30), nullable=False, default="queued")
-    model_source = Column(String(100), nullable=True)
+    model_source = Column(String(512), nullable=True)
     tool_mode = Column(String(50), nullable=True)
     failure_class = Column(String(50), nullable=True)
     storage_target = Column(String(50), nullable=False, default="session_draft")
@@ -82,7 +94,15 @@ class NovelCreationStageRun(Base):
     next_action = Column(Text, nullable=True)
     request_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)
+    diagnostics_json = Column(JSON, nullable=True)
     current_message = Column(Text, nullable=True)
+    idempotency_key = Column(String(128), nullable=True)
+    # Kept as a durable identifier rather than a database FK to avoid a cycle:
+    # claims point back to their eventual stage run after acquisition.
+    claim_id = Column(String(36), nullable=True)
+    retry_of_run_id = Column(
+        String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True
+    )
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
@@ -98,6 +118,47 @@ class NovelCreationStageRun(Base):
     __table_args__ = (
         Index("ix_novel_creation_stage_runs_session", "session_id"),
         Index("ix_novel_creation_stage_runs_status", "status"),
+    )
+
+
+class NovelCreationRunClaim(Base):
+    """Database fence for a logical creation-stage command."""
+
+    __tablename__ = "novel_creation_run_claims"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    claim_token = Column(String(36), nullable=False)
+    status = Column(String(30), nullable=False, default="running")
+    input_revision = Column(Integer, nullable=False)
+    input_snapshot_hash = Column(String(64), nullable=False)
+    run_id = Column(
+        String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    result_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "idempotency_key", name="uq_novel_creation_claim_identity"),
+        Index("ix_novel_creation_claim_status", "status", "updated_at"),
+        Index(
+            "uq_novel_creation_claim_active_target",
+            "session_id",
+            "artifact_key",
+            unique=True,
+            sqlite_where=(status == "running"),
+            postgresql_where=(status == "running"),
+        ),
     )
 
 
@@ -123,8 +184,172 @@ class NovelCreationStageEvent(Base):
     )
 
 
+class NovelCreationArtifactVersion(Base):
+    """Immutable artifact snapshot used for diff, audit, and restoration."""
+
+    __tablename__ = "novel_creation_artifact_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    revision = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="generated")
+    source = Column(String(100), nullable=False, default="unknown")
+    change_type = Column(String(40), nullable=False, default="save")
+    snapshot_json = Column(JSON, nullable=False)
+    change_summary_json = Column(JSON, nullable=True)
+    run_id = Column(
+        String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_version_id = Column(
+        String(36),
+        ForeignKey("novel_creation_artifact_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    restored_from_version_id = Column(
+        String(36),
+        ForeignKey("novel_creation_artifact_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    session = relationship("NovelCreationSession", back_populates="artifact_versions")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "artifact_key", "revision", name="uq_creation_artifact_version_revision"
+        ),
+        Index("ix_creation_artifact_version_history", "session_id", "artifact_key", "created_at"),
+    )
+
+
+class NovelCreationEntity(Base):
+    """Independently addressable entity projected from a creation artifact."""
+
+    __tablename__ = "novel_creation_entities"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_key = Column(String(100), nullable=False)
+    entity_type = Column(String(50), nullable=False)
+    entity_key = Column(String(180), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    status = Column(String(30), nullable=False, default="active")
+    revision = Column(Integer, nullable=False, default=0)
+    source = Column(String(100), nullable=False, default="unknown")
+    data_json = Column(JSON, nullable=False)
+    provenance_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    session = relationship("NovelCreationSession", back_populates="entities")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "artifact_key",
+            "entity_type",
+            "entity_key",
+            name="uq_creation_entity_identity",
+        ),
+        Index("ix_creation_entity_list", "session_id", "artifact_key", "entity_type", "status"),
+    )
+
+
+class NovelCreationMaterialImport(Base):
+    """Durable source-file ingestion run for a creation session."""
+
+    __tablename__ = "novel_creation_material_imports"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(
+        String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    operation_id = Column(
+        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_id = Column(String(36), nullable=True)
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(Text, nullable=False)
+    media_type = Column(String(100), nullable=True)
+    file_sha256 = Column(String(64), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="queued")
+    input_revision = Column(Integer, nullable=False)
+    text_length = Column(Integer, nullable=False, default=0)
+    chunk_count = Column(Integer, nullable=False, default=0)
+    processed_chunks = Column(Integer, nullable=False, default=0)
+    checkpoint_json = Column(JSON, nullable=True)
+    preview_json = Column(JSON, nullable=True)
+    selection_json = Column(JSON, nullable=True)
+    result_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    chunks = relationship(
+        "NovelCreationImportChunk",
+        back_populates="import_run",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationImportChunk.chunk_index",
+    )
+
+    __table_args__ = (
+        Index("ix_novel_creation_import_session", "session_id", "created_at"),
+        Index("ix_novel_creation_import_status", "status", "updated_at"),
+        UniqueConstraint("session_id", "file_sha256", name="uq_novel_creation_import_file"),
+    )
+
+
+class NovelCreationImportChunk(Base):
+    """Checkpointed text chunk and its extracted candidate data."""
+
+    __tablename__ = "novel_creation_import_chunks"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    import_run_id = Column(
+        String(36),
+        ForeignKey("novel_creation_material_imports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    char_start = Column(Integer, nullable=False)
+    char_end = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    text = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    extraction_json = Column(JSON, nullable=True)
+    confidence = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    import_run = relationship("NovelCreationMaterialImport", back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "import_run_id", "chunk_index", name="uq_novel_creation_import_chunk_index"
+        ),
+        Index("ix_novel_creation_import_chunk_status", "import_run_id", "status"),
+    )
+
+
 __all__ = [
     "NovelCreationSession",
     "NovelCreationStageRun",
+    "NovelCreationRunClaim",
     "NovelCreationStageEvent",
+    "NovelCreationArtifactVersion",
+    "NovelCreationEntity",
+    "NovelCreationMaterialImport",
+    "NovelCreationImportChunk",
 ]

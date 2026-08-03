@@ -38,12 +38,12 @@ router = APIRouter(tags=["getting-started"])
 
 
 class OpenCodeConfigureRequest(BaseModel):
-    model: str = Field(..., min_length=2, max_length=200)
+    model: str = Field(..., min_length=2, max_length=512)
     command: str | None = Field(None, max_length=500)
 
 
 class OpenCodeActivateRequest(BaseModel):
-    preferred_model: str | None = Field(None, max_length=200)
+    preferred_model: str | None = Field(None, max_length=512)
 
 
 class OpenCodeCredentialRequest(BaseModel):

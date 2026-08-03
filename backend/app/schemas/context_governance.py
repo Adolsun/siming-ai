@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class ContextManifestPrepare(BaseModel):
     task_type: str = Field(..., min_length=1, max_length=50)
-    model: str | None = Field(None, max_length=300)
+    model: str | None = Field(None, max_length=512)
     execution_route: str = Field("internal_api", max_length=50)
     arguments: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = Field(None, max_length=100)
@@ -32,7 +32,7 @@ class ContextSearchRequest(BaseModel):
 
 class ModelContextProfilePayload(BaseModel):
     provider: str = Field(..., min_length=1, max_length=80)
-    model_name: str = Field(..., min_length=1, max_length=200)
+    model_name: str = Field(..., min_length=1, max_length=512)
     context_window_tokens: int = Field(..., ge=2048, le=10_000_000)
     max_output_tokens: int | None = Field(None, ge=1, le=10_000_000)
     safety_margin_tokens: int = Field(512, ge=0, le=100_000)

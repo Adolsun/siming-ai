@@ -36,3 +36,37 @@ def test_publisher_stops_when_repository_verification_is_unavailable():
     assert "gh repo create" not in script
     assert "Publishing stopped without changing repository state" in script
     assert "$ExistingTagExitCode" in script
+
+
+def test_publisher_keeps_new_release_draft_until_all_assets_verify():
+    script = (ROOT / "scripts" / "publish-github.ps1").read_text(encoding="utf-8")
+
+    assert '"--draft"' in script
+    assert "MissingUploadedAssets" in script
+    assert "--draft=false" in script
+    assert "Assert-NativeSuccess \"upload release assets" in script
+
+
+def test_gateway_smokes_every_published_architecture():
+    workflow = (ROOT / ".github" / "workflows" / "gateway-image.yml").read_text(encoding="utf-8")
+
+    assert "platforms: linux/amd64" in workflow
+    assert "platforms: linux/arm64" in workflow
+    assert "smoke_arch amd64" in workflow
+    assert "smoke_arch arm64" in workflow
+
+
+def test_android_release_verifies_version_code_and_trusted_certificate():
+    script = (ROOT / "scripts" / "verify-android-release.ps1").read_text(encoding="utf-8")
+
+    assert "ExpectedCertificateSha256" in script
+    assert "certificate SHA-256 digest" in script
+    assert "versionCode" in script
+    assert "expectedVersionCode" in script
+
+
+def test_release_smoke_matches_runtime_to_update_manifest():
+    script = (ROOT / "scripts" / "smoke-test-release.ps1").read_text(encoding="utf-8")
+
+    assert '"$serverBaseUrl/health"' in script
+    assert "$health.version -ne $expectedVersion" in script

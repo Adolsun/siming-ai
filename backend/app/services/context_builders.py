@@ -9,6 +9,8 @@ from typing import Optional
 from sqlalchemy.orm import Session, selectinload
 
 from ..core.exceptions import ValidationError
+from ..core.numbers import chinese_number_to_int as _chinese_number_to_int
+from ..core.numbers import extract_chapter_number
 from ..core.utils import count_words as _count_words
 from ..database.models import (
     CatalogingFact,
@@ -23,7 +25,6 @@ from ..database.models import (
     OutlineNodeCharacter,
     WorldbuildingEntry,
 )
-
 
 DIMENSION_LABELS = {
     "geography": "地理", "history": "历史", "factions": "势力",
@@ -332,34 +333,8 @@ def _sort_entries_by_recent(entries: list[WorldbuildingEntry]) -> list[Worldbuil
     return sorted(entries, key=lambda entry: (_entry_time(entry), entry.sort_order or 0), reverse=True)
 
 
-def _chinese_number_to_int(text: str) -> Optional[int]:
-    text = (text or "").strip()
-    if not text:
-        return None
-    if text.isdigit():
-        return int(text)
-    digit_map = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    unit_map = {"十": 10, "百": 100, "千": 1000}
-    total = 0
-    current = 0
-    for char in text:
-        if char in digit_map:
-            current = digit_map[char]
-        elif char in unit_map:
-            unit = unit_map[char]
-            if current == 0:
-                current = 1
-            total += current * unit
-            current = 0
-    total += current
-    return total or None
-
-
 def _chapter_order_number(title: str) -> Optional[int]:
-    match = re.search(r"第\s*([0-9一二两三四五六七八九十百千万零〇]+)\s*章", title or "")
-    if not match:
-        match = re.search(r"([0-9]+)", title or "")
-    return _chinese_number_to_int(match.group(1)) if match else None
+    return extract_chapter_number(title, allow_bare=True, allow_unmarked=True)
 
 
 def _build_recent_summaries(db: Session, project_id: str, limit: int = 5) -> str:

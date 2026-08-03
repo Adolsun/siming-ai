@@ -79,6 +79,7 @@ class OperationResponse(BaseModel):
     health_status: HealthStatus
     outcome: OutcomeStatus | None = None
     attention: OperationAttentionResponse | None = None
+    attention_read_at: str | None = None
     result: OperationResultResponse | None = None
     result_summary: str | None = None
     phase: str | None = None

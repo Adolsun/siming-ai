@@ -32,6 +32,12 @@ class DraftNovelBlueprintInput(CompatibleInput):
     depth: Literal["concept", "full"] = "full"
 
 
+class ReviewNovelBlueprintInput(CompatibleInput):
+    session_id: str
+    execution_mode: Literal["hybrid", "internal_llm", "external_agent"] = "hybrid"
+    blueprint: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApplyNovelBlueprintInput(CompatibleInput):
     session_id: str
     blueprint_index: int = 0
@@ -43,6 +49,77 @@ class GetNovelCreationSessionInput(CompatibleInput):
     session_id: str
 
 
+class GetCreationOperationInput(CompatibleInput):
+    operation_id: str = ""
+    run_id: str = ""
+
+
+class PatchCreationSessionInput(CompatibleInput):
+    session_id: str
+    expected_revision: int
+    changes: dict[str, Any]
+
+
+class CreationArtifactInput(CompatibleInput):
+    session_id: str
+    artifact: str
+
+
+class ListCreationArtifactsInput(CompatibleInput):
+    session_id: str
+
+
+class PatchCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    changes: list[dict[str, Any]]
+    source: str = "assistant"
+
+
+class CreationArtifactLockInput(CreationArtifactInput):
+    expected_revision: int
+    paths: list[str]
+
+
+class UndoCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+
+
+class ListCreationEntitiesInput(CompatibleInput):
+    session_id: str
+    artifact: str = ""
+    entity_type: str = ""
+    include_deleted: bool = False
+
+
+class CreationEntityInput(CompatibleInput):
+    entity_id: str
+
+
+class PatchCreationEntityInput(CreationEntityInput):
+    expected_revision: int
+    changes: list[dict[str, Any]]
+    source: str = "assistant"
+
+
+class DeleteCreationEntityInput(CreationEntityInput):
+    expected_revision: int
+    source: str = "assistant"
+
+
+class ListArtifactVersionsInput(CreationArtifactInput):
+    limit: int = 100
+
+
+class ArtifactVersionDiffInput(CompatibleInput):
+    version_id: str
+    against_version_id: str = ""
+
+
+class RestoreArtifactVersionInput(CompatibleInput):
+    version_id: str
+    expected_revision: int
+
+
 class GenerateNovelCreationStageInput(CompatibleInput):
     session_id: str
     stage: str
@@ -50,6 +127,11 @@ class GenerateNovelCreationStageInput(CompatibleInput):
     use_model: bool = True
     auto_confirm: bool = False
     session_patch: dict[str, Any] = Field(default_factory=dict)
+    operation: str = "generate"
+    instruction: str = ""
+    expected_revision: int | None = None
+    entity_id: str = ""
+    entity_type: str = ""
 
 
 class SubmitNovelCreationStageInput(CompatibleInput):
@@ -60,13 +142,116 @@ class SubmitNovelCreationStageInput(CompatibleInput):
     source: str = "external_agent"
 
 
+class ConfirmCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    data: dict[str, Any] = Field(default_factory=dict)
+    source: Literal["author", "assistant", "external_agent"] = "assistant"
+
+
+class GenerateCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    model: str = ""
+    entity_type: str = ""
+    instruction: str = ""
+
+
+class RefineCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    instruction: str
+    model: str = ""
+    entity_id: str = ""
+
+
+class RegenerateCreationArtifactInput(CreationArtifactInput):
+    expected_revision: int
+    instruction: str = ""
+    model: str = ""
+    entity_id: str = ""
+
+
+class CreationOperationInput(CompatibleInput):
+    operation_id: str
+
+
+class ImportCreationMaterialInput(CompatibleInput):
+    session_id: str
+    file_path: str
+    model: str = ""
+    source_message_id: str = ""
+
+
+class PreviewCreationImportInput(CompatibleInput):
+    session_id: str
+    import_id: str
+
+
+class ApplyCreationImportInput(CompatibleInput):
+    import_id: str
+    selected_artifacts: list[
+        Literal[
+            "world_style",
+            "characters",
+            "locations",
+            "macro_outline",
+            "opening_outline",
+        ]
+    ]
+    strategy: Literal["merge", "overwrite_unconfirmed", "skip_conflicts"] = "merge"
+    expected_revision: int
+
+
+class ListImportedFilesInput(CompatibleInput):
+    pass
+
+
+class ReadImportedFileInput(CompatibleInput):
+    filename: str
+    max_size: int = 50_000
+
+
 _INPUTS: dict[str, type[BaseModel]] = {
     "start_novel_creation_session": StartNovelCreationSessionInput,
     "draft_novel_blueprint": DraftNovelBlueprintInput,
+    "review_novel_blueprint": ReviewNovelBlueprintInput,
     "apply_novel_blueprint": ApplyNovelBlueprintInput,
     "get_novel_creation_session": GetNovelCreationSessionInput,
+    "get_creation_session": GetNovelCreationSessionInput,
+    "get_creation_snapshot": GetNovelCreationSessionInput,
+    "get_creation_operation": GetCreationOperationInput,
+    "patch_creation_session": PatchCreationSessionInput,
+    "get_creation_artifact": CreationArtifactInput,
+    "list_creation_artifacts": ListCreationArtifactsInput,
+    "get_creation_dependencies": CreationArtifactInput,
+    "get_creation_dependency_graph": ListCreationArtifactsInput,
+    "validate_creation_consistency": ListCreationArtifactsInput,
+    "patch_creation_artifact": PatchCreationArtifactInput,
+    "lock_creation_fields": CreationArtifactLockInput,
+    "unlock_creation_fields": CreationArtifactLockInput,
+    "undo_creation_artifact": UndoCreationArtifactInput,
+    "list_creation_entities": ListCreationEntitiesInput,
+    "get_creation_entity": CreationEntityInput,
+    "patch_creation_entity": PatchCreationEntityInput,
+    "delete_creation_entity": DeleteCreationEntityInput,
+    "list_creation_artifact_versions": ListArtifactVersionsInput,
+    "get_creation_artifact_diff": ArtifactVersionDiffInput,
+    "restore_creation_artifact_version": RestoreArtifactVersionInput,
     "generate_novel_creation_stage": GenerateNovelCreationStageInput,
     "submit_novel_creation_stage": SubmitNovelCreationStageInput,
+    "confirm_creation_artifact": ConfirmCreationArtifactInput,
+    "generate_creation_artifact": GenerateCreationArtifactInput,
+    "refine_creation_artifact": RefineCreationArtifactInput,
+    "regenerate_creation_artifact": RegenerateCreationArtifactInput,
+    "cancel_creation_operation": CreationOperationInput,
+    "pause_creation_operation": CreationOperationInput,
+    "resume_creation_operation": CreationOperationInput,
+    "retry_creation_operation": CreationOperationInput,
+    "validate_creation_session": GetNovelCreationSessionInput,
+    "finalize_creation_session": GetNovelCreationSessionInput,
+    "import_creation_material": ImportCreationMaterialInput,
+    "preview_creation_import": PreviewCreationImportInput,
+    "apply_creation_import": ApplyCreationImportInput,
+    "list_imported_files": ListImportedFilesInput,
+    "read_imported_file": ReadImportedFileInput,
 }
 
 

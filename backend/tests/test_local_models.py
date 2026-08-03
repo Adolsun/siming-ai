@@ -2,86 +2,80 @@
 from __future__ import annotations
 
 import json
-import os
-import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.ai.gateway import LLMGateway
-from app.core.exceptions import LLMError
 from app.database.models import (
     APIConfig,
     Base,
     Chapter,
+    LocalModel,
     LocalModelTaskSetting,
     Project,
 )
 from app.services.local_runtime.datasets import build_training_dataset
 from app.services.local_runtime.hardware import detect_hardware
 from app.services.local_runtime.manifest import model_catalog
+from app.services.local_runtime.model_jobs import import_custom_model
+from app.schemas.local_model import RuntimeStartRequest
 from app.services.local_runtime.manager import LocalRuntimeManager
 
 
 def test_hardware_profile_has_safe_recommendation():
     profile = detect_hardware()
-    assert profile.recommended_model in {"qwen3-4b-q4", "qwen3-8b-q4", "qwen3-14b-q4"}
-    assert profile.recommended_context in {8192, 16384, 32768}
+    assert profile.recommended_model in {"qwen3.5-4b-q4", "qwen3.5-9b-q4", "qwen3.5-27b-q4"}
+    assert profile.recommended_context == 262144
     assert profile.cpu_count >= 1
 
 
 def test_embedded_catalog_contains_three_qwen_tiers():
     items = model_catalog()
     assert [item["model_key"] for item in items] == [
-        "qwen3-4b-q4",
-        "qwen3-8b-q4",
-        "qwen3-14b-q4",
+        "qwen3.5-4b-q4",
+        "qwen3.5-9b-q4",
+        "qwen3.5-27b-q4",
     ]
-    assert all(len(item["sources"]) >= 2 for item in items)
+    assert all(item["context_length"] == 262144 and item["sources"] for item in items)
 
 
-def test_task_setting_does_not_route_to_disabled_local_runtime():
+def test_task_setting_routes_to_local_runtime_by_default():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     with Session() as db:
-        db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3-8b-q4"))
+        db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3.5-9b-q4"))
         db.commit()
 
     with patch("app.modules.model_runtime.infrastructure.configuration.SessionLocal", Session):
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
-    assert selected is None
+    assert selected == "local_llama_cpp:qwen3.5-9b-q4"
     assert LLMGateway._model_for_task("deepseek:custom", {"moshu_task_type": "writing"}) == "deepseek:custom"
 
 
-def test_task_setting_routes_to_local_runtime_when_enabled():
+def test_task_setting_routes_to_local_runtime_without_environment_opt_in():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     with Session() as db:
-        db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3-8b-q4"))
+        db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3.5-9b-q4"))
         db.commit()
 
-    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch(
-        "app.modules.model_runtime.infrastructure.configuration.SessionLocal",
-        Session,
+    with patch(
+        "app.modules.model_runtime.infrastructure.configuration.SessionLocal", Session,
     ):
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
-    assert selected == "local_llama_cpp:qwen3-8b-q4"
+    assert selected == "local_llama_cpp:qwen3.5-9b-q4"
 
 
-def test_gateway_rejects_explicit_local_runtime_when_disabled():
-    with pytest.raises(LLMError, match="本地 AI 模型暂时已停用"):
-        asyncio.run(LLMGateway.chat_completion(
-            messages=[{"role": "user", "content": "hello"}],
-            model="local_llama_cpp:qwen3-8b-q4",
-            retry=0,
-        ))
+def test_runtime_start_request_accepts_high_context_values():
+    request = RuntimeStartRequest(model_key="qwen3.5-9b-q4", context_length=1_000_000)
+    assert request.context_length == 1_000_000
 
 
 def test_global_default_model_wins_over_task_local_setting_until_opt_in():
@@ -98,12 +92,11 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
             readiness_status="ready",
             readiness_json='{"source":"test_verification"}',
         ))
-        db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4", context_length=32768))
+        db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3.5-27b-q4", context_length=262144))
         db.commit()
 
-    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch(
-        "app.modules.model_runtime.infrastructure.configuration.SessionLocal",
-        Session,
+    with patch(
+        "app.modules.model_runtime.infrastructure.configuration.SessionLocal", Session,
     ):
         selected = LLMGateway.select_model_for_task(task_type="cataloging")
         opt_in = LLMGateway.select_model_for_task(
@@ -113,25 +106,25 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
         explicit_body = {"moshu_task_type": "cataloging"}
         explicit = LLMGateway.select_model_for_task(
             task_type="cataloging",
-            model_override="local_llama_cpp:qwen3-14b-q4",
+            model_override="local_llama_cpp:qwen3.5-27b-q4",
             extra_body=explicit_body,
         )
 
     assert selected.model == "claude_cli:claude-code"
     assert selected.source == "global_default"
     assert selected.provider == "claude_cli"
-    assert opt_in.model == "local_llama_cpp:qwen3-14b-q4"
+    assert opt_in.model == "local_llama_cpp:qwen3.5-27b-q4"
     assert opt_in.source == "task_setting"
-    assert explicit.model == "local_llama_cpp:qwen3-14b-q4"
+    assert explicit.model == "local_llama_cpp:qwen3.5-27b-q4"
     assert explicit.source == "explicit"
-    assert explicit_body["moshu_context_length"] == 32768
+    assert explicit_body["moshu_context_length"] == 262144
 
 
 def test_local_runtime_server_uses_single_parallel_slot():
     command = LocalRuntimeManager._build_command(
         "llama-server.exe",
         "model.gguf",
-        "qwen3-8b-q4",
+        "qwen3.5-9b-q4",
         8765,
         32768,
         8,
@@ -141,6 +134,36 @@ def test_local_runtime_server_uses_single_parallel_slot():
     parallel_index = command.index("--parallel")
     assert command[parallel_index + 1] == "1"
     assert "--lora-scaled" in command
+
+
+def test_local_runtime_command_preserves_requested_context_length():
+    command = LocalRuntimeManager._build_command(
+        "llama-server.exe", "model.gguf", "custom", 8765, 1_000_000, 8, 99, [],
+    )
+    context_index = command.index("--ctx-size")
+    assert command[context_index + 1] == "1000000"
+
+
+def test_imported_custom_gguf_is_registered_without_copying():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with TemporaryDirectory() as temp_dir:
+        model_path = Path(temp_dir) / "qwen36.gguf"
+        model_path.write_bytes(b"GGUF")
+        with patch("app.services.local_runtime.model_jobs.SessionLocal", Session):
+            import_custom_model(
+                model_key="qwen36-27b-q4",
+                display_name="Qwen 3.6 27B Q4",
+                file_path=str(model_path),
+                context_length=262144,
+            )
+        with Session() as db:
+            model = db.query(LocalModel).filter(LocalModel.model_key == "qwen36-27b-q4").one()
+            assert model.file_path == str(model_path.resolve())
+            assert model.context_length == 262144
+            assert model.source == "custom"
+            assert model.status == "installed"
 
 
 def test_training_dataset_deduplicates_and_splits():

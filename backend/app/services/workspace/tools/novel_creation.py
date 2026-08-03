@@ -29,6 +29,7 @@ from ...novel_creation_interview import (
     decide_next_interview_step,
     make_novel_interview_error,
 )
+from ...system_chat_completion import complete_system_chat
 
 _logger = logging.getLogger(__name__)
 
@@ -2274,21 +2275,21 @@ def _build_multi_variant_prompt(
     session_context: dict[str, str],
     session_id: str = "",
 ) -> list[dict[str, str]]:
-    """Build LLM messages for regenerating 3 blueprint variants with original concepts."""
+    """Build LLM messages for regenerating one blueprint that remains conversationally editable."""
     target = session_context.get("target_audience", "")
     platform = session_context.get("platform", "")
     seed = session_id[:8] if session_id else str(int(time.time() * 1000))[-8:]
 
     if feedback:
-        task_desc = "用户对当前方案不满意，请从零构思3套全新的方案。不要沿用之前方案的任何创意元素。"
+        task_desc = "用户要求重新生成当前方案，请从零构思一套全新的方向。不要沿用之前方案的创意元素。"
         feedback_section = f"## 用户反馈\n{feedback}\n\n"
         requirement_extra = f"- 反馈中的每一条具体要求都要在方案中体现\n"
-        user_msg = f"请根据反馈构思3套全新的方案（种子：{seed}），直接返回JSON。"
+        user_msg = f"请根据反馈构思一套全新的方案（种子：{seed}），直接返回JSON。"
     else:
-        task_desc = "用户想看到不同的方向，请从零构思3套全新的方案。不要沿用之前方案的任何创意元素。"
+        task_desc = "用户想重新探索方向，请从零构思一套全新的方案。不要沿用之前方案的任何创意元素。"
         feedback_section = ""
         requirement_extra = ""
-        user_msg = f"请构思3套全新的方案（种子：{seed}），直接返回JSON。"
+        user_msg = f"请构思一套全新的方案（种子：{seed}），直接返回JSON。"
 
     genre_profile = _get_genre_profile(genre_label)
 
@@ -2296,29 +2297,22 @@ def _build_multi_variant_prompt(
         f"你是顶级小说策划编辑。{task_desc}\n\n"
         f"{genre_profile}\n"
         f"## 核心原则\n"
-        f"你必须从零创造3套完全不同的方案。不要参考任何已有方案的内容。\n"
-        f"每套方案的标题、主角、世界观、核心冲突必须是全新的。\n\n"
+        f"你必须从零创造一套完整且可持续对话调整的方案。不要参考任何已有方案的内容。\n"
+        f"方案的标题、主角、世界观、核心冲突必须是全新的。\n\n"
         f"## 用户原始需求\n{user_brief}\n\n"
         f"{feedback_section}"
         f"## 目标读者：{target}\n"
         f"## 发布平台：{platform}\n"
         f"## 创意种子：{seed}\n\n"
-        f"## 3套方案必须满足\n"
-        f"1. 每套方案的标题风格不同\n"
-        f"2. 每套方案的核心设定不同\n"
-        f"3. 每套方案的主角类型不同\n"
-        f"4. 每套方案的冲突模式不同\n"
-        f"5. 每套方案的世界观不同\n\n"
-        f"## 方案定位（三种不同的叙事策略）\n"
-        f"1. 稳态长线版：以主角成长、设定展开和关系积累为主线\n"
-        f"2. 强悬念暗线版：悬念驱动，暗线和伏笔前置\n"
-        f"3. 强冲突爽点版：高对抗密度，即时反馈\n\n"
+        f"## 方案必须满足\n"
+        f"1. 标题、核心设定、主角、冲突模式和世界观相互支撑\n"
+        f"2. 具备清晰的长线故事发动机\n"
+        f"3. 保留用户随后通过对话局部调整的空间\n\n"
         f"## 要求\n"
-        f"- 每套方案的主角、配角、关系、世界观、大纲都要有实质性差异\n"
-        f"- 3套方案之间要有实质性差异，不能只有标题不同\n"
+        f"- 方案中的主角、配角、关系、世界观和大纲必须形成一致方向\n"
         f"{requirement_extra}"
         f"## 输出格式\n"
-        f'{{"blueprints": [方案1, 方案2, 方案3]}}\n'
+        f'{{"blueprints": [方案1]}}\n'
         f"每个方案的字段结构：\n{_BLUEPRINT_SCHEMA_DESC}\n"
         f"只输出JSON，不要Markdown，不要解释。"
     )
@@ -4728,7 +4722,7 @@ async def draft_novel_blueprint(
                     "failure_reasons": llm_diagnostics.get("failure_reasons", []),
                 },
             }
-        blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
+        blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)][:1]
 
         session.blueprint_json = blueprints
         concept_draft = attach_concepts(session, blueprints) if depth == "concept" else None
@@ -4749,7 +4743,7 @@ async def draft_novel_blueprint(
         if revision_mode == "refine":
             detail = f"Refined {len(blueprints)} blueprint options from current direction"
             recommendation = (
-                "已用模板与模型按反馈调整三套方案；请重点检查主角动机、弱点、开局压力和黄金三章。"
+                "已用模板与模型按反馈调整当前方案；请重点检查主角动机、弱点、开局压力和黄金三章。"
                 if llm_succeeded
                 else "模型深化暂时不可用，已保留模板调整结果；可以稍后再次深度优化。"
             )
@@ -4758,14 +4752,14 @@ async def draft_novel_blueprint(
             recommendation = (
                 "已用模型重新生成原创方案；建议比较标题、核心冲突、主角压力和黄金三章。"
                 if llm_succeeded
-                else "模型深化暂时不可用，已用模板重新生成三套方案；可以稍后再次深度优化。"
+                else "模型深化暂时不可用，已用模板重新生成当前方案；可以稍后再次深度优化。"
             )
         elif llm_succeeded:
             detail = f"Generated {len(blueprints)} original LLM blueprint options"
-            recommendation = "已用模型生成原创方案；每套方案的标题、角色和世界观都由当前模型即时构思，优先选择最打动你的一套。"
+            recommendation = "已用模型生成一套原创方案；标题、角色和世界观均由当前模型即时构思，可继续通过对话定向调整。"
         else:
             detail = f"Generated {len(blueprints)} API-free blueprint options"
-            recommendation = "已用快速创意编译器生成三套方案；优先选择需求覆盖率最高且黄金三章最顺眼的一套。"
+            recommendation = "已用快速创意编译器生成一套方案；可继续通过对话调整主角、冲突或开篇钩子。"
         return {
             "tool": "draft_novel_blueprint",
             "status": "ok",
@@ -5548,109 +5542,14 @@ async def system_chat_completion(
     context: dict[str, Any],
     model: str | None = None,
 ) -> dict[str, Any]:
-    """General conversation for system assistant without project context.
-
-    Uses LLM to understand user intent and respond naturally.
-    Context may include: blueprints, sessionId, brief, importedFiles, history.
-    """
-    # Build context description
-    context_parts = []
-
-    blueprints = context.get("blueprints")
-    if blueprints and len(blueprints) > 0:
-        titles = [bp.get("title", "未知") for bp in blueprints[:3]]
-        context_parts.append(f"当前有{len(blueprints)}个新书方案：{'、'.join(titles)}")
-
-    session_id = context.get("sessionId")
-    if session_id:
-        context_parts.append("有一个活跃的创作会话")
-
-    brief = context.get("brief")
-    if brief:
-        context_parts.append(f"用户的创作设想：{brief[:200]}")
-
-    imported_files = context.get("importedFiles")
-    if not isinstance(imported_files, list):
-        legacy_imported_file = context.get("importedFile")
-        imported_files = [legacy_imported_file] if isinstance(legacy_imported_file, dict) else []
-    if imported_files:
-        file_descriptions = [
-            f"{item.get('name', '未知')}（{item.get('length', 0)}字）"
-            for item in imported_files[:3]
-            if isinstance(item, dict)
-        ]
-        if file_descriptions:
-            context_parts.append(f"用户刚导入了文件：{'、'.join(file_descriptions)}")
-
-    history = context.get("history")
-    history_text = ""
-    if history and len(history) > 0:
-        recent = history[-6:]  # Last 3 turns
-        history_text = "\n".join([f"{'用户' if h.get('role') == 'user' else '司命'}：{h.get('content', '')[:200]}" for h in recent])
-
-    context_desc = "\n".join(context_parts) if context_parts else "当前没有任何特殊上下文。"
-
-    try:
-        provider, model_name = LLMGateway.model_identity(model)
-        model_identity = f"{provider}:{model_name}"
-    except Exception:
-        model_identity = "司命系统设置中的默认模型"
-
-    system = (
-        f"你是司命，一个专业的中文小说创作助手。你正在和用户进行系统级对话（没有绑定具体作品）。\n"
-        f"当前执行模型：{model_identity}。\n\n"
-        f"## 当前上下文\n{context_desc}\n\n"
-        f"## 近期对话\n{history_text}\n\n"
-        f"## 你的能力\n"
-        f"1. 帮用户创建新小说项目（通过新书立项流程）\n"
-        f"2. 管理已有作品列表\n"
-        f"3. 导入文件为新作品\n"
-        f"4. 基于参考文件写新书\n"
-        f"5. 回答关于小说创作的问题\n\n"
-        f"## 回复原则\n"
-        f"- 你在司命内部工作，不要把自己介绍成 OpenCode、代码助手或软件工程 Agent\n"
-        f"- 默认始终使用中文；除非用户明确要求，否则不要用英文回复\n"
-        f"- 不要自行寻找 requirements.md、代码仓库任务或编程配置，也不要讨论当前工作目录\n"
-        f"- 用户问当前模型时，直接依据“当前执行模型”回答，不要回避\n"
-        f"- 根据上下文理解用户的真实意图，不要死板地匹配关键词\n"
-        f"- 如果用户在表达不满或困惑，理解他们的情绪并给出有帮助的回应\n"
-        f"- 如果用户问了一个问题，直接回答\n"
-        f"- 如果用户想做某件事，告诉他们怎么操作（或直接帮他们做）\n"
-        f"- 回复简洁自然，不要用机器人式的固定格式\n"
-        f"- 如果不确定用户意图，可以反问确认\n\n"
-        f"## 输出格式\n"
-        f"直接回复用户的消息，不要JSON，不要Markdown代码块。"
+    return await complete_system_chat(
+        message=message,
+        context=context,
+        model=model,
+        gateway=LLMGateway,
+        generic_completion=_stream_blueprint_completion,
+        extra_body=_novel_creation_cli_context(model),
     )
-
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": message},
-    ]
-
-    try:
-        reply = (await _stream_blueprint_completion(
-            messages=messages,
-            model=model,
-            temperature=0.7,
-            max_tokens=800,
-            retry=0,
-            activity_message="司命正在组织回复",
-        )).strip()
-        if not reply:
-            raise RuntimeError("没有收到模型的文字回复")
-    except Exception as exc:
-        _logger.warning("System chat failed: %s", exc, exc_info=True)
-        detail = str(exc).strip()
-        if not detail:
-            detail = f"({type(exc).__name__})"
-        if len(detail) > 500:
-            detail = detail[:500] + "..."
-        raise RuntimeError(
-            f"当前选择的模型 {model_identity} 调用失败：{detail}"
-            "。请在系统设置中点击“测试本机 CLI”查看登录、模型或额度状态。"
-        ) from exc
-
-    return {"reply": reply}
 
 
 async def list_imported_files(

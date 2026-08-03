@@ -2,6 +2,7 @@ package com.siming.mobile.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
@@ -9,11 +10,15 @@ import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.local.SyncCursor
 import com.siming.mobile.data.network.GatewayApi
+import com.siming.mobile.data.network.DirectApiClient
+import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.data.network.PairingCompleteResponse
 import com.siming.mobile.data.network.RemoteSyncProject
 import com.siming.mobile.data.network.SyncMutationRequest
 import com.siming.mobile.data.network.WorkspaceAssistantRequest
 import com.siming.mobile.security.PairingSecurity
+import com.siming.mobile.security.SecureApiConfigStore
 import com.siming.mobile.security.SecureTokenStore
 import com.siming.mobile.security.StoredTokenPair
 import com.siming.mobile.security.VerifiedPairing
@@ -37,7 +42,9 @@ class SimingRepository(context: Context) {
     private val database = SimingDatabase.get(appContext)
     private val dao = database.dao()
     private val tokenStore = SecureTokenStore(appContext)
+    private val directApiStore = SecureApiConfigStore(appContext)
     private val api = GatewayApi(tokenStore)
+    private val directApi = DirectApiClient(allowCleartextForTests = BuildConfig.DEBUG)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
     val connection: Flow<GatewayConnection?> = dao.observeConnection()
@@ -48,6 +55,43 @@ class SimingRepository(context: Context) {
 
     fun entities(projectId: String, entityType: String): Flow<List<ReplicaEntity>> =
         dao.observeEntities(projectId, entityType)
+
+    fun directApiSummary(): DirectApiSummary? = directApiStore.read()?.summary()
+
+    suspend fun discoverDirectModels(baseUrl: String, apiKey: String): List<String> {
+        val effectiveKey = apiKey.trim().ifBlank { directApiStore.read()?.apiKey.orEmpty() }
+        return directApi.discoverModels(baseUrl, effectiveKey)
+    }
+
+    suspend fun configureDirectApi(
+        displayName: String,
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        protocol: String,
+    ): DirectApiSummary {
+        val existing = directApiStore.read()
+        val config = DirectApiConfig(
+            displayName = displayName.trim().ifBlank { "自定义 API" },
+            baseUrl = baseUrl.trim().trimEnd('/'),
+            apiKey = apiKey.trim().ifBlank { existing?.apiKey.orEmpty() },
+            model = model.trim(),
+            protocol = protocol,
+        )
+        directApi.test(config)
+        directApiStore.save(config)
+        return config.summary()
+    }
+
+    suspend fun testDirectApi(): DirectApiSummary {
+        val config = directApiStore.read() ?: error("请先配置手机直连 API")
+        directApi.test(config)
+        return config.summary()
+    }
+
+    fun clearDirectApi() {
+        directApiStore.clear()
+    }
 
     fun verifyPairing(raw: String): VerifiedPairing = PairingSecurity.verify(raw)
 
@@ -200,7 +244,7 @@ class SimingRepository(context: Context) {
                 ),
             )
         }
-        SyncScheduler.enqueue(appContext)
+        if (dao.connection() != null) SyncScheduler.enqueue(appContext)
         return entityId
     }
 
@@ -239,7 +283,7 @@ class SimingRepository(context: Context) {
                 ),
             )
         }
-        SyncScheduler.enqueue(appContext)
+        if (dao.connection() != null) SyncScheduler.enqueue(appContext)
     }
 
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
@@ -495,14 +539,77 @@ class SimingRepository(context: Context) {
         scope: String,
         prompt: String,
         onEvent: suspend (String) -> Unit,
-    ) {
-        api.streamAssistant(
-            requireConnection(),
-            projectId,
-            WorkspaceAssistantRequest(scope = scope, message = prompt),
-            onEvent,
+    ): AssistantRoute {
+        val directConfig = directApiStore.read()
+        if (directConfig != null) {
+            val (systemPrompt, userPrompt) = buildDirectAssistantPrompt(projectId, scope, prompt)
+            onEvent(directApi.complete(directConfig, systemPrompt, userPrompt))
+            return AssistantRoute.DirectApi
+        }
+
+        val connection = dao.connection()
+        if (connection != null) {
+            api.streamAssistant(
+                connection,
+                projectId,
+                WorkspaceAssistantRequest(scope = scope, message = prompt),
+                onEvent,
+            )
+            syncNow()
+            return AssistantRoute.Gateway
+        }
+        error("请先配置手机直连 API，或连接自己的 Gateway")
+    }
+
+    private suspend fun buildDirectAssistantPrompt(
+        projectId: String,
+        scope: String,
+        prompt: String,
+    ): Pair<String, String> {
+        val scopeTypes = when (scope) {
+            "outline" -> setOf("project", "outline", "character", "world")
+            "characters" -> setOf("project", "character", "world", "chapter")
+            "worldbuilding" -> setOf("project", "world", "character", "outline")
+            else -> setOf("project", "outline", "character", "world", "foreshadowing", "governance", "chapter")
+        }
+        val priorities = mapOf(
+            "project" to 0,
+            "outline" to 1,
+            "character" to 2,
+            "world" to 3,
+            "foreshadowing" to 4,
+            "governance" to 5,
+            "chapter" to 6,
         )
-        syncNow()
+        val context = StringBuilder()
+        dao.projectSnapshot(projectId)
+            .filter { it.entityType in scopeTypes && !it.payloadJson.isNullOrBlank() }
+            .sortedWith(compareBy<ReplicaEntity> { priorities[it.entityType] ?: 99 }.thenByDescending { it.localModifiedAt })
+            .forEach { entity ->
+                if (context.length >= DIRECT_CONTEXT_CHARACTERS) return@forEach
+                val remaining = DIRECT_CONTEXT_CHARACTERS - context.length
+                val payload = entity.payloadJson.orEmpty().take(remaining.coerceAtLeast(0))
+                if (payload.isNotBlank()) {
+                    context.append("\n[${entity.entityType}:${entity.entityId}]\n")
+                    context.append(payload)
+                }
+            }
+
+        val systemPrompt = """
+            你是司命手机版的小说项目助手。请使用简体中文，严格依据作者提供的本地项目资料完成任务。
+            手机独立模式不能调用服务器工具，也不能声称已经修改数据库；请直接返回可复制、可保存的成品文本。
+            保持人物动机、世界规则、叙事视角和既有事实一致。资料不足时明确说明合理假设，不要编造已存在的设定。
+        """.trimIndent()
+        val userPrompt = """
+            作者请求：
+            ${prompt.trim()}
+
+            处理范围：$scope
+
+            本地项目资料：
+            ${context.ifEmpty { "（当前项目尚无可用资料）" }}
+        """.trimIndent()
+        return systemPrompt to userPrompt
     }
 
     suspend fun disconnect(clearOfflineData: Boolean): Boolean {
@@ -534,10 +641,16 @@ class SimingRepository(context: Context) {
     companion object {
         private const val MAX_ENTITY_BYTES = 1024 * 1024
         private const val MAX_PUSH_BYTES = 6 * 1024 * 1024
+        private const val DIRECT_CONTEXT_CHARACTERS = 28_000
         private val syncMutex = Mutex()
     }
 }
 
 sealed interface SyncOutcome {
     data object Success : SyncOutcome
+}
+
+enum class AssistantRoute {
+    Gateway,
+    DirectApi,
 }

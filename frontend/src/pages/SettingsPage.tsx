@@ -40,6 +40,11 @@ import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
 import ModelReadinessBanner from '../components/ModelReadinessBanner'
+import {
+  type SharedModelConfig,
+  useGlobalModelActions,
+  useSharedModelConfigs,
+} from '../shared/query/modelConfigs'
 import GatewaySettingsPanel from '../features/gateway/GatewaySettingsPanel'
 import type { LauncherGatewaySettings } from '../features/gateway/types'
 import {
@@ -64,43 +69,12 @@ import {
   resolveProviderForSubmit,
   type ModelDiscoveryState,
   type ModelOption,
-  type ReadinessStatus,
 } from '../features/localModels/settingsModelOptions'
 import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
 
-interface ModelConfig {
-  id: string
-  provider: string
-  default_model: string
-  is_global_default: boolean
-  readiness_status: ReadinessStatus
-  is_usable: boolean
-  readiness_message?: string
-  readiness_source?: string | null
-  failure_class?: string | null
-  last_tested_at?: string | null
-  base_url_override?: string
-  api_protocol?: 'auto' | 'chat_completions' | 'responses'
-  provider_type?: string
-  cli_command?: string
-  cli_args?: string
-  max_output_tokens?: number | null
-  effective_max_output_tokens?: number
-  deconstruct_input_char_limit?: number | null
-  effective_deconstruct_input_char_limit?: number
-  deconstruct_item_char_limit?: number | null
-  effective_deconstruct_item_char_limit?: number
-  api_key_masked?: string
-  created_at?: string
-  updated_at?: string
-}
-
-interface GlobalModel {
-  provider: string | null
-  model: string | null
-}
+type ModelConfig = SharedModelConfig
 
 interface ContentRootSettings {
   current_path: string
@@ -169,9 +143,15 @@ interface SettingsPageProps {
 
 function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const queryClient = useQueryClient()
-  const [configs, setConfigs] = useState<ModelConfig[]>([])
-  const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
-  const [loading, setLoading] = useState(false)
+  const modelConfigsQuery = useSharedModelConfigs()
+  const { setGlobalModel: persistGlobalModel } = useGlobalModelActions()
+  const configs = modelConfigsQuery.data?.items || []
+  const loading = modelConfigsQuery.isLoading || modelConfigsQuery.isFetching
+  const globalConfig = configs.find((config) => config.is_global_default && config.is_usable)
+  const globalModel = {
+    provider: globalConfig?.provider || null,
+    model: globalConfig?.default_model || null,
+  }
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
@@ -197,25 +177,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'gateway'>('ai')
 
   const fetchConfigs = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await apiClient.get<{ code: number; data: { items: ModelConfig[] } }>('/config/models')
-      setConfigs(res.data.data.items)
-    } catch (err: any) {
-      message.error(err.message || '获取模型配置失败')
-    } finally {
-      setLoading(false)
+    const result = await modelConfigsQuery.refetch()
+    if (result.error) {
+      message.error(result.error instanceof Error ? result.error.message : '获取模型配置失败')
     }
-  }, [])
-
-  const fetchGlobalModel = useCallback(async () => {
-    try {
-      const res = await apiClient.get<{ code: number; data: GlobalModel }>('/config/global-model')
-      setGlobalModel(res.data.data)
-    } catch (err: any) {
-      // ignore if not set
-    }
-  }, [])
+  }, [modelConfigsQuery])
 
   const fetchContentRoot = useCallback(async () => {
     setContentRootLoading(true)
@@ -246,11 +212,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   }, [embedded])
 
   useEffect(() => {
-    fetchConfigs()
-    fetchGlobalModel()
     fetchContentRoot()
     fetchLauncherSettings()
-  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings])
+  }, [fetchContentRoot, fetchLauncherSettings])
 
   const saveLaunchMode = async () => {
     setLauncherLoading(true)
@@ -422,7 +386,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           ? fallbackModelOptions(cfg.provider)
           : [{ id: defaultModel, display_name: defaultModel }])
         if (!knownProvider) {
-          setModelDiscovery({ status: 'success', message: '已保留当前模型；输入 API Key 后会自动刷新模型列表。' })
+          setModelDiscovery({ status: 'success', message: '已保留当前模型；可直接使用已保存密钥刷新模型列表。' })
         }
         form.setFieldsValue({
           provider: knownProvider ? cfg.provider : CUSTOM_PROVIDER_VALUE,
@@ -438,6 +402,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           deconstruct_input_char_limit: cfg.deconstruct_input_char_limit || cfg.effective_deconstruct_input_char_limit || defaultOutputLimit(cfg.provider, defaultModel),
           deconstruct_item_char_limit: cfg.deconstruct_item_char_limit || cfg.effective_deconstruct_item_char_limit || defaultOutputLimit(cfg.provider, defaultModel),
         })
+        void fetchModels(provider)
       }
     } else {
       setEditingProvider(null)
@@ -507,7 +472,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           await apiClient.delete(`/config/models/${provider}`)
           message.success('配置已删除')
           fetchConfigs()
-          fetchGlobalModel()
         } catch (err: any) {
           message.error(err.message || '删除配置失败')
         }
@@ -527,6 +491,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     const baseUrl = form.getFieldValue('base_url_override') || undefined
     if (isCli) {
       setModelsLoading(true)
+      setModelDiscovery({ status: 'idle', message: provider === 'opencode_cli' ? '正在运行 OpenCode CLI 获取可用模型…' : '正在通过本机 CLI 获取可用模型…' })
       setModelOptions(fallbackModelOptions(provider))
       try {
         const res = await apiClient.post<{ code: number; data: { models: ModelOption[] } }>(
@@ -537,9 +502,17 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
             cli_args: form.getFieldValue('cli_args') || DEFAULT_CLI_ARGS[provider],
           }
         )
-        setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
+        const options = normalizeProviderModelOptions(provider, res.data.data.models || [])
+        setModelOptions(options)
+        setModelDiscovery({
+          status: 'success',
+          message: provider === 'opencode_cli'
+            ? `已由司命运行 OpenCode CLI，获取到 ${options.length} 个可用模型。`
+            : `已从本机 CLI 获取到 ${options.length} 个模型。`,
+        })
       } catch (err: any) {
         setModelOptions(fallbackModelOptions(provider))
+        setModelDiscovery({ status: 'manual', message: `CLI 模型发现失败：${err.message || '命令不可用'}。仍可手动填写模型名。` })
       } finally {
         setModelsLoading(false)
       }
@@ -550,7 +523,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       setModelDiscovery({ status: 'idle', message: '填写 API 端点和 API Key 后，将自动拉取模型列表。' })
       return
     }
-    if (!apiKey) {
+    const savedProvider = providerOverride || editingProvider
+    const hasSavedApiKey = Boolean(savedProvider && configs.find((item) => item.provider === savedProvider)?.api_key_configured)
+    if (!apiKey && !hasSavedApiKey) {
       setModelOptions(fallbackModelOptions(provider))
       if (isCustom) {
         setModelDiscovery({ status: 'idle', message: '填写 API 端点和 API Key 后，将自动拉取模型列表。' })
@@ -571,7 +546,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         '/config/models/list',
         {
           provider,
-          api_key: apiKey,
+          api_key: apiKey || undefined,
           base_url_override: baseUrl,
         }
       )
@@ -605,7 +580,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     const provider = resolveProviderForSubmit(values)
     const isCli = isLocalCliProvider(provider)
     const apiKey = form.getFieldValue('api_key')
-    if (!provider || (!isCli && !apiKey)) {
+    const hasSavedApiKey = Boolean(editingProvider && configs.find((item) => item.provider === editingProvider)?.api_key_configured)
+    if (!provider || (!isCli && !apiKey && !hasSavedApiKey)) {
       message.warning('请先选择提供商并输入 API Key')
       return
     }
@@ -627,7 +603,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         data: { api_protocol?: 'chat_completions' | 'responses'; base_url?: string }
       }>('/config/models/test', {
         provider,
-        api_key: isCli ? undefined : apiKey,
+        api_key: isCli ? undefined : apiKey || undefined,
         base_url_override: isCli ? undefined : baseUrl,
         api_protocol: isCli ? undefined : values.api_protocol || 'auto',
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] : undefined,
@@ -654,7 +630,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         `/config/models/${provider}/verify`,
       )
       message.success(response.data.message || '模型已经通过真实对话测试')
-      await Promise.all([fetchConfigs(), fetchGlobalModel()])
+      await fetchConfigs()
     } catch (err: any) {
       message.error(err.message || '真实对话测试失败')
       await fetchConfigs()
@@ -667,13 +643,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     const config = configs.find((item) => item.provider === provider)
     if (!config) return
     try {
-      await apiClient.put('/config/global-model', {
-        provider,
-        model: normalizeDefaultModel(provider, config.default_model),
-      })
+      const model = normalizeDefaultModel(provider, config.default_model)
+      await persistGlobalModel(provider, model)
       message.success('全局默认模型已设置')
-      fetchGlobalModel()
-      fetchConfigs()
     } catch (err: any) {
       message.error(err.message || '设置全局默认模型失败')
     }
@@ -716,8 +688,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       title: '全局默认',
       dataIndex: 'is_global_default',
       key: 'is_global_default',
-      render: (v: boolean) =>
-        v ? <Tag icon={<CheckCircleOutlined />} color="success">是</Tag> : <span>—</span>,
+      render: (_v: boolean, record: ModelConfig) =>
+        globalModel.provider === record.provider
+          ? <Tag icon={<CheckCircleOutlined />} color="success">是</Tag>
+          : <span>—</span>,
     },
     {
       title: '操作',
@@ -734,7 +708,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               测试并启用
             </Button>
           )}
-          {record.is_usable && !record.is_global_default && (
+          {record.is_usable && globalModel.provider !== record.provider && (
             <Button onClick={() => void handleSetGlobal(record.provider)}>设为默认</Button>
           )}
           <Button
@@ -1117,10 +1091,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           <Form.Item
             name="api_key"
             label="API Key"
-            rules={[{ required: true, message: '请输入 API Key' }]}
+            extra={editingProvider ? '密钥已加密保存。留空会继续使用原密钥；只有输入新值才会替换。' : '密钥将在本机加密存储。'}
+            rules={[{ required: !editingProvider, message: '请输入 API Key' }]}
           >
             <Input.Password
-              placeholder="输入 API Key（将被加密存储）"
+              placeholder={editingProvider ? '已保存，留空继续使用' : '输入 API Key（将被加密存储）'}
               onBlur={() => {
                 if (form.getFieldValue('provider')) {
                   fetchModels()
@@ -1183,6 +1158,17 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
           {isLocalCliProvider(modalProvider) && (
             <>
+              <Alert
+                showIcon
+                type={modelDiscovery.status === 'manual' ? 'warning' : modelDiscovery.status === 'success' ? 'success' : 'info'}
+                message={modelsLoading ? '正在获取 CLI 模型列表…' : modelDiscovery.message || '司命可以直接运行本机 CLI 获取可用模型。'}
+                action={(
+                  <Button size="small" icon={<ReloadOutlined />} loading={modelsLoading} onClick={() => void fetchModels()}>
+                    {modalProvider === 'opencode_cli' ? '刷新 OpenCode 模型' : '刷新 CLI 模型'}
+                  </Button>
+                )}
+                style={{ marginBottom: 16 }}
+              />
               <Form.Item
                 name="cli_command"
                 label="本机 CLI 命令"
@@ -1229,7 +1215,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           <Form.Item
             name="default_model"
             label="默认模型"
-            extra={isLocalCliProvider(modalProvider) ? '本机 CLI 可直接输入 CLI 支持的模型名；占位模型表示跟随 CLI 自身默认。' : undefined}
+            extra={isLocalCliProvider(modalProvider) ? '列表由司命调用本机 CLI 自动获取；仍可直接输入模型名作为兜底。' : undefined}
             rules={[{ required: true, message: '请选择默认模型名' }]}
           >
             {isLocalCliProvider(modalProvider) ? (
@@ -1239,9 +1225,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   label: m.display_name || m.id,
                 }))}
                 placeholder="输入 CLI 支持的模型名，或选择候选项"
-                filterOption={(input, option) =>
-                  String(option?.label || option?.value || '').toLowerCase().includes(input.toLowerCase())
-                }
+                // In combobox mode AutoComplete uses the current value as its search text.
+                // Keep every discovered model visible when an existing configuration is opened.
+                filterOption={false}
                 onChange={(modelName) => {
                   const provider = resolveProviderForSubmit(form.getFieldsValue())
                   form.setFieldsValue(defaultSafetyLimits(provider, modelName))
@@ -1272,7 +1258,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 notFoundContent={
                   modelsLoading
                     ? '加载中...'
-                    : form.getFieldValue('api_key')
+                    : form.getFieldValue('api_key') || editingProvider
                     ? '未找到模型'
                     : '请先输入 API Key'
                 }

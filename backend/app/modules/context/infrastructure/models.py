@@ -28,7 +28,7 @@ class ModelContextProfile(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     provider = Column(String(80), nullable=False)
-    model_name = Column(String(200), nullable=False)
+    model_name = Column(String(512), nullable=False)
     context_window_tokens = Column(Integer, nullable=False, default=16384)
     max_output_tokens = Column(Integer, nullable=True)
     safety_margin_tokens = Column(Integer, nullable=False, default=512)
@@ -49,7 +49,7 @@ class ContextManifest(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     session_id = Column(String(36), nullable=True)
     task_type = Column(String(50), nullable=False)
-    model = Column(String(200), nullable=True)
+    model = Column(String(512), nullable=True)
     provider = Column(String(80), nullable=True)
     execution_route = Column(String(50), nullable=False, default="internal_api")
     policy_version = Column(Integer, nullable=False, default=1)

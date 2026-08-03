@@ -7,34 +7,33 @@ import {
   Card,
   Collapse,
   Descriptions,
-  Divider,
-  Empty,
   Form,
   Input,
   InputNumber,
   Modal,
-  Progress,
   Radio,
   Select,
   Space,
   Spin,
   Tag,
-  Timeline,
   Tooltip,
   Typography,
   message,
 } from 'antd'
 import {
   BookOutlined,
-  CloudSyncOutlined,
+  CompassOutlined,
   DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
-  PlayCircleOutlined,
+  FileTextOutlined,
+  LockOutlined,
+  RobotOutlined,
   ReloadOutlined,
   RocketOutlined,
   SaveOutlined,
   SettingOutlined,
+  UploadOutlined,
 } from '@ant-design/icons'
 import SystemNav from '../components/SystemNav'
 import {
@@ -48,442 +47,27 @@ import {
   startNovelCreationSession,
   workbenchUrl,
 } from '../hooks/useNovelCreationInterviewController'
+import { RunStatusPanels } from '../features/novelCreation/RunStatusPanels'
+import { StagePreview, StructuredStageEditor } from '../features/novelCreation/StageContent'
+import { useNovelCreationRun } from '../features/novelCreation/useNovelCreationRun'
+import {
+  CORE_STAGES,
+  errorText,
+  splitLines,
+  stageStatusLabel,
+  stageTone,
+  type ApiResponse,
+  type CreationFormValues,
+  type CreationPath,
+  type CreationSession,
+  type GenrePreset,
+  type PresetCatalog,
+  type StageRun,
+} from '../features/novelCreation/types'
 import './NovelCreationWizardPage.css'
 
 const { Paragraph, Text, Title } = Typography
 const { TextArea } = Input
-
-interface ApiResponse<T> {
-  code: number
-  message: string
-  data: T
-}
-
-interface PresetDefaults {
-  world_tone: string
-  story_structure: string
-  pacing: string
-  writing_style: string
-  special_requirements: string[]
-  avoid: string[]
-}
-
-interface GenrePreset {
-  id: string
-  label: string
-  description: string
-  themes: Array<{ id: string; label: string }>
-  defaults: PresetDefaults
-}
-
-interface PresetCatalog {
-  categories: GenrePreset[]
-  platforms: string[]
-  audiences: string[]
-  length_options: Array<{ id: string; label: string; words: number; chapters: number }>
-  stage_order: string[]
-  stage_labels: Record<string, string>
-}
-
-interface ConceptCard {
-  id: string
-  title: string
-  subtitle?: string
-  logline: string
-  source_index: number
-  protagonist_seed: { name: string; identity: string; goal: string; lack: string }
-  world_hook: string
-  core_conflict: string
-  story_engine: string
-  opening_hook: string
-  differentiators: string[]
-  risks: string[]
-  coverage: { score: number; covered: string[]; missing: string[] }
-}
-
-interface StageState {
-  status: 'pending' | 'generated' | 'confirmed' | 'stale'
-  data?: Record<string, unknown> | null
-  source?: string
-  stale_reason?: string
-  updated_at?: string
-}
-
-interface StageFlowItem {
-  stage: string
-  label: string
-  status: StageState['status']
-  can_view: boolean
-  can_generate: boolean
-  can_confirm: boolean
-  blocked_by: Array<{ stage: string; label: string; reason: string }>
-  actions: string[]
-  next_stage?: string | null
-}
-
-interface StageFlow {
-  attention_stage?: string | null
-  recommended_stage?: string | null
-  legacy_current_stage?: string | null
-  pending_confirmations: string[]
-  items: Record<string, StageFlowItem>
-}
-
-interface CreationFormValues {
-  brief: string
-  preset_id: string
-  theme_id?: string
-  genre: string
-  target_audience: string
-  platform: string
-  target_words: number
-  target_chapters: number
-  world_tone: string
-  story_structure: string
-  pacing: string
-  writing_style: string
-  special_requirements: string[]
-  avoid: string[]
-}
-
-interface CreationSession {
-  id: string
-  status: string
-  current_stage?: string
-  created_project_id?: string
-  revision: number
-  stage_flow?: StageFlow
-  updated_at?: string
-  last_error?: {
-    failure_class?: string
-    message?: string
-    next_action?: string
-    run_id?: string
-    failed_stage?: string
-    failed_stage_label?: string
-  }
-  runs?: StageRun[]
-  draft?: {
-    form: CreationFormValues
-    concepts: ConceptCard[]
-    selected_concept_id?: string
-    quick_mode?: boolean
-    stages: Record<string, StageState>
-  }
-}
-
-interface StageRun {
-  id: string
-  session_id?: string
-  stage: string
-  status: string
-  current_message?: string
-  failure_class?: string
-  next_action?: string
-  operation_id?: string
-  input_revision?: number
-  input_snapshot_hash?: string
-  model_source?: string
-  events?: Array<{
-    event_type: string
-    status?: string
-    message?: string
-    payload?: Record<string, unknown>
-  }>
-}
-
-const CORE_STAGES = ['world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review']
-
-function errorText(error: unknown) {
-  return error instanceof Error ? error.message : '操作失败，请稍后重试'
-}
-
-function splitLines(value: string) {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
-}
-
-function stageTone(status?: StageState['status']) {
-  if (status === 'confirmed') return 'success'
-  if (status === 'stale') return 'warning'
-  if (status === 'generated') return 'processing'
-  return 'default'
-}
-
-function stageStatusLabel(status?: StageState['status']) {
-  const labels: Record<string, string> = {
-    pending: '待生成',
-    generated: '待确认',
-    confirmed: '已确认',
-    stale: '需重新校验',
-  }
-  return labels[status || 'pending'] || '待生成'
-}
-
-const stageFieldLabels: Record<string, string> = {
-  writing_style: '正文风格', world_tone: '世界基调', story_structure: '剧情结构', pacing: '叙事节奏',
-  style_rules: '文风规则', forbidden_patterns: '避雷项', worldbuilding: '世界设定', display_groups: '展示分组',
-  characters: '角色', relationships: '角色关系', entries: '地点与势力', relations: '稳定关系',
-  story_overview: '故事总览', core_conflict: '核心冲突', ending_direction: '结局方向', target_chapters: '目标章节数',
-  volumes: '分卷规划', stage_plan: '阶段规划', chapters: '章节细纲', sections: '场景事件',
-  title: '标题', name: '名称', summary: '摘要', content: '内容', description: '说明', dimension: '维度',
-  role_type: '角色类型', background: '背景', personality: '性格', goal: '目标', current_goal: '当前目标', profile: '写作锁',
-  source_title: '起点', target_title: '终点', relation_type: '关系类型', start_chapter: '起始章节', end_chapter: '结束章节',
-  client_id: '内部标识', parent_client_id: '所属章节', metadata: '场景信息', ready: '可以创建', blocking: '阻塞项', warnings: '提醒', counts: '数量检查',
-  core_tone: '核心基调', atmosphere: '氛围', emotional_color: '情绪色彩', reader_experience: '读者感受',
-  narrative_perspective: '叙事视角', perspective: '叙事视角', sentence_rhythm: '句式节奏', language_style: '语言风格',
-  main_line: '主线结构', stages: '阶段安排', opening: '开篇节奏', middle: '中段节奏', climax: '高潮节奏',
-}
-
-function fieldLabel(key: string) {
-  return stageFieldLabels[key] || key.replace(/_/g, ' ')
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function recordRows(value: unknown, nameField = 'title'): Array<Record<string, unknown>> {
-  if (Array.isArray(value)) return value.filter(isRecord)
-  if (!isRecord(value)) return []
-  return Object.entries(value).flatMap(([name, child]) => {
-    if (!isRecord(child)) return []
-    return [{ ...child, [nameField]: child[nameField] || name }]
-  })
-}
-
-function uniqueRows(rows: Array<Record<string, unknown>>, keyBuilder: (item: Record<string, unknown>) => string) {
-  const seen = new Set<string>()
-  return rows.filter((item) => {
-    const key = keyBuilder(item)
-    if (!key || !seen.has(key)) {
-      if (key) seen.add(key)
-      return true
-    }
-    return false
-  })
-}
-
-function roleTypeLabel(value: unknown, index: number) {
-  const role = String(value || (index === 0 ? 'protagonist' : 'supporting'))
-  return ({ protagonist: '主角', supporting: '配角', antagonist: '对手' } as Record<string, string>)[role] || role
-}
-
-function volumeRange(item: Record<string, unknown>) {
-  if (item.start_chapter && item.end_chapter) return `${String(item.start_chapter)} - ${String(item.end_chapter)} 章`
-  const numbers = String(item.chapters || '').match(/\d+/g)
-  if (numbers && numbers.length >= 2) return `${numbers[0]} - ${numbers[1]} 章`
-  return '章节范围待确认'
-}
-
-function collectionItemLabel(value: unknown, index: number) {
-  if (!isRecord(value)) return `第 ${index + 1} 项`
-  return String(value.title || value.name || value.client_id || value.source_title || `第 ${index + 1} 项`)
-}
-
-function StructuredPreviewValue({ value }: { value: unknown }) {
-  if (value == null || value === '') {
-    return <Text type="secondary">未提供</Text>
-  }
-  if (typeof value === 'boolean') {
-    return <span className="creation-preview-value">{value ? '是' : '否'}</span>
-  }
-  if (typeof value === 'string' || typeof value === 'number') {
-    return <span className="creation-preview-value">{String(value)}</span>
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) return <Text type="secondary">未提供</Text>
-    return (
-      <ul className="creation-preview-list">
-        {value.map((item, index) => (
-          <li key={`${collectionItemLabel(item, index)}-${index}`}>
-            <StructuredPreviewValue value={item} />
-          </li>
-        ))}
-      </ul>
-    )
-  }
-  if (isRecord(value)) {
-    const entries = Object.entries(value)
-    if (entries.length === 0) return <Text type="secondary">未提供</Text>
-    return (
-      <dl className="creation-preview-fields">
-        {entries.map(([key, child]) => (
-          <div className="creation-preview-field" key={key}>
-            <dt>{fieldLabel(key)}</dt>
-            <dd><StructuredPreviewValue value={child} /></dd>
-          </div>
-        ))}
-      </dl>
-    )
-  }
-  return <span className="creation-preview-value">{String(value)}</span>
-}
-
-function StructuredValueEditor({ fieldKey, value, onChange }: { fieldKey: string; value: unknown; onChange: (value: unknown) => void }) {
-  const label = fieldLabel(fieldKey)
-
-  if (typeof value === 'boolean') {
-    return <Radio.Group aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}><Radio.Button value>是</Radio.Button><Radio.Button value={false}>否</Radio.Button></Radio.Group>
-  }
-  if (typeof value === 'number') {
-    return <InputNumber aria-label={label} value={value} onChange={(next) => onChange(next ?? 0)} style={{ width: '100%' }} />
-  }
-  if (typeof value === 'string' || value == null) {
-    const text = value == null ? '' : value
-    const multiline = text.length > 80 || ['summary', 'content', 'description', 'background', 'story_overview', 'core_conflict', 'ending_direction'].includes(fieldKey)
-    return multiline
-      ? <TextArea aria-label={label} value={text} rows={3} onChange={(event) => onChange(event.target.value)} />
-      : <Input aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} />
-  }
-  if (Array.isArray(value)) {
-    const onlySimpleValues = value.every((item) => ['string', 'number', 'boolean'].includes(typeof item))
-    if (onlySimpleValues) {
-      return <TextArea aria-label={label} value={value.map(String).join('\n')} rows={Math.min(6, Math.max(2, value.length + 1))} placeholder="每行一项" onChange={(event) => onChange(splitLines(event.target.value))} />
-    }
-    if (value.length === 0) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本组暂无内容，可在高级编辑中补充" />
-    return (
-      <Collapse
-        size="small"
-        className="creation-structured-collection"
-        items={value.map((item, index) => ({
-          key: `${fieldKey}-${index}`,
-          label: collectionItemLabel(item, index),
-          children: <StructuredValueEditor fieldKey={`${fieldKey}_${index + 1}`} value={item} onChange={(next) => { const updated = [...value]; updated[index] = next; onChange(updated) }} />,
-        }))}
-      />
-    )
-  }
-  if (isRecord(value)) {
-    return (
-      <div className="creation-structured-fields">
-        {Object.entries(value).map(([key, child]) => (
-          <div className="creation-structured-field" key={key}>
-            <Text strong>{fieldLabel(key)}</Text>
-            <StructuredValueEditor fieldKey={key} value={child} onChange={(next) => onChange({ ...value, [key]: next })} />
-          </div>
-        ))}
-      </div>
-    )
-  }
-  return <Text type="secondary">暂不支持直接编辑此字段</Text>
-}
-
-function StructuredStageEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (data: Record<string, unknown>) => void }) {
-  return <StructuredValueEditor fieldKey="stage" value={data} onChange={(next) => onChange(isRecord(next) ? next : data)} />
-}
-
-function StagePreview({ stage, data }: { stage: string; data?: Record<string, unknown> | null }) {
-  if (!data) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本阶段尚未生成" />
-
-  if (stage === 'world_style') {
-    const world = recordRows(data.worldbuilding)
-    return (
-      <div className="creation-stage-preview">
-        <Descriptions column={{ xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered>
-          <Descriptions.Item label="世界基调"><StructuredPreviewValue value={data.world_tone} /></Descriptions.Item>
-          <Descriptions.Item label="正文风格"><StructuredPreviewValue value={data.writing_style} /></Descriptions.Item>
-          <Descriptions.Item label="结构"><StructuredPreviewValue value={data.story_structure} /></Descriptions.Item>
-          <Descriptions.Item label="节奏"><StructuredPreviewValue value={data.pacing} /></Descriptions.Item>
-        </Descriptions>
-        <div className="creation-item-grid">
-          {world.map((item, index) => (
-            <Card key={`${String(item.title)}-${index}`} size="small" title={String(item.title || `设定 ${index + 1}`)} extra={<Tag>{String(item.dimension || 'culture')}</Tag>}>
-              <div className="creation-worldbuilding-content">
-                <StructuredPreviewValue value={item.content || item.description} />
-              </div>
-            </Card>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  if (stage === 'characters') {
-    const characters = recordRows(data.characters, 'name')
-    return (
-      <div className="creation-item-grid creation-character-grid">
-        {characters.map((item, index) => {
-          const profile = (item.profile || {}) as Record<string, unknown>
-          return (
-            <Card key={`${String(item.name)}-${index}`} size="small" title={String(item.name || `角色 ${index + 1}`)} extra={<Tag>{roleTypeLabel(item.role_type, index)}</Tag>}>
-              <Paragraph>{String(item.background || item.personality || '')}</Paragraph>
-              <Descriptions column={1} size="small">
-                <Descriptions.Item label="当前目标">{String(item.goal || item.current_goal || profile.core_motivation || '待补充')}</Descriptions.Item>
-                <Descriptions.Item label="核心动机">{String(profile.core_motivation || '')}</Descriptions.Item>
-                <Descriptions.Item label="内在缺口">{String(profile.inner_lack || '')}</Descriptions.Item>
-                <Descriptions.Item label="声线">{String(profile.voice || '')}</Descriptions.Item>
-              </Descriptions>
-            </Card>
-          )
-        })}
-      </div>
-    )
-  }
-
-  if (stage === 'locations') {
-    const entries = uniqueRows(recordRows(data.entries), (item) => String(item.title || '').trim().toLocaleLowerCase())
-    const relations = uniqueRows(recordRows(data.relations), (item) => [item.source_title, item.target_title, item.relation_type].map((value) => String(value || '').trim().toLocaleLowerCase()).join('|'))
-    return (
-      <div className="creation-stage-preview">
-        <div className="creation-item-grid">
-          {entries.map((item, index) => <Card size="small" key={`${String(item.title)}-${index}`} title={String(item.title || `地点 ${index + 1}`)}><Paragraph>{String(item.content || item.description || '')}</Paragraph></Card>)}
-        </div>
-        <Divider orientation="left">稳定关系</Divider>
-        <Timeline items={relations.map((item) => ({ children: <><Text strong>{String(item.source_title)}</Text> <Text type="secondary">{String(item.relation_type)}</Text> <Text strong>{String(item.target_title)}</Text><br /><Text type="secondary">{String(item.description || '')}</Text></> }))} />
-      </div>
-    )
-  }
-
-  if (stage === 'macro_outline') {
-    const volumes = recordRows(data.volumes)
-    return (
-      <div className="creation-stage-preview">
-        <Alert type="info" showIcon message={String(data.core_conflict || '')} description={String(data.story_overview || '')} />
-        <Timeline className="creation-volume-timeline" items={volumes.map((item) => ({
-          children: <div><Text strong>{String(item.title || '')}</Text><Tag style={{ marginLeft: 8 }}>{volumeRange(item)}</Tag><Paragraph>{String(item.summary || item.core_function || item.focus || '')}</Paragraph></div>,
-        }))} />
-      </div>
-    )
-  }
-
-  if (stage === 'opening_outline') {
-    const chapters = Array.isArray(data.chapters) ? data.chapters as Array<Record<string, unknown>> : []
-    const sections = Array.isArray(data.sections) ? data.sections as Array<Record<string, unknown>> : []
-    return (
-      <Collapse
-        className="creation-outline-collapse"
-        items={chapters.map((chapter) => {
-          const childSections = sections.filter((section) => section.parent_client_id === chapter.client_id)
-          return {
-            key: String(chapter.client_id),
-            label: <Space><Text strong>{String(chapter.title)}</Text><Tag>{childSections.length} 个场景</Tag></Space>,
-            children: <><Paragraph>{String(chapter.summary || '')}</Paragraph>{childSections.map((section, index) => {
-              const metadata = (section.metadata || {}) as Record<string, unknown>
-              return <div className="creation-section-row" key={`${String(section.client_id)}-${index}`}><Badge count={index + 1} color="var(--ant-color-primary)" /><div><Text strong>{String(section.title)}</Text><Paragraph type="secondary">{String(metadata.purpose || section.summary || '')}</Paragraph><Space wrap size={4}><Tag>{String(metadata.location || '地点待定')}</Tag><Tag>{String(metadata.pov_character || '视角待定')}</Tag><Tag>{String(metadata.exit_state || '状态待定')}</Tag></Space></div></div>
-            })}</>,
-          }
-        })}
-      />
-    )
-  }
-
-  if (stage === 'final_review') {
-    const counts = (data.counts || {}) as Record<string, unknown>
-    const blocking = Array.isArray(data.blocking) ? data.blocking as string[] : []
-    const warnings = Array.isArray(data.warnings) ? data.warnings as string[] : []
-    return (
-      <div className="creation-final-review">
-        <Alert type={data.ready ? 'success' : 'error'} showIcon message={data.ready ? '立项档案已达到创建标准' : '还不能创建正式作品'} description={blocking.join('；') || '所有关键阶段和颗粒度检查均已通过。'} />
-        <div className="creation-count-grid">
-          {Object.entries(counts).map(([key, value]) => <div key={key}><strong>{String(value)}</strong><span>{({ characters: '角色', worldbuilding: '世界设定', chapters: '细纲章节', sections: '场景事件' } as Record<string, string>)[key] || key}</span></div>)}
-        </div>
-        {warnings.map((warning) => <Alert key={warning} type="warning" showIcon message={warning} />)}
-      </div>
-    )
-  }
-
-  return <pre className="creation-json-preview">{JSON.stringify(data, null, 2)}</pre>
-}
 
 function NovelCreationWizardPage() {
   const navigate = useNavigate()
@@ -493,6 +77,7 @@ function NovelCreationWizardPage() {
   const [catalog, setCatalog] = useState<PresetCatalog | null>(null)
   const [sessions, setSessions] = useState<CreationSession[]>([])
   const [session, setSession] = useState<CreationSession | null>(null)
+  const [creationPath, setCreationPath] = useState<CreationPath | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [runMessage, setRunMessage] = useState('')
@@ -500,15 +85,17 @@ function NovelCreationWizardPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorText, setEditorText] = useState('')
   const [editorData, setEditorData] = useState<Record<string, unknown>>({})
+  const [editorStage, setEditorStage] = useState('world_style')
   const [presetSearch, setPresetSearch] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [formEditTick, setFormEditTick] = useState(0)
   const [saveNotice, setSaveNotice] = useState('')
   const [runConnection, setRunConnection] = useState<'connected' | 'reconnecting'>('connected')
-  const [activeRun, setActiveRun] = useState<StageRun | null>(null)
   const [resultRevisionNotice, setResultRevisionNotice] = useState('')
   const [stageActionError, setStageActionError] = useState('')
-  const watchingRunRef = useRef<string | null>(null)
+  const [refineOpen, setRefineOpen] = useState(false)
+  const [refineTarget, setRefineTarget] = useState('concepts')
+  const [refineInstruction, setRefineInstruction] = useState('')
   const stageHeadingRef = useRef<HTMLDivElement | null>(null)
   const defaultsAppliedRef = useRef(false)
   const loadRequestRef = useRef(0)
@@ -523,6 +110,10 @@ function NovelCreationWizardPage() {
   const requestedRunId = searchParams.get('run')
   const requestedModel = searchParams.get('model') || undefined
   const requestedStage = searchParams.get('stage') || undefined
+  const requestedConversationId = searchParams.get('conversation') || undefined
+  const assistantReturnUrl = requestedConversationId
+    ? `/gui?creationSession=${requestedSessionId || session?.id || ''}&conversation=${requestedConversationId}`
+    : `/gui?creationSession=${requestedSessionId || session?.id || ''}`
 
   const watchedPresetId = Form.useWatch('preset_id', form)
   const activePreset = useMemo(() => catalog?.categories.find((item) => item.id === watchedPresetId), [catalog, watchedPresetId])
@@ -565,10 +156,15 @@ function NovelCreationWizardPage() {
     const loaded = response.data.data
     if (requestId !== loadRequestRef.current) return loaded
     setSession(loaded)
+    setCreationPath(loaded.draft?.creation_mode || 'explore')
     const switchingSession = loadedSessionIdRef.current !== loaded.id
     if (loaded.draft?.form && (switchingSession || !formDirtyRef.current)) {
       hydratingFormRef.current = true
-      form.setFieldsValue(loaded.draft.form)
+      form.setFieldsValue({
+        ...loaded.draft.form,
+        author_outline: loaded.draft.author_outline || '',
+        locked_requirements: loaded.draft.locked_requirements || [],
+      })
       hydratingFormRef.current = false
       formDirtyRef.current = false
     }
@@ -602,6 +198,34 @@ function NovelCreationWizardPage() {
   const focusStageHeading = useCallback(() => {
     window.requestAnimationFrame(() => stageHeadingRef.current?.focus())
   }, [])
+
+  const invalidateSessionLoads = useCallback(() => {
+    loadRequestRef.current += 1
+  }, [])
+
+  const {
+    activeRun,
+    setActiveRun,
+    cancellingRun,
+    pausingRun,
+    cancelActiveRun,
+    pauseActiveRun,
+    resumeActiveRun,
+    watchRun,
+    clearRunState,
+  } = useNovelCreationRun({
+    session,
+    requestedRunId,
+    loadSession,
+    invalidateSessionLoads,
+    focusStageHeading,
+    editedDuringRunRef,
+    setBusy,
+    setRunMessage,
+    setRunProgress,
+    setRunConnection,
+    setResultRevisionNotice,
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -652,8 +276,8 @@ function NovelCreationWizardPage() {
     editTickRef.current += 1
     setFormEditTick(editTickRef.current)
     setSaveNotice('修改尚未保存')
-    if (watchingRunRef.current) editedDuringRunRef.current = true
-  }, [])
+    if (activeRun && ['queued', 'running'].includes(activeRun.status)) editedDuringRunRef.current = true
+  }, [activeRun])
 
   useEffect(() => {
     if (!session || !formDirtyRef.current) return
@@ -661,9 +285,20 @@ function NovelCreationWizardPage() {
     const requestId = ++saveRequestRef.current
     const timer = window.setTimeout(async () => {
       const values = form.getFieldsValue(true)
+      const {
+        author_brief: authorBrief = values.brief,
+        author_outline: authorOutline = '',
+        locked_requirements: lockedRequirements = [],
+        ...formValues
+      } = values
+      const creationMode = creationPath || session.draft?.creation_mode || 'author_led'
       try {
         const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
-          form: values,
+          form: formValues,
+          creation_mode: creationMode,
+          author_brief: creationMode === 'author_led' ? authorBrief : '',
+          author_outline: creationMode === 'author_led' ? authorOutline : '',
+          locked_requirements: creationMode === 'author_led' ? lockedRequirements : [],
           expected_revision: session.revision,
         })
         if (requestId !== saveRequestRef.current) return
@@ -689,7 +324,7 @@ function NovelCreationWizardPage() {
       }
     }, 800)
     return () => window.clearTimeout(timer)
-  }, [form, formEditTick, session])
+  }, [creationPath, form, formEditTick, session])
 
   const applyPreset = (preset: GenrePreset) => {
     form.setFieldsValue({
@@ -708,10 +343,21 @@ function NovelCreationWizardPage() {
 
   const persistIntake = async () => {
     const values = await form.validateFields()
+    const {
+      author_brief: authorBrief = values.brief,
+      author_outline: authorOutline = '',
+      locked_requirements: lockedRequirements = [],
+      ...formValues
+    } = values
+    const creationMode = creationPath || session?.draft?.creation_mode || 'author_led'
     ++saveRequestRef.current
     if (session) {
       const save = async (expectedRevision: number) => apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
-        form: values,
+        form: formValues,
+        creation_mode: creationMode,
+        author_brief: creationMode === 'author_led' ? authorBrief : '',
+        author_outline: creationMode === 'author_led' ? authorOutline : '',
+        locked_requirements: creationMode === 'author_led' ? lockedRequirements : [],
         expected_revision: expectedRevision,
       })
       let response
@@ -731,7 +377,11 @@ function NovelCreationWizardPage() {
     const created = await startNovelCreationSession({
       mode: 'internal_llm',
       userBrief: values.brief,
-      form: values,
+      form: formValues,
+      creationMode,
+      authorBrief: creationMode === 'author_led' ? authorBrief : '',
+      authorOutline: creationMode === 'author_led' ? authorOutline : '',
+      lockedRequirements: creationMode === 'author_led' ? lockedRequirements : [],
     })
     const payload = created.raw as { session?: CreationSession }
     const createdSession = payload.session || (await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${created.id}`)).data.data
@@ -756,23 +406,29 @@ function NovelCreationWizardPage() {
     }
   }
 
-  const generateConcepts = async () => {
+  const generateConcepts = async (
+    operation: 'generate' | 'regenerate' | 'refine' = concepts.length ? 'regenerate' : 'generate',
+    instruction?: string,
+  ) => {
     if (!hasModels || !selectedModel) {
       message.warning('还没有可用模型。先到系统设置配置 API 或本机 CLI，并完成连接测试。')
       return
     }
     setBusy(true)
-    setRunMessage('正在理解创作约束并生成三套轻量创意...')
+    const authorLed = (creationPath || session?.draft?.creation_mode) === 'author_led'
+    setRunMessage(operation === 'refine'
+      ? '正在按你的要求调整当前方案...'
+      : authorLed ? '正在忠实整理作者方案...' : '正在理解创作约束并生成一套创意方向...')
     setRunProgress(0)
     setResultRevisionNotice('')
     editedDuringRunRef.current = false
     try {
       const saved = await persistIntake()
-      const run = await startNovelCreationConceptRun(saved.id, selectedModel, saved.revision)
+      const run = await startNovelCreationConceptRun(saved.id, selectedModel, saved.revision, operation, instruction)
       setActiveRun(run)
       const query = workbenchUrl(saved.id, run.id, selectedModel).split('?')[1] || ''
       setSearchParams(new URLSearchParams(query), { replace: true })
-      watchRun(run.id)
+      watchRun(run.id, saved.id)
     } catch (error) {
       setBusy(false)
       setRunMessage('')
@@ -780,88 +436,13 @@ function NovelCreationWizardPage() {
     }
   }
 
-  const watchRun = useCallback((runId: string) => {
-    if (watchingRunRef.current === runId) return
-    watchingRunRef.current = runId
-    setBusy(true)
-    setRunConnection('connected')
-    const source = new EventSource(`/api/v1/novel-creation/runs/${runId}/stream`)
-    source.onopen = () => setRunConnection('connected')
-    const handleEvent = (event: MessageEvent) => {
-      try {
-        const payload = JSON.parse(event.data) as { message?: string; event_type?: string; payload?: { stage?: string } }
-        if (payload.message) setRunMessage(payload.message)
-        const stageIndex = payload.payload?.stage ? CORE_STAGES.indexOf(payload.payload.stage) : -1
-        if (stageIndex >= 0) {
-          const completed = payload.event_type === 'stage_completed'
-          setRunProgress(Math.round(((stageIndex + (completed ? 1 : 0.25)) / CORE_STAGES.length) * 100))
-        }
-        if (payload.event_type === 'stage_completed') {
-          const targetSessionId = requestedSessionId || session?.id
-          if (targetSessionId) void loadSession(targetSessionId).catch(() => undefined)
-        }
-      } catch { /* keep the last readable status */ }
-    }
-    source.addEventListener('started', handleEvent as EventListener)
-    source.addEventListener('stage_progress', handleEvent as EventListener)
-    source.addEventListener('stage_repaired', handleEvent as EventListener)
-    source.addEventListener('stage_completed', handleEvent as EventListener)
-    source.addEventListener('completed', handleEvent as EventListener)
-    source.addEventListener('failed', handleEvent as EventListener)
-    source.addEventListener('done', (event) => {
-      source.close()
-      watchingRunRef.current = null
-      setRunConnection('connected')
-      let finished: StageRun | null = null
-      try {
-        finished = JSON.parse((event as MessageEvent).data) as StageRun
-        setActiveRun(finished)
-        if (finished.status === 'failed') {
-          message.error(finished.current_message || '阶段生成失败')
-        } else {
-          message.success('阶段结果已保存到立项草稿')
-        }
-      } catch { /* the session refresh below is authoritative */ }
-      const targetSessionId = finished?.session_id || requestedSessionId || session?.id
-      if (finished?.input_revision != null) {
-        const suffix = editedDuringRunRef.current ? '；运行期间的新修改已保存为下一版，不会被旧结果覆盖' : ''
-        const repairedStages = (finished.events || [])
-          .filter((item) => item.event_type === 'stage_repaired')
-          .map((item) => String(item.payload?.stage || '未知阶段'))
-        const repairNotice = repairedStages.length > 0
-          ? `；${repairedStages.length} 个阶段的模型回复不可用，已采用安全结构并保留供你审阅`
-          : ''
-        setResultRevisionNotice(`本次结果基于草稿 v${finished.input_revision}${suffix}${repairNotice}`)
-      }
-      if (targetSessionId) {
-        void loadSession(targetSessionId).then(() => focusStageHeading())
-      }
-      setBusy(false)
-      setRunMessage('')
-      setRunProgress(100)
-    })
-    source.onerror = () => {
-      setRunConnection('reconnecting')
-      setRunMessage('进度连接中断，正在重新连接；后台任务仍在运行...')
-      void apiClient.get<ApiResponse<StageRun>>(`/novel-creation/runs/${runId}`).then((response) => {
-        const current = response.data.data
-        setActiveRun(current)
-        if (current.current_message) setRunMessage(current.current_message)
-      }).catch(() => undefined)
-    }
-  }, [focusStageHeading, loadSession, requestedSessionId, session?.id])
-
-  useEffect(() => {
-    const activeRun = requestedRunId
-      ? session?.runs?.find((run) => run.id === requestedRunId && run.status === 'running')
-      : session?.runs?.find((run) => run.status === 'running')
-    if (!activeRun) return
-    setActiveRun(activeRun)
-    setRunMessage(activeRun.current_message || '正在恢复立项任务...')
-    watchRun(activeRun.id)
-  }, [requestedRunId, session?.id, session?.runs, watchRun])
-
-  const startStageRun = async (stage: string, autoConfirm = false, runSession: CreationSession | null = session) => {
+  const startStageRun = async (
+    stage: string,
+    autoConfirm = false,
+    runSession: CreationSession | null = session,
+    operation: 'generate' | 'regenerate' | 'refine' = 'generate',
+    instruction?: string,
+  ) => {
     if (!runSession || !selectedModel) return false
     setBusy(true)
     setStageActionError('')
@@ -875,11 +456,24 @@ function NovelCreationWizardPage() {
         model: selectedModel,
         use_model: true,
         auto_confirm: autoConfirm,
+        operation,
+        ...(instruction ? { instruction } : {}),
         expected_revision: runSession.revision,
       })
-      setActiveRun(response.data.data.run)
-      if (stage !== 'all') viewStage(stage)
-      watchRun(response.data.data.run.id)
+      const startedRun = {
+        ...response.data.data.run,
+        session_id: response.data.data.run.session_id || runSession.id,
+      }
+      setActiveRun(startedRun)
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current)
+        next.set('session', runSession.id)
+        next.set('run', startedRun.id)
+        if (selectedModel) next.set('model', selectedModel)
+        if (stage !== 'all') next.set('stage', stage)
+        return next
+      }, { replace: true })
+      watchRun(startedRun.id, runSession.id)
       return true
     } catch (error) {
       setBusy(false)
@@ -891,13 +485,13 @@ function NovelCreationWizardPage() {
     }
   }
 
-  const chooseConcept = async (conceptId: string, quickMode: boolean) => {
+  const confirmConceptOnly = async (conceptId: string) => {
     if (!session) return
     setBusy(true)
     try {
       const selection = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
         selected_concept_id: conceptId,
-        quick_mode: quickMode,
+        quick_mode: false,
         expected_revision: session.revision,
       })
       const constraints = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/constraints/confirm`, {
@@ -906,19 +500,18 @@ function NovelCreationWizardPage() {
         source: 'author',
         expected_revision: selection.data.data.revision,
       })
-      const conceptConfirmation = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, {
+      const confirmation = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, {
         data: { options: concepts, selected_concept_id: conceptId },
         confirm: true,
         source: 'author',
         expected_revision: constraints.data.data.revision,
       })
-      setSession(conceptConfirmation.data.data)
-      viewStage('world_style', true)
-      setBusy(false)
-      await startStageRun(quickMode ? 'all' : 'world_style', quickMode, conceptConfirmation.data.data)
+      setSession(confirmation.data.data)
+      message.success('当前创意方向已确认；不会自动生成其他数据')
     } catch (error) {
-      setBusy(false)
       message.error(errorText(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -927,6 +520,34 @@ function NovelCreationWizardPage() {
     setBusy(true)
     setStageActionError('')
     try {
+      if (continueToNext) {
+        const response = await apiClient.post<ApiResponse<{
+          action_type: 'confirm_and_generate_recommended'
+          session: CreationSession
+          run: StageRun | null
+          recommended_stage?: string | null
+        }>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm-and-generate-recommended`, {
+          data: currentStageState.data,
+          confirm: true,
+          source: 'author',
+          expected_revision: session.revision,
+          model: selectedModel || null,
+          use_model: true,
+        }, { headers: { 'Idempotency-Key': `confirm-next:${session.id}:${currentStage}:${session.revision}` } })
+        const refreshed = response.data.data.session
+        setSession(refreshed)
+        setBusy(false)
+        const nextRun = response.data.data.run
+        if (nextRun) {
+          viewStage(nextRun.stage)
+          setActiveRun(nextRun)
+          watchRun(nextRun.id, nextRun.session_id || refreshed.id)
+        } else {
+          viewStage(currentStage, true)
+          focusStageHeading()
+        }
+        return
+      }
       const response = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm`, {
         data: currentStageState.data,
         confirm: true,
@@ -936,20 +557,8 @@ function NovelCreationWizardPage() {
       const refreshed = response.data.data
       setSession(refreshed)
       setBusy(false)
-      if (!continueToNext) {
-        viewStage(currentStage, true)
-        focusStageHeading()
-        return
-      }
-      const next = refreshed.stage_flow?.recommended_stage || refreshed.current_stage
-      if (next && CORE_STAGES.includes(next)) {
-        viewStage(next)
-        const started = await startStageRun(next, false, refreshed)
-        if (!started) {
-          setStageActionError(`${stageLabels[currentStage] || currentStage}已确认，但${stageLabels[next] || next}尚未开始生成。你可以安全重试下一阶段。`)
-          viewStage(currentStage, true)
-        }
-      }
+      viewStage(currentStage, true)
+      focusStageHeading()
     } catch (error) {
       setBusy(false)
       setStageActionError(errorText(error))
@@ -968,8 +577,11 @@ function NovelCreationWizardPage() {
     if (!started) viewStage(currentStage, true)
   }
 
-  const openEditor = () => {
-    const data = currentStageState?.data || {}
+  const openEditor = (stage = currentStage) => {
+    const data = stage === 'concepts'
+      ? (session?.draft?.stages?.concepts?.data || { options: concepts, selected_concept_id: selectedConceptId || null })
+      : (session?.draft?.stages?.[stage]?.data || {})
+    setEditorStage(stage)
     setEditorData(data)
     setEditorText(JSON.stringify(data, null, 2))
     setEditorOpen(true)
@@ -984,13 +596,13 @@ function NovelCreationWizardPage() {
     if (!session) return
     try {
       const data = JSON.parse(editorText) as Record<string, unknown>
-      const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}`, {
+      const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${editorStage}`, {
         data,
         source: 'author',
         expected_revision: session.revision,
       })
       setSession(response.data.data)
-      viewStage(currentStage, true)
+      if (CORE_STAGES.includes(editorStage)) viewStage(editorStage, true)
       setEditorOpen(false)
       message.success('修改已保存，下游阶段已按需标记为待重新生成')
     } catch (error) {
@@ -1024,9 +636,36 @@ function NovelCreationWizardPage() {
     message.success('未完成草稿已删除')
   }
 
+  const openRefine = (stage: string) => {
+    setRefineTarget(stage)
+    setRefineInstruction('')
+    setRefineOpen(true)
+  }
+
+  const submitRefinement = async () => {
+    const instruction = refineInstruction.trim()
+    if (!instruction) {
+      message.warning('请先写明希望 AI 如何调整')
+      return
+    }
+    if (instruction.length > 2000) {
+      message.warning('调整要求不能超过 2000 字')
+      return
+    }
+    setRefineOpen(false)
+    if (refineTarget === 'concepts') await generateConcepts('refine', instruction)
+    else await startStageRun(refineTarget, false, session, 'refine', instruction)
+  }
+
   const resetWorkspace = () => {
+    invalidateSessionLoads()
+    clearRunState()
     setSession(null)
+    setCreationPath(null)
     setSearchParams({}, { replace: true })
+    loadedSessionIdRef.current = null
+    formDirtyRef.current = false
+    editedDuringRunRef.current = false
     form.resetFields()
     if (catalog?.categories[0]) applyPreset(catalog.categories[0])
   }
@@ -1039,6 +678,8 @@ function NovelCreationWizardPage() {
   const recommendedStageLabel = recommendedStage ? stageLabels[recommendedStage] || recommendedStage : ''
   const nextStageLabel = nextStage ? stageLabels[nextStage] || nextStage : recommendedStageLabel
   const currentBlockers = currentStageFlow?.blocked_by || []
+  const authorLed = (session?.draft?.creation_mode || creationPath) === 'author_led'
+  const showPathChooser = !session && !creationPath
 
   return (
     <div className="creation-page">
@@ -1047,15 +688,17 @@ function NovelCreationWizardPage() {
         <header className="creation-header">
           <div>
             <Title level={2}><BookOutlined /> 新书立项工作台</Title>
-            <Paragraph>先比较创意，再逐步确认世界、角色与全书结构。正式作品只在最终确认时创建。</Paragraph>
+            <Paragraph>{authorLed ? '从你的原始设定出发，只补全空白，再逐步确认世界、角色与全书结构。' : '先比较创意，再逐步确认世界、角色与全书结构。'}正式作品只在最终确认时创建。</Paragraph>
           </div>
           <Space wrap>
+            {session && <Button icon={<RobotOutlined />} onClick={() => navigate(assistantReturnUrl)}>返回原对话</Button>}
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
             {saveNotice && <Tag color={saveNotice.includes('失败') ? 'warning' : 'default'}>{saveNotice}</Tag>}
             {!inWorkbench && hasModels && modelOptions.length > 1 && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="切换可用模型" style={{ minWidth: 260 }} />}
             {!inWorkbench && hasModels && modelOptions.length === 1 && <Tag color="success">AI 已准备好</Tag>}
             <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>配置模型</Button>
-            {session && <Button onClick={resetWorkspace}>新建立项</Button>}
+            {!session && creationPath && <Button onClick={() => setCreationPath(null)}>重新选择起点</Button>}
+            {session && <Button onClick={resetWorkspace} disabled={busy}>新建立项</Button>}
           </Space>
         </header>
 
@@ -1063,7 +706,48 @@ function NovelCreationWizardPage() {
           <Alert className="creation-model-alert" type="warning" showIcon message="当前没有可用模型" description="你仍可填写并保存立项草稿。也可以先免费体验，不需要命令行或 API Key。" action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费开始</Button>} />
         )}
 
-        {!session || concepts.length === 0 ? (
+        {showPathChooser ? (
+          <main className="creation-path-shell" aria-labelledby="creation-path-title">
+            <div className="creation-path-heading">
+              <Text className="creation-path-kicker">选择起点</Text>
+              <Title level={2} id="creation-path-title">你已经想到哪一步了？</Title>
+              <Paragraph>司命会根据你的准备程度进入对应流程。已有设定不会被随机方案覆盖。</Paragraph>
+            </div>
+            <div className="creation-path-grid">
+              <button type="button" className="creation-path-card is-primary" onClick={() => setCreationPath('author_led')}>
+                <span className="creation-path-icon"><FileTextOutlined /></span>
+                <span className="creation-path-badge">推荐给已有想法的作者</span>
+                <strong>按我的设定立项</strong>
+                <span>粘贴已有故事方案与大纲，锁定不可改动内容；AI 只负责整理和补全。</span>
+                <em>开始整理我的方案</em>
+              </button>
+              <button type="button" className="creation-path-card" onClick={() => setCreationPath('explore')}>
+                <span className="creation-path-icon"><CompassOutlined /></span>
+                <strong>帮我探索创意</strong>
+                <span>从一个画面或念头出发，生成一套故事方向；之后可随时通过对话局部调整。</span>
+                <em>生成一个方向</em>
+              </button>
+              <button type="button" className="creation-path-card" onClick={() => navigate('/dashboard?create=import')}>
+                <span className="creation-path-icon"><UploadOutlined /></span>
+                <strong>导入已有小说</strong>
+                <span>导入 TXT 或 DOCX，自动拆章建档，再进入写作工作台续写或二创。</span>
+                <em>选择小说文件</em>
+              </button>
+            </div>
+            {otherSessions.length > 0 && (
+              <section className="creation-resume-band creation-path-resume">
+                <Title level={4}>或继续未完成立项</Title>
+                <div className="creation-resume-list">
+                  {otherSessions.slice(0, 4).map((item) => (
+                    <Card size="small" key={item.id} onClick={() => void loadSession(item.id)} hoverable title={item.draft?.form?.brief?.slice(0, 30) || '未命名立项'}>
+                      <Text type="secondary">{item.draft?.form?.genre || '自由创作'} · {item.updated_at ? new Date(item.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                    </Card>
+                  ))}
+                </div>
+              </section>
+            )}
+          </main>
+        ) : !session || concepts.length === 0 ? (
           <div className="creation-intake-layout">
             <aside className="creation-taxonomy">
               <Input.Search value={presetSearch} onChange={(event) => setPresetSearch(event.target.value)} placeholder="搜索题材或主题" allowClear />
@@ -1087,10 +771,27 @@ function NovelCreationWizardPage() {
               <Form form={form} layout="vertical" requiredMark="optional" onValuesChange={markFormEdited}>
                 <Form.Item name="preset_id" hidden><Input /></Form.Item>
                 <Form.Item name="genre" hidden><Input /></Form.Item>
-                <div className="creation-form-heading"><div><Title level={3}>把故事的边界说清楚</Title><Text type="secondary">题材画像会自动填入可编辑约束，任何字段都不是强制答案。</Text></div>{activePreset && <Tooltip title="恢复该题材的原始预设"><Button icon={<ReloadOutlined />} onClick={() => applyPreset(activePreset)}>恢复预设</Button></Tooltip>}</div>
-                <Form.Item name="brief" label="故事梗概或最想写的画面" rules={[{ required: true, message: '至少写一句你想创作的故事' }]}>
+                <div className="creation-form-heading"><div><Title level={3}>{authorLed ? '把你已经想好的内容交给司命' : '把故事的边界说清楚'}</Title><Text type="secondary">{authorLed ? '原文会作为作者事实持续保留，AI 不会把它替换成随机故事。' : '题材画像会自动填入可编辑约束，任何字段都不是强制答案。'}</Text></div>{activePreset && <Tooltip title="恢复该题材的原始预设"><Button icon={<ReloadOutlined />} onClick={() => applyPreset(activePreset)}>恢复预设</Button></Tooltip>}</div>
+                {authorLed && <Alert className="creation-author-promise" type="success" showIcon icon={<LockOutlined />} message="作者原始设定优先" description="专名、核心因果、结局方向和下方锁定项会随每个阶段一同发送给 AI；它只能补全没有写明的部分。" />}
+                <Form.Item name="brief" label={authorLed ? '已有故事方案' : '故事梗概或最想写的画面'} rules={[{ required: true, message: '至少写一句你想创作的故事' }]}>
                   <TextArea rows={6} maxLength={5000} showCount placeholder="例如：一个能看见病毒记忆的女孩，在被感染的城市里寻找失踪的母亲。她每救一个人，自己就会忘掉一段过去。" />
                 </Form.Item>
+                {authorLed && (
+                  <div className="creation-author-fields">
+                    <Form.Item name="author_outline" label="已有大纲" extra="可粘贴分卷、章节节点或结局安排，最多 20000 字。">
+                      <TextArea rows={7} maxLength={20000} showCount placeholder={'第一卷：……\n关键转折：……\n结局：……'} />
+                    </Form.Item>
+                    <Form.Item
+                      name="locked_requirements"
+                      label="不可改动的设定"
+                      getValueFromEvent={(event) => splitLines(event.target.value)}
+                      getValueProps={(value) => ({ value: Array.isArray(value) ? value.join('\n') : '' })}
+                      extra="每行一条，例如角色姓名、世界规则、CP、卷数或结局。"
+                    >
+                      <TextArea aria-label="不可改动的设定" rows={4} maxLength={5000} placeholder={'周遥必须是植物学实习生\n花展在七天后举行\n全书规划为六卷'} />
+                    </Form.Item>
+                  </div>
+                )}
                 <div className="creation-form-grid">
                   <Form.Item name="theme_id" label="细分主题"><Select options={(activePreset?.themes || []).map((item) => ({ value: item.id, label: item.label }))} placeholder="选择细分主题" /></Form.Item>
                   <Form.Item name="target_audience" label="目标读者"><Select options={catalog.audiences.map((item) => ({ value: item, label: item }))} /></Form.Item>
@@ -1131,7 +832,7 @@ function NovelCreationWizardPage() {
                 }]} />
                 <div className="creation-primary-actions">
                   <Button size="large" icon={<SaveOutlined />} loading={busy} onClick={saveIntake}>只保存草稿</Button>
-                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} disabled={!hasModels || !selectedModel} onClick={generateConcepts}>生成三套轻量创意</Button>
+                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} disabled={!hasModels || !selectedModel} onClick={() => void generateConcepts('generate')}>{authorLed ? '整理为作者方案' : '生成创意方向'}</Button>
                 </div>
               </Form>
             </main>
@@ -1151,10 +852,18 @@ function NovelCreationWizardPage() {
           </div>
         ) : inConceptSelection ? (
           <main className="creation-concepts-main">
-            <div className="creation-section-heading"><div><Title level={3}>先选故事发动机</Title><Paragraph>这里只展示足够做方向判断的内容。选中后再生成完整角色、世界和全书规划。</Paragraph></div><Button icon={<ReloadOutlined />} onClick={generateConcepts} loading={busy}>重新生成三案</Button></div>
-            <div className="creation-concept-grid">
-              {concepts.map((concept, index) => (
-                <Card key={concept.id} className="creation-concept-card" title={<Space><Badge count={index + 1} color="var(--ant-color-primary)" /><span>{concept.title}</span></Space>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
+            {authorLed && session?.draft && (
+              <section className="creation-author-source" aria-label="作者原始设定">
+                <div><LockOutlined /><Text strong>作者原始设定</Text><Tag color="success">持续锁定</Tag></div>
+                <Paragraph>{session.draft.author_brief || session.draft.form.brief}</Paragraph>
+                {session.draft.author_outline && <Collapse ghost items={[{ key: 'outline', label: '查看已有大纲原文', children: <pre>{session.draft.author_outline}</pre> }]} />}
+                <Space wrap>{session.draft.locked_requirements?.map((item) => <Tag key={item}>{item}</Tag>)}</Space>
+              </section>
+            )}
+            <div className="creation-section-heading"><div><Title level={3}>{authorLed ? '检查作者方案' : '完善故事发动机'}</Title><Paragraph>{authorLed ? 'AI 只整理和补全了你的方案。继续前可手动编辑，或写明要求让 AI 定向调整。' : '这里先形成一套清晰方向。你可以继续对话调整，不需要在多套方案之间抽选。'}</Paragraph></div><Space wrap><Button onClick={() => openEditor('concepts')} disabled={busy}>编辑方案内容</Button><Button icon={<EditOutlined />} onClick={() => openRefine('concepts')} disabled={busy}>让 AI 按要求调整</Button><Button icon={<ReloadOutlined />} onClick={() => void generateConcepts('regenerate')} loading={busy}>{authorLed ? '重新整理方案' : '重新生成方向'}</Button></Space></div>
+            <div className={`creation-concept-grid is-single ${authorLed ? 'is-author-led' : ''}`}>
+              {concepts.map((concept) => (
+                <Card key={concept.id} className="creation-concept-card" title={<span>{concept.title}</span>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
                   <Text type="secondary">{concept.subtitle}</Text>
                   <Paragraph className="creation-logline">{concept.logline}</Paragraph>
                   <Descriptions column={1} size="small">
@@ -1167,8 +876,8 @@ function NovelCreationWizardPage() {
                   <Space className="creation-differentiators" wrap>{concept.differentiators?.map((item) => <Tag color="blue" key={item}>{item}</Tag>)}</Space>
                   {concept.risks?.length > 0 && <Alert className="creation-risk" type="warning" message={concept.risks.join('；')} />}
                   <div className="creation-concept-actions">
-                    <Button icon={<PlayCircleOutlined />} onClick={() => void chooseConcept(concept.id, true)} disabled={busy}>快速生成到最终审阅</Button>
-                    <Button type="primary" onClick={() => void chooseConcept(concept.id, false)} disabled={busy}>进入完整向导</Button>
+                    <Button icon={<RobotOutlined />} onClick={() => navigate(assistantReturnUrl)} disabled={busy}>返回聊天继续调整</Button>
+                    <Button type="primary" onClick={() => void confirmConceptOnly(concept.id)} disabled={busy}>确认当前方向</Button>
                   </div>
                 </Card>
               ))}
@@ -1213,6 +922,25 @@ function NovelCreationWizardPage() {
               <Alert type="info" showIcon message={session?.draft?.quick_mode ? '快速模式' : '完整向导'} description="所有内容仍在立项草稿中，最终确认前不会创建正式作品。" />
             </aside>
             <section className="creation-stage-main">
+              {authorLed && session.draft && (
+                <section className="creation-author-source is-compact" aria-label="作者原始设定">
+                  <div><LockOutlined /><Text strong>作者原始设定持续生效</Text><Tag color="success">不可静默改写</Tag></div>
+                  <Paragraph ellipsis={{ rows: 2, expandable: true, symbol: '展开原文' }}>{session.draft.author_brief || session.draft.form.brief}</Paragraph>
+                  {session.draft.author_outline && (
+                    <Collapse
+                      className="creation-author-outline"
+                      ghost
+                      size="small"
+                      items={[{
+                        key: 'author-outline',
+                        label: '查看已有大纲原文',
+                        children: <pre>{session.draft.author_outline}</pre>,
+                      }]}
+                    />
+                  )}
+                  <Space wrap>{session.draft.locked_requirements?.map((item) => <Tag key={item}>{item}</Tag>)}</Space>
+                </section>
+              )}
               <div className="creation-section-heading">
                 <div ref={stageHeadingRef} tabIndex={-1} className="creation-stage-heading-focus">
                   <Title level={3}>{stageLabels[currentStage] || currentStage}</Title>
@@ -1224,8 +952,9 @@ function NovelCreationWizardPage() {
                 </div>
                 <Space wrap>
                   <Select aria-label="选择当前阶段模型" value={selectedModel} onChange={setSelectedModel} options={modelOptions} style={{ minWidth: 250 }} />
-                  <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage)} disabled={busy || currentStageFlow?.can_generate === false}>重新生成</Button>
-                  <Button icon={<EditOutlined />} onClick={openEditor} disabled={!currentStageState?.data || busy}>编辑阶段内容</Button>
+                  <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage, false, session, 'regenerate')} disabled={busy || currentStageFlow?.can_generate === false}>重新生成</Button>
+                  <Button onClick={() => openRefine(currentStage)} disabled={!currentStageState?.data || busy}>让 AI 按要求调整</Button>
+                  <Button icon={<EditOutlined />} onClick={() => openEditor()} disabled={!currentStageState?.data || busy}>编辑阶段内容</Button>
                 </Space>
               </div>
               <StageFeedback
@@ -1274,38 +1003,25 @@ function NovelCreationWizardPage() {
           </main>
         ) : null}
 
-        {busy && (
-          <div className="creation-run-bar" aria-live="polite">
-            <CloudSyncOutlined spin />
-            <div className="creation-run-detail">
-              <Space size={6} wrap>
-                <Text strong>{runMessage || '正在处理立项任务...'}</Text>
-                <Tag color={runConnection === 'connected' ? 'processing' : 'warning'}>{runConnection === 'connected' ? '运行中' : '正在重新连接'}</Tag>
-                {activeRun?.model_source && <Tag>{activeRun.model_source}</Tag>}
-                {activeRun?.input_revision != null && <Tag>基于草稿 v{activeRun.input_revision}</Tag>}
-              </Space>
-              {activeRun?.stage === 'all' && runProgress > 0
-                ? <Progress percent={runProgress} status="active" showInfo />
-                : <div className="creation-run-indeterminate"><Spin size="small" /><Text type="secondary">模型正在推进；无法准确估算时不显示虚假百分比</Text></div>}
-              {editedDuringRunRef.current && <Text type="warning">你刚才的修改会保存为下一版，不会改变当前这次生成。</Text>}
-            </div>
-          </div>
-        )}
-
-        {resultRevisionNotice && !busy && (
-          <Alert
-            className="creation-result-revision"
-            type="info"
-            showIcon
-            message={resultRevisionNotice}
-            action={editedDuringRunRef.current ? (
-              <Space wrap>
-                <Button onClick={() => { editedDuringRunRef.current = false; setResultRevisionNotice('') }}>接受本次结果</Button>
-                <Button type="primary" onClick={() => activeRun?.stage === 'concepts' ? void generateConcepts() : void startStageRun(activeRun?.stage || currentStage)}>按最新版重新生成</Button>
-              </Space>
-            ) : undefined}
-          />
-        )}
+        <RunStatusPanels
+          busy={busy}
+          activeRun={activeRun}
+          stageLabels={stageLabels}
+          runMessage={runMessage}
+          runConnection={runConnection}
+          runProgress={runProgress}
+          editedDuringRun={editedDuringRunRef.current}
+          cancellingRun={cancellingRun}
+          pausingRun={pausingRun}
+          resultRevisionNotice={resultRevisionNotice}
+          onCancel={() => void cancelActiveRun()}
+          onPause={() => void pauseActiveRun()}
+          onResume={() => void resumeActiveRun()}
+          onAcceptResult={() => { editedDuringRunRef.current = false; setResultRevisionNotice('') }}
+          onRegenerateLatest={() => activeRun?.stage === 'concepts'
+            ? void generateConcepts()
+            : void startStageRun(activeRun?.stage || currentStage)}
+        />
 
         {session?.last_error && !busy && (() => {
           const failedStage = session.last_error.failed_stage
@@ -1328,7 +1044,7 @@ function NovelCreationWizardPage() {
         })()}
       </div>
 
-      <Modal title={`编辑：${stageLabels[currentStage] || currentStage}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={960}>
+      <Modal title={`编辑：${stageLabels[editorStage] || (editorStage === 'concepts' ? '创意方向' : editorStage)}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={960}>
         <Alert type="info" showIcon message="直接修改需要调整的字段" description="保存后，下游已经确认的阶段会标记为需要重新校验。列表和复杂关系可以展开逐项编辑。" />
         <div className="creation-structured-editor">
           <StructuredStageEditor data={editorData} onChange={updateStructuredEditor} />
@@ -1341,6 +1057,29 @@ function NovelCreationWizardPage() {
             children: <><Paragraph type="secondary">仅在需要批量修改结构时使用；保存时会校验格式。</Paragraph><TextArea aria-label="阶段 JSON 原文" className="creation-json-editor" value={editorText} onChange={(event) => setEditorText(event.target.value)} rows={24} spellCheck={false} /></>,
           }]}
         />
+      </Modal>
+
+      <Modal
+        title={`让 AI 调整：${stageLabels[refineTarget] || (refineTarget === 'concepts' ? '创意方向' : refineTarget)}`}
+        open={refineOpen}
+        onCancel={() => setRefineOpen(false)}
+        onOk={() => void submitRefinement()}
+        okText="按要求调整"
+        confirmLoading={busy}
+        destroyOnHidden
+      >
+        <Alert type="info" showIcon message="只修改当前阶段" description="司命会同时带上当前内容、已确认的上游阶段和作者锁定要求。生成或校验失败时，当前草稿不会被覆盖。" />
+        <Form.Item label="调整要求" required style={{ marginTop: 20 }}>
+          <TextArea
+            autoFocus
+            rows={6}
+            maxLength={2000}
+            showCount
+            value={refineInstruction}
+            onChange={(event) => setRefineInstruction(event.target.value)}
+            placeholder="例如：改成六卷结构；保留周遥的职业和花展结局；加强第二卷取证压力，但不要改变结局。"
+          />
+        </Form.Item>
       </Modal>
 
     </div>

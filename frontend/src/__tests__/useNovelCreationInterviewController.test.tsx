@@ -98,7 +98,7 @@ describe('useNovelCreationInterviewController', () => {
       stage: 'concepts',
       model: 'codex_cli:codex-cli',
       use_model: true,
-      operation: 'generate_concepts',
+      operation: 'generate',
     })
     expect(mockNavigate).toHaveBeenCalledWith('/novel-creation?session=session-1&run=run-1&model=codex_cli%3Acodex-cli')
   })

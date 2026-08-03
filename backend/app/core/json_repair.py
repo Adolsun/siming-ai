@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 
 
 def strip_json_fences(text: str) -> str:
-    value = (text or "").strip()
+    value = (text or "").strip().lstrip("﻿")
+    # Some reasoning models expose their private reasoning as tagged text
+    # before the final answer. Braces inside that section must not become the
+    # start of the JSON candidate.
+    value = re.sub(r"<(?:think|thinking|analysis)>[\s\S]*?</(?:think|thinking|analysis)>", "", value, flags=re.IGNORECASE).strip()
     for _ in range(2):
         if value.startswith("```json"):
             value = value[7:]
@@ -17,6 +22,65 @@ def strip_json_fences(text: str) -> str:
         if value.endswith("```"):
             value = value[:-3]
     return value.strip()
+
+
+def remove_trailing_commas(text: str) -> str:
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
+def normalize_json_punctuation(text: str) -> str:
+    return text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+
+
+def repair_truncated_json(candidate: str) -> Optional[str]:
+    """Conservatively close an object cut off by a model token limit."""
+    repaired = candidate.strip()
+    if not repaired.startswith("{"):
+        return None
+    stack: list[str] = []
+    normalized: list[str] = []
+    in_string = False
+    escape = False
+    changed = False
+    for char in repaired:
+        normalized.append(char)
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]":
+            # Models often close the outer array/object while omitting one
+            # nested object brace, e.g. ..."arguments": {...}]}. Insert only
+            # the closers required to make the existing closer legal.
+            while stack and stack[-1] != char:
+                normalized.insert(len(normalized) - 1, stack.pop())
+                changed = True
+            if stack and stack[-1] == char:
+                stack.pop()
+    repaired = "".join(normalized)
+    if not stack and not in_string and not changed:
+        return None
+    if in_string:
+        repaired += '"'
+    repaired = repaired.rstrip()
+    for _ in range(3):
+        next_text = re.sub(r',?\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*:\s*$', "", repaired).rstrip()
+        if next_text == repaired:
+            break
+        repaired = next_text
+    repaired = re.sub(r"[:,]\s*$", "", repaired).rstrip()
+    repaired += "".join(reversed(stack))
+    return remove_trailing_commas(repaired)
 
 
 def escape_json_string_values(text: str) -> str:
@@ -64,33 +128,75 @@ def escape_json_string_values(text: str) -> str:
     return ''.join(result)
 
 
-def parse_json_object(text: str) -> Optional[dict]:
+def parse_json_object_detailed(text: str) -> tuple[Optional[dict], Optional[str]]:
+    """Parse one object and report whether deterministic repair was required."""
     cleaned = strip_json_fences(text)
 
     def _try_parse(candidate_text: str) -> Optional[dict]:
-        start = candidate_text.find("{")
-        if start < 0:
-            return None
-        for end_offset in range(len(candidate_text), start + 1, -1):
-            end = candidate_text.rfind("}", start, end_offset)
-            if end < 0:
+        starts: list[int] = []
+        depth = 0
+        in_string = False
+        escape = False
+        for index, char in enumerate(candidate_text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
                 continue
-            candidate = candidate_text[start:end + 1]
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                if depth == 0:
+                    starts.append(index)
+                depth += 1
+            elif char == "}" and depth > 0:
+                depth -= 1
+        if not starts:
+            return None
+        # Decode every possible object start and keep the largest valid
+        # object. This skips prose/reasoning braces while preferring the final
+        # top-level payload over nested objects inside it.
+        decoder = json.JSONDecoder(strict=False)
+        decoded: list[tuple[int, dict]] = []
+        for start in starts:
             try:
-                parsed = json.loads(candidate, strict=False)
+                parsed, end = decoder.raw_decode(candidate_text[start:])
                 if isinstance(parsed, dict):
-                    return parsed
+                    decoded.append((end, parsed))
             except (json.JSONDecodeError, ValueError):
                 continue
+        if decoded:
+            return max(decoded, key=lambda item: item[0])[1]
         return None
 
     parsed = _try_parse(cleaned)
     if parsed is not None:
-        return parsed
+        return parsed, "direct"
     escaped = escape_json_string_values(cleaned)
     if escaped != cleaned:
-        return _try_parse(escaped)
-    return None
+        parsed = _try_parse(escaped)
+        if parsed is not None:
+            return parsed, "deterministic_json"
+    normalized = remove_trailing_commas(normalize_json_punctuation(cleaned))
+    parsed = _try_parse(normalized)
+    if parsed is not None:
+        return parsed, "deterministic_json"
+    start = normalized.find("{")
+    if start >= 0:
+        repaired = repair_truncated_json(normalized[start:])
+        if repaired:
+            parsed = _try_parse(repaired)
+            if parsed is not None:
+                return parsed, "deterministic_json"
+    return None, None
+
+
+def parse_json_object(text: str) -> Optional[dict]:
+    parsed, _method = parse_json_object_detailed(text)
+    return parsed
 
 
 WORKSPACE_JSON_REPAIR_SYSTEM_PROMPT = (

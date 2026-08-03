@@ -130,9 +130,11 @@ async function mockApi(page: Page, options: {
   onInterview?: (route: Route, call: number) => Promise<void>
   onApply?: (route: Route) => Promise<void>
   onStageConfirm?: (route: Route, stage: string) => Promise<void>
+  onConfirmAndGenerate?: (route: Route, stage: string) => Promise<void>
   onStageRun?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
+  let turnCalls = 0
   let startedSession: Record<string, unknown> | undefined
   const unexpected: string[] = []
   unexpectedApiRequests.set(page, unexpected)
@@ -216,6 +218,12 @@ async function mockApi(page: Page, options: {
       const sessions = options.sessions ?? (options.session ? [options.session] : [])
       return fulfill(route, { code: 0, data: { sessions } })
     }
+    if (/^\/api\/v1\/novel-creation\/sessions\/[^/]+\/validate-consistency$/.test(path) && method === 'POST') {
+      return fulfill(route, {
+        code: 0,
+        data: { valid: true, revision: 1, summary: { blocking: 0, warnings: 0, total: 0 }, issues: [] },
+      })
+    }
     if (path === '/api/v1/novel-creation/start' && method === 'POST') {
       const session = options.session ?? { id: 'draft-1', status: 'drafting', revision: 1, current_stage: 'constraints', draft: { form: baseForm, concepts: [], stages: {} } }
       startedSession = session
@@ -230,6 +238,16 @@ async function mockApi(page: Page, options: {
     if (stageConfirm && method === 'POST') {
       if (options.onStageConfirm) return options.onStageConfirm(route, stageConfirm[1])
       return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
+    }
+    const confirmAndGenerate = path.match(/^\/api\/v1\/novel-creation\/sessions\/[^/]+\/stages\/([^/]+)\/confirm-and-generate-recommended$/)
+    if (confirmAndGenerate && method === 'POST') {
+      if (options.onConfirmAndGenerate) return options.onConfirmAndGenerate(route, confirmAndGenerate[1])
+      return fulfill(route, { code: 0, data: {
+        action_type: 'confirm_and_generate_recommended',
+        session: options.session ?? startedSession ?? conceptSession(),
+        run: null,
+        recommended_stage: null,
+      } })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'PATCH') {
       return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
@@ -252,6 +270,27 @@ async function mockApi(page: Page, options: {
     if (path === '/api/v1/ai/system-assistant/conversations' && method === 'POST') {
       return fulfill(route, { code: 0, data: { conversation: { id: 'conversation-1', title: '\u65b0\u4e66' } } })
     }
+    if (path.endsWith('/turns/start') && method === 'POST') {
+      turnCalls += 1
+      const payload = request.postDataJSON() as { user_content?: string; message_type?: string }
+      return fulfill(route, { code: 0, data: {
+        conversation: { id: 'conversation-1', title: '\u65b0\u4e66' },
+        messages: [
+          { id: `user-message-${turnCalls}`, role: 'user', content: payload.user_content || '', status: 'completed', message_type: 'text', payload: {} },
+          { id: `assistant-message-${turnCalls}`, role: 'assistant', content: '', status: 'running', message_type: payload.message_type || 'text', payload: {} },
+        ],
+      } })
+    }
+    if (/\/turns\/assistant-message-\d+$/.test(path) && method === 'PATCH') {
+      const payload = request.postDataJSON() as { assistant_content?: string; status?: string; message_type?: string; payload?: unknown }
+      return fulfill(route, { code: 0, data: {
+        conversation: { id: 'conversation-1', title: '\u65b0\u4e66' },
+        message: {
+          id: path.split('/').pop(), role: 'assistant', content: payload.assistant_content || '',
+          status: payload.status || 'completed', message_type: payload.message_type || 'text', payload: payload.payload || {},
+        },
+      } })
+    }
     if (path.includes('/ai/system-assistant/conversations/') && path.endsWith('/turns') && method === 'POST') {
       return fulfill(route, { code: 0, data: { conversation: { id: 'conversation-1', title: '\u65b0\u4e66' } } })
     }
@@ -269,6 +308,7 @@ test('allows a no-model author to save and restore a creation draft', async ({ p
 
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
   await expect(page.getByText(zh.noModel)).toBeVisible()
+  await page.getByRole('button', { name: /按我的设定立项/ }).click()
   await page.locator('textarea').first().fill(baseForm.brief)
   await expect(page.getByRole('button', { name: zh.saveDraft })).toBeEnabled()
   await page.getByRole('button', { name: zh.saveDraft }).click()
@@ -289,8 +329,9 @@ test('does not treat a detected Claude CLI as a usable writing model', async ({ 
   await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText(zh.noModel)).toBeVisible()
+  await page.getByRole('button', { name: /帮我探索创意/ }).click()
   await expect(page.getByRole('combobox', { name: '\u9009\u62e9\u672c\u9636\u6bb5\u6a21\u578b' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f/ })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /\u751f\u6210\u521b\u610f\u65b9\u5411/ })).toBeDisabled()
 })
 
 test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) => {
@@ -441,7 +482,7 @@ test('automatically guides a first-time user to one-click OpenCode setup', async
   await expect(page.getByText('\u65e0\u9700\u6253\u5f00\u547d\u4ee4\u884c')).toBeVisible()
 })
 
-test('turns one story sentence into the first three-concept run after setup', async ({ page }) => {
+test('turns one story sentence into the first adjustable concept run after setup', async ({ page }) => {
   await mockApi(page, {
     gettingStarted: {
       needs_setup: false,
@@ -454,7 +495,7 @@ test('turns one story sentence into the first three-concept run after setup', as
   })
   await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })
   await page.getByLabel('\u4f60\u60f3\u5199\u4ec0\u4e48\u6545\u4e8b\uff1f').fill('\u4e00\u5bb6\u53ea\u5728\u5348\u591c\u8425\u4e1a\u7684\u4fee\u4ed9\u5ba2\u6808')
-  await page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u5c0f\u8bf4\u521b\u610f/ }).click()
+  await page.getByRole('button', { name: /\u751f\u6210\u5c0f\u8bf4\u521b\u610f/ }).click()
   await expect(page).toHaveURL(/\/novel-creation\?session=draft-1&run=run-1/)
 })
 
@@ -554,19 +595,19 @@ test('keeps a generated world stage visible until confirmation and only then sta
       },
     },
   }
-  let confirmBody: Record<string, unknown> | undefined
-  let runBody: Record<string, unknown> | undefined
+  let actionBody: Record<string, unknown> | undefined
   await mockApi(page, {
     session,
     sessions: [session],
-    onStageConfirm: async (route, stage) => {
+    onConfirmAndGenerate: async (route, stage) => {
       expect(stage).toBe('world_style')
-      confirmBody = route.request().postDataJSON()
-      return fulfill(route, { code: 0, data: confirmed })
-    },
-    onStageRun: async (route) => {
-      runBody = route.request().postDataJSON()
-      return fulfill(route, { code: 0, data: { run: { id: 'run-characters', session_id: 'session-1', stage: 'characters', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' } } })
+      actionBody = route.request().postDataJSON()
+      return fulfill(route, { code: 0, data: {
+        action_type: 'confirm_and_generate_recommended',
+        session: confirmed,
+        run: { id: 'run-characters', session_id: 'session-1', stage: 'characters', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' },
+        recommended_stage: 'characters',
+      } })
     },
   })
   await page.goto('/novel-creation?session=session-1&stage=characters', { waitUntil: 'domcontentloaded' })
@@ -585,9 +626,9 @@ test('keeps a generated world stage visible until confirmation and only then sta
       caret: 'hide',
     })
   }
-  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' })
+  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u7ee7\u7eed' })
   await expect(confirmAndContinue).toBeEnabled()
-  expect(runBody).toBeUndefined()
+  expect(actionBody).toBeUndefined()
 
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(confirmAndContinue).toBeVisible()
@@ -609,7 +650,6 @@ test('keeps a generated world stage visible until confirmation and only then sta
   }
 
   await confirmAndContinue.click()
-  await expect.poll(() => runBody).toBeTruthy()
-  expect(confirmBody).toMatchObject({ confirm: true, expected_revision: 5 })
-  expect(runBody).toMatchObject({ stage: 'characters', expected_revision: 6, auto_confirm: false })
+  await expect.poll(() => actionBody).toBeTruthy()
+  expect(actionBody).toMatchObject({ confirm: true, expected_revision: 5, use_model: true })
 })

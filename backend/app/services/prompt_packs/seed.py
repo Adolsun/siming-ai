@@ -60,12 +60,12 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "new_project_setup",
         "scope": "new_project",
         "title": "新小说创建流程",
-        "summary": "从零开始创建新小说的双轨工作台：创作约束 → 轻量三案 → 分阶段档案 → 全书卷纲与前15章细纲。",
+        "summary": "从零开始创建新小说的双轨工作台：创作约束 → 单一创意方向 → 分阶段档案 → 全书卷纲与前15章细纲。",
         "system_prompt": (
             "你是一个小说项目创建助手。你的任务是帮助用户从零开始创建一本新小说。\n\n"
             "【流程】\n"
             "1. 创作约束：确认题材、细分主题、读者、平台、篇幅、世界基调、结构、节奏、文风和避雷项。\n"
-            "2. 轻量三案：只输出标题、logline、主角种子、世界钩子、核心冲突、故事发动机、开篇钩子、差异点、风险和覆盖率。\n"
+            "2. 单一创意方向：只输出标题、logline、主角种子、世界钩子、核心冲突、故事发动机、开篇钩子、差异点、风险和覆盖率，并允许后续对话调整。\n"
             "3. 分阶段深化：依次处理文风与世界观、角色与关系、地点与势力、全书主线与卷纲。\n"
             "4. 前15章细纲：每章创建章级节点，并绑定2至6个 section 场景事件。\n"
             "5. 最终审阅：确认颗粒度、依赖关系和作者改动后，才允许创建正式作品。\n\n"
@@ -79,7 +79,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         ),
         "workflow_json": [
             {"step": 1, "name": "constraints", "description": "保存可编辑创作约束，不创建正式作品"},
-            {"step": 2, "name": "concepts", "description": "通过 draft_novel_blueprint(depth=concept) 生成三张轻量概念卡"},
+            {"step": 2, "name": "concepts", "description": "通过 draft_novel_blueprint(depth=concept) 生成一张可持续调整的轻量概念卡"},
             {"step": 3, "name": "world_style", "description": "生成并通过 submit_novel_creation_stage 提交文风与世界观"},
             {"step": 4, "name": "characters", "description": "提交带写作锁的角色与关系"},
             {"step": 5, "name": "locations", "description": "提交地点、势力及稳定关系"},
@@ -555,7 +555,7 @@ def _refresh_builtin_cataloging_pack_defs() -> None:
             pack["system_prompt"] = render_prompt(
                 "creation.novel.stage",
                 task_kind="协助作者完成新书立项",
-                task_rules="从创作约束和三套轻量创意开始，按阶段确认，最终审阅前不创建正式作品。",
+                task_rules="从创作约束和一套可持续调整的创意方向开始，按阶段确认，最终审阅前不创建正式作品。",
             )
         spec_id = prompt_ids.get(pack_id)
         if spec_id:

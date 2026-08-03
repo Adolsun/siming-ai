@@ -109,6 +109,7 @@ DEFAULT_CLI_MODELS: dict[str, str] = {
 CLI_MODEL_DISCOVERY_ARGS: dict[str, list[str]] = {
     "opencode_cli": ["models"],
     "mimocode_cli": ["models"],
+    "codex_cli": ["models"],
     "cursor_cli": ["--list-models"],
     "kilocode_cli": ["models"],
 }
@@ -414,10 +415,48 @@ def discover_local_cli_models(
         return []
     if completed.returncode != 0:
         return []
+
+    def _extract_discovered_models(payload: str) -> list[str]:
+        data = None
+        text = payload.strip()
+        if not text:
+            return []
+        try:
+            data = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            data = None
+
+        if data is not None:
+            values: list[object] = []
+
+            def _collect(model_data: object) -> None:
+                if isinstance(model_data, str):
+                    values.append(model_data)
+                elif isinstance(model_data, list):
+                    for item in model_data:
+                        _collect(item)
+                elif isinstance(model_data, dict):
+                    for key in ("id", "slug", "model", "name"):
+                        value = model_data.get(key)
+                        if isinstance(value, str):
+                            values.append(value)
+                    for key in ("models", "data", "items"):
+                        if key in model_data:
+                            _collect(model_data[key])
+
+            _collect(data)
+            return [value for value in (str(item) for item in values) if _clean_model_candidate(value)]
+
+        return [
+            value
+            for value in (_clean_model_candidate(raw_line) for raw_line in payload.splitlines())
+            if value
+        ]
+
     models: list[dict] = []
     seen: set[str] = set()
-    for raw_line in completed.stdout.splitlines():
-        model = _clean_model_candidate(raw_line)
+    for raw_line in _extract_discovered_models(completed.stdout):
+        model = str(raw_line)
         if not model or model in seen:
             continue
         seen.add(model)

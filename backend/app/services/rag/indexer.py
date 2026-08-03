@@ -1,8 +1,6 @@
 """RAG indexer: chunking, FTS5 indexing, and dirty detection."""
 from __future__ import annotations
 
-from app.architecture.uow import commit_session
-
 import hashlib
 import json
 from datetime import datetime
@@ -11,6 +9,9 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import commit_session
+
+from ...core.numbers import extract_chapter_number
 from ...database.models import (
     AssistantMemory,
     Chapter,
@@ -22,7 +23,6 @@ from ...database.models import (
     RagDocument,
     WorldbuildingEntry,
 )
-
 
 # ---------------------------------------------------------------------------
 # FTS5 detection
@@ -746,9 +746,4 @@ def _get_source_content_hash(db: Session, source_type: str, source_id: str) -> s
 
 def _extract_chapter_number(title: str) -> int | None:
     """Extract chapter number from title."""
-    import re
-    from ...core.numbers import chinese_number_to_int
-    match = re.search(r"第\s*([0-9一二两三四五六七八九十百千万零〇]+)\s*章", title or "")
-    if not match:
-        match = re.search(r"([0-9]+)", title or "")
-    return chinese_number_to_int(match.group(1)) if match else None
+    return extract_chapter_number(title, allow_bare=True, allow_unmarked=True)

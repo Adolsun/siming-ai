@@ -1,6 +1,7 @@
 """SQLAlchemy system-assistant conversation adapter."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
@@ -24,7 +25,10 @@ def _conversation_data(
     return {
         "id": conversation.id,
         "title": conversation.title,
-        "scope": "system",
+        "scope": conversation.scope_type or "system",
+        "scope_type": conversation.scope_type or "system",
+        "scope_id": conversation.scope_id,
+        "project_id": conversation.project_id,
         "message_count": message_count,
         "creation_session_id": conversation.creation_session_id,
         "user_brief": conversation.user_brief,
@@ -40,6 +44,9 @@ def _message_data(message: SystemAssistantMessage) -> dict[str, Any]:
         "conversation_id": message.conversation_id,
         "role": message.role,
         "content": message.content,
+        "run_id": message.run_id,
+        "operation_id": message.operation_id,
+        "message_type": message.message_type,
         "payload": message.payload_json,
         "status": message.status,
         "created_at": message.created_at.isoformat() if message.created_at else None,
@@ -61,9 +68,48 @@ class SqlAlchemySystemConversationStore:
             raise NotFoundError("系统助手对话不存在")
         return conversation
 
-    def list(self) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_scope(scope_type: str, scope_id: str | None) -> tuple[str, str | None]:
+        normalized = (scope_type or "system").strip().lower()
+        if normalized not in {"system", "creation", "project"}:
+            raise ValueError("scope_type must be system, creation, or project")
+        identifier = (scope_id or "").strip() or None
+        if normalized != "system" and not identifier:
+            raise ValueError(f"{normalized} scope requires scope_id")
+        return normalized, identifier
+
+    def _apply_scope(
+        self,
+        conversation: SystemAssistantConversation,
+        payload: dict[str, Any],
+    ) -> None:
+        if payload.get("scope_type") is None and payload.get("scope_id") is None:
+            if payload.get("creation_session_id"):
+                conversation.scope_type = "creation"
+                conversation.scope_id = payload["creation_session_id"]
+            return
+        scope_type, scope_id = self._normalize_scope(
+            str(payload.get("scope_type") or conversation.scope_type or "system"),
+            payload.get("scope_id"),
+        )
+        conversation.scope_type = scope_type
+        conversation.scope_id = scope_id
+        conversation.project_id = scope_id if scope_type == "project" else payload.get("project_id")
+        if scope_type == "creation":
+            conversation.creation_session_id = scope_id
+
+    def list(self, *, scope_type: str | None = None, scope_id: str | None = None) -> dict[str, Any]:
+        query = self._session.query(SystemAssistantConversation)
+        if scope_type:
+            normalized = scope_type.strip().lower()
+            if normalized not in {"system", "creation", "project"}:
+                raise ValueError("scope_type must be system, creation, or project")
+            identifier = (scope_id or "").strip() or None
+            query = query.filter(SystemAssistantConversation.scope_type == normalized)
+            if identifier:
+                query = query.filter(SystemAssistantConversation.scope_id == identifier)
         conversations = (
-            self._session.query(SystemAssistantConversation)
+            query
             .order_by(
                 SystemAssistantConversation.updated_at.desc(),
                 SystemAssistantConversation.created_at.desc(),
@@ -84,11 +130,30 @@ class SqlAlchemySystemConversationStore:
         ]
         return {"items": items, "total": len(items)}
 
-    def create(self, title: str) -> dict[str, Any]:
-        conversation = SystemAssistantConversation(title=title.strip() or "新对话")
+    def create(
+        self,
+        title: str,
+        *,
+        scope_type: str = "system",
+        scope_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized, identifier = self._normalize_scope(scope_type, scope_id)
+        conversation = SystemAssistantConversation(
+            title=title.strip() or "新对话",
+            scope_type=normalized,
+            scope_id=identifier,
+            project_id=identifier if normalized == "project" else None,
+            creation_session_id=identifier if normalized == "creation" else None,
+        )
         self._session.add(conversation)
         self._session.flush()
         return {"conversation": _conversation_data(conversation, 0)}
+
+    def set_scope(self, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        conversation = self._conversation(conversation_id)
+        self._apply_scope(conversation, payload)
+        self._session.flush()
+        return {"conversation": _conversation_data(conversation)}
 
     def get(self, conversation_id: str) -> dict[str, Any]:
         conversation = self._conversation(conversation_id)
@@ -108,6 +173,100 @@ class SqlAlchemySystemConversationStore:
             "messages": [_message_data(message) for message in messages],
         }
 
+    def start_turn(
+        self,
+        conversation_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a user turn and its running assistant placeholder."""
+        conversation = self._conversation(conversation_id)
+        if conversation.title == "新对话":
+            conversation.title = _title_from_message(str(payload.get("user_content") or ""))
+        for field, source in (
+            ("creation_session_id", "creation_session_id"),
+            ("user_brief", "user_brief"),
+        ):
+            if payload.get(source) is not None:
+                setattr(conversation, field, payload.get(source) or None)
+        self._apply_scope(conversation, payload)
+
+        user_message = SystemAssistantMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=payload["user_content"],
+            status="completed",
+        )
+        assistant_message = SystemAssistantMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="",
+            run_id=payload.get("run_id"),
+            operation_id=payload.get("operation_id"),
+            message_type=payload.get("message_type") or "text",
+            status="running",
+            payload_json=payload.get("payload"),
+        )
+        self._session.add_all([user_message, assistant_message])
+        self._session.flush()
+        return {
+            "conversation": _conversation_data(conversation),
+            "messages": [_message_data(user_message), _message_data(assistant_message)],
+        }
+
+    def finish_turn(
+        self,
+        conversation_id: str,
+        assistant_message_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Finish or fail a previously persisted assistant placeholder."""
+        conversation = self._conversation(conversation_id)
+        message = self._session.query(SystemAssistantMessage).filter(
+            SystemAssistantMessage.id == assistant_message_id,
+            SystemAssistantMessage.conversation_id == conversation.id,
+            SystemAssistantMessage.role == "assistant",
+        ).first()
+        if not message:
+            raise NotFoundError("系统助手消息不存在")
+        message.content = payload.get("assistant_content") or ""
+        message.status = payload.get("status") or "completed"
+        if payload.get("run_id") is not None:
+            message.run_id = payload.get("run_id") or None
+        if payload.get("operation_id") is not None:
+            message.operation_id = payload.get("operation_id") or None
+        if payload.get("message_type") is not None:
+            message.message_type = payload.get("message_type") or "text"
+        message.payload_json = payload.get("payload")
+        if payload.get("creation_session_id") is not None:
+            conversation.creation_session_id = payload.get("creation_session_id") or None
+        if payload.get("user_brief") is not None:
+            conversation.user_brief = payload.get("user_brief") or None
+        if payload.get("blueprints") is not None:
+            conversation.blueprint_json = payload["blueprints"]
+        self._apply_scope(conversation, payload)
+        self._session.flush()
+        return {"conversation": _conversation_data(conversation), "message": _message_data(message)}
+
+    def interrupt_running_messages(self) -> int:
+        """Make abandoned placeholders explicit and recoverable after restart."""
+        messages = self._session.query(SystemAssistantMessage).filter(
+            SystemAssistantMessage.role == "assistant",
+            SystemAssistantMessage.status == "running",
+        ).all()
+        now = datetime.utcnow()
+        for message in messages:
+            message.status = "interrupted"
+            if not message.content.strip():
+                message.content = "上次处理在应用关闭或服务重启时中断，可按原消息重试。"
+            payload = dict(message.payload_json or {})
+            payload["interrupted_at"] = now.isoformat()
+            payload["retryable"] = True
+            message.payload_json = payload
+            message.updated_at = now
+        if messages:
+            self._session.flush()
+        return len(messages)
+
     def append_turn(
         self,
         conversation_id: str,
@@ -122,6 +281,7 @@ class SqlAlchemySystemConversationStore:
             conversation.user_brief = payload.get("user_brief") or None
         if payload.get("blueprints") is not None:
             conversation.blueprint_json = payload["blueprints"]
+        self._apply_scope(conversation, payload)
 
         user_message = SystemAssistantMessage(
             conversation_id=conversation.id,

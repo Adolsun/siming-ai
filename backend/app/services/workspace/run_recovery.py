@@ -44,8 +44,8 @@ async def retry_step(
         if resolved:
             return _enriched_step_payload(resolved)
 
-    if original.status != "error":
-        raise ValueError("只能重试失败的步骤")
+    if original.status not in {"error", "interrupted"}:
+        raise ValueError("只能重试失败或已中断的步骤")
 
     run = db.query(AssistantRun).filter(AssistantRun.id == run_id).first()
     if not run:
@@ -109,12 +109,12 @@ async def retry_step(
         commit_session(db)
 
     # Promote run status if all errors resolved
-    if result.get("status") != "error" and run.status == "error":
+    if result.get("status") != "error" and run.status in {"error", "interrupted"}:
         remaining = (
             db.query(AssistantRunStep)
             .filter(
                 AssistantRunStep.run_id == run.id,
-                AssistantRunStep.status == "error",
+                AssistantRunStep.status.in_(["error", "interrupted"]),
                 AssistantRunStep.resolved_step_id.is_(None),
             )
             .count()
@@ -154,10 +154,10 @@ def resolve_downstream_steps(
     if target_idx is None:
         return []
 
-    # Return unresolved error steps after this one
+    # Return unresolved failed/interrupted steps after this one
     downstream = []
     for s in all_steps[target_idx + 1:]:
-        if s.status == "error" and not s.resolved_step_id:
+        if s.status in {"error", "interrupted"} and not s.resolved_step_id:
             downstream.append(s)
 
     return downstream
@@ -203,16 +203,16 @@ async def resume_run(
     db: Session,
     run_id: str,
 ) -> list[dict]:
-    """Retry all unresolved error steps in a run, in execution order."""
+    """Retry all unresolved failed/interrupted steps in execution order."""
     run = db.query(AssistantRun).filter(AssistantRun.id == run_id).first()
     if not run:
         raise ValueError("任务不存在")
 
-    error_steps = (
+    recoverable_steps = (
         db.query(AssistantRunStep)
         .filter(
             AssistantRunStep.run_id == run_id,
-            AssistantRunStep.status == "error",
+            AssistantRunStep.status.in_(["error", "interrupted"]),
             AssistantRunStep.resolved_step_id.is_(None),
         )
         .order_by(AssistantRunStep.iteration.asc(), AssistantRunStep.created_at.asc())
@@ -220,7 +220,7 @@ async def resume_run(
     )
 
     results = []
-    for step in error_steps:
+    for step in recoverable_steps:
         r = await retry_step(db, run_id, step.id)
         results.append(r)
 

@@ -15,7 +15,12 @@ from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.assistant.application.system_conversations import SystemConversationStore
+from ..modules.assistant.interfaces.system_conversation_dependencies import (
+    get_system_conversation_store,
+)
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
+from ..modules.creation.infrastructure.models import NovelCreationSession
 from ..services.context_builders import (
     _build_chapter_detail_context,
     _build_character_ai_context,
@@ -72,10 +77,12 @@ from ..services.workspace.run_log import (
     create_assistant_run,
     finish_run_step,
     mark_assistant_run,
+    resolve_assistant_model,
     run_payload,
     start_run_step,
     step_payload,
 )
+from ..services.workspace.assistant_stream_runtime import assistant_cancel_was_explicit, detached_assistant_stream
 from ..services.workspace.run_recovery import (
     generate_idempotency_key,
     retry_step,
@@ -83,8 +90,7 @@ from ..services.workspace.run_recovery import (
     resume_run,
 )
 from ..services.operation_runtime import record_operation_signal
-from ..services.agent.bridge import detect_and_stream_plan
-from ..schemas.ai_writer import WorkspaceAssistantRequest
+from ..schemas.ai_writer import WorkspaceAssistantRequest, WorkspaceAssistantRunDetailResponse, WorkspaceAssistantRunListResponse
 
 router = APIRouter(tags=["ai-writer"])
 
@@ -965,7 +971,7 @@ def _maybe_json(text: Optional[str]):
         return text
 
 
-@router.get("/projects/{project_id}/ai/assistant/runs")
+@router.get("/projects/{project_id}/ai/assistant/runs", response_model=ApiResponse[WorkspaceAssistantRunListResponse])
 async def list_assistant_runs(
     project_id: str,
     conversation_id: Optional[str] = None,
@@ -986,7 +992,7 @@ async def list_assistant_runs(
     })
 
 
-@router.get("/projects/{project_id}/ai/assistant/runs/{run_id}")
+@router.get("/projects/{project_id}/ai/assistant/runs/{run_id}", response_model=ApiResponse[WorkspaceAssistantRunDetailResponse])
 async def get_assistant_run(
     project_id: str,
     run_id: str,
@@ -998,8 +1004,10 @@ async def get_assistant_run(
     if not run:
         raise NotFoundError("助手任务不存在")
     steps = workspace.run_steps(run.id)
+    assistant_message = workspace.message(run.assistant_message_id) if run.assistant_message_id else None
     return ApiResponse.success(data={
         "run": run_payload(run),
+        "assistant_message": _assistant_message_to_dict(assistant_message) if assistant_message else None,
         "steps": [
             {
                 **step_payload(step),
@@ -1120,27 +1128,43 @@ async def workspace_assistant_stream(
     project_id: str,
     payload: WorkspaceAssistantRequest,
     db: Session = Depends(get_db),
+    system_conversations: SystemConversationStore = Depends(get_system_conversation_store),
 ):
     """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     get_project_or_404(db, project_id)
+    if payload.canonical_conversation_id:
+        try:
+            canonical = system_conversations.get(payload.canonical_conversation_id)["conversation"]
+        except NotFoundError as exc:
+            raise ValidationError(
+                "Canonical project conversation does not belong to this project"
+            ) from exc
+        if canonical.get("scope_type") != "project" or canonical.get("scope_id") != project_id:
+            raise ValidationError("Canonical project conversation does not belong to this project")
+    # Pin the selected default at submission time. This makes the initial SSE
+    # event/query expose the real model and prevents a global-model change from
+    # switching a task between iterations.
+    payload.model = resolve_assistant_model(payload.model)
 
-    async def event_generator():
-        # --- Plan path: detect intent and delegate to plan orchestrator ---
-        plan_gen = await detect_and_stream_plan(
-            db, project_id,
-            message=payload.message,
-            conversation_id=payload.conversation_id,
-            scope=payload.scope,
-            model=payload.model,
-            assistant_mode=payload.assistant_mode,
-            outline_batch_count=payload.outline_batch_count,
-        )
-        if plan_gen is not None:
-            async for event in plan_gen:
-                yield event
-            return
-
-        # --- Fallback: old agentic loop ---
+    async def event_generator(run_db: Session):
+        db = run_db
+        if payload.canonical_conversation_id and not payload.conversation_id:
+            workspace = assistant_workspace(db)
+            execution_conversation = workspace.conversation_by_canonical(
+                project_id,
+                payload.canonical_conversation_id,
+            )
+            if not execution_conversation:
+                execution_conversation = workspace.create_conversation(
+                    project_id=project_id,
+                    title=_assistant_title_from_message(payload.message),
+                    scope=payload.scope,
+                    canonical_conversation_id=payload.canonical_conversation_id,
+                )
+                commit_session(db)
+            payload.conversation_id = execution_conversation.id
+        # The model sees the authorized workspace tools and decides which data
+        # to read or mutate. Do not pre-route equivalent requests by wording.
         conversation = None
         user_msg_db = None
         assistant_msg_db = None
@@ -1247,6 +1271,21 @@ async def workspace_assistant_stream(
                 local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
+            if payload.creation_session_id:
+                creation_session = (
+                    db.query(NovelCreationSession)
+                    .filter(NovelCreationSession.id == payload.creation_session_id)
+                    .first()
+                )
+                if creation_session and project_id in {
+                    creation_session.created_project_id,
+                    creation_session.source_project_id,
+                }:
+                    selected_context.append(
+                        "当前作品关联的立项数据："
+                        f"creation_session_id={creation_session.id}，revision={int(creation_session.revision or 0)}。"
+                        "当用户询问、补充或修改作品设定时，先读取这份立项数据，再使用立项工具做局部更新。"
+                    )
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
             if selected_character:
@@ -2098,45 +2137,13 @@ async def workspace_assistant_stream(
             yield _sse_event({"type": "complete", "data": response_payload})
             yield _sse_event("[DONE]")
         except (GeneratorExit, asyncio.CancelledError):
-            # Client disconnected during streaming — finish critical work silently
-            if all_actions and payload.auto_apply:
-                for action in all_actions[:12]:
-                    tool = str(action.get("tool") or "tool")
-                    try:
-                        action_result = await _execute_workspace_action(
-                            db, project_id, action, assistant_mode=payload.assistant_mode, model=payload.model
-                        )
-                    except Exception:
-                        action_result = {"tool": tool, "status": "error", "detail": "后台执行失败"}
-                    applied_actions.append(action_result)
-                commit_session(db)
+            # Only an explicit Operation cancellation closes this producer.
+            # Never execute deferred writes while unwinding a cancelled stream.
+            if not assistant_cancel_was_explicit():
+                raise
             if assistant_msg_db:
-                reply = _build_workspace_final_reply(
-                    final_reply or str(parsed_fallback.get("reply") or ""),
-                    all_actions=all_actions,
-                    applied_actions=applied_actions,
-                    tool_logs=tool_logs,
-                    searched_context=searched_context,
-                )
-                assistant_msg_db.content = reply
-                assistant_msg_db.payload_json = json.dumps({
-                    "reply": reply,
-                    "outcome": _workspace_outcome(
-                        final_reply or str(parsed_fallback.get("reply") or ""),
-                        all_actions=all_actions,
-                        applied_actions=applied_actions,
-                        tool_logs=tool_logs,
-                        searched_context=searched_context,
-                    ),
-                    "actions": all_actions,
-                    "applied_actions": applied_actions,
-                    "tool_logs": tool_logs,
-                    "searched_context": searched_context,
-                    "scope": payload.scope,
-                    "model": final_model,
-                    "usage": final_usage,
-                }, ensure_ascii=False)
-                assistant_msg_db.status = "completed"
+                assistant_msg_db.content = "任务已取消，本轮不会再写入章节。"
+                assistant_msg_db.status = "aborted"
                 assistant_msg_db.updated_at = datetime.utcnow()
                 if conversation:
                     conversation.updated_at = datetime.utcnow()
@@ -2144,16 +2151,12 @@ async def workspace_assistant_stream(
             mark_assistant_run(
                 db,
                 assistant_run,
-                status="completed",
-                phase="client_disconnected",
-                final_reply=_build_workspace_final_reply(
-                    final_reply or str(parsed_fallback.get("reply") or ""),
-                    all_actions=all_actions,
-                    applied_actions=applied_actions,
-                    tool_logs=tool_logs,
-                    searched_context=searched_context,
-                ),
+                status="cancelled",
+                phase="cancelled",
+                error="用户取消了任务",
+                final_reply="任务已取消，本轮不会再写入章节。",
             )
+            raise
         except LLMError as exc:
             if assistant_msg_db:
                 assistant_msg_db.content = str(exc)
@@ -2174,7 +2177,7 @@ async def workspace_assistant_stream(
             yield _sse_event("[DONE]")
 
     return StreamingResponse(
-        event_generator(),
+        detached_assistant_stream(event_generator),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

@@ -12,6 +12,14 @@ from ....core.utils import count_words
 from ....database.models import AgentRun, AgentRunEvent, Chapter, ChapterDraft, Project
 from ....services.storage_contract import storage_health
 from ....services.local_cli_agent_worker import start_local_cli_agent_worker
+from ....services.operation_runtime import current_operation_id
+from ..idempotency import (
+    acquire_chapter_write_claim,
+    chapter_write_target_key,
+    fail_chapter_write_claim,
+    validate_chapter_write_claim,
+)
+from ..utils import find_outline_by_title_or_id
 
 
 _TERMINAL_RUN_STATES = {"completed", "failed", "cancelled"}
@@ -121,27 +129,131 @@ async def start_local_cli_agent_run(
     args: dict[str, Any],
 ) -> dict:
     """Start Claude/Codex/opencode as a Siming-managed CLI Agent worker."""
+    if str(args.get("_context_execution_route") or "").strip() == "external_mcp":
+        return {
+            "tool": "start_local_cli_agent_run",
+            "status": "skipped",
+            "detail": (
+                "当前已经在外部 MCP Agent 中，不能递归启动第二个 CLI。"
+                "请使用 prepare_external_writing_context、start_agent_run、"
+                "report_context_selected 和写入工具完成当前任务。"
+            ),
+            "data": None,
+        }
     task_type = str(args.get("task_type") or args.get("mode") or "general").strip().lower()
     if task_type not in {"general", "cataloging", "writing"}:
         task_type = "general"
     user_request = str(args.get("user_request") or args.get("request") or "").strip()
     provider = str(args.get("provider") or "").strip() or None
+    rewrite = bool(args.get("rewrite"))
+    outline_node_id = str(args.get("outline_node_id") or "").strip()
+    claim_id = str(args.get("_chapter_claim_id") or "").strip() or None
+    claim_token = str(args.get("_chapter_claim_token") or "").strip() or None
+    claim_target_key = str(args.get("_chapter_target_key") or "").strip()
+    claim_idempotency_key = str(args.get("_chapter_idempotency_key") or "").strip()
+    parent_operation_id = (
+        str(args.get("parent_operation_id") or "").strip()
+        or current_operation_id()
+    )
+
+    if task_type == "writing":
+        outline = find_outline_by_title_or_id(
+            db,
+            project_id,
+            outline_node_id,
+            node_type="chapter",
+        )
+        if not outline:
+            return {
+                "tool": "start_local_cli_agent_run",
+                "status": "error",
+                "detail": "本机 CLI 写作缺少当前作品中的章节大纲，本轮未启动。",
+                "data": None,
+            }
+        outline_node_id = outline.id
+        claim_target_key = claim_target_key or chapter_write_target_key(
+            project_id,
+            outline_node_id=outline.id,
+        ) or ""
+        claim_idempotency_key = claim_idempotency_key or (
+            f"rewrite_chapter:{project_id}:{outline.id}:{parent_operation_id or 'direct'}"
+            if rewrite
+            else f"create_chapter:{project_id}:{outline.id}"
+        )
+        if claim_id or claim_token:
+            if not validate_chapter_write_claim(
+                db,
+                project_id=project_id,
+                target_key=claim_target_key,
+                idempotency_key=claim_idempotency_key,
+                claim_id=claim_id,
+                claim_token=claim_token,
+            ):
+                return {
+                    "tool": "start_local_cli_agent_run",
+                    "status": "error",
+                    "detail": "章节写作占用已失效，本机 CLI 未启动，请重新执行任务。",
+                    "data": None,
+                }
+        else:
+            reservation = acquire_chapter_write_claim(
+                db,
+                project_id=project_id,
+                target_key=claim_target_key,
+                idempotency_key=claim_idempotency_key,
+            )
+            if reservation.get("state") != "acquired":
+                existing = reservation.get("result") or {}
+                return {
+                    "tool": "start_local_cli_agent_run",
+                    "status": "ok" if reservation.get("state") == "completed" else "blocked",
+                    "detail": str(existing.get("detail") or "同一章节已有写作任务，未重复启动本机 CLI。"),
+                    "data": existing.get("data"),
+                }
+            claim_id = str(reservation.get("claim_id") or "").strip() or None
+            claim_token = str(reservation.get("claim_token") or "").strip() or None
+
     context_arguments = {
-        "outline_node_id": str(args.get("outline_node_id") or "").strip(),
+        "outline_node_id": outline_node_id,
         "chapter_id": str(args.get("chapter_id") or "").strip(),
         "requirements": user_request,
         "pinned_chunk_ids": args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else [],
         "pinned_source_ids": args.get("pinned_source_ids") if isinstance(args.get("pinned_source_ids"), list) else [],
+        "rewrite": rewrite,
+        "managed_chapter_write": bool(task_type == "writing" and claim_id and claim_token),
+        "parent_plan_id": str(args.get("parent_plan_id") or "").strip(),
+        "parent_operation_id": parent_operation_id or "",
+        "chapter_claim_id": claim_id or "",
+        "chapter_claim_token": claim_token or "",
+        "chapter_target_key": claim_target_key,
+        "chapter_idempotency_key": claim_idempotency_key,
     }
-    result = start_local_cli_agent_worker(
-        db,
-        project_id,
-        user_request=user_request,
-        task_type=task_type,
-        provider=provider,
-        context_manifest_id=str(args.get("context_manifest_id") or "").strip() or None,
-        context_arguments=context_arguments,
-    )
+    try:
+        result = start_local_cli_agent_worker(
+            db,
+            project_id,
+            user_request=user_request,
+            task_type=task_type,
+            provider=provider,
+            context_manifest_id=str(args.get("context_manifest_id") or "").strip() or None,
+            context_arguments=context_arguments,
+        )
+    except BaseException:
+        if task_type == "writing":
+            fail_chapter_write_claim(
+                db,
+                claim_id,
+                claim_token,
+                error="本机 CLI 启动异常，已释放章节写作占用",
+            )
+        raise
+    if task_type == "writing" and result.get("status") != "ok":
+        fail_chapter_write_claim(
+            db,
+            claim_id,
+            claim_token,
+            error=str(result.get("detail") or "本机 CLI 未启动"),
+        )
     return {
         "tool": "start_local_cli_agent_run",
         "status": result.get("status", "ok"),

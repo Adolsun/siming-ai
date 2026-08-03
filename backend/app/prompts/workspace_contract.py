@@ -59,6 +59,16 @@ WORKSPACE_TOOL_NAMES = frozenset(
     finish_agent_run
     forget
     generate_novel_creation_stage
+    generate_creation_artifact
+    get_creation_artifact
+    get_creation_operation
+    get_creation_session
+    get_creation_snapshot
+    get_creation_artifact_diff
+    get_creation_dependencies
+    get_creation_dependency_graph
+    validate_creation_consistency
+    get_creation_entity
     get_cataloging_control_state
     get_cataloging_job
     get_deconstruct_report
@@ -79,6 +89,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     get_tool_playbook
     get_writing_stats_history
     import_deconstruct_report
+    import_creation_material
     import_file_as_chapters
     import_file_as_project
     import_text_as_chapters
@@ -92,6 +103,9 @@ WORKSPACE_TOOL_NAMES = frozenset(
     list_deconstruct_reports
     list_duplicate_characters
     list_imported_files
+    list_creation_artifacts
+    list_creation_artifact_versions
+    list_creation_entities
     list_memories
     list_narrative_checkpoints
     list_project_files
@@ -111,6 +125,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     prepare_task_context
     preview_character_merge
     preview_deconstruct_source
+    preview_creation_import
     preview_import_splits
     preview_rag_context
     preview_skill_match
@@ -128,6 +143,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     rerun_failed_deconstruct_chunks
     reset_skill
     restore_chapter_version
+    restore_creation_artifact_version
     restore_narrative_governance_checkpoint
     resume_cataloging_job
     retry_current_cataloging_chapter
@@ -156,6 +172,23 @@ WORKSPACE_TOOL_NAMES = frozenset(
     start_novel_creation_session
     submit_context_evidence
     submit_novel_creation_stage
+    confirm_creation_artifact
+    refine_creation_artifact
+    regenerate_creation_artifact
+    cancel_creation_operation
+    pause_creation_operation
+    resume_creation_operation
+    retry_creation_operation
+    validate_creation_session
+    finalize_creation_session
+    patch_creation_artifact
+    patch_creation_session
+    patch_creation_entity
+    delete_creation_entity
+    apply_creation_import
+    lock_creation_fields
+    unlock_creation_fields
+    undo_creation_artifact
     suggest_conflicts
     sync_project_files
     update_cataloging_candidate

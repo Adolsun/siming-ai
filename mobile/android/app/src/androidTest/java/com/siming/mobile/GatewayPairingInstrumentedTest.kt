@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -19,6 +20,39 @@ import org.junit.runner.RunWith
 class GatewayPairingInstrumentedTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun standaloneApiSetupIsReachableWithoutGateway() {
+        when {
+            composeRule.onAllNodesWithText("配置云端 API（推荐）")
+                .fetchSemanticsNodes().isNotEmpty() -> {
+                composeRule.onNodeWithText("配置云端 API（推荐）").performClick()
+            }
+            else -> {
+                composeRule.onNodeWithText("设置").performClick()
+                if (composeRule.onAllNodesWithText("配置云端 API")
+                        .fetchSemanticsNodes().isNotEmpty()
+                ) {
+                    composeRule.onNodeWithText("配置云端 API").performClick()
+                } else {
+                    composeRule.onNodeWithText("编辑").performClick()
+                }
+            }
+        }
+
+        val setupTitle = if (composeRule.onAllNodesWithText("配置手机直连 API")
+                .fetchSemanticsNodes().isNotEmpty()
+        ) {
+            "配置手机直连 API"
+        } else {
+            "编辑手机直连 API"
+        }
+        composeRule.onNodeWithText(setupTitle).assertIsDisplayed()
+        composeRule.onNodeWithText("不连接电脑，也能使用 AI").assertIsDisplayed()
+        composeRule.onNodeWithText("自动获取模型、测试并保存")
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
 
     @Test
     fun pairsThroughTheRenderedManualFlowWhenPayloadIsProvided() {

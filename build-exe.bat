@@ -8,7 +8,7 @@ if errorlevel 1 (
   set "BUILD_EXIT_CODE=%ERRORLEVEL%"
   echo.
   echo Packaging failed. See the message above.
-  pause
+  if not defined CI pause
   exit /b %BUILD_EXIT_CODE%
 )
 

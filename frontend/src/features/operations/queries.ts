@@ -32,6 +32,10 @@ export function useOperationAction(limit = 30) {
   })
 }
 
+export async function markOperationAttentionRead(operationIds: string[]) {
+  await apiClient.post('/operations/attention/read', { operation_ids: operationIds })
+}
+
 export function updateOperationInCache(
   current: OperationRun[] | undefined,
   operation: OperationRun,

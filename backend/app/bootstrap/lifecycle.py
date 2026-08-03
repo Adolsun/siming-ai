@@ -34,9 +34,14 @@ class RuntimeBootstrapStatus:
 
 def _run_legacy_startup_recovery() -> None:
     """Run compatibility recovery after the database schema is available."""
+    from ..modules.assistant.infrastructure.system_conversations import (
+        SqlAlchemySystemConversationStore,
+    )
     from ..modules.story.infrastructure.content_sync import (
         recover_content_sync_queue,
     )
+    from ..services.novel_creation_imports import mark_interrupted_material_imports
+    from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
     from ..services.operation_runtime import mark_interrupted_operations
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
@@ -49,7 +54,12 @@ def _run_legacy_startup_recovery() -> None:
         recover_sync_capture_queue()
     with SqlAlchemyUnitOfWork(SessionLocal) as uow:
         mark_interrupted_assistant_runs(uow.session)
+        # Creation runs own their durable result state. Reconcile them before
+        # projecting generic operations so saved output remains reviewable.
+        mark_interrupted_novel_creation_runs(uow.session)
+        mark_interrupted_material_imports(uow.session)
         mark_interrupted_operations(uow.session)
+        SqlAlchemySystemConversationStore(uow.session).interrupt_running_messages()
         uow.commit()
 
 

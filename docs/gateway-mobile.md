@@ -8,6 +8,8 @@
 Windows 桌面 ─┐
                ├─ 用户自有 Gateway（权威修订线） ─ 云端模型 API（可选）
 Android 离线副本 ┘
+
+Android ── 用户选择的 OpenAI 兼容 API（独立创作，无需 Gateway）
 ```
 
 桌面内置 Gateway 保留桌面端全部本地能力。Docker Gateway 是 headless 运行时，只开放同步、设备管理和云端模型所需能力，不运行本地模型、OpenCode、CLI、MCP 或训练。电脑关机后，只有部署在 NAS、常开主机或云主机上的 Gateway 才能继续为手机同步和执行云端 AI 请求。
@@ -32,7 +34,7 @@ $env:SIMING_GATEWAY_BOOTSTRAP_KEY = "请使用至少12位随机口令"
 docker compose -f compose.gateway.yml up -d
 ```
 
-也可以直接使用 `ghcr.io/teangtang1122/siming-ai-gateway:3.0.14`。默认映射宿主机 8000 端口，数据写入 Docker 卷 `siming-gateway-data`。首次打开管理页时输入 `SIMING_GATEWAY_BOOTSTRAP_KEY`；成功后服务器写入 12 小时 HttpOnly、SameSite=Strict 会话 Cookie，口令不会进入浏览器存储。
+也可以直接使用 `ghcr.io/teangtang1122/siming-ai-gateway:3.1.0`。默认映射宿主机 8000 端口，数据写入 Docker 卷 `siming-gateway-data`。首次打开管理页时输入 `SIMING_GATEWAY_BOOTSTRAP_KEY`；成功后服务器写入 12 小时 HttpOnly、SameSite=Strict 会话 Cookie，口令不会进入浏览器存储。本版同步协议保持不变。
 
 建议显式设置：
 
@@ -58,10 +60,12 @@ APK 支持 Android 8.0（API 26）及以上。手机端可以：
 
 - 新建作品或导入 TXT；较长章节会拆成不超过约 20 万字符的连续章节。
 - 离线编辑章节、大纲、角色、关系、世界观、伏笔与叙事治理资料。
-- 使用 Gateway 已配置的云端模型执行质量模式写作；没有 Gateway 时 AI 按钮会明确禁用，但本地编辑不受影响。
+- 在“设置”中配置 OpenAI 兼容 API，自动获取或手动填写模型后执行真实对话测试；配置成功后，无需 Gateway 或电脑开机即可使用项目助手。
+- 手机直连支持 Responses API 与 Chat Completions 自动回退，并对临时上游错误进行有限重试；生成结果由用户确认后保存为本机新章节，不会静默覆盖正文。
+- 也可使用 Gateway 已配置的云端模型和项目工具；如同时配置直连 API 与 Gateway，项目助手优先使用手机直连 API，避免电脑离线时中断。
 - 查看同步状态与冲突。同步先上传本机变更再拉取服务器修订；同一资料两边都改动时保留双方版本，由用户选择。
 
-Android 不包含本地模型、OpenCode、本机 CLI、MCP 或训练能力。令牌由 Android Keystore 加密后原子写入；系统备份被禁用，断开设备会尽力先撤销服务器授权再清除本机令牌。
+Android 不包含本地模型、OpenCode、本机 CLI、MCP 或训练能力。API Key 和 Gateway 令牌分别由 Android Keystore 加密保存，不进入作品数据库、同步队列或日志；系统备份被禁用。手机直连地址在正式版中必须使用 HTTPS。断开设备会尽力先撤销服务器授权再清除本机 Gateway 令牌。
 
 ## 数据、备份与恢复
 

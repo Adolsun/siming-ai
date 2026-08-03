@@ -4,6 +4,11 @@
   text-rendering: optimizeLegibility;
 }
 
+/* Ant's default character counter is just below WCAG AA on light modals. */
+.ant-input-data-count {
+  color: #625f59;
+}
+
 html,
 body,
 #root {

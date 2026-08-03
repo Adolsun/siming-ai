@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Collapse,
-  Dropdown,
   Empty,
   Form,
   Input,
@@ -22,7 +21,6 @@ import {
   DiffOutlined,
   FileTextOutlined,
   HistoryOutlined,
-  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
@@ -315,9 +313,12 @@ function WriterPage({ projectId }: WriterPageProps) {
   }
 
   const confirmDeleteChapter = () => {
+    const chapterTitle = detail?.title
+      || chapters.find((chapter) => chapter.id === selectedId)?.title
+      || '当前章节'
     Modal.confirm({
-      title: '确认删除章节',
-      content: '版本历史和出场记录也会一并删除，此操作不可恢复。',
+      title: `删除「${chapterTitle}」？`,
+      content: '该章节的正文、版本历史和出场记录都会一并删除，此操作不可恢复。',
       okText: '删除',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -451,15 +452,14 @@ function WriterPage({ projectId }: WriterPageProps) {
             </div>
             <Space>
               {selectedId && !creating && (
-                <Dropdown
-                  trigger={['click']}
-                  menu={{
-                    items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除章节' }],
-                    onClick: ({ key }) => { if (key === 'delete') confirmDeleteChapter() },
-                  }}
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={confirmDeleteChapter}
+                  aria-label={`删除本章：${detail?.title || editorTitle}`}
                 >
-                  <Button icon={<MoreOutlined />} aria-label="章节更多操作" />
-                </Dropdown>
+                  删除本章
+                </Button>
               )}
               <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!creating && !isDirty} onClick={() => form.submit()}>
                 {creating ? '创建章节' : '保存改动'}

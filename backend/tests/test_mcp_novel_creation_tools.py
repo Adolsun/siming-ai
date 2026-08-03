@@ -24,9 +24,33 @@ class MCPNovelCreationToolsTest(unittest.TestCase):
     def test_apply_in_project_management(self):
         tools = list_mcp_tools(permission_pack="project_management")
         names = {t.name for t in tools}
-        self.assertIn("apply_novel_blueprint", names)
-        self.assertIn("generate_novel_creation_stage", names)
-        self.assertIn("submit_novel_creation_stage", names)
+        expected = {
+            "apply_novel_blueprint",
+            "generate_novel_creation_stage",
+            "submit_novel_creation_stage",
+            "patch_creation_session",
+            "confirm_creation_artifact",
+            "generate_creation_artifact",
+            "refine_creation_artifact",
+            "regenerate_creation_artifact",
+            "cancel_creation_operation",
+            "pause_creation_operation",
+            "resume_creation_operation",
+            "retry_creation_operation",
+            "finalize_creation_session",
+        }
+        self.assertTrue(expected.issubset(names))
+
+    def test_canonical_creation_reads_are_available_to_readonly_collaboration(self):
+        tools = list_mcp_tools(permission_pack="readonly_collaboration")
+        names = {tool.name for tool in tools}
+        expected = {
+            "get_creation_session",
+            "get_creation_snapshot",
+            "get_creation_operation",
+            "validate_creation_session",
+        }
+        self.assertTrue(expected.issubset(names))
 
     def test_creation_session_tools_do_not_require_project_id(self):
         tools = list_mcp_tools(permission_pack="project_management")

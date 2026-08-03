@@ -20,6 +20,7 @@ from app.architecture.uow import commit_session
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.exceptions import ValidationError
+from ..core.crypto import encrypt
 from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
 from ..database.session import get_db
@@ -28,6 +29,8 @@ from ..schemas.local_model import (
     AdapterCompareRequest,
     AdapterUpdateRequest,
     BenchmarkRequest,
+    CustomModelDownloadRequest,
+    CustomModelImportRequest,
     DatasetCreateRequest,
     ModelInstallRequest,
     ModelRootUpdateRequest,
@@ -40,9 +43,14 @@ from ..services.local_runtime.hardware import detect_hardware
 from ..services.local_runtime.manifest import model_catalog
 from ..services.local_runtime.model_jobs import (
     create_model_download,
+    create_custom_model_download,
+    import_custom_model,
     create_runtime_download,
     ensure_catalog_rows,
+    resume_download,
 )
+from ..database.models import APIConfig
+from ..modules.model_runtime.infrastructure.readiness import mark_model_ready
 from ..services.local_runtime.paths import model_root
 from ..services.local_runtime.training import (
     control_training_job,
@@ -63,6 +71,29 @@ def _launcher_settings_path() -> Path:
     if home:
         return Path(home) / "launcher-settings.json"
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
+
+
+def _pick_local_path(*, directory: bool) -> Path | None:
+    try:
+        import tkinter
+        from tkinter import filedialog
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = (
+            filedialog.askdirectory(title="选择本地模型存储文件夹", parent=root)
+            if directory
+            else filedialog.askopenfilename(
+                title="选择本地 GGUF 模型",
+                filetypes=[("GGUF 模型", "*.gguf"), ("所有文件", "*.*")],
+                parent=root,
+            )
+        )
+        root.destroy()
+        return Path(selected).expanduser().resolve() if selected else None
+    except Exception as exc:
+        raise ValidationError(f"无法打开本机选择器：{exc}")
 
 
 def _model_payload(model: Any) -> dict:
@@ -172,6 +203,20 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
     return ApiResponse.success(data={"model_root": str(target)}, message="模型目录已更新")
 
 
+@router.post("/root/pick")
+def pick_model_root():
+    selected = _pick_local_path(directory=True)
+    return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
+
+
+@router.post("/custom/pick")
+def pick_custom_model_file():
+    selected = _pick_local_path(directory=False)
+    if selected and selected.suffix.lower() != ".gguf":
+        raise ValidationError("请选择 .gguf 模型文件")
+    return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
+
+
 @router.post("/runtime/install")
 def install_runtime():
     task_id = create_runtime_download()
@@ -187,6 +232,18 @@ def install_model(payload: ModelInstallRequest):
         "model_task_id": model_task_id,
         "already_installed": not bool(model_task_id),
     })
+
+
+@router.post("/custom/download")
+def download_custom_model(payload: CustomModelDownloadRequest):
+    task_id = create_custom_model_download(**payload.model_dump())
+    return ApiResponse.success(data={"model_task_id": task_id, "already_installed": not bool(task_id)})
+
+
+@router.post("/custom/import")
+def import_existing_custom_model(payload: CustomModelImportRequest):
+    import_custom_model(**payload.model_dump())
+    return ApiResponse.success(message="自有 GGUF 模型已登记")
 
 
 @router.get("/downloads")
@@ -219,8 +276,14 @@ async def download_events(task_id: str):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/downloads/{task_id}/resume")
+def resume_model_download(task_id: str):
+    resume_download(task_id)
+    return ApiResponse.success(message="已从保存的下载进度继续")
+
+
 @router.post("/runtime/start")
-async def start_runtime(payload: RuntimeStartRequest):
+async def start_runtime(payload: RuntimeStartRequest, db: Session = Depends(get_db)):
     _ensure_local_runtime_usage_enabled()
     base_url = await asyncio.to_thread(
         get_runtime_manager().ensure_running,
@@ -229,6 +292,19 @@ async def start_runtime(payload: RuntimeStartRequest):
         task_type=payload.task_type,
         project_id=payload.project_id,
     )
+    config = db.query(APIConfig).filter(APIConfig.provider == "local_llama_cpp").first()
+    if not config:
+        config = APIConfig(
+            provider="local_llama_cpp",
+            api_key_encrypted=encrypt("__local_runtime__"),
+            default_model=payload.model_key,
+            provider_type="local_runtime",
+            max_output_tokens=16384,
+        )
+        db.add(config)
+    config.default_model = payload.model_key
+    mark_model_ready(config, source="local_runtime_started", message="本地模型已成功加载")
+    commit_session(db)
     return ApiResponse.success(data={**get_runtime_manager().status(), "base_url": base_url})
 
 
@@ -240,11 +316,19 @@ def stop_runtime():
 
 @router.delete("/{model_key}")
 def delete_model(model_key: str, db: Session = Depends(get_db)):
-    model = local_model_store(db).model(model_key)
+    store = local_model_store(db)
+    model = store.model(model_key)
     if not model:
         return ApiResponse.success()
     if get_runtime_manager().status().get("model_key") == model_key:
         get_runtime_manager().stop()
+    # A manually registered file belongs to the user. Removing it from the
+    # model center must not erase an arbitrary file outside Siming's model
+    # directory.
+    if model.source == "custom" and not (model.source_urls or []):
+        store.delete(model)
+        commit_session(db)
+        return ApiResponse.success(message="已移除自有 GGUF 的登记，原文件未改动")
     if model.file_path:
         path = Path(model.file_path)
         if path.exists():
@@ -271,14 +355,18 @@ async def benchmark(payload: BenchmarkRequest):
         timeout=180,
     )
     elapsed = max(0.001, time.perf_counter() - started)
-    reply = result.get("content") or ""
+    reply = str(result.get("content") or "")
+    reasoning = str(result.get("reasoning_content") or "")
+    measured_text = reply or reasoning
     completion_tokens = int((result.get("usage") or {}).get("completion_tokens") or 0)
     tokens_estimated = False
-    if not completion_tokens and reply.strip():
-        completion_tokens = max(1, len(reply.strip()))
+    if not completion_tokens and measured_text.strip():
+        completion_tokens = max(1, len(measured_text.strip()))
         tokens_estimated = True
     return ApiResponse.success(data={
         "reply": reply,
+        "reasoning_preview": reasoning[:500] if reasoning and not reply else "",
+        "reasoning_only": bool(reasoning and not reply),
         "elapsed_seconds": round(elapsed, 2),
         "completion_tokens": completion_tokens,
         "tokens_estimated": tokens_estimated,

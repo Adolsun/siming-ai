@@ -43,6 +43,12 @@ interface SimingDao {
     suspend fun entity(key: String): ReplicaEntity?
 
     @Query(
+        "SELECT * FROM replica_entities WHERE projectId = :projectId " +
+            "AND operation = 'upsert' ORDER BY localModifiedAt DESC",
+    )
+    suspend fun projectSnapshot(projectId: String): List<ReplicaEntity>
+
+    @Query(
         "SELECT * FROM replica_entities WHERE projectId IN (:projectIds) " +
             "AND dirty = 1",
     )

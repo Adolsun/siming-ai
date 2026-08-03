@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
@@ -22,13 +23,18 @@ from app.services.novel_creation_workspace import (
     attach_concepts,
     build_stage_flow,
     build_apply_blueprint,
+    creation_artifact_dependencies,
     derive_stage,
     generation_blockers,
     get_presets,
     initialize_session_draft,
     patch_session,
+    patch_creation_artifact,
     save_stage,
     serialize_session,
+    serialize_creation_artifact,
+    set_creation_artifact_locks,
+    undo_creation_artifact,
 )
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
@@ -36,6 +42,8 @@ from app.services.workspace.tools.novel_creation_v2 import (
     _normalize_stage_data,
     _validate_stage,
     generate_novel_creation_stage,
+    get_creation_snapshot,
+    patch_creation_session_tool,
     submit_novel_creation_stage,
 )
 
@@ -98,9 +106,27 @@ def _ready_session(db) -> NovelCreationSession:
 
 def test_presets_share_editable_taxonomy_contract():
     payload = get_presets()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert len(payload["categories"]) >= 10
     assert all(item["themes"] and item["defaults"]["avoid"] for item in payload["categories"])
+
+
+def test_v2_draft_migrates_to_v3_as_exploration_without_losing_content():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="旧版悬疑草稿", schema_version=2)
+    session.draft_json = {
+        "schema_version": 2,
+        "form": {"brief": "旧版悬疑草稿", "target_words": 600000, "target_chapters": 240},
+        "concepts": [],
+        "stages": {},
+    }
+    db.add(session)
+
+    draft = initialize_session_draft(session)
+
+    assert draft["schema_version"] == 3
+    assert draft["creation_mode"] == "explore"
+    assert draft["form"]["brief"] == "旧版悬疑草稿"
 
 
 def test_opening_outline_has_fifteen_chapters_and_two_to_six_sections_each():
@@ -155,8 +181,85 @@ def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
         data["characters"][0]["background"] = f"修订 {revision}"
         save_stage(session, "characters", data, confirm=True, source="author")
     assert len(session.checkpoints_json["characters"]) == 3
-    assert session.draft_json["stages"]["locations"]["status"] == "stale"
+    assert session.draft_json["stages"]["locations"]["status"] == "confirmed"
+    assert session.draft_json["stages"]["macro_outline"]["status"] == "stale"
     assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+
+def test_artifact_patch_is_atomic_and_reports_downstream_impact():
+    db = _db()
+    session = _ready_session(db)
+    before_revision = int(session.revision or 0)
+    before_volume_count = len(session.draft_json["stages"]["macro_outline"]["data"]["volumes"])
+
+    result = patch_creation_artifact(session, "macro_outline", [
+        {"path": "/volumes/0/title", "action": "replace", "value": "第一卷 失忆封锁线"},
+        {"path": "/volumes", "action": "append", "value": {"title": "第二卷 白塔回声"}},
+    ], source="assistant")
+
+    assert result["artifact"]["data"]["volumes"][0]["title"] == "第一卷 失忆封锁线"
+    assert len(result["artifact"]["data"]["volumes"]) == before_volume_count + 1
+    assert int(session.revision or 0) == before_revision + 1
+    assert result["affected_artifacts"]
+    assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+    saved = deepcopy(session.draft_json)
+    with pytest.raises(ValueError, match="invalid list path segment"):
+        patch_creation_artifact(session, "macro_outline", [
+            {"path": "/volumes/99/title", "action": "replace", "value": "不会写入"},
+        ])
+    assert session.draft_json == saved
+
+
+def test_artifact_locks_block_parent_and_child_patch_paths():
+    db = _db()
+    session = _ready_session(db)
+    set_creation_artifact_locks(session, "characters", ["/characters/0"], locked=True)
+    artifact = serialize_creation_artifact(session, "characters")
+    assert artifact["locked_paths"] == ["/characters/0"]
+
+    with pytest.raises(ValueError, match="字段已锁定"):
+        patch_creation_artifact(session, "characters", [
+            {"path": "/characters/0/goal", "action": "replace", "value": "改写目标"},
+        ])
+
+    set_creation_artifact_locks(session, "characters", ["/characters/0"], locked=False)
+    result = patch_creation_artifact(session, "characters", [
+        {"path": "/characters/0/goal", "action": "replace", "value": "找到母亲并保存记忆"},
+    ])
+    assert result["artifact"]["data"]["characters"][0]["goal"] == "找到母亲并保存记忆"
+
+
+def test_artifact_patch_runs_schema_validation_before_writing():
+    db = _db()
+    session = _ready_session(db)
+    saved = deepcopy(session.draft_json)
+    revision = int(session.revision or 0)
+
+    def reject_missing_characters(stage: str, data: dict) -> None:
+        assert stage == "characters"
+        if not data.get("characters"):
+            raise ValueError("缺少角色档案")
+
+    with pytest.raises(ValueError, match="缺少角色档案"):
+        patch_creation_artifact(
+            session,
+            "characters",
+            [{"path": "/characters", "action": "replace", "value": []}],
+            validator=reject_missing_characters,
+        )
+
+    assert session.draft_json == saved
+    assert int(session.revision or 0) == revision
+
+
+def test_artifact_dependencies_keep_existing_downstream_data_visible():
+    db = _db()
+    session = _ready_session(db)
+    dependencies = creation_artifact_dependencies(session, "characters")
+    affected = {item["artifact"] for item in dependencies["affected_artifacts"]}
+    assert affected == {"macro_outline", "opening_outline", "final_review"}
+    assert all(item["effect"] == "stale" for item in dependencies["affected_artifacts"])
 
 
 def test_generated_stage_remains_current_until_the_author_confirms_it():
@@ -193,23 +296,27 @@ def test_stage_flow_recovers_a_legacy_session_that_advanced_before_confirmation(
 
     assert flow["legacy_current_stage"] == "characters"
     assert flow["attention_stage"] == "world_style"
-    assert flow["pending_confirmations"] == ["world_style"]
+    assert "world_style" in flow["pending_confirmations"]
     assert flow["items"]["characters"]["can_view"] is False
-    assert flow["items"]["characters"]["blocked_by"][0]["stage"] == "world_style"
+    assert flow["items"]["characters"]["can_generate"] is True
+    assert flow["items"]["characters"]["blocked_by"] == []
+    assert flow["items"]["characters"]["soft_dependencies"][0]["stage"] == "world_style"
 
 
-def test_generation_blockers_require_confirmed_upstream_stages():
+def test_generation_uses_soft_dependency_hints_instead_of_fixed_stage_blockers():
     db = _db()
     session = _ready_session(db)
     session.draft_json["stages"]["world_style"]["status"] = "generated"
 
     blockers = generation_blockers(session, "characters")
 
-    assert [item["stage"] for item in blockers] == ["world_style"]
+    assert blockers == []
+    dependencies = creation_artifact_dependencies(session, "characters")
+    assert [item["stage"] for item in dependencies["soft_dependencies"]] == ["world_style"]
     assert generation_blockers(session, "concepts") == []
 
 
-def test_legacy_lifecycle_stage_is_projected_as_stale_and_blocks_downstream():
+def test_legacy_lifecycle_stage_is_projected_as_stale_without_blocking_downstream():
     db = _db()
     session = _ready_session(db)
     session.draft_json["stages"]["macro_outline"] = {
@@ -225,9 +332,58 @@ def test_legacy_lifecycle_stage_is_projected_as_stale_and_blocks_downstream():
     assert macro["data"] is None
     assert "重新生成" in macro["stale_reason"]
     assert serialized["stage_flow"]["recommended_stage"] == "macro_outline"
-    assert [item["stage"] for item in generation_blockers(session, "opening_outline")] == ["macro_outline"]
+    assert generation_blockers(session, "opening_outline") == []
+    assert [
+        item["stage"]
+        for item in creation_artifact_dependencies(session, "opening_outline")["soft_dependencies"]
+    ] == ["macro_outline"]
     with pytest.raises(ValueError, match="全书主线与卷纲"):
         build_apply_blueprint(session)
+
+
+def test_serialize_incomplete_old_work_keeps_context_selector_available():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="旧立项草稿")
+    db.add(session)
+    initialize_session_draft(session)
+    session.draft_json["stages"]["final_review"] = {
+        "status": "generated",
+        "source": "model",
+        "data": {"ready": False},
+    }
+
+    serialized = serialize_session(session)
+
+    assert serialized["id"] == session.id
+    assert serialized["display_title"] == "旧立项草稿"
+    assert serialized["draft"]["stages"]["final_review"]["data"] == {"ready": False}
+
+
+def test_artifact_undo_restores_latest_checkpoint_and_keeps_dependents_stale():
+    db = _db()
+    session = _ready_session(db)
+    original = deepcopy(session.draft_json["stages"]["macro_outline"]["data"])
+    patch_creation_artifact(session, "macro_outline", [
+        {"path": "/volumes/0/title", "action": "replace", "value": "修改后的卷名"},
+    ])
+    revision_after_patch = int(session.revision or 0)
+
+    result = undo_creation_artifact(session, "macro_outline")
+
+    assert result["artifact"]["data"] == original
+    assert result["artifact"]["can_undo"] is False
+    assert int(session.revision or 0) == revision_after_patch + 1
+    assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+
+def test_artifact_undo_rejects_an_artifact_without_a_checkpoint():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="先写卷纲")
+    db.add(session)
+    initialize_session_draft(session)
+
+    with pytest.raises(ValueError, match="没有可撤销"):
+        undo_creation_artifact(session, "macro_outline")
 
 
 def test_stage_submission_rejects_a_stale_expected_revision():
@@ -355,9 +511,53 @@ def test_v2_apply_is_idempotent_and_persists_profiles_relations_and_sections():
 
 
 def test_v2_workspace_tools_are_registered():
-    assert registry.get("get_novel_creation_session") is not None
-    assert registry.get("generate_novel_creation_stage") is not None
-    assert registry.get("submit_novel_creation_stage") is not None
+    expected = {
+        "get_novel_creation_session",
+        "get_creation_session",
+        "get_creation_snapshot",
+        "get_creation_operation",
+        "patch_creation_session",
+        "confirm_creation_artifact",
+        "generate_creation_artifact",
+        "refine_creation_artifact",
+        "regenerate_creation_artifact",
+        "cancel_creation_operation",
+        "pause_creation_operation",
+        "resume_creation_operation",
+        "retry_creation_operation",
+        "validate_creation_session",
+        "finalize_creation_session",
+        "generate_novel_creation_stage",
+        "submit_novel_creation_stage",
+    }
+    assert all(registry.get(name) is not None for name in expected)
+
+
+def test_creation_snapshot_and_session_patch_are_revision_protected():
+    db = _db()
+    session = _ready_session(db)
+    initial_revision = int(session.revision or 0)
+
+    patched = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session.id,
+        "expected_revision": initial_revision,
+        "changes": {"user_brief": "只保留悬疑主线，目标八卷"},
+    }))
+    assert patched["status"] == "ok"
+    assert patched["data"]["revision"] > initial_revision
+
+    conflict = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session.id,
+        "expected_revision": initial_revision,
+        "changes": {"user_brief": "不应覆盖"},
+    }))
+    assert conflict["status"] == "error"
+    assert conflict["data"]["failure_class"] == "revision_conflict"
+
+    snapshot = asyncio.run(get_creation_snapshot(db, "", {"session_id": session.id}))
+    assert snapshot["status"] == "ok"
+    assert snapshot["data"]["revision"] == patched["data"]["revision"]
+    assert len(snapshot["data"]["artifacts"]) == len(STAGE_ORDER)
 
 
 def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
@@ -374,7 +574,7 @@ def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
     event_types = [item["event_type"] for item in run["events"]]
     assert event_types.count("stage_progress") == 5
     assert event_types.count("stage_completed") == 6
-    assert run["status"] == "completed"
+    assert run["status"] == "waiting_user"
     final = result["data"]["session"]["draft"]["stages"]["final_review"]
     assert final["status"] == "generated"
     assert final["data"]["ready"] is True
@@ -410,6 +610,37 @@ def test_quick_run_uses_an_explicit_safe_fallback_for_empty_model_events():
     macro = result["data"]["session"]["draft"]["stages"]["macro_outline"]
     assert macro["source"] == "contract_fallback"
     assert macro["data"]["volumes"]
+
+
+def test_truncated_stage_json_is_repaired_without_a_second_model_call():
+    db = _db()
+    session = _ready_session(db)
+    world = derive_stage(session, "world_style")
+    raw = json.dumps({"data": world}, ensure_ascii=False)[:-1]
+
+    def truncated_stream(**_kwargs):
+        async def generate():
+            yield raw
+
+        return generate()
+
+    completion = MagicMock(side_effect=truncated_stream)
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=completion,
+    ):
+        result = asyncio.run(generate_novel_creation_stage(db, "", {
+            "session_id": session.id,
+            "stage": "world_style",
+            "model": "openai:test",
+            "use_model": True,
+        }))
+
+    assert result["status"] == "ok"
+    assert completion.call_count == 1
+    completed = [event for event in result["data"]["run"]["events"] if event["event_type"] == "stage_completed"][-1]
+    assert completed["payload"]["repair_method"] == "deterministic_json"
+    assert completed["payload"]["original_response_excerpt"]
 
 
 def test_stage_run_classifies_invalid_token_with_actionable_next_step():

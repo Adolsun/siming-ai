@@ -4,15 +4,17 @@ from __future__ import annotations
 from app.architecture.uow import commit_session
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
@@ -20,16 +22,66 @@ from ..ai.local_cli_adapter import is_local_cli_provider
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..database.session import SessionLocal
+from ..schemas.novel_creation import (
+    NovelCreationStageRunResponse,
+    NovelCreationStageRunStartData,
+)
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
+from ..services.novel_creation_claims import (
+    claim_or_replay_creation_run,
+    creation_idempotency_key,
+    get_creation_claim_by_idempotency_key,
+)
+from ..services.novel_creation_consistency import (
+    creation_dependency_graph,
+    validate_creation_consistency,
+)
+from ..services.novel_creation_imports import (
+    IMPORTABLE_ARTIFACTS,
+    MAX_UPLOAD_BYTES,
+    SUPPORTED_EXTENSIONS,
+    apply_material_import,
+    claim_material_import_retry,
+    create_material_import as create_material_import_record,
+    find_material_import_by_file,
+    get_material_import_record,
+    list_material_import_records,
+    run_material_import,
+    serialize_material_import,
+)
+from ..services.novel_creation_entities import (
+    ENTITY_TYPES_BY_ARTIFACT,
+    get_creation_entity,
+    list_creation_entities,
+    serialize_creation_entity,
+)
+from ..services.novel_creation_actions import delete_creation_entity, patch_creation_entity, restore_artifact_version
+from ..services.novel_creation_retry import select_creation_retry_input
+from ..services.novel_creation_versions import (
+    artifact_version_diff,
+    get_artifact_version,
+    list_artifact_versions,
+    record_artifact_version,
+    serialize_artifact_version,
+)
 from ..services.novel_creation_workspace import (
+    STAGE_LABELS,
     STAGE_ORDER,
+    add_run_event,
     create_run,
+    confirm_run,
     generation_blockers,
     get_presets,
+    creation_artifact_dependencies,
+    list_creation_artifacts,
+    patch_creation_artifact,
     patch_session,
+    serialize_creation_artifact,
     serialize_run,
     serialize_session,
+    set_creation_artifact_locks,
+    undo_creation_artifact,
 )
 from ..services.observability.run_events import classify_failure
 from ..services.operation_runtime import (
@@ -49,7 +101,9 @@ from ..services.workspace.tools.novel_creation import (
     review_novel_blueprint,
     start_novel_creation_session,
 )
-from ..services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage, submit_novel_creation_stage
+from ..services.workspace.tools.novel_creation_v2 import _validate_stage, submit_novel_creation_stage
+from ..services.novel_creation_task_runtime import schedule_creation_stage
+from .novel_creation_support import idempotent_confirmation_response
 
 router = APIRouter(tags=["novel-creation"])
 
@@ -173,6 +227,10 @@ class NovelCreationStartRequest(BaseModel):
     special_requirements: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     author_overrides: dict[str, Any] = Field(default_factory=dict)
+    creation_mode: Literal["author_led", "explore"] = "explore"
+    author_brief: str = Field(default="", max_length=5000)
+    author_outline: str = Field(default="", max_length=20000)
+    locked_requirements: list[str] = Field(default_factory=list, max_length=100)
 
 
 class NovelCreationDraftRequest(BaseModel):
@@ -291,6 +349,10 @@ class NovelCreationSessionPatchRequest(BaseModel):
     form: dict[str, Any] | None = None
     selected_concept_id: str | None = None
     quick_mode: bool | None = None
+    creation_mode: Literal["author_led", "explore"] | None = None
+    author_brief: str | None = Field(default=None, max_length=5000)
+    author_outline: str | None = Field(default=None, max_length=20000)
+    locked_requirements: list[str] | None = Field(default=None, max_length=100)
     expected_revision: int | None = None
 
 
@@ -299,9 +361,42 @@ class NovelCreationStageRunRequest(BaseModel):
     model: str | None = None
     use_model: bool = True
     auto_confirm: bool = False
-    operation: str = "generate"
+    operation: Literal["generate", "regenerate", "refine"] = "generate"
+    instruction: str | None = Field(default=None, min_length=1, max_length=2000)
     session_patch: dict[str, Any] | None = None
     expected_revision: int | None = None
+    entity_id: str | None = None
+    entity_type: Literal[
+        "worldbuilding", "character", "relationship", "location", "faction",
+        "world_relation", "volume", "chapter_outline", "scene_outline",
+    ] | None = None
+    entity_count: int | None = Field(default=None, ge=1, le=20)
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def normalize_legacy_operation(cls, value: Any) -> Any:
+        # V2 clients used this internal name for the first concept run.
+        return "generate" if value == "generate_concepts" else value
+
+    @field_validator("instruction")
+    @classmethod
+    def validate_refinement_instruction(cls, value: str | None, info: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("instruction must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_refinement_instruction(self) -> "NovelCreationStageRunRequest":
+        if self.operation == "refine" and not self.instruction:
+            raise ValueError("refine operation requires an instruction")
+        if self.entity_id and self.entity_type:
+            raise ValueError("entity_id and entity_type are mutually exclusive")
+        if (self.entity_id or self.entity_type) and self.stage == "all":
+            raise ValueError("entity-level generation requires one artifact stage")
+        return self
 
 
 class NovelCreationStageConfirmRequest(BaseModel):
@@ -311,9 +406,43 @@ class NovelCreationStageConfirmRequest(BaseModel):
     expected_revision: int | None = None
 
 
+class NovelCreationConfirmAndGenerateRequest(NovelCreationStageConfirmRequest):
+    model: str | None = None
+    use_model: bool = True
+
+
 class NovelCreationStagePatchRequest(BaseModel):
     data: dict[str, Any]
     source: str = "author"
+    expected_revision: int
+
+
+class NovelCreationArtifactPatchRequest(BaseModel):
+    changes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    source: str = "author"
+    expected_revision: int
+    allow_incomplete: bool = False
+
+
+class NovelCreationArtifactLockRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=100)
+    expected_revision: int
+
+
+class NovelCreationArtifactUndoRequest(BaseModel):
+    expected_revision: int
+
+
+class NovelCreationArtifactRestoreRequest(BaseModel):
+    expected_revision: int
+
+
+class NovelCreationEntityPatchRequest(BaseModel):
+    expected_revision: int
+    changes: list[dict[str, Any]] = Field(min_length=1)
+
+
+class NovelCreationEntityDeleteRequest(BaseModel):
     expected_revision: int
 
 
@@ -323,11 +452,20 @@ async def novel_creation_presets():
 
 
 @router.get("/novel-creation/sessions")
-async def list_creation_sessions(include_completed: bool = False, db: Session = Depends(get_db)):
+async def list_creation_sessions(
+    include_completed: bool = False,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+):
     sessions = novel_creation_session_store(db).sessions(
-        include_completed=include_completed,
+        include_completed=include_completed or bool(project_id),
         limit=30,
     )
+    if project_id:
+        sessions = [
+            item for item in sessions
+            if item.created_project_id == project_id or item.source_project_id == project_id
+        ]
     return ApiResponse.success(data={"sessions": [serialize_session(item, include_runs=False) for item in sessions]})
 
 
@@ -337,6 +475,233 @@ async def get_creation_session(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     return ApiResponse.success(data=serialize_session(session))
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts")
+async def get_creation_artifacts(session_id: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    return ApiResponse.success(data={
+        "session_id": session.id,
+        "revision": int(session.revision or 0),
+        "artifacts": list_creation_artifacts(session),
+    })
+
+
+@router.get("/novel-creation/sessions/{session_id}/dependency-graph")
+async def get_creation_dependency_graph(session_id: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    result = creation_dependency_graph(session)
+    commit_session(db)
+    return ApiResponse.success(data=result)
+
+
+@router.post("/novel-creation/sessions/{session_id}/validate-consistency")
+async def validate_creation_session_consistency(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    result = validate_creation_consistency(session)
+    commit_session(db)
+    return ApiResponse.success(
+        data=result,
+        message="一致性检查通过" if result["valid"] else "发现需要处理的一致性问题",
+    )
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}")
+async def get_creation_artifact(session_id: str, stage: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        return ApiResponse.success(data=serialize_creation_artifact(session, stage))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}/dependencies")
+async def get_creation_dependencies(session_id: str, stage: str, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        return ApiResponse.success(data=creation_artifact_dependencies(session, stage))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/artifacts/{stage}/versions")
+async def get_creation_artifact_versions(
+    session_id: str,
+    stage: str,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        artifact = serialize_creation_artifact(session, stage)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(artifact.get("data"), dict):
+        record_artifact_version(
+            session,
+            stage,
+            artifact["data"],
+            revision=int(session.revision or 0),
+            status=artifact["status"],
+            source=artifact["source"],
+            change_type="legacy_baseline",
+        )
+        commit_session(db)
+    versions = list_artifact_versions(db, session_id=session_id, artifact=stage, limit=limit)
+    return ApiResponse.success(data={
+        "session_id": session_id,
+        "artifact": stage,
+        "revision": int(session.revision or 0),
+        "versions": [serialize_artifact_version(item) for item in versions],
+    })
+
+
+@router.get("/novel-creation/artifact-versions/{version_id}")
+async def get_creation_artifact_version(
+    version_id: str,
+    against_version_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    version = get_artifact_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="立项版本不存在")
+    try:
+        data = artifact_version_diff(db, version, against_version_id=against_version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    data["snapshot"] = version.snapshot_json
+    return ApiResponse.success(data=data)
+
+
+@router.post("/novel-creation/artifact-versions/{version_id}/restore")
+async def restore_creation_artifact_version(
+    version_id: str,
+    payload: NovelCreationArtifactRestoreRequest,
+    db: Session = Depends(get_db),
+):
+    version = get_artifact_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="立项版本不存在")
+    session = novel_creation_session_store(db).session(version.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        result = restore_artifact_version(session, version, expected_revision=payload.expected_revision)
+        commit_session(db)
+        return ApiResponse.success(data=result, message="已恢复所选版本，原内容仍保留在版本历史中")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新版本历史后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/novel-creation/sessions/{session_id}/entities")
+async def get_creation_entities(
+    session_id: str,
+    artifact: str | None = None,
+    entity_type: str | None = None,
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    entities = list_creation_entities(
+        session,
+        artifact=artifact,
+        entity_type=entity_type,
+        include_deleted=include_deleted,
+    )
+    commit_session(db)
+    return ApiResponse.success(data={
+        "session_id": session_id,
+        "revision": int(session.revision or 0),
+        "entities": entities,
+    })
+
+
+@router.get("/novel-creation/entities/{entity_id}")
+async def get_creation_entity_endpoint(entity_id: str, db: Session = Depends(get_db)):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    return ApiResponse.success(data=serialize_creation_entity(entity))
+
+
+@router.patch("/novel-creation/entities/{entity_id}")
+async def patch_creation_entity_endpoint(
+    entity_id: str,
+    payload: NovelCreationEntityPatchRequest,
+    db: Session = Depends(get_db),
+):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    session = novel_creation_session_store(db).session(entity.session_id)
+    try:
+        result = patch_creation_entity(
+            session,
+            entity,
+            payload.changes,
+            expected_revision=payload.expected_revision,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message="立项实体已更新")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新实体后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/novel-creation/entities/{entity_id}")
+async def delete_creation_entity_endpoint(
+    entity_id: str,
+    payload: NovelCreationEntityDeleteRequest,
+    db: Session = Depends(get_db),
+):
+    entity = get_creation_entity(db, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="立项实体不存在")
+    session = novel_creation_session_store(db).session(entity.session_id)
+    try:
+        result = delete_creation_entity(
+            session,
+            entity,
+            expected_revision=payload.expected_revision,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message="立项实体已删除，可通过版本历史恢复")
+    except RuntimeError as exc:
+        db.rollback()
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新实体后重试") from exc
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/novel-creation/sessions/{session_id}")
@@ -375,42 +740,30 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
     return ApiResponse.success(data={"deleted": True})
 
 
-async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
-    db = SessionLocal()
-    heartbeat_task: asyncio.Task | None = None
-    run: Any | None = None
-    try:
-        run = novel_creation_session_store(db).run(run_id)
-        operation_id = run.operation_id if run else None
-        if operation_id:
-            heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
-        with activate_operation(operation_id):
-            await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
-    except asyncio.CancelledError:
-        run = novel_creation_session_store(db).run(run_id)
-        if run and run.status == "running":
-            run.status = "cancelled"
-            run.current_message = "立项任务已取消，已保存内容不会丢失"
-            run.completed_at = datetime.utcnow()
-            commit_session(db)
-        raise
-    finally:
-        if heartbeat_task:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
-        if run and run.operation_id:
-            unregister_operation_actions(run.operation_id)
-        db.close()
-
-
-@router.post("/novel-creation/sessions/{session_id}/runs")
-async def start_creation_stage_run(session_id: str, payload: NovelCreationStageRunRequest, db: Session = Depends(get_db)):
+@router.post(
+    "/novel-creation/sessions/{session_id}/runs",
+    response_model=ApiResponse[NovelCreationStageRunStartData],
+)
+async def start_creation_stage_run(
+    session_id: str,
+    payload: NovelCreationStageRunRequest,
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     store = novel_creation_session_store(db)
     session = store.session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.stage not in {*STAGE_ORDER, "all"}:
         raise HTTPException(status_code=400, detail="未知立项阶段")
+    if payload.entity_id:
+        entity = get_creation_entity(db, payload.entity_id)
+        if not entity or entity.session_id != session_id or entity.status == "deleted":
+            raise HTTPException(status_code=404, detail="目标实体不存在或已删除")
+        if entity.artifact_key != payload.stage:
+            raise HTTPException(status_code=400, detail="目标实体不属于当前立项对象")
+    if payload.entity_type and payload.entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(payload.stage, frozenset()):
+        raise HTTPException(status_code=400, detail="目标实体类型不属于当前立项对象")
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
         raise HTTPException(
             status_code=409,
@@ -442,16 +795,59 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
     if payload.session_patch:
         patch_session(session, payload.session_patch)
         request["session_patch"] = None
-    run = create_run(db, session, payload.stage, request)
+    input_revision = int(session.revision or 0)
+    snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
+    request_key = creation_idempotency_key(
+        session_id=session_id,
+        stage=payload.stage,
+        operation=payload.operation,
+        request=request,
+        input_revision=input_revision,
+        input_snapshot_hash=snapshot_hash,
+        explicit_key=idempotency_key,
+    )
+    artifact_claim_key = payload.stage
+    if payload.entity_id:
+        artifact_claim_key = f"{payload.stage}:entity:{payload.entity_id}"
+    elif payload.entity_type:
+        artifact_claim_key = f"{payload.stage}:new:{payload.entity_type}"
+    claim, replayed = claim_or_replay_creation_run(
+        db,
+        session_id=session_id,
+        artifact_key=artifact_claim_key,
+        idempotency_key=request_key,
+        input_revision=input_revision,
+        input_snapshot_hash=snapshot_hash,
+    )
+    if replayed and claim.run_id:
+        existing = store.run(claim.run_id)
+        if existing:
+            return ApiResponse.success(
+                data={
+                    "run": serialize_run(existing),
+                    "stream_url": f"/api/novel-creation/runs/{existing.id}/stream",
+                    "replayed": True,
+                },
+                message="已恢复同一立项任务",
+            )
+    run = create_run(
+        db,
+        session,
+        payload.stage,
+        request,
+        claim_id=claim.id,
+        idempotency_key=request_key,
+    )
     commit_session(db)
     run_id = run.id
-    task = asyncio.create_task(_run_creation_stage(run_id, session_id, request))
-    if run.operation_id:
-        register_operation_actions(run.operation_id, cancel=task.cancel)
+    schedule_creation_stage(run_id, session_id, request, operation_id=run.operation_id)
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
-@router.get("/novel-creation/runs/{run_id}")
+@router.get(
+    "/novel-creation/runs/{run_id}",
+    response_model=ApiResponse[NovelCreationStageRunResponse],
+)
 async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
     run = novel_creation_session_store(db).run(run_id)
     if not run:
@@ -460,9 +856,18 @@ async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/novel-creation/runs/{run_id}/stream")
-async def stream_creation_stage_run(run_id: str):
+async def stream_creation_stage_run(
+    run_id: str,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    after_sequence: int = 0,
+):
+    try:
+        initial_after = max(int(last_event_id or 0), after_sequence, 0)
+    except ValueError:
+        initial_after = max(after_sequence, 0)
+
     async def events():
-        sent = 0
+        sent = initial_after
         tick = 0
         while True:
             db = SessionLocal()
@@ -471,8 +876,17 @@ async def stream_creation_stage_run(run_id: str):
                 if not run:
                     yield "event: error\ndata: " + json.dumps({"message": "阶段任务不存在"}, ensure_ascii=False) + "\n\n"
                     return
+                if tick == 0:
+                    yield (
+                        "id: 0\n"
+                        "event: snapshot\ndata: "
+                        + json.dumps(serialize_run(run, include_events=False), ensure_ascii=False)
+                        + "\n\n"
+                    )
                 rows = list(run.events or [])
-                for event in rows[sent:]:
+                for event in rows:
+                    if event.sequence <= sent:
+                        continue
                     payload = {
                         "sequence": event.sequence,
                         "event_type": event.event_type,
@@ -480,9 +894,9 @@ async def stream_creation_stage_run(run_id: str):
                         "message": event.message,
                         "payload": event.payload_json,
                     }
-                    yield f"event: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                sent = len(rows)
-                if run.status in {"completed", "failed", "cancelled"}:
+                    yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                sent = max([int(event.sequence or 0) for event in rows] or [sent])
+                if run.status in {"completed", "waiting_user", "waiting_author", "failed", "cancelled", "interrupted"}:
                     yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
                     return
             finally:
@@ -494,12 +908,74 @@ async def stream_creation_stage_run(run_id: str):
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class NovelCreationStageRetryRequest(BaseModel):
+    use_latest_draft: bool = False
+    model: str | None = None
+
+
+@router.post("/novel-creation/runs/{run_id}/retry")
+async def retry_creation_stage_run(
+    run_id: str,
+    payload: NovelCreationStageRetryRequest,
+    db: Session = Depends(get_db),
+):
+    store = novel_creation_session_store(db)
+    previous = store.run(run_id)
+    if not previous:
+        raise HTTPException(status_code=404, detail="阶段任务不存在")
+    if previous.status not in {"failed", "cancelled", "interrupted", "superseded"}:
+        raise HTTPException(status_code=409, detail="当前阶段任务不需要重试")
+    session = store.session(previous.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    retry_input = select_creation_retry_input(previous, session, use_latest=payload.use_latest_draft)
+    request = retry_input.request
+    if payload.model:
+        request["model"] = payload.model
+    retry_key = creation_idempotency_key(
+        session_id=session.id,
+        stage=previous.stage,
+        operation=str(request.get("operation") or previous.operation),
+        request=request,
+        input_revision=retry_input.revision,
+        input_snapshot_hash=retry_input.snapshot_hash,
+        explicit_key=f"retry:{previous.id}:{uuid.uuid4()}",
+    )
+    claim, _ = claim_or_replay_creation_run(
+        db,
+        session_id=session.id,
+        artifact_key=previous.stage,
+        idempotency_key=retry_key,
+        input_revision=retry_input.revision,
+        input_snapshot_hash=retry_input.snapshot_hash,
+    )
+    run = create_run(
+        db,
+        session,
+        previous.stage,
+        request,
+        claim_id=claim.id,
+        idempotency_key=retry_key,
+        frozen_input_snapshot=retry_input.snapshot,
+        frozen_input_revision=retry_input.revision,
+    )
+    run.retry_of_run_id = previous.id
+    commit_session(db)
+    schedule_creation_stage(run.id, session.id, request, operation_id=run.operation_id)
+    return ApiResponse.success(
+        data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run.id}/stream"},
+        message="已创建重试任务",
+    )
+
 @router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm")
 async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCreationStageConfirmRequest, db: Session = Depends(get_db)):
     store = novel_creation_session_store(db)
     session = store.session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
+    confirmation, replay = idempotent_confirmation_response(session, stage, data=payload.data, confirm=payload.confirm)
+    if replay:
+        return replay
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
         raise HTTPException(
             status_code=409,
@@ -512,15 +988,19 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
     result = await submit_novel_creation_stage(db, "", {
         "session_id": session_id,
         "stage": stage,
-        "data": payload.data,
+        "data": payload.data if payload.data is not None else confirmation.current_data,
         "confirm": payload.confirm,
         "source": payload.source,
         "expected_revision": payload.expected_revision,
     })
     if payload.confirm:
-        latest_run = store.latest_stage_operation(session_id, stage)
-        if latest_run and latest_run.operation_id:
-            get_operation_service().complete_author_confirmation(latest_run.operation_id)
+        producing_run = store.latest_stage_operation(session_id, stage)
+        if producing_run:
+            confirmed = confirm_run(db, producing_run)
+            if confirmed:
+                commit_session(db)
+            if producing_run.operation_id:
+                get_operation_service().complete_author_confirmation(producing_run.operation_id)
     return _tool_response(result)
 
 
@@ -547,6 +1027,183 @@ async def update_creation_stage(session_id: str, stage: str, payload: NovelCreat
         "expected_revision": payload.expected_revision,
     })
     return _tool_response(result)
+
+
+@router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm-and-generate-recommended")
+async def confirm_and_generate_recommended(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationConfirmAndGenerateRequest,
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    if idempotency_key:
+        existing_claim = get_creation_claim_by_idempotency_key(
+            db,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing_claim and existing_claim.run_id:
+            existing_run = novel_creation_session_store(db).run(existing_claim.run_id)
+            existing_session = novel_creation_session_store(db).session(session_id)
+            if existing_run and existing_session:
+                return ApiResponse.success(
+                    data={
+                        "action_type": "confirm_and_generate_recommended",
+                        "session": serialize_session(existing_session),
+                        "run": serialize_run(existing_run),
+                        "recommended_stage": existing_run.stage,
+                    },
+                    message="已恢复同一次确认并继续任务",
+                )
+    await confirm_creation_stage(session_id, stage, payload, db)
+    store = novel_creation_session_store(db)
+    session = store.session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    serialized = serialize_session(session)
+    recommended = (serialized.get("stage_flow") or {}).get("recommended_stage")
+    producing_run = store.latest_stage_operation(session_id, stage)
+    if producing_run:
+        add_run_event(
+            db,
+            producing_run,
+            "confirm_and_generate_recommended",
+            "completed",
+            "已确认当前内容并请求生成推荐对象",
+            {"action_type": "confirm_and_generate_recommended", "recommended_stage": recommended},
+        )
+        commit_session(db)
+    if not recommended or recommended == stage or recommended not in STAGE_ORDER:
+        return ApiResponse.success(
+            data={
+                "action_type": "confirm_and_generate_recommended",
+                "session": serialize_session(session),
+                "run": None,
+                "recommended_stage": recommended,
+            },
+            message="当前内容已确认；没有需要自动生成的下一对象",
+        )
+    start_payload = NovelCreationStageRunRequest(
+        stage=recommended,
+        model=payload.model,
+        use_model=payload.use_model,
+        expected_revision=int(session.revision or 0),
+    )
+    stable_key = idempotency_key or f"confirm-next:{session_id}:{stage}:{int(session.revision or 0)}:{recommended}"
+    started = await start_creation_stage_run(
+        session_id,
+        start_payload,
+        db,
+        idempotency_key=stable_key,
+    )
+    return ApiResponse.success(
+        data={
+            "action_type": "confirm_and_generate_recommended",
+            "session": serialize_session(session),
+            "run": started.data.get("run") if isinstance(started.data, dict) else None,
+            "recommended_stage": recommended,
+        },
+        message=f"已确认当前内容，并开始生成{STAGE_LABELS.get(recommended, recommended)}",
+    )
+
+
+def _require_creation_revision(session: Any, expected_revision: int) -> None:
+    if int(session.revision or 0) != expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿版本已经变化，本次操作未写入。",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
+
+
+@router.patch("/novel-creation/sessions/{session_id}/artifacts/{stage}")
+async def patch_creation_artifact_endpoint(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactPatchRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        result = patch_creation_artifact(
+            session,
+            stage,
+            payload.changes,
+            source=payload.source,
+            validator=None if payload.allow_incomplete else _validate_stage,
+        )
+        commit_session(db)
+        return ApiResponse.success(data=result, message=f"{STAGE_LABELS[stage]}已局部更新")
+    except (KeyError, TypeError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/novel-creation/sessions/{session_id}/artifacts/{stage}/locks")
+async def lock_creation_artifact_fields(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactLockRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        artifact = set_creation_artifact_locks(session, stage, payload.paths, locked=True)
+        commit_session(db)
+        return ApiResponse.success(data=artifact, message="字段已锁定")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/novel-creation/sessions/{session_id}/artifacts/{stage}/locks")
+async def unlock_creation_artifact_fields(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactLockRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        artifact = set_creation_artifact_locks(session, stage, payload.paths, locked=False)
+        commit_session(db)
+        return ApiResponse.success(data=artifact, message="字段已解锁")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/novel-creation/sessions/{session_id}/artifacts/{stage}/undo")
+async def undo_creation_artifact_endpoint(
+    session_id: str,
+    stage: str,
+    payload: NovelCreationArtifactUndoRequest,
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    _require_creation_revision(session, payload.expected_revision)
+    try:
+        result = undo_creation_artifact(session, stage)
+        commit_session(db)
+        return ApiResponse.success(data=result, message=f"已撤销{STAGE_LABELS[stage]}的最近一次修改")
+    except (KeyError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class RefreshQuestionRequest(BaseModel):
@@ -593,7 +1250,7 @@ async def refresh_question(payload: RefreshQuestionRequest, db: Session = Depend
 
 
 class SystemChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = None
     context: dict[str, Any] | None = None  # {blueprints, sessionId, brief, importedFiles, history}
 
@@ -629,9 +1286,309 @@ async def system_chat(payload: SystemChatRequest, db: Session = Depends(get_db))
     return ApiResponse.success(data=result)
 
 
+class CreationConversationCommandRequest(BaseModel):
+    session_id: str
+    stage: str
+    instruction: str | None = None
+    model: str | None = None
+    expected_revision: int | None = None
+    entity_type: Literal[
+        "worldbuilding", "character", "relationship", "location", "faction",
+        "world_relation", "volume", "chapter_outline", "scene_outline",
+    ] | None = None
+    entity_count: int | None = Field(default=None, ge=1, le=20)
+    action: Literal["generate_artifact", "refine_artifact", "open_editor"] = "refine_artifact"
+
+    @model_validator(mode="after")
+    def validate_entity_target(self) -> "CreationConversationCommandRequest":
+        if self.entity_type and self.entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(self.stage, frozenset()):
+            raise ValueError("目标实体类型不属于当前立项对象")
+        if self.entity_type and self.action != "generate_artifact":
+            raise ValueError("新增实体只能使用 generate_artifact")
+        return self
+
+
+class CreationAgentRequest(BaseModel):
+    session_id: str
+    message: str = Field(min_length=1, max_length=1_000_000)
+    model: str | None = None
+    history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/novel-creation/agent-turn")
+async def creation_agent_turn(payload: CreationAgentRequest, db: Session = Depends(get_db)):
+    session = novel_creation_session_store(db).session(payload.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    from ..services.novel_creation_agent import run_creation_agent
+
+    result = await run_creation_agent(
+        db,
+        session=session,
+        message=payload.message,
+        model=payload.model,
+        history=payload.history,
+    )
+    return ApiResponse.success(data=result)
+
+
+@router.post("/novel-creation/conversation-command")
+async def creation_conversation_command(
+    payload: CreationConversationCommandRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.stage not in {*STAGE_ORDER, "all"}:
+        raise HTTPException(status_code=400, detail="未知立项阶段")
+    store = novel_creation_session_store(db)
+    session = store.session(payload.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="立项草稿版本已经变化")
+    if payload.action == "open_editor":
+        return ApiResponse.success(data={
+            "ui_directive": {"navigate": True, "url": f"/novel-creation?session={session.id}&stage={payload.stage}"},
+            "summary": f"已打开{STAGE_LABELS.get(payload.stage, payload.stage)}完整编辑器",
+        })
+    operation = "refine" if payload.action == "refine_artifact" else "generate"
+    entity_id: str | None = None
+    if operation == "refine" and payload.stage in {"characters", "locations", "macro_outline", "opening_outline", "world_style"}:
+        candidates = []
+        for item in list_creation_entities(session, artifact=payload.stage):
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            labels = {
+                str(data.get("name") or "").strip(),
+                str(data.get("title") or "").strip(),
+                str(data.get("role") or data.get("role_type") or "").strip(),
+            }
+            labels.discard("")
+            if any(label in payload.instruction for label in labels):
+                candidates.append(item)
+        if len(candidates) == 1:
+            entity_id = str(candidates[0]["id"])
+    request = {
+        "session_id": session.id,
+        "stage": payload.stage,
+        "operation": operation,
+        "instruction": payload.instruction,
+        "model": payload.model,
+        "expected_revision": int(session.revision or 0),
+        "entity_id": entity_id,
+        "entity_type": payload.entity_type,
+        "entity_count": payload.entity_count,
+    }
+    snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
+    command_key = creation_idempotency_key(
+        session_id=session.id,
+        stage=payload.stage,
+        operation=operation,
+        request=request,
+        input_revision=int(session.revision or 0),
+        input_snapshot_hash=snapshot_hash,
+    )
+    artifact_claim_key = (
+        f"{payload.stage}:entity:{entity_id}"
+        if entity_id else
+        f"{payload.stage}:new:{payload.entity_type}"
+        if payload.entity_type else
+        payload.stage
+    )
+    claim, replayed = claim_or_replay_creation_run(
+        db,
+        session_id=session.id,
+        artifact_key=artifact_claim_key,
+        idempotency_key=command_key,
+        input_revision=int(session.revision or 0),
+        input_snapshot_hash=snapshot_hash,
+    )
+    if replayed and claim.run_id:
+        run = store.run(claim.run_id)
+        if run:
+            return ApiResponse.success(data={
+                "run": serialize_run(run),
+                "ui_directive": {"navigate": False},
+                "summary": f"正在继续{STAGE_LABELS.get(payload.stage, payload.stage)}任务",
+            })
+    run = create_run(db, session, payload.stage, request, claim_id=claim.id, idempotency_key=command_key)
+    commit_session(db)
+    schedule_creation_stage(run.id, session.id, request, operation_id=run.operation_id)
+    return ApiResponse.success(data={
+        "run": serialize_run(run),
+        "ui_directive": {"navigate": False},
+        "summary": (
+            f"已开始定向调整{candidates[0]['data'].get('name') or candidates[0]['data'].get('title')}，其他对象会保持不变。"
+            if entity_id else
+            f"已开始按你的描述新增{ {'character': '角色', 'relationship': '人物关系', 'location': '地点', 'faction': '势力', 'volume': '分卷', 'chapter_outline': '章节细纲', 'scene_outline': '场景细纲', 'worldbuilding': '世界设定', 'world_relation': '世界关系'}.get(payload.entity_type, '立项对象') }，数量由本次对话要求决定，现有内容会保持不变。"
+            if payload.entity_type else
+            f"已开始{STAGE_LABELS.get(payload.stage, payload.stage)}{('调整' if operation == 'refine' else '生成')}，你可以继续在对话中补充要求。"
+        ),
+    })
+
+
 class SaveImportedFileRequest(BaseModel):
     filename: str
     content: str
+
+
+class CreationImportApplyRequest(BaseModel):
+    selected_artifacts: list[str] = Field(default_factory=list)
+    strategy: Literal["merge", "overwrite_unconfirmed", "skip_conflicts"] = "merge"
+    expected_revision: int
+
+    @field_validator("selected_artifacts")
+    @classmethod
+    def validate_artifacts(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(IMPORTABLE_ARTIFACTS))
+        if unknown:
+            raise ValueError("不支持的导入对象：" + "、".join(unknown))
+        return list(dict.fromkeys(value))
+
+
+def _launch_material_import(import_run: Any, model: str | None) -> None:
+    task = asyncio.create_task(run_material_import(import_run.id, model))
+    if import_run.operation_id:
+        register_operation_actions(import_run.operation_id, cancel=task.cancel)
+
+
+@router.post("/novel-creation/sessions/{session_id}/imports")
+async def create_material_import(
+    session_id: str,
+    file: UploadFile = File(...),
+    model: str | None = Form(default=None),
+    source_message_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项会话不存在")
+    filename = (file.filename or "").strip()
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持 txt、md、docx 和 json 文件")
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件超过 25MB 上限")
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        import_run, replayed = create_material_import_record(
+            db,
+            session,
+            filename=filename,
+            raw=raw,
+            model=model,
+            source_message_id=source_message_id,
+            media_type=file.content_type or extension,
+        )
+        commit_session(db)
+    except IntegrityError:
+        db.rollback()
+        existing = find_material_import_by_file(db, session_id=session_id, file_sha256=digest)
+        if existing:
+            return ApiResponse.success(data=serialize_material_import(existing), message="已恢复同一文件的导入任务")
+        raise
+    if replayed:
+        return ApiResponse.success(data=serialize_material_import(import_run), message="已恢复同一文件的导入任务")
+    _launch_material_import(import_run, model)
+    return ApiResponse.success(data=serialize_material_import(import_run), message="文件已保存，导入任务已开始")
+
+
+@router.get("/novel-creation/sessions/{session_id}/imports")
+async def list_material_imports(session_id: str, db: Session = Depends(get_db)):
+    if not novel_creation_session_store(db).session(session_id):
+        raise HTTPException(status_code=404, detail="立项会话不存在")
+    rows = list_material_import_records(db, session_id)
+    return ApiResponse.success(data={"imports": [serialize_material_import(row, include_preview=False) for row in rows]})
+
+
+@router.get("/novel-creation/imports/{import_id}")
+async def get_material_import(import_id: str, db: Session = Depends(get_db)):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return ApiResponse.success(data=serialize_material_import(import_run))
+
+
+@router.post("/novel-creation/imports/{import_id}/retry")
+async def retry_material_import(
+    import_id: str,
+    model: str | None = None,
+    db: Session = Depends(get_db),
+):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    if import_run.status in {"queued", "running", "waiting_user", "completed"}:
+        return ApiResponse.success(data=serialize_material_import(import_run), message="已恢复现有导入状态")
+    claimed = claim_material_import_retry(db, import_id)
+    if not claimed:
+        db.rollback()
+        current = get_material_import_record(db, import_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="导入任务不存在")
+        return ApiResponse.success(data=serialize_material_import(current), message="已恢复现有导入状态")
+    commit_session(db)
+    import_run = get_material_import_record(db, import_id)
+    session = novel_creation_session_store(db).session(import_run.session_id)
+    model_source, tool_mode = _operation_model_identity(model)
+    try:
+        operation = ensure_operation(
+            db,
+            source_kind="novel_creation_import",
+            source_id=import_run.id,
+            title=f"重试导入 · {import_run.filename}",
+            status="queued",
+            phase="resuming_checkpoint",
+            message="正在从已保存的分块检查点继续",
+            model_source=model_source,
+            tool_mode=tool_mode if model else "deterministic_import",
+            resume_url=f"/gui?creationSession={import_run.session_id}&import={import_run.id}",
+            can_cancel=True,
+            can_retry=True,
+            progress_mode="steps",
+            progress_current=int(import_run.processed_chunks or 0),
+            progress_total=int(import_run.chunk_count or 0) or None,
+            input_revision=int(session.revision or 0) if session else import_run.input_revision,
+            snapshot_hash=import_run.file_sha256,
+        )
+    except Exception as exc:
+        import_run.status = "failed"
+        import_run.error = f"无法恢复 Operation：{exc}"[:4000]
+        commit_session(db)
+        raise
+    import_run.operation_id = operation.id
+    import_run.status = "queued"
+    import_run.updated_at = datetime.utcnow()
+    commit_session(db)
+    _launch_material_import(import_run, model)
+    return ApiResponse.success(data=serialize_material_import(import_run), message="已从分块检查点重试")
+
+
+@router.post("/novel-creation/imports/{import_id}/apply")
+async def apply_material_import_endpoint(
+    import_id: str,
+    payload: CreationImportApplyRequest,
+    db: Session = Depends(get_db),
+):
+    import_run = get_material_import_record(db, import_id)
+    if not import_run:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    try:
+        result = apply_material_import(
+            db,
+            import_run,
+            selected_artifacts=payload.selected_artifacts,
+            strategy=payload.strategy,
+            expected_revision=payload.expected_revision,
+        )
+    except RuntimeError as exc:
+        if str(exc) == "revision_conflict":
+            raise HTTPException(status_code=409, detail="立项数据已变化，请刷新预览后再应用") from exc
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ApiResponse.success(data=result, message="已按选择写入立项数据")
 
 
 @router.post("/novel-creation/save-imported-file")

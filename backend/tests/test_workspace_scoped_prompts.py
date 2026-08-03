@@ -52,3 +52,13 @@ def test_selected_text_adds_local_text_tools():
     assert "rewrite_text" in names
     assert "expand_text" in names
     assert "continue_text" in names
+
+
+def test_tool_catalog_does_not_depend_on_chapter_wording():
+    chinese_ordinal = select_workspace_tool_names(scope="project", message="请写第一章")
+    numeric_ordinal = select_workspace_tool_names(scope="project", message="请写第1章")
+    implicit_opening = select_workspace_tool_names(scope="project", message="从故事开头正式写起")
+
+    assert chinese_ordinal == numeric_ordinal == implicit_opening
+    assert "create_chapter" in chinese_ordinal
+    assert "delete_project" not in chinese_ordinal

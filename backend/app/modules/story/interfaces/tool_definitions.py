@@ -909,6 +909,14 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "string",
                 "description": "Governed task manifest required for MCP formal writes",
             },
+            "rewrite": {
+                "type": "boolean",
+                "description": "受管重写时必须为 true；保存前创建版本快照，不新建重复章节",
+            },
+            "rewrite_request_id": {
+                "type": "string",
+                "description": "受管重写请求编号；本机 CLI 任务由司命自动注入",
+            },
         },
         tool_type="write",
         estimated_cost="free",

@@ -12,7 +12,12 @@ from openai import NotFoundError
 from app.ai.openai_adapter import OpenAIAdapter
 from app.core.exceptions import LLMError
 from app.modules.model_runtime.application.verification import ModelProbeRequest
-from app.modules.model_runtime.infrastructure.verification import _list_openai, _openai_client, _probe_openai
+from app.modules.model_runtime.infrastructure.verification import (
+    ProviderModelVerification,
+    _list_openai,
+    _openai_client,
+    _probe_openai,
+)
 from app.routers.config import list_provider_models
 from app.schemas.config import ModelListRequest
 
@@ -61,6 +66,54 @@ def test_auto_protocol_probe_uses_real_responses_call_after_chat_404():
     assert result["reply"] == "OK"
     assert client.chat.completions.create.await_count == 1
     assert client.responses.create.await_count == 1
+
+
+def test_chat_probe_accepts_reasoning_only_response():
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=None,
+            reasoning_content="正在确认本地模型连接",
+        ))],
+    ))
+    client.close = AsyncMock()
+
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.AsyncOpenAI",
+        return_value=client,
+    ):
+        result = asyncio.run(_probe_openai(ModelProbeRequest(
+            provider="custom_proxy",
+            api_key="secret",
+            base_url="http://127.0.0.1:57783/v1",
+            model="qwen3.5-9b-q4",
+            api_protocol="chat_completions",
+        )))
+
+    assert result["reasoning_only"] is True
+    assert result["reply"] == "正在确认本地模型连接"
+
+
+def test_managed_local_model_verification_bypasses_readiness_gate():
+    runtime_result = {
+        "content": "",
+        "reasoning_content": "本地运行时已经响应",
+    }
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.LocalRuntimeAdapter.chat_completion",
+        new=AsyncMock(return_value=runtime_result),
+    ) as completion, patch(
+        "app.modules.model_runtime.infrastructure.verification.LLMGateway.chat_completion",
+        new=AsyncMock(side_effect=AssertionError("must not use the readiness-gated gateway")),
+    ):
+        result = asyncio.run(ProviderModelVerification().verify(ModelProbeRequest(
+            provider="local_llama_cpp",
+            model="qwen3.5-9b-q4",
+        )))
+
+    assert completion.await_count == 1
+    assert result["reasoning_only"] is True
+    assert result["reply"] == "本地运行时已经响应"
 
 
 def test_custom_model_catalog_404_allows_manual_model_entry():

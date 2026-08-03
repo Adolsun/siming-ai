@@ -8,7 +8,7 @@ import json
 import os
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func
@@ -34,6 +34,15 @@ _ACTION_HANDLERS: dict[str, dict[str, Callable[[], Any]]] = {}
 
 def utcnow() -> datetime:
     return datetime.utcnow()
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    """Serialize database UTC timestamps with an explicit offset for clients."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _write_with_uow(callback: Callable[[Session], None], db: Session | None = None) -> None:
@@ -219,6 +228,12 @@ def update_operation(
     activity: bool = False,
 ) -> OperationRun:
     now = utcnow()
+    was_attention = (
+        operation.status == "waiting_user"
+        or operation.health_status in {"stalled", "disconnected"}
+        or (operation.status == "failed" and operation.can_retry)
+    )
+    previous_attention = _copy_dict(operation.attention_json)
     if status:
         operation.status = project_lifecycle_status(status)
     if health_status in HEALTH_VALUES:
@@ -243,6 +258,16 @@ def update_operation(
         operation.attention_json = _copy_dict(attention)
     if result is not None or outcome is not None:
         operation.result_json = _result_with_outcome(result, outcome)
+    needs_attention = (
+        operation.status == "waiting_user"
+        or operation.health_status in {"stalled", "disconnected"}
+        or (operation.status == "failed" and operation.can_retry)
+    )
+    if needs_attention and (
+        not was_attention
+        or (attention is not None and _copy_dict(attention) != previous_attention)
+    ):
+        operation.attention_read_at = None
     operation.heartbeat_at = now
     operation.updated_at = now
     health_only_events = {"heartbeat", "quiet", "suspected_stall", "stalled", "disconnected"}
@@ -497,6 +522,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "health_status": _derived_health(operation, now),
         "outcome": outcome,
         "attention": attention,
+        "attention_read_at": _utc_iso(operation.attention_read_at),
         "result": public_result,
         "result_summary": (result or {}).get("summary")
         or (
@@ -524,19 +550,13 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "input_snapshot_hash": operation.input_snapshot_hash,
         "process_metrics": deepcopy(operation.process_metrics_json),
         "elapsed_seconds": elapsed,
-        "heartbeat_at": operation.heartbeat_at.isoformat() if operation.heartbeat_at else None,
-        "last_activity_at": operation.last_activity_at.isoformat()
-        if operation.last_activity_at
-        else None,
-        "last_output_at": operation.last_output_at.isoformat()
-        if operation.last_output_at
-        else None,
-        "last_checkpoint_at": operation.last_checkpoint_at.isoformat()
-        if operation.last_checkpoint_at
-        else None,
-        "created_at": operation.created_at.isoformat() if operation.created_at else None,
-        "updated_at": operation.updated_at.isoformat() if operation.updated_at else None,
-        "completed_at": operation.completed_at.isoformat() if operation.completed_at else None,
+        "heartbeat_at": _utc_iso(operation.heartbeat_at),
+        "last_activity_at": _utc_iso(operation.last_activity_at),
+        "last_output_at": _utc_iso(operation.last_output_at),
+        "last_checkpoint_at": _utc_iso(operation.last_checkpoint_at),
+        "created_at": _utc_iso(operation.created_at),
+        "updated_at": _utc_iso(operation.updated_at),
+        "completed_at": _utc_iso(operation.completed_at),
     }
     if include_events:
         data["result"] = result
@@ -547,7 +567,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
                 "status": event.status,
                 "message": event.message,
                 "payload": deepcopy(event.payload_json),
-                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "created_at": _utc_iso(event.created_at),
             }
             for event in operation.events
         ]

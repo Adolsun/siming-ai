@@ -35,7 +35,7 @@ if (-not $gradle) { $gradle = Join-Path $androidRoot "gradlew.bat" }
 
 Push-Location $androidRoot
 try {
-    & $gradle clean assembleRelease
+    & $gradle assembleRelease --no-daemon
     if ($LASTEXITCODE -ne 0) { throw "Android release build failed with exit code $LASTEXITCODE." }
 } finally {
     Pop-Location

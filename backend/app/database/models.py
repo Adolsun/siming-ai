@@ -14,6 +14,7 @@ from app.modules.assistant.infrastructure.models import (
     AssistantMessage,
     AssistantRun,
     AssistantRunStep,
+    ChapterWriteClaim,
     ChapterDraft,
     RagChunk,
     RagChunkEmbedding,
@@ -48,6 +49,11 @@ from app.modules.continuity.infrastructure.models import (
     WorldbuildingVersion,
 )
 from app.modules.creation.infrastructure.models import (
+    NovelCreationArtifactVersion,
+    NovelCreationEntity,
+    NovelCreationImportChunk,
+    NovelCreationMaterialImport,
+    NovelCreationRunClaim,
     NovelCreationSession,
     NovelCreationStageEvent,
     NovelCreationStageRun,
@@ -142,6 +148,7 @@ __all__ = [
     "SystemAssistantMessage",
     "AssistantRun",
     "AssistantRunStep",
+    "ChapterWriteClaim",
     "AssistantMemory",
     "ChapterDraft",
     "RagDocument",

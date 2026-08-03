@@ -104,10 +104,10 @@ class LocalRuntimeManager:
                 ensure_ascii=False,
             )
             profile = detect_hardware()
-            context = min(
-                context_length or profile.recommended_context,
-                model.context_length or profile.recommended_context,
-            )
+            # The catalog value is a useful starting point, not a ceiling.
+            # Users with large VRAM/unified memory may select a model's full
+            # or RoPE-scaled context window.
+            context = context_length or model.context_length or profile.recommended_context
             if (
                 self._model_key == model_key
                 and self._requested_context_length == context
@@ -117,15 +117,10 @@ class LocalRuntimeManager:
                 return self.base_url or ""
 
             self.stop()
-            launch_profiles = (
-                [
-                    (99, context),
-                    (40, max(4096, context // 2)),
-                    (0, max(4096, context // 2)),
-                ]
-                if profile.nvidia_available
-                else [(0, context), (0, max(4096, context // 2))]
-            )
+            # Never silently shrink a context selected by the user. A failed
+            # launch reports llama.cpp's diagnostic so the user can choose a
+            # lower value deliberately, instead of losing project evidence.
+            launch_profiles = [(99 if profile.nvidia_available else 0, context)]
             last_error = "本地模型运行时启动失败"
             for attempt, (gpu_layers, attempt_context) in enumerate(launch_profiles):
                 port = _free_port()

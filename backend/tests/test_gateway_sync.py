@@ -145,7 +145,7 @@ def test_sync_is_ordered_idempotent_and_merges_different_entities(tmp_path):
                 entity_id="character-1",
                 operation="upsert",
                 base_revision=0,
-                payload={"name": "林岚", "current_goal": "查清火灾"},
+                payload={"name": "周遥", "current_goal": "查清花色异常"},
             )
             pushed = service.push(
                 [first, second],
@@ -164,7 +164,7 @@ def test_sync_is_ordered_idempotent_and_merges_different_entities(tmp_path):
 
             stored_character = db.get(Character, "character-1")
             assert stored_character is not None
-            assert stored_character.current_goal == "查清火灾"
+            assert stored_character.current_goal == "查清花色异常"
 
             duplicate = service.push(
                 [first],
@@ -289,7 +289,7 @@ def test_delete_creates_retained_tombstone_and_bootstrap_snapshot(tmp_path):
                         entity_id="world-1",
                         operation="upsert",
                         base_revision=0,
-                        payload={"title": "记忆分配中心"},
+                        payload={"title": "公共温室管理站"},
                     )
                 ],
                 protocol_version=1,

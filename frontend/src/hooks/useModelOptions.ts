@@ -1,33 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { apiClient } from '../api/client'
+import {
+  type SharedModelConfig,
+  useGlobalModelActions,
+  useSharedModelConfigs,
+} from '../shared/query/modelConfigs'
 
-interface ApiResponse<T> {
-  code: number
-  message: string
-  data: T
-}
-
-export interface ModelConfig {
-  id: string
-  provider: string
-  default_model: string
-  is_global_default: boolean
-  readiness_status: 'detected' | 'unverified' | 'testing' | 'ready' | 'auth_required' | 'quota_limited' | 'unavailable'
-  is_usable: boolean
-  readiness_message?: string
-  readiness_source?: string | null
-  failure_class?: string | null
-  last_tested_at?: string | null
-  base_url_override?: string
-  max_output_tokens?: number | null
-  effective_max_output_tokens?: number
-  deconstruct_input_char_limit?: number | null
-  effective_deconstruct_input_char_limit?: number
-  deconstruct_item_char_limit?: number | null
-  effective_deconstruct_item_char_limit?: number
-  created_at?: string
-  updated_at?: string
-}
+export type ModelConfig = SharedModelConfig
 
 export interface ModelSelectOption {
   value: string
@@ -71,27 +49,36 @@ const normalizeModel = (provider: string, model: string) => {
 }
 
 export function useModelOptions() {
-  const [configs, setConfigs] = useState<ModelConfig[]>([])
-  const [loading, setLoading] = useState(false)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await apiClient.get<ApiResponse<{ items: ModelConfig[]; total: number }>>('/config/models')
-      setConfigs(res.data.data.items || [])
-    } catch {
-      setConfigs([])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const configsQuery = useSharedModelConfigs()
+  const { setGlobalModel: persistGlobalModel } = useGlobalModelActions()
+  const configs = useMemo(() => configsQuery.data?.items || [], [configsQuery.data?.items])
+  const [selectionOverride, setSelectionOverride] = useState<string>()
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    const handleSelection = (event: Event) => {
+      const value = (event as CustomEvent<string>).detail
+      if (value) setSelectionOverride(value)
+    }
+    window.addEventListener('siming:global-model-changed', handleSelection)
+    return () => window.removeEventListener('siming:global-model-changed', handleSelection)
+  }, [])
+
+  const effectiveConfigs = useMemo(() => {
+    if (!selectionOverride) return configs
+    const separator = selectionOverride.indexOf(':')
+    if (separator <= 0) return configs
+    const provider = selectionOverride.slice(0, separator)
+    const model = selectionOverride.slice(separator + 1)
+    return configs.map((config) => ({
+      ...config,
+      default_model: config.provider === provider ? model : config.default_model,
+      is_global_default: `${config.provider}:${config.default_model}` === selectionOverride
+        || config.provider === provider,
+    }))
+  }, [configs, selectionOverride])
 
   const modelOptions = useMemo<ModelSelectOption[]>(() => (
-    configs.filter((config) => config.is_usable && config.readiness_status === 'ready').map((config) => {
+    effectiveConfigs.filter((config) => config.is_usable && config.readiness_status === 'ready').map((config) => {
       const model = normalizeModel(config.provider, config.default_model)
       const localRuntimeSuffix = config.provider === 'local_llama_cpp' ? '（本地文本）' : ''
       return {
@@ -102,7 +89,7 @@ export function useModelOptions() {
         isGlobalDefault: config.is_global_default,
       }
     })
-  ), [configs])
+  ), [effectiveConfigs])
 
   const defaultModel = useMemo(
     () => modelOptions.find((option) => option.isGlobalDefault)?.value,
@@ -114,12 +101,23 @@ export function useModelOptions() {
     [configs],
   )
 
+  const setGlobalModel = useCallback(async (value: string) => {
+    const option = modelOptions.find((candidate) => candidate.value === value)
+    if (!option) throw new Error('所选模型尚未通过真实对话测试')
+    await persistGlobalModel(option.provider, option.model)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('siming:global-model-changed', { detail: value }))
+    }
+    return option
+  }, [modelOptions, persistGlobalModel])
+
   return {
     configs,
     modelOptions,
     defaultModel,
-    loading,
-    refresh,
+    loading: configsQuery.isLoading || configsQuery.isFetching,
+    refresh: configsQuery.refetch,
+    setGlobalModel,
     hasModels: modelOptions.length > 0,
     hasDetectedModels: detectedConfigs.length > 0,
     detectedConfigs,

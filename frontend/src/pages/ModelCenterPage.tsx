@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Input, Modal, Select, Space, Switch, Tabs, Typography, message } from 'antd'
 import { ExperimentOutlined, HddOutlined, SlidersOutlined } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import SystemNav from '../components/SystemNav'
 import ModelCatalogPanel from '../features/localModels/ModelCatalogPanel'
 import TrainingPanel from '../features/localModels/TrainingPanel'
 import type {
@@ -117,6 +118,7 @@ export default function ModelCenterPage({ embedded = false }: Props) {
 
   return (
     <div style={{ padding: embedded ? 24 : '24px max(24px, 5vw)', maxWidth: 1500, margin: '0 auto' }}>
+      {!embedded && <SystemNav current="models" />}
       <Title level={2} style={{ marginBottom: 4 }}>本地 AI 模型中心</Title>
       <Paragraph type="secondary">
         下载一次即可离线使用。司命自动管理模型、运行时、任务路由和写作适配器。

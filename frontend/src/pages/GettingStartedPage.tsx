@@ -127,7 +127,7 @@ function FirstIdea({ modelReady, model }: { modelReady: boolean; model?: string 
     <div className="getting-started-first-idea">
       <CheckCircleOutlined className="getting-started-ready-icon" />
       <Title level={3}>免费写作能力已经准备好</Title>
-      <Paragraph>不用先学设置。说一句你想写的故事，司命会立即给你三套书名、核心卖点、主角目标和开篇钩子。</Paragraph>
+      <Paragraph>不用先学设置。说一句你想写的故事，司命会先生成一套包含书名、核心卖点、主角目标和开篇钩子的方向，再按你的反馈持续调整。</Paragraph>
       <label htmlFor="getting-started-idea">你想写什么故事？</label>
       <TextArea
         id="getting-started-idea"
@@ -147,7 +147,7 @@ function FirstIdea({ modelReady, model }: { modelReady: boolean; model?: string 
           disabled={!idea.trim() || !modelReady}
           onClick={() => void createIdeas()}
         >
-          生成三套小说创意
+          生成小说创意
         </Button>
         <Button onClick={() => navigate('/dashboard')}>先看看作品库</Button>
       </Space>
@@ -322,7 +322,7 @@ export function GettingStartedPanel() {
 
         <section className="getting-started-work" aria-live="polite">
           <Title level={3}>从一句故事想法开始</Title>
-          <Paragraph>司命会先为这台电脑准备写作所需的 AI。准备好后，你可以马上生成三套小说方向。</Paragraph>
+          <Paragraph>司命会先为这台电脑准备写作所需的 AI。准备好后，你可以马上生成一套小说方向并继续对话调整。</Paragraph>
 
           {running ? (
             <div className="getting-started-progress">

@@ -5,11 +5,12 @@ from app.architecture.uow import commit_session
 
 import threading
 import hashlib
+from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
 
 from ...core.crypto import encrypt
-from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask
+from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask, OperationRun
 from ...database.session import SessionLocal
 from ..operation_runtime import ensure_operation, update_operation
 from .downloads import download_with_fallback
@@ -126,6 +127,117 @@ def create_model_download(model_key: str) -> str:
     return task_id
 
 
+def create_custom_model_download(
+    *,
+    model_key: str,
+    display_name: str,
+    source_url: str,
+    context_length: int,
+) -> str:
+    """Register and download a user-selected GGUF without curating its URL.
+
+    The user owns the source choice; this deliberately supplements rather than
+    mutates the signed/built-in catalog.
+    """
+    if Path(urlparse(source_url).path).suffix.lower() != ".gguf":
+        raise ValueError("下载地址必须直接指向 .gguf 模型文件")
+    destination = model_root() / model_key / Path(urlparse(source_url).path).name
+    with SessionLocal() as db:
+        existing = db.query(LocalModel).filter(LocalModel.model_key == model_key).first()
+        if existing and existing.source == "catalog":
+            raise ValueError("模型标识与内置目录冲突，请使用不同的模型标识")
+        if existing and existing.status == "installed" and existing.file_path and Path(existing.file_path).exists():
+            return ""
+        active_task = db.query(ModelDownloadTask).filter(
+            ModelDownloadTask.kind == "model",
+            ModelDownloadTask.target_key == model_key,
+            ModelDownloadTask.status.in_(["queued", "downloading"]),
+        ).first()
+        if active_task:
+            return active_task.id
+        if not existing:
+            existing = LocalModel(model_key=model_key)
+            db.add(existing)
+        existing.display_name = display_name
+        existing.family = "custom"
+        existing.parameter_size = "自定义"
+        existing.quantization = "GGUF"
+        existing.context_length = context_length
+        existing.license_name = "由用户确认"
+        existing.source = "custom"
+        existing.source_urls = [source_url]
+        existing.min_ram_gb = None
+        existing.recommended_vram_gb = None
+        existing.status = "available"
+        task = ModelDownloadTask(
+            kind="model",
+            target_key=model_key,
+            source_url=source_url,
+            destination_path=str(destination),
+            status="queued",
+        )
+        db.add(task)
+        db.flush()
+        operation = ensure_operation(
+            db,
+            source_kind="download",
+            source_id=task.id,
+            title=f"下载自有 GGUF 模型 · {model_key}",
+            status="queued",
+            phase="queued",
+            message="模型下载已排队",
+            tool_mode="resumable_download",
+            resume_url="/models",
+            can_pause=False,
+            can_cancel=False,
+            can_retry=False,
+            progress_mode="indeterminate",
+        )
+        task.operation_id = operation.id
+        commit_session(db)
+        task_id = task.id
+    _start_thread(task_id, _run_model_download, task_id, model_key)
+    return task_id
+
+
+def import_custom_model(
+    *,
+    model_key: str,
+    display_name: str,
+    file_path: str,
+    context_length: int,
+) -> None:
+    """Register an existing local GGUF in place; it is never copied or moved."""
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file() or path.suffix.lower() != ".gguf":
+        raise ValueError("请选择存在的 .gguf 模型文件")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    with SessionLocal() as db:
+        existing = db.query(LocalModel).filter(LocalModel.model_key == model_key).first()
+        if existing and existing.source == "catalog":
+            raise ValueError("模型标识与内置目录冲突，请使用不同的模型标识")
+        if not existing:
+            existing = LocalModel(model_key=model_key)
+            db.add(existing)
+        existing.display_name = display_name
+        existing.family = "custom"
+        existing.parameter_size = "自定义"
+        existing.quantization = "GGUF"
+        existing.context_length = context_length
+        existing.file_path = str(path)
+        existing.file_size = path.stat().st_size
+        existing.sha256 = digest.hexdigest()
+        existing.license_name = "由用户确认"
+        existing.source = "custom"
+        existing.source_urls = []
+        existing.status = "installed"
+        existing.installed_at = datetime.utcnow()
+        commit_session(db)
+
+
 def create_runtime_download() -> str:
     with SessionLocal() as db:
         runtime = db.query(LocalRuntimeInstallation).filter(
@@ -206,6 +318,41 @@ def resume_incomplete_downloads() -> None:
             _start_thread(task_id, _run_model_download, task_id, target_key)
 
 
+def resume_download(task_id: str) -> None:
+    """Reconnect an interrupted download to its persisted partial file."""
+    with SessionLocal() as db:
+        task = db.query(ModelDownloadTask).filter(ModelDownloadTask.id == task_id).first()
+        if not task:
+            raise ValueError("下载任务不存在")
+        if task.status == "completed":
+            return
+        task.status = "queued"
+        task.error_message = None
+        task.updated_at = datetime.utcnow()
+        if task.operation_id:
+            operation = db.query(OperationRun).filter(OperationRun.id == task.operation_id).first()
+            if operation:
+                update_operation(
+                    db,
+                    operation,
+                    status="queued",
+                    health_status="active",
+                    phase="queued",
+                    message="正在从已保存进度继续下载",
+                    progress_mode="determinate" if task.total_bytes else "indeterminate",
+                    progress_current=int(task.downloaded_bytes or 0),
+                    progress_total=int(task.total_bytes) if task.total_bytes else None,
+                    output=True,
+                )
+        kind = task.kind
+        target_key = task.target_key
+        commit_session(db)
+    if kind == "runtime":
+        _start_thread(task_id, _run_runtime_download, task_id)
+    elif kind == "model":
+        _start_thread(task_id, _run_model_download, task_id, target_key)
+
+
 def _start_thread(key: str, target, *args) -> None:
     with _LOCK:
         current = _THREADS.get(key)
@@ -262,15 +409,20 @@ def _set_task(task_id: str, **values) -> None:
 
 def _run_model_download(task_id: str, model_key: str) -> None:
     spec = model_spec(model_key)
-    if not spec:
-        _set_task(task_id, status="failed", error_message="模型清单中不存在该模型")
+    with SessionLocal() as db:
+        task = db.query(ModelDownloadTask).filter(ModelDownloadTask.id == task_id).first()
+        source_url = task.source_url if task else None
+        destination_path = task.destination_path if task else None
+    sources = spec["sources"] if spec else ([source_url] if source_url else [])
+    if not sources or not destination_path:
+        _set_task(task_id, status="failed", error_message="模型下载信息不完整")
         return
-    destination = model_root() / model_key / spec["file_name"]
+    destination = Path(destination_path)
     _set_task(task_id, status="downloading", error_message=None)
     try:
         path = download_with_fallback(
             task_id,
-            spec["sources"],
+            sources,
             destination,
             expected_sha256=spec.get("sha256"),
         )

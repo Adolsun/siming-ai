@@ -49,9 +49,17 @@ export function StageActionBar({
   } else if (status === 'generated' || status === 'stale') {
     action = (
       <>
-        <Button size="large" disabled={!hasData || busy} onClick={onConfirmOnly}>仅确认，稍后继续</Button>
-        <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!hasData || busy} loading={busy} onClick={onConfirmAndContinue}>
-          {nextStageLabel ? `确认并生成${nextStageLabel}` : '确认本阶段'}
+        <Button size="large" disabled={!hasData || busy} onClick={onConfirmOnly}>确认当前内容</Button>
+        <Button
+          size="large"
+          type="primary"
+          icon={<CheckCircleOutlined />}
+          disabled={!hasData || busy}
+          loading={busy}
+          title={nextStageLabel ? `确认后生成${nextStageLabel}` : '确认后生成系统推荐的下一对象'}
+          onClick={onConfirmAndContinue}
+        >
+          确认并继续
         </Button>
       </>
     )

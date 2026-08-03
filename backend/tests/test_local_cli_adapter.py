@@ -132,6 +132,20 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertTrue(any(str(part).endswith("mimo.cmd") for part in command))
         self.assertEqual(command[-1], "models")
 
+    @patch("app.ai.local_cli_adapter.subprocess.run")
+    @patch("app.ai.local_cli_adapter.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_codex_model_discovery_parses_models_json(self, _which, run_mock):
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = '[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.6-terra"},{"id":"codex-cli"}]'
+        models = discover_local_cli_models("codex_cli", "codex")
+        self.assertEqual(
+            [item["id"] for item in models],
+            ["gpt-5.6-sol", "gpt-5.6-terra", "codex-cli"],
+        )
+        command = run_mock.call_args.args[0]
+        self.assertTrue(any(str(part).endswith("codex.cmd") for part in command))
+        self.assertEqual(command[-1], "models")
+
     def test_codex_model_options_include_configured_model_and_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory)

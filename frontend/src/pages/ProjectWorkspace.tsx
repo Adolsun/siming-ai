@@ -74,7 +74,8 @@ const PAGE_TITLES: Record<MenuKey, string> = {
 
 function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; setAiCollapsed: (v: boolean) => void }) {
   const { projectId } = useParams<{ projectId: string }>()
-  const { defaultModel } = useModelOptions()
+  const navigate = useNavigate()
+  const { modelOptions, defaultModel, loading: modelsLoading, setGlobalModel } = useModelOptions()
   const { width: aiWidth, onDragHandleMouseDown: onAiResize, dragging: aiDragging } = usePanelResize({
     initialWidth: Math.min(560, Math.max(280, window.innerWidth * 0.24)),
   })
@@ -103,6 +104,10 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
           selectedText={selectedText}
           selectedTextChapterId={selectedTextChapterId}
           defaultModel={defaultModel}
+          modelOptions={modelOptions}
+          modelsLoading={modelsLoading}
+          onGlobalModelChange={setGlobalModel}
+          onManageModels={() => navigate('/settings')}
           onApplied={triggerRefresh}
         />
       )}

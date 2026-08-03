@@ -13,7 +13,6 @@ const GettingStartedPage = lazy(() => import('./pages/GettingStartedPage'))
 const ExternalAgentPage = lazy(() => import('./pages/ExternalAgentPage'))
 const GuiPage = lazy(() => import('./pages/GuiPage'))
 const ModelCenterPage = lazy(() => import('./pages/ModelCenterPage'))
-const NovelCreationWizardPage = lazy(() => import('./pages/NovelCreationWizardPage'))
 
 const { Content } = Layout
 
@@ -89,6 +88,28 @@ function WildcardRedirect() {
   return null
 }
 
+/** The creation workbench is now an inline editor in the AI assistant. */
+function NovelCreationRedirect() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    const source = new URLSearchParams(location.search)
+    const target = new URLSearchParams()
+    const session = source.get('session') || source.get('creationSession')
+    const conversation = source.get('conversation')
+    const artifact = source.get('stage') || source.get('artifact')
+    const importId = source.get('import')
+    if (session) target.set('creationSession', session)
+    if (conversation) target.set('conversation', conversation)
+    if (artifact) target.set('artifact', artifact)
+    if (importId) target.set('import', importId)
+    navigate(`/gui${target.size ? `?${target.toString()}` : ''}`, { replace: true })
+  }, [location.search, navigate])
+
+  return <LoadingScreen />
+}
+
 /** Global error banner — renders store errors as a dismissible alert. */
 function GlobalErrorBanner() {
   const error = useAppStore((s) => s.error)
@@ -122,7 +143,7 @@ function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
+              <Route path="/novel-creation" element={<NovelCreationRedirect />} />
               <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/getting-started" element={<GettingStartedPage />} />

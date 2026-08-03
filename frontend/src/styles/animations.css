@@ -270,12 +270,20 @@
 
 /* ─── Respect user motion preferences ─── */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  html {
     scroll-behavior: auto !important;
+  }
+
+  .siming-animate-in,
+  .siming-animate-fade,
+  .siming-animate-scale,
+  .siming-animate-ink,
+  .siming-content-enter,
+  .siming-card-hover,
+  .siming-btn-press,
+  .tab-cache-fade-in > *,
+  .typing-indicator span {
+    animation: none !important;
+    transition: none !important;
   }
 }

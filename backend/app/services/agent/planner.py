@@ -4,8 +4,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...core.numbers import extract_chapter_number, parse_chapter_number
+from .chapter_intent import has_chapter_rewrite_intent, has_strong_chapter_writing_intent
 from .plan_graph import PlanGraph, StepDef
-
 
 # ---------------------------------------------------------------------------
 # Intent types
@@ -31,6 +32,7 @@ def plan_fast_chapter(
     outline_node_id: str,
     requirements: str = "",
     involved_characters: list[str] | None = None,
+    rewrite: bool = False,
 ) -> PlanGraph:
     """Fast chapter write path: search -> write -> save -> detect changes."""
     chars = involved_characters or []
@@ -55,15 +57,20 @@ def plan_fast_chapter(
             label="生成章节内容",
         ),
         "create_chapter": StepDef(
-            tool="create_chapter",
+            tool="update_chapter" if rewrite else "create_chapter",
             args={
                 "outline_node_id": outline_node_id,
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
                 "title": "{search_outline.data.0.title}",
+                **({
+                    "rewrite": True,
+                    "rewrite_request_id": "{chapter_writer.data.draft_id}",
+                    "trigger_type": "ai_insert",
+                } if rewrite else {}),
             },
             depends_on=["chapter_writer"],
-            label="保存章节",
+            label="保存为章节新版本" if rewrite else "保存章节",
         ),
         "archive_chapter_after_write": StepDef(
             tool="archive_chapter_after_write",
@@ -90,6 +97,7 @@ def plan_quality_chapter(
     outline_node_id: str,
     requirements: str = "",
     involved_characters: list[str] | None = None,
+    rewrite: bool = False,
 ) -> PlanGraph:
     """Quality chapter write path: preview -> plot -> roleplay -> write -> evaluate -> save -> detect."""
     chars = involved_characters or []
@@ -168,15 +176,20 @@ def plan_quality_chapter(
             label="评估章节质量",
         ),
         "create_chapter": StepDef(
-            tool="create_chapter",
+            tool="update_chapter" if rewrite else "create_chapter",
             args={
                 "outline_node_id": outline_node_id,
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
                 "title": "{preview_context.data.outline_context.title}",
+                **({
+                    "rewrite": True,
+                    "rewrite_request_id": "{chapter_writer.data.draft_id}",
+                    "trigger_type": "ai_insert",
+                } if rewrite else {}),
             },
             depends_on=["evaluate_chapter"],
-            label="保存章节",
+            label="保存为章节新版本" if rewrite else "保存章节",
         ),
         "archive_chapter_after_write": StepDef(
             tool="archive_chapter_after_write",
@@ -518,19 +531,23 @@ def plan_local_cli_writing(
     requirements: str = "",
     provider: str = "",
     outline_node_id: str = "",
+    rewrite: bool = False,
 ) -> PlanGraph:
     """Start a Siming-managed local CLI Agent for chapter writing."""
     user_request = requirements.strip()
     if outline_node_id:
+        write_action = "update_chapter（rewrite=true）" if rewrite else "create_chapter"
         user_request = (
             f"{user_request}\n\n"
             f"Target outline_node_id: `{outline_node_id}`. "
-            "Before writing, call `prepare_external_writing_context` with this outline_node_id."
+            "Before writing, call `prepare_external_writing_context` with this outline_node_id. "
+            f"The formal write must use `{write_action}`; do not use the other chapter write tool."
         ).strip()
     args = {
         "task_type": "writing",
         "user_request": user_request,
         "outline_node_id": outline_node_id,
+        "rewrite": rewrite,
     }
     if provider:
         args["provider"] = provider
@@ -547,6 +564,7 @@ def plan_local_cli_writing(
                 "run_id": "{start_local_cli_agent_run.data.run_id}",
                 "task_type": "writing",
                 "outline_node_id": outline_node_id,
+                "rewrite": rewrite,
                 "startup_timeout_seconds": 3,
             },
             depends_on=["start_local_cli_agent_run"],
@@ -554,6 +572,40 @@ def plan_local_cli_writing(
         ),
     }
     return PlanGraph(name="local_cli_writing", steps=steps)
+
+
+def plan_has_chapter_writing_contract(graph: PlanGraph | None) -> bool:
+    """Return whether a plan can deterministically persist chapter prose.
+
+    Internal plans must generate a draft and then save it.  Managed local CLI
+    plans use their explicit start/wait contract; a generic scheduler step is
+    not enough to count as chapter writing.
+    """
+    if graph is None:
+        return False
+    tools = {step.tool for step in graph.steps.values()}
+    if "chapter_writer" in tools and tools.intersection({"create_chapter", "update_chapter"}):
+        return True
+    if "save_external_chapter_draft" in tools and tools.intersection(
+        {"create_chapter", "update_chapter"}
+    ):
+        return True
+
+    start_steps = [
+        step
+        for step in graph.steps.values()
+        if step.tool == "start_local_cli_agent_run"
+        and str(step.args.get("task_type") or "").strip().lower() == "writing"
+        and str(step.args.get("outline_node_id") or "").strip()
+    ]
+    wait_steps = [
+        step
+        for step in graph.steps.values()
+        if step.tool == "wait_local_cli_agent_run"
+        and str(step.args.get("task_type") or "").strip().lower() == "writing"
+        and str(step.args.get("outline_node_id") or "").strip()
+    ]
+    return bool(start_steps and wait_steps)
 
 
 def plan_external_cataloging(
@@ -605,8 +657,9 @@ def plan_export_project(
 # Intent detection
 # ---------------------------------------------------------------------------
 
-_CHAPTER_RE = re.compile(r"第\s*(\d+)\s*章")
-_BARE_CHAPTER_RE = re.compile(r"(?<!\d)(\d{1,5})\s*章")
+_BARE_CHAPTER_RE = re.compile(
+    r"(?P<number>[0-9０-９零〇○一二两三四五六七八九十百千万](?:[0-9０-９零〇○一二两三四五六七八九十百千万]|\s)*?)\s*章"
+)
 _QUALITY_KEYWORDS = {"精写", "高质量", "仔细写", "认真写", "质量", "quality"}
 
 # Character creation keywords
@@ -667,12 +720,14 @@ def _extract_outline_batch_count(text: str) -> int | None:
 
 
 def _extract_chapter_number(text: str) -> int | None:
-    match = _CHAPTER_RE.search(text)
-    if match:
-        return int(match.group(1))
+    explicit = extract_chapter_number(text)
+    if explicit is not None:
+        return explicit
 
     for match in _BARE_CHAPTER_RE.finditer(text):
-        number = int(match.group(1))
+        number = parse_chapter_number(match.group("number"))
+        if number is None:
+            continue
         prefix = text[max(0, match.start() - 10):match.start()]
         suffix = text[match.end():match.end() + 8]
         if any(key in prefix for key in ("后续", "连续", "接下来", "往后", "一批")):
@@ -806,6 +861,21 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
     if any(kw in text for kw in _EXTERNAL_WRITING_KEYWORDS):
         return {"intent_type": _INTENT_EXTERNAL_WRITING, "requirements": text}
 
+    # A clear request to create prose takes precedence over adjacent planning
+    # vocabulary (for example, "先创建下一章大纲，然后生成正文").  Merely
+    # mentioning a chapter number is not a write request.
+    if has_strong_chapter_writing_intent(text):
+        chapter_number = _extract_chapter_number(text)
+        mode = "quality" if any(kw in text for kw in _QUALITY_KEYWORDS) else "fast"
+        return {
+            "intent_type": _INTENT_CHAPTER,
+            "mode": mode,
+            "outline_query": text,
+            "requirements": text,
+            "chapter_number": chapter_number,
+            "rewrite": has_chapter_rewrite_intent(text),
+        }
+
     # 1.5 Scheduled tasks
     if any(kw in text for kw in _SCHEDULE_KEYWORDS) and any(kw in text for kw in ("任务", "搜索", "整理", "提醒", "监控", "收集")):
         cron_expr, interval_minutes = _extract_schedule(text)
@@ -846,34 +916,21 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
         }
 
     # 4. Outline planning
-    if any(kw in text for kw in _OUTLINE_KEYWORDS) or ("大纲" in text and any(kw in text for kw in ("创建", "新建", "补", "生成", "规划", "添加", "先"))):
+    if any(kw in text for kw in _OUTLINE_KEYWORDS) or (
+        "大纲" in text
+        and any(
+            kw in text
+            for kw in (
+                "创建", "新建", "补", "生成", "规划", "添加", "先",
+                "写", "重写", "改写", "创作",
+            )
+        )
+    ):
         return {
             "intent_type": _INTENT_OUTLINE,
             "requirements": text,
             "chapter_number": _extract_chapter_number(text),
             "batch_count": _extract_outline_batch_count(text),
-        }
-
-    # 5. Chapter writing
-    chapter_number = _extract_chapter_number(text)
-    if chapter_number:
-        mode = "quality" if any(kw in text for kw in _QUALITY_KEYWORDS) else "fast"
-        return {
-            "intent_type": _INTENT_CHAPTER,
-            "mode": mode,
-            "outline_query": text,
-            "requirements": text,
-            "chapter_number": chapter_number,
-        }
-
-    if any(kw in text for kw in ("写章", "写一章", "续写", "继续写")):
-        mode = "quality" if any(kw in text for kw in _QUALITY_KEYWORDS) else "fast"
-        return {
-            "intent_type": _INTENT_CHAPTER,
-            "mode": mode,
-            "outline_query": text,
-            "requirements": text,
-            "chapter_number": None,
         }
 
     return None
@@ -892,10 +949,12 @@ def build_plan_from_intent(intent: dict[str, Any], *, outline_node_id: str = "")
             return plan_quality_chapter(
                 outline_node_id=outline_node_id,
                 requirements=intent.get("requirements", ""),
+                rewrite=bool(intent.get("rewrite")),
             )
         return plan_fast_chapter(
             outline_node_id=outline_node_id,
             requirements=intent.get("requirements", ""),
+            rewrite=bool(intent.get("rewrite")),
         )
 
     if intent_type == _INTENT_CHARACTER:

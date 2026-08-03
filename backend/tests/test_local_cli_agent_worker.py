@@ -13,7 +13,17 @@ from sqlalchemy.orm import sessionmaker
 
 from pathlib import Path
 
-from app.database.models import APIConfig, AgentRun, AgentRunEvent, Base, Chapter, Project
+from app.database.models import (
+    APIConfig,
+    AgentRun,
+    AgentRunEvent,
+    Base,
+    Chapter,
+    ChapterWriteClaim,
+    ContextManifest,
+    Project,
+)
+from app.mcp.adapter import _managed_chapter_write_guard
 from app.services.external_agent.run_service import create_run, update_run_status
 from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
@@ -24,7 +34,9 @@ from app.services.local_cli_agent_worker import (
     start_local_cli_agent_worker,
     write_task_file,
 )
+from app.services.operation_runtime import ensure_operation
 from app.services.workspace.registry import registry
+from app.services.workspace.tools.context_governance import prepare_task_context
 from app.services.workspace.tools.local_cli_agent import wait_local_cli_agent_run
 
 
@@ -71,6 +83,154 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn('phase="merged"', text)
         self.assertIn("Do not call `save_external_cataloging_facts`", text)
         self.assertIn("Preserve the source novel language", text)
+
+    def test_rewrite_task_file_requires_update_version_flow(self):
+        project = self._project()
+        task_file = write_task_file(
+            self.db,
+            project,
+            run_id="run-rewrite",
+            user_request="重写本章",
+            task_type="writing",
+            provider="opencode_cli",
+            context_manifest_id="manifest-rewrite",
+            writing_contract={
+                "managed_chapter_write": True,
+                "rewrite": True,
+                "outline_node_id": "outline-rewrite",
+                "parent_operation_id": "parent-op",
+                "chapter_claim_id": "claim-rewrite",
+            },
+        )
+
+        text = task_file.read_text(encoding="utf-8")
+        self.assertIn("required formal tool: `update_chapter`", text)
+        self.assertIn("`rewrite=true`", text)
+        self.assertIn("Never call `create_chapter`", text)
+        self.assertIn('run_id="run-rewrite"', text)
+
+    def test_managed_write_guard_rejects_cancelled_parent_operation(self):
+        project = self._project()
+        parent = ensure_operation(
+            self.db,
+            source_kind="assistant",
+            source_id="assistant-parent",
+            project_id=project.id,
+            title="parent",
+            status="running",
+        )
+        child = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="opencode_cli",
+            title="writing",
+        )
+        claim = ChapterWriteClaim(
+            project_id=project.id,
+            target_key=f"project:{project.id}:outline:outline-1",
+            idempotency_key=f"create_chapter:{project.id}:outline-1",
+            claim_token="claim-token",
+            status="running",
+            operation_id=parent.id,
+        )
+        self.db.add(claim)
+        self.db.flush()
+        manifest = ContextManifest(
+            project_id=project.id,
+            task_type="writing",
+            execution_route="local_cli_agent",
+            query_json={
+                "arguments": {
+                    "managed_chapter_write": True,
+                    "rewrite": False,
+                    "outline_node_id": "outline-1",
+                    "parent_operation_id": parent.id,
+                    "chapter_claim_id": claim.id,
+                    "chapter_claim_token": claim.claim_token,
+                    "chapter_target_key": claim.target_key,
+                    "chapter_idempotency_key": claim.idempotency_key,
+                },
+            },
+        )
+        self.db.add(manifest)
+        self.db.flush()
+        child.context_manifest_id = manifest.id
+        self.db.commit()
+        update_run_status(self.db, child.id, "running", summary="writing")
+        parent.status = "cancelled"
+        self.db.commit()
+
+        result = _managed_chapter_write_guard(
+            self.db,
+            project.id,
+            "create_chapter",
+            {"context_manifest_id": manifest.id, "outline_node_id": "outline-1"},
+            child.id,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn("父写作任务已取消", result["detail"])
+
+    def test_managed_run_cannot_replace_claim_manifest(self):
+        project = self._project()
+        child = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="opencode_cli",
+            title="writing",
+        )
+        baseline = ContextManifest(
+            project_id=project.id,
+            task_type="writing",
+            execution_route="local_cli_agent",
+            query_json={
+                "arguments": {
+                    "managed_chapter_write": True,
+                    "outline_node_id": "outline-1",
+                    "chapter_claim_id": "claim-1",
+                    "chapter_claim_token": "token-1",
+                },
+            },
+        )
+        replacement = ContextManifest(
+            project_id=project.id,
+            task_type="writing",
+            execution_route="external_mcp",
+            query_json={"arguments": {"outline_node_id": "outline-1"}},
+        )
+        self.db.add_all([baseline, replacement])
+        self.db.flush()
+        child.context_manifest_id = baseline.id
+        self.db.commit()
+
+        result = asyncio.run(prepare_task_context(
+            self.db,
+            project.id,
+            {
+                "run_id": child.id,
+                "task_type": "writing",
+                "context_manifest_id": replacement.id,
+                "arguments": {"outline_node_id": "outline-1"},
+            },
+        ))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["data"]["manifest_id"], baseline.id)
+        self.db.refresh(child)
+        self.assertEqual(child.context_manifest_id, baseline.id)
+
+        reused = asyncio.run(prepare_task_context(
+            self.db,
+            project.id,
+            {
+                "run_id": child.id,
+                "task_type": "writing",
+                "arguments": {"outline_node_id": "outline-1"},
+            },
+        ))
+        self.assertEqual(reused["data"]["manifest_id"], baseline.id)
 
     def test_worker_requires_local_cli_config(self):
         project = self._project()

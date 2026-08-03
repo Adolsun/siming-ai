@@ -8,37 +8,22 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy.orm import Session
-
-from app.database.models import NovelCreationSession, NovelCreationStageEvent, NovelCreationStageRun
-from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
-from app.services.novel_creation_failures import build_stage_failure, clear_stage_failure
-from app.services.observability.run_events import classify_failure
-
-SCHEMA_VERSION = 2
-STAGE_ORDER = (
-    "constraints",
-    "concepts",
-    "world_style",
-    "characters",
-    "locations",
-    "macro_outline",
-    "opening_outline",
-    "final_review",
+from app.database.models import NovelCreationSession
+from app.services.novel_creation_contract import (
+    IMPACT_DEPENDENCIES,
+    SCHEMA_VERSION,
+    SOFT_DEPENDENCIES,
+    STAGE_LABELS,
+    STAGE_ORDER,
 )
-STAGE_LABELS = {
-    "constraints": "创作约束",
-    "concepts": "创意方向",
-    "world_style": "文风与世界观",
-    "characters": "角色与关系",
-    "locations": "地点与势力",
-    "macro_outline": "全书主线与卷纲",
-    "opening_outline": "前15章细纲",
-    "final_review": "最终审阅",
-}
-
+from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
+from app.services.novel_creation_failures import clear_stage_failure
+from app.services.novel_creation_conflicts import artifact_conflict_projection
+from app.services.novel_creation_values import requested_volume_count as _requested_volume_count
+from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
 
 _PRESET_ROWS: tuple[tuple[str, str, str, tuple[str, ...], dict[str, Any]], ...] = (
     ("xuanhuan", "玄幻奇幻", "力量体系、升级兑现与世界奇观", ("东方玄幻", "高武世界", "异世大陆", "诡秘奇幻"), {
@@ -208,7 +193,10 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
         "author_overrides": _dict(values.get("author_overrides")),
     }
     if existing.get("form"):
-        merged = _dict(existing["form"])
+        # Legacy drafts may only contain fields that existed in their version.
+        # Layer them over current defaults so migration never creates a partial
+        # V3 form that later serialization cannot read.
+        merged = {**form, **_dict(existing["form"])}
         explicit_keys = set(values)
         if "user_brief" in explicit_keys:
             explicit_keys.add("brief")
@@ -224,8 +212,41 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
         "data": deepcopy(form),
         "updated_at": _now(),
     }
+    existing_schema_version = int(existing.get("schema_version") or session.schema_version or 1)
+    creation_mode = _text(
+        values.get("creation_mode")
+        if "creation_mode" in values
+        else existing.get("creation_mode"),
+        "explore",
+    )
+    if creation_mode not in {"author_led", "explore"}:
+        creation_mode = "explore"
+    author_brief = _text(
+        values.get("author_brief")
+        if "author_brief" in values
+        else existing.get("author_brief"),
+    )
+    author_outline = _text(
+        values.get("author_outline")
+        if "author_outline" in values
+        else existing.get("author_outline"),
+    )
+    locked_requirements = _list(
+        values.get("locked_requirements")
+        if "locked_requirements" in values
+        else existing.get("locked_requirements")
+    )
+    if existing_schema_version < 3 and not values.get("creation_mode"):
+        # V2 sessions always used the divergent three-card exploration flow.
+        creation_mode = "explore"
+    if creation_mode == "author_led" and not author_brief:
+        author_brief = form["brief"]
     draft = {
         "schema_version": SCHEMA_VERSION,
+        "creation_mode": creation_mode,
+        "author_brief": author_brief,
+        "author_outline": author_outline,
+        "locked_requirements": locked_requirements,
         "form": form,
         "concepts": _list(existing.get("concepts")),
         "concept_seeds": _dict(existing.get("concept_seeds")),
@@ -280,7 +301,7 @@ def concept_cards(blueprints: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, Any]]) -> dict[str, Any]:
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     draft["concepts"] = concept_cards(blueprints)
     # Legacy full-blueprint flows retain their source in blueprint_json. Clear
     # compact seeds so a stale compact selection can never win over it.
@@ -292,6 +313,17 @@ def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, An
     session.current_stage = "concepts"
     session.status = "reviewing"
     session.revision = int(session.revision or 0) + 1
+    from app.services.novel_creation_versions import record_artifact_version
+
+    record_artifact_version(
+        session,
+        "concepts",
+        draft["stages"]["concepts"]["data"],
+        revision=int(session.revision or 0),
+        status="generated",
+        source="legacy_blueprint",
+        change_type="generate",
+    )
     return draft
 
 
@@ -309,9 +341,14 @@ def _compact_concept_coverage(card: dict[str, Any]) -> dict[str, Any]:
     return {"score": round(len(covered) / total * 100), "covered": covered, "missing": missing}
 
 
-def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str, Any]]) -> dict[str, Any]:
+def save_compact_concepts(
+    session: NovelCreationSession,
+    concepts: list[dict[str, Any]],
+    *,
+    source: str = "model",
+) -> dict[str, Any]:
     """Persist compact concept cards without changing legacy blueprint_json."""
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     cards: list[dict[str, Any]] = []
     seeds: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(concepts):
@@ -347,8 +384,10 @@ def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str
         cards.append(card)
         seeds[concept_id] = deepcopy(card)
 
-    if len(cards) != 3:
-        raise ValueError("轻量创意必须恰好包含三张有效创意卡")
+    expected_count = 1
+    if len(cards) != expected_count:
+        label = "作者方案" if expected_count == 1 else "轻量创意"
+        raise ValueError(f"{label}必须恰好包含{expected_count}张有效创意卡")
 
     draft["concepts"] = cards
     draft["concept_seeds"] = seeds
@@ -356,7 +395,7 @@ def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str
     draft["stages"]["concepts"] = {
         "status": "generated",
         "data": {"options": deepcopy(cards), "selected_concept_id": None},
-        "source": "model",
+        "source": source,
         "updated_at": _now(),
     }
     _invalidate_after(draft, "concepts")
@@ -364,6 +403,17 @@ def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"
+    from app.services.novel_creation_versions import record_artifact_version
+
+    record_artifact_version(
+        session,
+        "concepts",
+        draft["stages"]["concepts"]["data"],
+        revision=int(session.revision or 0),
+        status="generated",
+        source=source,
+        change_type="generate",
+    )
     return draft["stages"]["concepts"]
 
 
@@ -411,6 +461,7 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
         state = _dict(stages.get(stage))
         status = _text(state.get("status"), "pending")
         blockers = generation_blockers(session, stage, draft)
+        soft_dependencies = _soft_dependencies(draft, stage)
         has_data = state.get("data") is not None
         can_generate = stage not in {"constraints", "concepts"} and not blockers
         can_confirm = has_data and status in {"generated", "stale"} and not blockers
@@ -430,6 +481,7 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
             "can_generate": can_generate,
             "can_confirm": can_confirm,
             "blocked_by": blockers,
+            "soft_dependencies": soft_dependencies,
             "actions": actions,
             "next_stage": STAGE_ORDER[index + 1] if index + 1 < len(STAGE_ORDER) else None,
         }
@@ -452,19 +504,38 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
     projected_stages = _dict(projected_draft.get("stages"))
     projected_final = _dict(projected_stages.get("final_review"))
     if projected_final.get("data") is not None and projected_final.get("status") in {"generated", "confirmed"}:
-        projected_final["data"] = derive_stage(session, "final_review", projected_draft)
+        try:
+            projected_final["data"] = derive_stage(session, "final_review", projected_draft)
+        except ValueError:
+            # Listing work contexts must remain available even when an old or
+            # partially imported draft contains a stale final-review snapshot
+            # without a selected concept. Validation can report that gap when
+            # the user opens the work; it must not erase the whole selector.
+            pass
         projected_stages["final_review"] = projected_final
         projected_draft["stages"] = projected_stages
+    concepts = _dict(_dict(projected_stages.get("concepts")).get("data"))
+    concept_options = _list(concepts.get("options"))
+    selected_concept_id = _text(concepts.get("selected_concept_id"))
+    selected_concept = next(
+        (
+            _dict(option) for option in concept_options
+            if _text(_dict(option).get("id")) == selected_concept_id
+        ),
+        _dict(concept_options[0]) if concept_options else {},
+    )
+    display_title = _text(selected_concept.get("title")) or _text(session.user_brief) or "未命名作品"
     data = {
         "id": session.id,
         "source_project_id": session.source_project_id,
         "created_project_id": session.created_project_id,
         "status": session.status,
         "mode": session.mode,
-        "schema_version": int(session.schema_version or 1),
+        "schema_version": int(projected_draft.get("schema_version") or session.schema_version or 1),
         "current_stage": session.current_stage,
         "revision": int(session.revision or 0),
         "user_brief": session.user_brief,
+        "display_title": display_title,
         "target_audience": session.target_audience,
         "genre": session.genre,
         "platform": session.platform,
@@ -481,9 +552,332 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
     return data
 
 
+def serialize_creation_artifact(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Return one creation artifact with its workflow and provenance metadata."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
+    state = _dict(_dict(draft.get("stages")).get(stage))
+    flow = build_stage_flow(session, draft)["items"][stage]
+    locks = _dict(draft.get("artifact_locks"))
+    checkpoints = _list(_dict(session.checkpoints_json).get(stage))
+    versions = [item for item in session.artifact_versions if item.artifact_key == stage]
+    running = next(
+        (
+            serialize_run(run, include_events=False)
+            for run in reversed(list(session.stage_runs or []))
+            if run.stage == stage and run.status in {"queued", "running", "paused"}
+        ),
+        None,
+    )
+    stored_status = _text(state.get("status"), "pending")
+    conflict_projection = artifact_conflict_projection(
+        stage=stage,
+        stored_status=stored_status,
+        stage_runs=session.stage_runs or [],
+        current_revision=int(session.revision or 0),
+    )
+    return {
+        "artifact": stage,
+        "label": STAGE_LABELS[stage],
+        **conflict_projection,
+        "data": deepcopy(state.get("data")),
+        "source": _text(state.get("source"), "unknown"),
+        "updated_at": state.get("updated_at"),
+        "stale_reason": state.get("stale_reason"),
+        "locked_paths": list(_list(locks.get(stage))),
+        "checkpoint_count": len(checkpoints),
+        "can_undo": bool(checkpoints),
+        "latest_checkpoint_at": checkpoints[-1].get("created_at") if checkpoints else None,
+        "version_count": len(versions),
+        "latest_version_id": versions[-1].id if versions else None,
+        "revision": int(session.revision or 0),
+        "flow": deepcopy(flow),
+        "running_operation": running,
+    }
+
+
+def list_creation_artifacts(session: NovelCreationSession) -> list[dict[str, Any]]:
+    return [serialize_creation_artifact(session, stage) for stage in STAGE_ORDER]
+
+
+def creation_artifact_dependencies(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Describe blockers and retained downstream data that a change may stale."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
+    downstream = []
+    for name in IMPACT_DEPENDENCIES.get(stage, ()):
+        state = _dict(_dict(draft.get("stages")).get(name))
+        if state.get("data") is not None:
+            downstream.append({
+                "artifact": name,
+                "label": STAGE_LABELS[name],
+                "status": _text(state.get("status"), "pending"),
+                "effect": "stale",
+            })
+    return {
+        "artifact": stage,
+        "hard_dependencies": generation_blockers(session, stage, draft),
+        "soft_dependencies": _soft_dependencies(draft, stage),
+        "affected_artifacts": downstream,
+    }
+
+
+def _soft_dependencies(draft: dict[str, Any], stage: str) -> list[dict[str, str]]:
+    if stage not in STAGE_ORDER:
+        return []
+    stages = _dict(draft.get("stages"))
+    missing: list[dict[str, str]] = []
+    for dependency in SOFT_DEPENDENCIES.get(stage, ()):
+        status = _text(_dict(stages.get(dependency)).get("status"), "pending")
+        if status != "confirmed":
+            missing.append({
+                "stage": dependency,
+                "label": STAGE_LABELS[dependency],
+                "reason": "stale" if status == "stale" else "not_confirmed",
+                "message": f"缺少已确认的{STAGE_LABELS[dependency]}，仍可生成，但结果可能需要后续校验",
+            })
+    return missing
+
+
+def _pointer_parts(path: str) -> list[str]:
+    if path in {"", "/"}:
+        return []
+    if not path.startswith("/"):
+        raise ValueError(f"patch path must be a JSON Pointer: {path}")
+    return [part.replace("~1", "/").replace("~0", "~") for part in path[1:].split("/")]
+
+
+def _path_is_locked(path: str, locked_paths: list[str]) -> bool:
+    normalized = path.rstrip("/") or "/"
+    return any(
+        normalized == lock.rstrip("/")
+        or normalized.startswith(lock.rstrip("/") + "/")
+        or lock.rstrip("/").startswith(normalized + "/")
+        for lock in locked_paths
+    )
+
+
+def _patch_parent(document: Any, parts: list[str]) -> tuple[Any, str]:
+    if not parts:
+        raise ValueError("the artifact root cannot be removed or appended")
+    cursor = document
+    for part in parts[:-1]:
+        if isinstance(cursor, dict):
+            if part not in cursor:
+                cursor[part] = {}
+            cursor = cursor[part]
+        elif isinstance(cursor, list):
+            try:
+                cursor = cursor[int(part)]
+            except (ValueError, IndexError) as exc:
+                raise ValueError(f"invalid list path segment: {part}") from exc
+        else:
+            raise ValueError(f"patch path crosses a scalar value: {part}")
+    return cursor, parts[-1]
+
+
+def patch_creation_artifact(
+    session: NovelCreationSession,
+    stage: str,
+    changes: list[dict[str, Any]],
+    *,
+    source: str = "author",
+    validator: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Atomically apply validated, lock-aware operations to one artifact."""
+    artifact = serialize_creation_artifact(session, stage)
+    if not changes:
+        raise ValueError("changes must contain at least one patch operation")
+    document = deepcopy(artifact["data"]) if isinstance(artifact.get("data"), dict) else {}
+    locked_paths = [str(item) for item in artifact.get("locked_paths") or []]
+    summary: list[dict[str, Any]] = []
+    for change in changes:
+        path = _text(change.get("path"))
+        action = _text(change.get("action"))
+        if action not in {"set", "replace", "append", "remove", "resize"}:
+            raise ValueError(f"unsupported patch action: {action}")
+        if _path_is_locked(path, locked_paths):
+            raise ValueError(f"字段已锁定，不能修改：{path}")
+        parts = _pointer_parts(path)
+        if not parts and action in {"set", "replace"}:
+            value = change.get("value")
+            if not isinstance(value, dict):
+                raise ValueError("artifact root replacement must be an object")
+            document = deepcopy(value)
+            summary.append({"path": path or "/", "action": action})
+            continue
+        parent, key = _patch_parent(document, parts)
+        if action in {"set", "replace"}:
+            if isinstance(parent, dict):
+                parent[key] = deepcopy(change.get("value"))
+            elif isinstance(parent, list):
+                try:
+                    parent[int(key)] = deepcopy(change.get("value"))
+                except (ValueError, IndexError) as exc:
+                    raise ValueError(f"invalid list index: {key}") from exc
+        elif action == "append":
+            target = parent.get(key) if isinstance(parent, dict) else parent[int(key)]
+            if not isinstance(target, list):
+                raise ValueError(f"append target is not a list: {path}")
+            target.append(deepcopy(change.get("value")))
+        elif action == "remove":
+            if isinstance(parent, dict):
+                if key not in parent:
+                    raise ValueError(f"remove target does not exist: {path}")
+                del parent[key]
+            elif isinstance(parent, list):
+                try:
+                    parent.pop(int(key))
+                except (ValueError, IndexError) as exc:
+                    raise ValueError(f"invalid list index: {key}") from exc
+        else:
+            target = parent.get(key) if isinstance(parent, dict) else parent[int(key)]
+            if not isinstance(target, list):
+                raise ValueError(f"resize target is not a list: {path}")
+            target_count = int(change.get("target_count", -1))
+            if target_count < 0:
+                raise ValueError("target_count must be non-negative")
+            if target_count < len(target):
+                del target[target_count:]
+            else:
+                fill_value = change.get("fill_value", {})
+                target.extend(deepcopy(fill_value) for _ in range(target_count - len(target)))
+        summary.append({"path": path, "action": action})
+    if validator:
+        validator(stage, document)
+    affected = creation_artifact_dependencies(session, stage)["affected_artifacts"]
+    save_stage(
+        session,
+        stage,
+        document,
+        confirm=False,
+        source=source,
+        change_type="patch",
+        change_summary=summary,
+    )
+    return {
+        "artifact": serialize_creation_artifact(session, stage),
+        "changes": summary,
+        "affected_artifacts": affected,
+    }
+
+
+def set_creation_artifact_locks(
+    session: NovelCreationSession,
+    stage: str,
+    paths: list[str],
+    *,
+    locked: bool,
+) -> dict[str, Any]:
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    normalized = {_text(path) for path in paths if _text(path)}
+    if any(not path.startswith("/") for path in normalized):
+        raise ValueError("locked paths must use JSON Pointer syntax")
+    draft = deepcopy(initialize_session_draft(session))
+    locks = _dict(draft.get("artifact_locks"))
+    existing = {str(item) for item in _list(locks.get(stage))}
+    updated = existing | normalized if locked else existing - normalized
+    locks[stage] = sorted(updated)
+    draft["artifact_locks"] = locks
+    draft["updated_at"] = _now()
+    session.draft_json = deepcopy(draft)
+    session.revision = int(session.revision or 0) + 1
+    state = _dict(_dict(draft.get("stages")).get(stage))
+    if isinstance(state.get("data"), dict):
+        from app.services.novel_creation_versions import record_artifact_version
+
+        record_artifact_version(
+            session,
+            stage,
+            state["data"],
+            revision=int(session.revision or 0),
+            status=_text(state.get("status"), "generated"),
+            source=_text(state.get("source"), "unknown"),
+            change_type="lock" if locked else "unlock",
+            change_summary=[{"paths": sorted(normalized)}],
+        )
+    return serialize_creation_artifact(session, stage)
+
+
+def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+    """Restore the most recent artifact checkpoint without reviving stale dependents."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage}")
+    checkpoints = deepcopy(_dict(session.checkpoints_json))
+    items = _list(checkpoints.get(stage))
+    if not items:
+        raise ValueError("当前立项数据没有可撤销的最近修改")
+    checkpoint = items.pop()
+    data = checkpoint.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("最近检查点不包含可恢复的结构化数据")
+    draft = deepcopy(initialize_session_draft(session))
+    current = _dict(_dict(draft.get("stages")).get(stage))
+    from app.services.novel_creation_versions import record_artifact_version
+
+    if isinstance(current.get("data"), dict):
+        record_artifact_version(
+            session,
+            stage,
+            current["data"],
+            revision=int(session.revision or 0),
+            status=_text(current.get("status"), "generated"),
+            source=_text(current.get("source"), "unknown"),
+            change_type="checkpoint_baseline",
+        )
+    affected = _invalidate_after(draft, stage)
+    draft["stages"][stage] = {
+        "status": _text(checkpoint.get("status"), "generated"),
+        "data": deepcopy(data),
+        "source": _text(checkpoint.get("source"), "restored_checkpoint"),
+        "updated_at": _now(),
+        "restored_from_revision": checkpoint.get("revision"),
+    }
+    checkpoints[stage] = items
+    session.checkpoints_json = checkpoints
+    session.draft_json = deepcopy(draft)
+    session.revision = int(session.revision or 0) + 1
+    session.current_stage = stage
+    session.status = "reviewing"
+    record_artifact_version(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        status=_text(checkpoint.get("status"), "generated"),
+        source="restored_checkpoint",
+        change_type="undo",
+        change_summary=[{"restored_revision": checkpoint.get("revision")}],
+    )
+    from app.services.novel_creation_entities import sync_creation_entities
+
+    sync_creation_entities(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        source="restored_checkpoint",
+    )
+    return {
+        "artifact": serialize_creation_artifact(session, stage),
+        "undone_source": current.get("source"),
+        "restored_revision": checkpoint.get("revision"),
+        "affected_artifacts": affected,
+    }
+
+
 def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[str, Any]:
     draft = initialize_session_draft(session)
     before_form = _dict(draft.get("form"))
+    before_author_source = {
+        "creation_mode": _text(draft.get("creation_mode"), "explore"),
+        "author_brief": _text(draft.get("author_brief")),
+        "author_outline": _text(draft.get("author_outline")),
+        "locked_requirements": _list(draft.get("locked_requirements")),
+    }
     if isinstance(patch.get("form"), dict):
         draft["form"].update(deepcopy(patch["form"]))
     selected = patch.get("selected_concept_id")
@@ -493,9 +887,35 @@ def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[
         draft["selected_concept_id"] = selected or None
     if "quick_mode" in patch:
         draft["quick_mode"] = bool(patch["quick_mode"])
+    if "creation_mode" in patch:
+        creation_mode = _text(patch.get("creation_mode"), "explore")
+        if creation_mode not in {"author_led", "explore"}:
+            raise ValueError("creation_mode must be author_led or explore")
+        draft["creation_mode"] = creation_mode
+    for field in ("author_brief", "author_outline"):
+        if field in patch:
+            draft[field] = _text(patch.get(field))
+    if "locked_requirements" in patch:
+        value = patch.get("locked_requirements")
+        if not isinstance(value, list):
+            raise ValueError("locked_requirements must be a list")
+        draft["locked_requirements"] = [_text(item) for item in value if _text(item)]
     if draft["form"] != before_form:
         _invalidate_after(draft, "constraints")
         draft["stages"]["constraints"] = {"status": "generated", "data": deepcopy(draft["form"]), "updated_at": _now()}
+    after_author_source = {
+        "creation_mode": _text(draft.get("creation_mode"), "explore"),
+        "author_brief": _text(draft.get("author_brief")),
+        "author_outline": _text(draft.get("author_outline")),
+        "locked_requirements": _list(draft.get("locked_requirements")),
+    }
+    if after_author_source != before_author_source:
+        concept_stage = _dict(draft.get("stages", {}).get("concepts"))
+        if concept_stage.get("status") in {"generated", "confirmed", "stale"}:
+            concept_stage["status"] = "stale"
+            concept_stage["stale_reason"] = "作者方案或不可改动设定已修改"
+            draft["stages"]["concepts"] = concept_stage
+        _invalidate_after(draft, "concepts")
     draft["updated_at"] = _now()
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
@@ -503,6 +923,29 @@ def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[
     session.genre = _text(draft["form"].get("genre")) or None
     session.target_audience = _text(draft["form"].get("target_audience")) or None
     session.platform = _text(draft["form"].get("platform")) or None
+    from app.services.novel_creation_versions import record_artifact_version
+
+    if draft["form"] != before_form:
+        record_artifact_version(
+            session,
+            "constraints",
+            draft["form"],
+            revision=int(session.revision or 0),
+            status="generated",
+            source="author",
+            change_type="session_patch",
+        )
+    concept_stage = _dict(draft.get("stages", {}).get("concepts"))
+    if after_author_source != before_author_source and isinstance(concept_stage.get("data"), dict):
+        record_artifact_version(
+            session,
+            "concepts",
+            concept_stage["data"],
+            revision=int(session.revision or 0),
+            status=_text(concept_stage.get("status"), "stale"),
+            source=_text(concept_stage.get("source"), "unknown"),
+            change_type="upstream_stale",
+        )
     return draft
 
 
@@ -563,7 +1006,7 @@ def _selected_blueprint(session: NovelCreationSession, draft_override: dict[str,
     blueprints = session.blueprint_json if isinstance(session.blueprint_json, list) else [session.blueprint_json]
     index = int(selected.get("source_index") or 0)
     if index >= len(blueprints) or not isinstance(blueprints[index], dict):
-        raise ValueError("所选创意方向缺少完整方案来源，请重新生成三案")
+        raise ValueError("当前创意方向缺少完整方案来源，请重新生成方向")
     return deepcopy(blueprints[index])
 
 
@@ -706,7 +1149,9 @@ def derive_stage(
     if stage == "macro_outline":
         volumes = _list(blueprint.get("volume_outline"))
         target_chapters = int(form.get("target_chapters") or 240)
-        volume_count = min(12, max(3, round(target_chapters / 100)))
+        requested_volume_count = _requested_volume_count(draft)
+        volume_count = requested_volume_count or min(12, max(3, round(target_chapters / 100)))
+        volumes = volumes[:volume_count]
         while len(volumes) < volume_count:
             index = len(volumes)
             volumes.append({
@@ -725,6 +1170,7 @@ def derive_stage(
             "core_conflict": _text(blueprint.get("core_conflict")),
             "ending_direction": _text(blueprint.get("ending_direction"), "主角必须以最终选择回应开篇提出的核心问题"),
             "target_chapters": target_chapters,
+            "requested_volume_count": requested_volume_count,
             "volumes": volumes,
             "stage_plan": [{"name": _text(item.get("title")), "range": [item.get("start_chapter"), item.get("end_chapter")], "promise": _text(item.get("summary"))} for item in volumes if isinstance(item, dict)],
         }
@@ -769,31 +1215,82 @@ def derive_stage(
     }
 
 
-def _checkpoint(session: NovelCreationSession, stage: str, data: Any) -> None:
-    checkpoints = _dict(session.checkpoints_json)
+def _checkpoint(
+    session: NovelCreationSession,
+    stage: str,
+    data: Any,
+    *,
+    status: str = "generated",
+    source: str = "unknown",
+) -> None:
+    checkpoints = deepcopy(_dict(session.checkpoints_json))
     items = _list(checkpoints.get(stage))
-    items.append({"revision": int(session.revision or 0), "created_at": _now(), "data": deepcopy(data)})
+    items.append({
+        "revision": int(session.revision or 0),
+        "created_at": _now(),
+        "status": status,
+        "source": source,
+        "data": deepcopy(data),
+    })
     checkpoints[stage] = items[-3:]
     session.checkpoints_json = checkpoints
 
 
-def _invalidate_after(draft: dict[str, Any], stage: str) -> None:
-    start = STAGE_ORDER.index(stage)
-    for downstream in STAGE_ORDER[start + 1:]:
+def _invalidate_after(draft: dict[str, Any], stage: str) -> list[dict[str, str]]:
+    affected: list[dict[str, str]] = []
+    for downstream in IMPACT_DEPENDENCIES.get(stage, ()):
         current = _dict(draft.get("stages", {}).get(downstream))
         if current.get("status") in {"generated", "confirmed"}:
+            previous_status = _text(current.get("status"), "generated")
             current["status"] = "stale"
             current["stale_reason"] = f"上游阶段“{STAGE_LABELS[stage]}”已修改"
+            current["stale_source"] = stage
             draft["stages"][downstream] = current
+            affected.append({
+                "artifact": downstream,
+                "label": STAGE_LABELS[downstream],
+                "previous_status": previous_status,
+                "effect": "stale",
+            })
+    return affected
 
 
-def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], *, confirm: bool = False, source: str = "generated") -> dict[str, Any]:
+def save_stage(
+    session: NovelCreationSession,
+    stage: str,
+    data: dict[str, Any],
+    *,
+    confirm: bool = False,
+    source: str = "generated",
+    change_type: str = "save",
+    change_summary: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
+    operation_id: str | None = None,
+    restored_from_version_id: str | None = None,
+) -> dict[str, Any]:
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
-    draft = initialize_session_draft(session)
+    draft = deepcopy(initialize_session_draft(session))
     previous = _dict(draft["stages"].get(stage))
+    from app.services.novel_creation_versions import record_artifact_version
+
     if previous.get("data") is not None:
-        _checkpoint(session, stage, previous.get("data"))
+        _checkpoint(
+            session,
+            stage,
+            previous.get("data"),
+            status=_text(previous.get("status"), "generated"),
+            source=_text(previous.get("source"), "unknown"),
+        )
+        record_artifact_version(
+            session,
+            stage,
+            previous.get("data"),
+            revision=int(session.revision or 0),
+            status=_text(previous.get("status"), "generated"),
+            source=_text(previous.get("source"), "unknown"),
+            change_type="baseline",
+        )
     changed = previous.get("data") != data
     draft["stages"][stage] = {
         "status": "confirmed" if confirm else "generated",
@@ -802,6 +1299,15 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
         "updated_at": _now(),
     }
     if stage == "concepts":
+        options = data.get("options")
+        if isinstance(options, list):
+            draft["concepts"] = deepcopy(options)
+            if not _list(session.blueprint_json):
+                draft["concept_seeds"] = {
+                    _text(item.get("id")): deepcopy(item)
+                    for item in options
+                    if isinstance(item, dict) and _text(item.get("id"))
+                }
         selected_id = data.get("selected_concept_id")
         if selected_id:
             draft["selected_concept_id"] = selected_id
@@ -816,6 +1322,28 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"
     session.last_error_json = clear_stage_failure(session.last_error_json, stage)
+    record_artifact_version(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        status="confirmed" if confirm else "generated",
+        source=source,
+        change_type=change_type,
+        change_summary=change_summary,
+        run_id=run_id,
+        operation_id=operation_id,
+        restored_from_version_id=restored_from_version_id,
+    )
+    from app.services.novel_creation_entities import sync_creation_entities
+
+    sync_creation_entities(
+        session,
+        stage,
+        data,
+        revision=int(session.revision or 0),
+        source=source,
+    )
     return draft["stages"][stage]
 
 
@@ -861,209 +1389,3 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
         "novel_creation_schema_version": SCHEMA_VERSION,
     })
     return blueprint
-
-
-def create_run(db: Session, session: NovelCreationSession, stage: str, request: dict[str, Any]) -> NovelCreationStageRun:
-    from .operation_runtime import ensure_operation, input_snapshot_hash
-
-    model = _text(request.get("model")) or None
-    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
-    input_snapshot = deepcopy(draft)
-    revision = int(session.revision or 0)
-    snapshot_hash = input_snapshot_hash(input_snapshot)
-    run = NovelCreationStageRun(
-        session_id=session.id,
-        stage=stage,
-        operation=_text(request.get("operation"), "generate")[:30],
-        status="running",
-        model_source=model,
-        tool_mode="session_stage",
-        storage_target="session_draft",
-        context_manifest_id=_text(request.get("context_manifest_id")) or None,
-        request_json=deepcopy(request),
-        current_message=f"正在生成{STAGE_LABELS.get(stage, stage)}",
-        input_revision=revision,
-        input_snapshot_hash=snapshot_hash,
-    )
-    db.add(run)
-    db.flush()
-    operation = ensure_operation(
-        db,
-        source_kind="novel_creation",
-        source_id=run.id,
-        title=f"新书立项 · {STAGE_LABELS.get(stage, stage)}",
-        status="running",
-        phase=stage,
-        message=run.current_message,
-        model_source=model,
-        tool_mode="session_stage",
-        resume_url=f"/novel-creation?session={session.id}&run={run.id}",
-        can_pause=False,
-        can_cancel=True,
-        can_retry=False,
-        input_revision=revision,
-        snapshot_hash=snapshot_hash,
-    )
-    run.operation_id = operation.id
-    request_copy = deepcopy(request)
-    request_copy["input_revision"] = revision
-    request_copy["input_snapshot_hash"] = snapshot_hash
-    request_copy["input_snapshot"] = input_snapshot
-    request_copy["operation_id"] = operation.id
-    run.request_json = request_copy
-    add_run_event(db, run, "started", "running", run.current_message, {"model_source": model, "storage_target": "session_draft"})
-    return run
-
-
-def add_run_event(db: Session, run: NovelCreationStageRun, event_type: str, status: str, message: str, payload: dict[str, Any] | None = None) -> NovelCreationStageEvent:
-    from .operation_runtime import update_operation
-
-    sequence = len(run.events or []) + 1
-    event = NovelCreationStageEvent(
-        run_id=run.id,
-        sequence=sequence,
-        event_type=event_type,
-        status=status,
-        message=message,
-        payload_json=deepcopy(payload) if payload else None,
-    )
-    db.add(event)
-    db.flush()
-    if run.operation_id:
-        from ..database.models import OperationRun
-
-        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
-        if operation:
-            if isinstance(payload, dict) and payload.get("model_source"):
-                operation.model_source = str(payload["model_source"])
-            progress_current = None
-            progress_total = None
-            progress_mode = None
-            if isinstance(payload, dict) and payload.get("stage"):
-                stage_name = str(payload["stage"])
-                if stage_name in STAGE_ORDER:
-                    progress_current = STAGE_ORDER.index(stage_name) + (1 if event_type == "stage_completed" else 0)
-                    progress_total = len(STAGE_ORDER)
-                    progress_mode = "determinate" if run.stage == "all" else "indeterminate"
-            update_operation(
-                db,
-                operation,
-                phase=str((payload or {}).get("stage") or run.stage),
-                message=message,
-                event_type=event_type,
-                payload=payload,
-                progress_current=progress_current,
-                progress_total=progress_total,
-                progress_mode=progress_mode,
-                checkpoint=event_type == "stage_completed",
-                health_status="active",
-            )
-    return event
-
-
-def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]) -> None:
-    run.status = "completed"
-    run.result_json = deepcopy(result)
-    run.current_message = "阶段结果已保存到立项草稿"
-    run.next_action = "审阅并确认本阶段，或编辑后重新生成"
-    run.completed_at = datetime.utcnow()
-    add_run_event(db, run, "completed", "ok", run.current_message, {"storage_target": run.storage_target, "next_action": run.next_action})
-    if run.operation_id:
-        from ..database.models import OperationRun
-        from .operation_runtime import update_operation
-
-        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
-        if operation:
-            attention_stage = run.session.current_stage if run.stage == "all" else run.stage
-            update_operation(
-                db,
-                operation,
-                status="waiting_user",
-                health_status="active",
-                message=run.current_message,
-                next_action=run.next_action,
-                checkpoint=True,
-                attention={
-                    "kind": "confirmation",
-                    "title": "阶段内容等待确认",
-                    "message": run.next_action,
-                    "action_label": "审阅阶段内容",
-                    "action_url": f"/novel-creation?session={run.session_id}&stage={attention_stage}",
-                    "blocking": True,
-                },
-                result={
-                    "summary": run.current_message,
-                    "completed": [f"{STAGE_LABELS.get(attention_stage, attention_stage)}内容已生成并保存到立项草稿"],
-                    "incomplete": ["阶段尚未由作者确认"],
-                },
-                outcome="waiting_user",
-            )
-            operation.can_cancel = False
-            operation.can_retry = False
-
-
-def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception, *, failed_stage: str | None = None) -> None:
-    message = _text(exc, "阶段生成失败")
-    failure_class = classify_failure(message) or "unknown"
-    retry_stage = failed_stage or run.stage
-    retry_label = STAGE_LABELS.get(retry_stage, retry_stage)
-    advice, failure_payload = build_stage_failure(
-        failure_class=failure_class, message=message, run_id=run.id,
-        failed_stage=retry_stage, failed_stage_label=retry_label,
-    )
-    run.status = "failed"
-    run.failure_class = failure_class
-    run.current_message = message[:1000]
-    run.next_action = advice
-    run.completed_at = datetime.utcnow()
-    run.session.last_error_json = failure_payload
-    add_run_event(db, run, "failed", "error", message, failure_payload)
-    if run.operation_id:
-        from ..database.models import OperationRun
-        from .operation_runtime import update_operation
-
-        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
-        if operation:
-            update_operation(
-                db,
-                operation,
-                status="failed",
-                health_status="stalled" if "卡住" in message else operation.health_status,
-                message=message,
-                failure_class=failure_class,
-                next_action=advice,
-            )
-
-
-def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> dict[str, Any]:
-    data = {
-        "id": run.id,
-        "session_id": run.session_id,
-        "stage": run.stage,
-        "operation": run.operation,
-        "status": run.status,
-        "model_source": run.model_source,
-        "tool_mode": run.tool_mode,
-        "failure_class": run.failure_class,
-        "storage_target": run.storage_target,
-        "context_manifest_id": run.context_manifest_id,
-        "operation_id": run.operation_id,
-        "input_revision": run.input_revision,
-        "input_snapshot_hash": run.input_snapshot_hash,
-        "next_action": run.next_action,
-        "result": deepcopy(run.result_json),
-        "current_message": run.current_message,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-    }
-    if include_events:
-        data["events"] = [{
-            "sequence": event.sequence,
-            "event_type": event.event_type,
-            "status": event.status,
-            "message": event.message,
-            "payload": deepcopy(event.payload_json),
-            "created_at": event.created_at.isoformat() if event.created_at else None,
-        } for event in run.events]
-    return data
