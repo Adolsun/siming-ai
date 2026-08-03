@@ -12,10 +12,10 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 [![Frontend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
-[下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [下载 Android 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.apk) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
+[下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [下载 Android 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.apk) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
 > 💬 **用户交流 QQ 群：814283606**  
-> 欢迎交流使用体验、小说创作方法与功能建议。为确保安全，请仅从本仓库的官方 Releases 下载 `Siming.exe`。
+> 欢迎交流使用体验、小说创作方法与功能建议。大陆地区访问 GitHub 下载较慢时，可使用 [Gitee 同步镜像 Releases](https://gitee.com/teangtang13/siming-ai/releases) 备用下载；下载后请核对版本号与对应的 SHA-256。
 
 [![司命新书立项工作台，展示可持续对话调整的单一创意方向](docs/images/readme/novel-creation.png)](docs/images/readme/novel-creation.png)
 
@@ -121,7 +121,7 @@ docker compose -f compose.gateway.yml up -d
 
 为减少供应链风险：
 
-1. 只从 [`teangtang1122/siming-ai` 官方 Releases](https://github.com/teangtang1122/siming-ai/releases) 下载。
+1. 只从 [`teangtang1122/siming-ai` 官方 Releases](https://github.com/teangtang1122/siming-ai/releases) 或 [Gitee 同步镜像 Releases](https://gitee.com/teangtang13/siming-ai/releases) 下载。
 2. 下载同一版本的 `sha256.txt`，用 `certutil -hashfile Siming.exe SHA256` 计算文件哈希并与其对照。
 3. 不要使用网盘、聊天群或第三方网站二次分发的 EXE。
 
