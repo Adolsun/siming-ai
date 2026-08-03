@@ -48,7 +48,7 @@ const presets = {
   platforms: ['暂不确定'], audiences: ['成年大众'],
   length_options: [{ id: 'long', label: '长篇', words: 600000, chapters: 240 }],
   stage_order: ['constraints', 'concepts', 'world_style'],
-  stage_labels: { world_style: '文风与世界观', opening_outline: '前15章细纲' },
+  stage_labels: { world_style: '文风与世界观', opening_outline: '前3章细纲' },
 }
 
 function renderPage(path = '/novel-creation') {
@@ -366,7 +366,7 @@ describe('NovelCreationWizardPage', () => {
       last_error: {
         failure_class: 'invalid_response',
         message: '开篇细纲结构不完整',
-        next_action: '草稿已保留，请重试“前15章细纲”',
+        next_action: '草稿已保留，请重试“前3章细纲”',
         run_id: 'run-opening',
       },
       draft: {
@@ -388,7 +388,7 @@ describe('NovelCreationWizardPage', () => {
 
     const user = userEvent.setup()
     renderPage('/novel-creation?session=session-1&stage=macro_outline')
-    await user.click(await screen.findByRole('button', { name: '重试“前15章细纲”' }))
+    await user.click(await screen.findByRole('button', { name: '重试“前3章细纲”' }))
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
@@ -405,14 +405,14 @@ describe('NovelCreationWizardPage', () => {
       last_error: {
         failure_class: 'invalid_response',
         message: '开篇细纲结构不完整',
-        next_action: '草稿已保留，请重试“前15章细纲”',
+        next_action: '草稿已保留，请重试“前3章细纲”',
         run_id: 'run-opening',
       },
       stage_flow: {
         attention_stage: 'macro_outline', recommended_stage: 'macro_outline', pending_confirmations: [],
         items: {
           macro_outline: { stage: 'macro_outline', label: '全书主线与卷纲', status: 'stale', can_view: true, can_generate: true, can_confirm: false, blocked_by: [], actions: ['generate'] },
-          opening_outline: { stage: 'opening_outline', label: '前15章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书主线与卷纲', reason: '需要重新生成' }], actions: [] },
+          opening_outline: { stage: 'opening_outline', label: '前3章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书主线与卷纲', reason: '需要重新生成' }], actions: [] },
         },
       },
       draft: {

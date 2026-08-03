@@ -3,6 +3,12 @@ from __future__ import annotations
 
 
 SCHEMA_VERSION = 3
+OPENING_OUTLINE_CHAPTER_COUNT = 3
+# Previously saved V3 drafts may already contain a confirmed 15-chapter
+# opening outline. Keep that window readable/editable instead of turning an
+# upgrade into a destructive migration; all newly created drafts use 3.
+LEGACY_OPENING_OUTLINE_CHAPTER_COUNT = 15
+OPENING_OUTLINE_LABEL = f"前{OPENING_OUTLINE_CHAPTER_COUNT}章细纲"
 STAGE_ORDER = (
     "constraints",
     "concepts",
@@ -20,7 +26,7 @@ STAGE_LABELS = {
     "characters": "角色与关系",
     "locations": "地点与势力",
     "macro_outline": "全书主线与卷纲",
-    "opening_outline": "前15章细纲",
+    "opening_outline": OPENING_OUTLINE_LABEL,
     "final_review": "最终审阅",
 }
 

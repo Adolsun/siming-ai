@@ -27,12 +27,14 @@ from ....services.novel_creation_authoring import (
     _dedupe_dicts,
     _dict_rows,
     _looks_like_cli_metadata,
+    _opening_outline_chapter_count,
     _safe_compact_concepts,
     _stage_contract,
     _validate_author_requirements,
     _validate_compact_concepts,
     _validate_stage,
 )
+from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from ....services.novel_creation_imports import (
     apply_material_import,
@@ -734,6 +736,11 @@ async def _enhance_with_model(
         "refinement_instruction": instruction,
         "entity_target": draft.get("_entity_target"),
     }
+    opening_chapter_count = _opening_outline_chapter_count(baseline) if stage == "opening_outline" else None
+    stage_contract = _stage_contract(
+        stage,
+        opening_chapter_count=opening_chapter_count or OPENING_OUTLINE_CHAPTER_COUNT,
+    )
     from ....modules.creation.interfaces.dependencies import render_creation_prompt
 
     system = render_creation_prompt(
@@ -748,22 +755,21 @@ async def _enhance_with_model(
     )
     user = (
         f"当前阶段：{STAGE_LABELS.get(stage, stage)}\n"
-        f"结构契约：{_stage_contract(stage)}\n"
+        f"结构契约：{stage_contract}\n"
         "请在保留作者约束和已确认事实的前提下，深化 baseline；不要改变已经确认的专名。\n"
         + (f"作者本次调整要求：{instruction}\n" if instruction else "")
         + f"上下文：{json.dumps(context, ensure_ascii=False)}"
     )
     from ....services.content_store import content_root
 
-    # Stage generation used to cap normal artifacts at 6k tokens and opening
-    # outlines at 12k, even when the selected model and context manifest could
-    # safely return much more. Honour the effective model/context allowance;
-    # entity-level runs remain small because their contract asks for one row.
+    # Three opening chapters fit a 6k response. Keep that cap for this stage
+    # so local models do not spend a long call on an unnecessarily large
+    # opening-outline response, while still respecting a smaller manifest.
     manifest_output_limit = int(getattr(context_manifest, "output_reserve_tokens", 0) or 0)
-    max_output_tokens = max(
-        12000 if stage == "opening_outline" else 6000,
-        manifest_output_limit,
-    )
+    if stage == "opening_outline":
+        max_output_tokens = min(6000, manifest_output_limit) if manifest_output_limit else 6000
+    else:
+        max_output_tokens = max(6000, manifest_output_limit)
     max_output_tokens = min(max_output_tokens, 1_000_000)
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
@@ -805,7 +811,7 @@ async def _enhance_with_model(
                 raw=raw,
                 error=parse_error,
                 model=model,
-                contract=_stage_contract(stage),
+                contract=stage_contract,
                 max_tokens=max_output_tokens,
                 extra_body=LLMGateway.local_cli_extra_body(
                     model,

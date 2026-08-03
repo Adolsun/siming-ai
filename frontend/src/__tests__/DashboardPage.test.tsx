@@ -166,7 +166,7 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。')).toBeInTheDocument()
+      expect(screen.getByText('作品库还是空的。建议先立项，让司命一起建立角色、世界和前 3 章细纲。')).toBeInTheDocument()
     })
   })
 

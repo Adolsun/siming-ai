@@ -62,7 +62,7 @@ const catalog = {
     characters: '角色与关系',
     locations: '地点与势力',
     macro_outline: '全书主线与卷纲',
-    opening_outline: '前 15 章细纲',
+    opening_outline: '前 3 章细纲',
     final_review: '最终审阅',
   },
 }
