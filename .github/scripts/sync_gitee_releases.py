@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -27,6 +29,7 @@ github_token = required_env("GITHUB_TOKEN")
 gitee_token = required_env("GITEE_TOKEN")
 gitee_owner = required_env("GITEE_OWNER")
 gitee_repo = required_env("GITEE_REPO")
+sync_release_tag = os.environ.get("SYNC_RELEASE_TAG", "").strip()
 
 github = requests.Session()
 github.headers.update(
@@ -130,20 +133,57 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
         if existing and int(existing.get("size", -1)) == int(asset["size"]):
             print(f"Asset already current: {github_release['tag_name']}/{asset['name']}")
             continue
-        if existing:
-            print(f"Replacing changed asset: {github_release['tag_name']}/{asset['name']}")
-            gitee_request("DELETE", f"{base_path}/{existing['id']}")
 
-        print(f"Uploading asset: {github_release['tag_name']}/{asset['name']}")
         with tempfile.TemporaryDirectory() as temp_dir:
             asset_path = Path(temp_dir) / asset["name"]
+            download_url = asset.get("browser_download_url") or asset["url"]
+            sha256 = hashlib.sha256()
             with checked(
-                github.get(asset["url"], stream=True, timeout=TIMEOUT)
+                github.get(
+                    download_url,
+                    headers={"Accept": "application/octet-stream"},
+                    stream=True,
+                    timeout=TIMEOUT,
+                )
             ) as download:
                 with asset_path.open("wb") as output:
                     for chunk in download.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             output.write(chunk)
+                            sha256.update(chunk)
+
+            expected_size = int(asset["size"])
+            actual_size = asset_path.stat().st_size
+            if actual_size != expected_size:
+                raise RuntimeError(
+                    f"Downloaded asset size mismatch for "
+                    f"{github_release['tag_name']}/{asset['name']}: "
+                    f"expected {expected_size}, got {actual_size}"
+                )
+
+            actual_digest = sha256.hexdigest()
+            expected_digest = str(asset.get("digest") or "")
+            if expected_digest.startswith("sha256:"):
+                expected_sha256 = expected_digest.removeprefix("sha256:").lower()
+                if actual_digest.lower() != expected_sha256:
+                    raise RuntimeError(
+                        f"Downloaded asset SHA-256 mismatch for "
+                        f"{github_release['tag_name']}/{asset['name']}: "
+                        f"expected {expected_sha256}, got {actual_digest}"
+                    )
+            print(
+                f"Verified GitHub asset: {github_release['tag_name']}/{asset['name']} "
+                f"({actual_size} bytes, sha256:{actual_digest})"
+            )
+
+            if existing:
+                print(
+                    f"Replacing changed asset: "
+                    f"{github_release['tag_name']}/{asset['name']}"
+                )
+                gitee_request("DELETE", f"{base_path}/{existing['id']}")
+
+            print(f"Uploading asset: {github_release['tag_name']}/{asset['name']}")
             with asset_path.open("rb") as upload:
                 gitee_request(
                     "POST",
@@ -151,10 +191,45 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
                     files={"file": (asset["name"], upload, "application/octet-stream")},
                 )
 
+            mirrored = None
+            mirrored_size = -1
+            for attempt in range(5):
+                mirrored_assets = {
+                    item["name"]: item
+                    for item in gitee_request("GET", base_path).json()
+                }
+                mirrored = mirrored_assets.get(asset["name"])
+                mirrored_size = int((mirrored or {}).get("size", -1))
+                if mirrored_size == expected_size:
+                    break
+                if attempt < 4:
+                    time.sleep(2)
+            if mirrored_size != expected_size:
+                raise RuntimeError(
+                    f"Gitee asset size mismatch after upload for "
+                    f"{github_release['tag_name']}/{asset['name']}: "
+                    f"expected {expected_size}, got {mirrored_size}"
+                )
+            existing_assets[asset["name"]] = mirrored
+            print(
+                f"Verified Gitee asset: {github_release['tag_name']}/{asset['name']} "
+                f"({mirrored_size} bytes)"
+            )
+
 
 def main() -> None:
     releases = github_releases()
     published = [release for release in releases if not release["draft"]]
+    if sync_release_tag == "latest":
+        published = published[:1]
+    elif sync_release_tag:
+        published = [
+            release for release in published if release["tag_name"] == sync_release_tag
+        ]
+        if not published:
+            raise RuntimeError(
+                f"Published GitHub release not found for tag: {sync_release_tag}"
+            )
     print(f"Found {len(published)} published GitHub releases")
     for release in reversed(published):
         gitee_release = upsert_gitee_release(release)
