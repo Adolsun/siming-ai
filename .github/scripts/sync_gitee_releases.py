@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
+from requests_toolbelt import MultipartEncoder
 
 
 GITHUB_API = "https://api.github.com"
@@ -190,17 +191,22 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
             for attempt in range(1, UPLOAD_ATTEMPTS + 1):
                 try:
                     with asset_path.open("rb") as upload:
-                        gitee_request(
-                            "POST",
-                            base_path,
-                            timeout=UPLOAD_TIMEOUT,
-                            files={
+                        multipart = MultipartEncoder(
+                            fields={
+                                "access_token": gitee_token,
                                 "file": (
                                     asset["name"],
                                     upload,
                                     "application/octet-stream",
-                                )
-                            },
+                                ),
+                            }
+                        )
+                        gitee_request(
+                            "POST",
+                            base_path,
+                            timeout=UPLOAD_TIMEOUT,
+                            data=multipart,
+                            headers={"Content-Type": multipart.content_type},
                         )
                     break
                 except requests.RequestException:
