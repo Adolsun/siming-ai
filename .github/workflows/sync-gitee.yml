@@ -114,6 +114,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          PYTHONUNBUFFERED: "1"
           SYNC_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'push' && 'latest' || '' }}
         run: python .github/scripts/sync_gitee_releases.py
 

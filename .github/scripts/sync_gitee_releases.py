@@ -15,6 +15,8 @@ import requests
 GITHUB_API = "https://api.github.com"
 GITEE_API = "https://gitee.com/api/v5"
 TIMEOUT = 60
+UPLOAD_TIMEOUT = (30, 600)
+UPLOAD_ATTEMPTS = 3
 
 
 def required_env(name: str) -> str:
@@ -58,11 +60,12 @@ def checked(response: requests.Response) -> requests.Response:
 def gitee_request(method: str, path: str, **kwargs) -> requests.Response:
     params = dict(kwargs.pop("params", {}))
     params["access_token"] = gitee_token
+    timeout = kwargs.pop("timeout", TIMEOUT)
     response = gitee.request(
         method,
         f"{GITEE_API}{path}",
         params=params,
-        timeout=TIMEOUT,
+        timeout=timeout,
         **kwargs,
     )
     return checked(response)
@@ -184,12 +187,42 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
                 gitee_request("DELETE", f"{base_path}/{existing['id']}")
 
             print(f"Uploading asset: {github_release['tag_name']}/{asset['name']}")
-            with asset_path.open("rb") as upload:
-                gitee_request(
-                    "POST",
-                    base_path,
-                    files={"file": (asset["name"], upload, "application/octet-stream")},
-                )
+            for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+                try:
+                    with asset_path.open("rb") as upload:
+                        gitee_request(
+                            "POST",
+                            base_path,
+                            timeout=UPLOAD_TIMEOUT,
+                            files={
+                                "file": (
+                                    asset["name"],
+                                    upload,
+                                    "application/octet-stream",
+                                )
+                            },
+                        )
+                    break
+                except requests.RequestException:
+                    mirrored_assets = {
+                        item["name"]: item
+                        for item in gitee_request("GET", base_path).json()
+                    }
+                    mirrored = mirrored_assets.get(asset["name"])
+                    if int((mirrored or {}).get("size", -1)) == expected_size:
+                        print(
+                            f"Upload response was interrupted, but Gitee has the "
+                            f"complete asset: {github_release['tag_name']}/"
+                            f"{asset['name']}"
+                        )
+                        break
+                    if attempt == UPLOAD_ATTEMPTS:
+                        raise
+                    print(
+                        f"Upload attempt {attempt}/{UPLOAD_ATTEMPTS} failed for "
+                        f"{github_release['tag_name']}/{asset['name']}; retrying"
+                    )
+                    time.sleep(5)
 
             mirrored = None
             mirrored_size = -1
