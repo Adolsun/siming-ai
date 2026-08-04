@@ -47,8 +47,11 @@ const presets = {
   ],
   platforms: ['暂不确定'], audiences: ['成年大众'],
   length_options: [{ id: 'long', label: '长篇', words: 600000, chapters: 240 }],
-  stage_order: ['constraints', 'concepts', 'world_style'],
-  stage_labels: { world_style: '文风与世界观', opening_outline: '前3章细纲' },
+  stage_order: ['constraints', 'concepts', 'world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review'],
+  stage_labels: {
+    world_style: '文风与世界观', characters: '角色与关系', locations: '地点与势力',
+    macro_outline: '全书主线与卷纲', opening_outline: '前3章细纲', final_review: '最终审阅',
+  },
 }
 
 function renderPage(path = '/novel-creation') {
@@ -562,7 +565,7 @@ describe('NovelCreationWizardPage', () => {
     })
   }, 10_000)
 
-  it('returns a legacy-misaligned session to the earliest stage awaiting confirmation', async () => {
+  it('allows a later pending stage while an earlier stage awaits confirmation', async () => {
     const worldData = {
       world_tone: { core_tone: '冷峻但保留希望', reader_experience: '持续感到规则压力' },
       writing_style: { narrative_perspective: '第三人称限知', sentence_rhythm: ['危机用短句', '余波用长句'] },
@@ -579,7 +582,7 @@ describe('NovelCreationWizardPage', () => {
         pending_confirmations: ['world_style'],
         items: {
           world_style: { stage: 'world_style', label: '文风与世界观', status: 'generated', can_view: true, can_generate: true, can_confirm: true, blocked_by: [], actions: ['view', 'edit', 'regenerate', 'confirm'], next_stage: 'characters' },
-          characters: { stage: 'characters', label: '角色与关系', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'world_style', label: '文风与世界观', reason: 'not_confirmed' }], actions: [], next_stage: 'locations' },
+          characters: { stage: 'characters', label: '角色与关系', status: 'pending', can_view: true, can_generate: true, can_confirm: false, blocked_by: [], actions: ['view', 'generate'], next_stage: 'locations' },
         },
       },
       draft: {
@@ -624,15 +627,14 @@ describe('NovelCreationWizardPage', () => {
     mockPost.mockResolvedValue({ data: { data: confirmed } })
 
     const user = userEvent.setup()
-    renderPage('/novel-creation?session=session-1&stage=characters')
+    renderPage('/novel-creation?session=session-1')
 
     expect(await screen.findByRole('heading', { name: '文风与世界观' })).toBeInTheDocument()
-    expect(screen.getByText('生成完成，等待你确认')).toBeInTheDocument()
-    expect(screen.getByText('冷峻但保留希望')).toBeInTheDocument()
-    expect(screen.getByText('第三人称限知')).toBeInTheDocument()
-    expect(screen.getByText('逃亡与揭密并进')).toBeInTheDocument()
-    expect(screen.getByText('快速入局')).toBeInTheDocument()
-    expect(document.body).not.toHaveTextContent('[object Object]')
+    await user.click(screen.getByRole('button', { name: /角色与关系/ }))
+    expect(await screen.findByRole('heading', { name: '角色与关系' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /生成角色与关系/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /文风与世界观.*待确认/ }))
+    expect(await screen.findByRole('heading', { name: '文风与世界观' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '确认当前内容' }))
 
     await waitFor(() => {

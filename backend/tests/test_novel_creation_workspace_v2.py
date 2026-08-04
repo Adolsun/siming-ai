@@ -324,10 +324,47 @@ def test_stage_flow_recovers_a_legacy_session_that_advanced_before_confirmation(
     assert flow["legacy_current_stage"] == "characters"
     assert flow["attention_stage"] == "world_style"
     assert "world_style" in flow["pending_confirmations"]
-    assert flow["items"]["characters"]["can_view"] is False
+    assert flow["items"]["characters"]["can_view"] is True
     assert flow["items"]["characters"]["can_generate"] is True
     assert flow["items"]["characters"]["blocked_by"] == []
     assert flow["items"]["characters"]["soft_dependencies"][0]["stage"] == "world_style"
+
+
+def test_confirming_downstream_does_not_restore_old_constraints_form():
+    db = _db()
+    session = _ready_session(db)
+    edited_constraints = {
+        **session.draft_json["stages"]["constraints"]["data"],
+        "brief": "保留这次上游修改",
+        "special_requirements": ["主角不能失忆"],
+    }
+
+    save_stage(session, "constraints", edited_constraints, confirm=True, source="author")
+    save_stage(
+        session,
+        "world_style",
+        deepcopy(session.draft_json["stages"]["world_style"]["data"]),
+        confirm=True,
+        source="author",
+    )
+
+    assert session.draft_json["form"]["brief"] == "保留这次上游修改"
+    assert session.draft_json["stages"]["constraints"]["data"] == session.draft_json["form"]
+    assert session.draft_json["form"]["special_requirements"] == ["主角不能失忆"]
+
+
+def test_initialize_recovers_constraints_saved_without_form_sync():
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    draft["form"]["brief"] = "旧表单内容"
+    draft["stages"]["constraints"]["data"]["brief"] = "已保存的新约束"
+    session.draft_json = draft
+
+    migrated = initialize_session_draft(session)
+
+    assert migrated["form"]["brief"] == "已保存的新约束"
+    assert migrated["stages"]["constraints"]["data"]["brief"] == "已保存的新约束"
 
 
 def test_generation_uses_soft_dependency_hints_instead_of_fixed_stage_blockers():

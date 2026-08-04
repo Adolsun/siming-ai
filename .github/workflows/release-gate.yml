@@ -2,7 +2,12 @@ name: Release Gate
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+    paths:
+      - "backend/app/version.py"
+      - "frontend/package.json"
+      - "mobile/android/app/build.gradle.kts"
   release:
     types: [published]
   workflow_dispatch:
@@ -13,7 +18,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-smoke:
@@ -64,19 +69,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          git fetch --tags --force
-          $headCommit = (git rev-parse HEAD).Trim()
-          $tagCommit = (git rev-list -n 1 $tag).Trim()
-          if (-not $tagCommit -or $headCommit -ne $tagCommit) {
-            throw "Release validation must build the exact tag commit. HEAD=$headCommit tag=$tagCommit"
-          }
           $frontendVersion = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           $backendVersion = (Select-String -Path backend/app/version.py -Pattern 'APP_VERSION\s*=\s*["'']([^"'']+)' | Select-Object -First 1).Matches.Groups[1].Value
           $androidBuild = Get-Content mobile/android/app/build.gradle.kts -Raw
           $androidVersion = [regex]::Match($androidBuild, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ inputs.tag }}"
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            "${{ github.ref_name }}"
+          } else {
+            "v$frontendVersion"
+          }
           if ($tag -ne "v$frontendVersion" -or $frontendVersion -ne $backendVersion -or $frontendVersion -ne $androidVersion) {
             throw "Tag $tag must match frontend/backend/Android version ($frontendVersion/$backendVersion/$androidVersion)."
+          }
+          if ("${{ github.ref_type }}" -eq "tag" -or "${{ github.event_name }}" -eq "workflow_dispatch") {
+            git fetch --tags --force
+            $headCommit = (git rev-parse HEAD).Trim()
+            $tagCommit = (git rev-list -n 1 $tag).Trim()
+            if (-not $tagCommit -or $headCommit -ne $tagCommit) {
+              throw "Release validation must build the exact tag commit. HEAD=$headCommit tag=$tagCommit"
+            }
           }
 
       - name: Install frontend dependencies
@@ -141,7 +154,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}".TrimStart("v")
+          $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
           ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
           ./scripts/smoke-test-release.ps1 -SkipBuild
@@ -157,6 +170,35 @@ jobs:
             release/Siming.apk
             release/Siming-apk-sha256.txt
           if-no-files-found: error
+
+      - name: Publish verified GitHub release
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "v$version" }
+          $notesPath = "docs/release-notes-$version.md"
+          $assets = @(
+            "release/Siming.exe",
+            "release/update.json",
+            "release/sha256.txt",
+            "release/Siming.apk",
+            "release/Siming-apk-sha256.txt"
+          )
+          $releaseExists = $false
+          gh release view $tag -R "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
+          if ($releaseExists) {
+            gh release upload $tag @assets -R "${{ github.repository }}" --clobber
+          } elseif (Test-Path -LiteralPath $notesPath) {
+            gh release create $tag @assets -R "${{ github.repository }}" --title "司命 $version" --notes-file $notesPath
+          } else {
+            gh release create $tag @assets -R "${{ github.repository }}" --title "司命 $version" --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release publishing failed." }
 
   verify-published-assets:
     if: github.event_name == 'release'

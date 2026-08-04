@@ -35,7 +35,7 @@ export function StageFeedback({
           className="creation-stage-outcome"
           outcome="waiting_user"
           title={currentStage === 'final_review' ? '最终审阅已生成，等待你创建正式作品' : '生成完成，等待你确认'}
-          description="内容已保存到立项草稿。你可以先阅读、修改或重新生成；只有确认后才会进入下一阶段。"
+          description="内容已保存到立项草稿。你可以阅读、修改、确认，也可以先生成其他阶段。"
         />
       )}
       {status === 'stale' && (
@@ -52,7 +52,7 @@ export function StageFeedback({
           type="info"
           showIcon
           message={`先确认“${blockers[0].label}”`}
-          description="前置阶段确认后，这一阶段才会开放生成，避免后续内容建立在未定稿的信息上。"
+          description="只有真正缺少必要数据时才会阻止生成；其他阶段可以按任意顺序处理。"
           action={<Button onClick={() => onViewStage(blockers[0].stage)}>返回确认</Button>}
         />
       )}

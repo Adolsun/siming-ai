@@ -123,7 +123,10 @@ function NovelCreationWizardPage() {
   const currentStage = (
     requestedStage
     && CORE_STAGES.includes(requestedStage)
-    && session?.stage_flow?.items?.[requestedStage]?.can_view
+    && (
+      session?.stage_flow?.items?.[requestedStage]?.can_view
+      || session?.stage_flow?.items?.[requestedStage]?.can_generate
+    )
   )
     ? requestedStage
     : attentionStage && CORE_STAGES.includes(attentionStage)
@@ -174,7 +177,10 @@ function NovelCreationWizardPage() {
       next.set('session', loaded.id)
       const existingStage = next.get('stage')
       const flow = loaded.stage_flow
-      const targetStage = existingStage && flow?.items?.[existingStage]?.can_view
+      const targetStage = existingStage && (
+        flow?.items?.[existingStage]?.can_view
+        || flow?.items?.[existingStage]?.can_generate
+      )
         ? existingStage
         : flow?.attention_stage || flow?.recommended_stage || loaded.current_stage
       if (targetStage && CORE_STAGES.includes(targetStage)) next.set('stage', targetStage)
@@ -892,14 +898,17 @@ function NovelCreationWizardPage() {
                 current={Math.max(0, CORE_STAGES.indexOf(currentStage))}
                 onChange={(index) => {
                   const stage = CORE_STAGES[index]
-                  const canView = session?.stage_flow?.items?.[stage]?.can_view
-                    ?? Boolean(session?.draft?.stages?.[stage]?.data || stage === currentStage)
+                  const canView = (
+                    session?.stage_flow?.items?.[stage]?.can_view
+                    || session?.stage_flow?.items?.[stage]?.can_generate
+                  ) ?? Boolean(session?.draft?.stages?.[stage]?.data || stage === currentStage)
                   if (canView) viewStage(stage)
                 }}
                 items={CORE_STAGES.map((stage) => {
                   const state = session?.draft?.stages[stage]
                   const flow = session?.stage_flow?.items?.[stage]
-                  const canView = flow?.can_view ?? Boolean(state?.data || stage === currentStage)
+                  const canView = (flow?.can_view || flow?.can_generate)
+                    ?? Boolean(state?.data || stage === currentStage)
                   return {
                     title: stageLabels[stage] || stage,
                     disabled: !canView,
@@ -913,13 +922,13 @@ function NovelCreationWizardPage() {
                     description: (
                       <Space direction="vertical" size={2}>
                         <Tag color={stageTone(state?.status)}>{stageStatusLabel(state?.status)}</Tag>
-                        {!canView && flow?.blocked_by?.[0] && <Text type="secondary">先确认{flow.blocked_by[0].label}</Text>}
+                        {!canView && flow?.blocked_by?.[0] && <Text type="secondary">需先处理{flow.blocked_by[0].label}</Text>}
                       </Space>
                     ),
                   }
                 })}
               />
-              <Alert type="info" showIcon message={session?.draft?.quick_mode ? '快速模式' : '完整向导'} description="所有内容仍在立项草稿中，最终确认前不会创建正式作品。" />
+              <Alert type="info" showIcon message={session?.draft?.quick_mode ? '快速模式' : '自由规划'} description="各项内容可以按任意顺序生成；缺少关联资料时只会影响生成质量。最终确认前不会创建正式作品。" />
             </aside>
             <section className="creation-stage-main">
               {authorLed && session.draft && (

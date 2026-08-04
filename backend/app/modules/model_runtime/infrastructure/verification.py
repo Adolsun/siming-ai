@@ -27,7 +27,6 @@ from ....ai.local_runtime_adapter import LocalRuntimeAdapter
 from ....ai.openai_adapter import message_reasoning_content, responses_reasoning_content
 from ....core.exceptions import LLMError, ValidationError
 from ..application.verification import ModelProbeRequest
-from .gateway import LLMGateway
 from .local_cli import (
     DEFAULT_CLI_MODELS,
     DEFAULT_LOCAL_CLI_TIMEOUT,

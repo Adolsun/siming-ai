@@ -206,6 +206,21 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
             if key in form:
                 merged[key] = deepcopy(form[key])
         form = merged
+    existing_stages = _dict(existing.get("stages"))
+    existing_constraints = _dict(_dict(existing_stages.get("constraints")).get("data"))
+    if existing_constraints:
+        # Some historical saves updated the constraints artifact without
+        # updating draft.form. Treat the edited artifact as the newer source,
+        # while still letting explicit form submissions win.
+        form = {**form, **deepcopy(existing_constraints)}
+        explicit_keys = set(values)
+        if "user_brief" in explicit_keys:
+            explicit_keys.add("brief")
+        for key in explicit_keys:
+            if key in form and key in values:
+                form[key] = deepcopy(values[key])
+            elif key == "brief":
+                form[key] = _text(values.get("brief") or values.get("user_brief"))
     existing_opening = _dict(_dict(existing.get("stages")).get("opening_outline")).get("data")
     existing_opening_chapters = _list(_dict(existing_opening).get("chapters"))
     # Unstarted drafts move to the new lightweight three-chapter default. A
@@ -216,13 +231,15 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
         if len(existing_opening_chapters) == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
         else OPENING_OUTLINE_CHAPTER_COUNT
     )
-    stages = _dict(existing.get("stages"))
+    stages = existing_stages
     for stage in STAGE_ORDER:
         stages.setdefault(stage, {"status": "pending", "data": None, "updated_at": None})
+    constraints_state = _dict(stages.get("constraints"))
     stages["constraints"] = {
-        "status": stages["constraints"].get("status") or "generated",
+        **constraints_state,
+        "status": constraints_state.get("status") or "generated",
         "data": deepcopy(form),
-        "updated_at": _now(),
+        "updated_at": constraints_state.get("updated_at") or _now(),
     }
     existing_schema_version = int(existing.get("schema_version") or session.schema_version or 1)
     creation_mode = _text(
@@ -477,7 +494,12 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
         has_data = state.get("data") is not None
         can_generate = stage not in {"constraints", "concepts"} and not blockers
         can_confirm = has_data and status in {"generated", "stale"} and not blockers
-        can_view = has_data or status in {"generated", "confirmed", "stale"} or stage in {attention_stage, recommended_stage}
+        can_view = (
+            can_generate
+            or has_data
+            or status in {"generated", "confirmed", "stale"}
+            or stage in {attention_stage, recommended_stage}
+        )
         actions = ["view"] if can_view else []
         if has_data:
             actions.append("edit")
@@ -1295,6 +1317,10 @@ def save_stage(
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
     draft = deepcopy(initialize_session_draft(session))
+    if stage == "constraints":
+        # Keep the compatibility form snapshot and the editable constraints
+        # artifact atomic. Partial payloads are layered over the complete form.
+        data = {**_dict(draft.get("form")), **deepcopy(data)}
     previous = _dict(draft["stages"].get(stage))
     from app.services.novel_creation_versions import record_artifact_version
 
@@ -1322,6 +1348,8 @@ def save_stage(
         "source": source,
         "updated_at": _now(),
     }
+    if stage == "constraints":
+        draft["form"] = deepcopy(data)
     if stage == "concepts":
         options = data.get("options")
         if isinstance(options, list):
