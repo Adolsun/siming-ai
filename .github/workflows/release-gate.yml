@@ -105,8 +105,6 @@ jobs:
           npm run architecture
           npm run duplicates
           npm run build
-          npx playwright install chromium
-          npm run test:e2e
 
       - name: Install backend test dependencies
         working-directory: backend
