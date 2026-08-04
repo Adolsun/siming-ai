@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
     paths:
+      - ".github/workflows/release-gate.yml"
       - "backend/app/version.py"
       - "frontend/package.json"
       - "mobile/android/app/build.gradle.kts"

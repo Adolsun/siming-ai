@@ -882,6 +882,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-models/custom/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pick Custom Model File */
+        post: operations["pick_custom_model_file_api_v1_local_models_custom_pick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/local-models/downloads": {
         parameters: {
             query?: never;
@@ -910,6 +927,23 @@ export interface paths {
         get: operations["download_events_api_v1_local_models_downloads__task_id__events_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/downloads/{task_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Model Download */
+        post: operations["resume_model_download_api_v1_local_models_downloads__task_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -961,6 +995,23 @@ export interface paths {
         /** Update Model Root */
         put: operations["update_model_root_api_v1_local_models_root_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/root/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pick Model Root */
+        post: operations["pick_model_root_api_v1_local_models_root_pick_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8394,6 +8445,11 @@ export interface components {
             canonical_conversation_id?: string | null;
             /** Conversation Id */
             conversation_id?: string | null;
+            /**
+             * Creation Session Id
+             * @description Creation data linked to this project and available to the assistant as structured context
+             */
+            creation_session_id?: string | null;
             /** History */
             history?: {
                 [key: string]: unknown;
@@ -10342,6 +10398,26 @@ export interface operations {
             };
         };
     };
+    pick_custom_model_file_api_v1_local_models_custom_pick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     downloads_api_v1_local_models_downloads_get: {
         parameters: {
             query?: never;
@@ -10363,6 +10439,37 @@ export interface operations {
         };
     };
     download_events_api_v1_local_models_downloads__task_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_model_download_api_v1_local_models_downloads__task_id__resume_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -10475,6 +10582,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pick_model_root_api_v1_local_models_root_pick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -11517,6 +11644,7 @@ export interface operations {
         parameters: {
             query?: {
                 include_completed?: boolean;
+                project_id?: string | null;
             };
             header?: never;
             path?: never;
