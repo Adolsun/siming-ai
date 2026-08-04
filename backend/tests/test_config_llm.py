@@ -381,6 +381,7 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
         self.assertEqual(data["cli_args"], '["-p","{prompt}"]')
 
     def test_create_local_runtime_provider_without_api_key(self):
+        """Desktop local runtime remains configurable without a hidden opt-in."""
         response = self.client.post(
             f"{API_PREFIX}/config/models",
             json={
@@ -389,8 +390,11 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
                 "default_model": "qwen3-8b-q4",
             },
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("本地 AI 模型暂时已停用", response.json()["message"])
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["provider"], "local_llama_cpp")
+        self.assertEqual(data["provider_type"], "local_runtime")
+        self.assertEqual(data["default_model"], "qwen3-8b-q4")
 
     # ------------------------------------------------------------------
     # TC-09: Create with missing required fields

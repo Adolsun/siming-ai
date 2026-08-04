@@ -25,6 +25,7 @@ jobs:
   build-and-smoke:
     if: github.event_name != 'release'
     runs-on: windows-latest
+    timeout-minutes: 90
     env:
       MOSHU_DISABLE_AUTO_MCP_SETUP: "1"
       SIMING_ENABLE_LOCAL_RUNTIME: "0"
