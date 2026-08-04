@@ -15,7 +15,7 @@ import requests
 GITHUB_API = "https://api.github.com"
 GITEE_API = "https://gitee.com/api/v5"
 TIMEOUT = 60
-UPLOAD_TIMEOUT = (30, 600)
+UPLOAD_TIMEOUT = 600
 UPLOAD_ATTEMPTS = 3
 
 
