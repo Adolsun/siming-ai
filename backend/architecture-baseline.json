@@ -1,7 +1,7 @@
 {
   "legacy_direct_commit_calls": 0,
-  "legacy_router_db_query_calls": 2,
-  "legacy_router_orm_imports": 1,
+  "legacy_router_db_query_calls": 0,
+  "legacy_router_orm_imports": 0,
   "legacy_router_model_adapter_imports": 0,
   "oversized_modules": {
     "backend/app/ai/local_cli_adapter.py": 1493,

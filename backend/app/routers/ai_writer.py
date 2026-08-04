@@ -20,7 +20,7 @@ from ..modules.assistant.interfaces.system_conversation_dependencies import (
     get_system_conversation_store,
 )
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
-from ..modules.creation.infrastructure.models import NovelCreationSession
+from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..services.context_builders import (
     _build_chapter_detail_context,
     _build_character_ai_context,
@@ -1272,10 +1272,8 @@ async def workspace_assistant_stream(
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
             if payload.creation_session_id:
-                creation_session = (
-                    db.query(NovelCreationSession)
-                    .filter(NovelCreationSession.id == payload.creation_session_id)
-                    .first()
+                creation_session = novel_creation_session_store(db).session(
+                    payload.creation_session_id
                 )
                 if creation_session and project_id in {
                     creation_session.created_project_id,

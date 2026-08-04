@@ -40,6 +40,7 @@ import {
   FlowNavigator,
 } from '../components/interaction'
 import { StageActionBar, StageFeedback } from '../components/novel-creation'
+import { StructuredStageEditor } from '../components/novel-creation/StructuredStageEditor'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
 import {
@@ -48,7 +49,7 @@ import {
   workbenchUrl,
 } from '../hooks/useNovelCreationInterviewController'
 import { RunStatusPanels } from '../features/novelCreation/RunStatusPanels'
-import { StagePreview, StructuredStageEditor } from '../features/novelCreation/StageContent'
+import { StagePreview } from '../features/novelCreation/StageContent'
 import { useNovelCreationRun } from '../features/novelCreation/useNovelCreationRun'
 import {
   CORE_STAGES,

@@ -24,6 +24,7 @@ from ..core.crypto import encrypt
 from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..modules.model_runtime.interfaces.local_model_dependencies import local_model_store
 from ..schemas.local_model import (
     AdapterCompareRequest,
@@ -49,7 +50,6 @@ from ..services.local_runtime.model_jobs import (
     ensure_catalog_rows,
     resume_download,
 )
-from ..database.models import APIConfig
 from ..modules.model_runtime.infrastructure.readiness import mark_model_ready
 from ..services.local_runtime.paths import model_root
 from ..services.local_runtime.training import (
@@ -292,9 +292,10 @@ async def start_runtime(payload: RuntimeStartRequest, db: Session = Depends(get_
         task_type=payload.task_type,
         project_id=payload.project_id,
     )
-    config = db.query(APIConfig).filter(APIConfig.provider == "local_llama_cpp").first()
+    config_crud = model_config_crud(db)
+    config = config_crud.get_provider("local_llama_cpp")
     if not config:
-        config = APIConfig(
+        config = config_crud.create(
             provider="local_llama_cpp",
             api_key_encrypted=encrypt("__local_runtime__"),
             default_model=payload.model_key,
