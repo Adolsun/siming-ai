@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 # Maximum character count before content is truncated in MCP responses.
 _CONTENT_TRUNCATE_LIMIT = 12000
 
+# Workspace tools usually return ``ok``.  Context governance additionally
+# exposes the persisted manifest lifecycle states below; both mean the result
+# is usable and must not be surfaced to MCP clients as a failed tool call.
+_MCP_SUCCESS_STATUSES = frozenset({"ok", "ready", "overridden"})
+
 _PROJECT_OPTIONAL_TOOLS = {
     "list_projects",
     "create_project",
@@ -267,7 +272,7 @@ def _format_tool_result(raw: dict) -> McpToolResult:
     - Marks errors when status indicates failure.
     """
     status = raw.get("status", "ok")
-    is_error = status not in ("ok",)
+    is_error = status not in _MCP_SUCCESS_STATUSES
 
     # Build the MCP-friendly payload
     payload: dict[str, Any] = {
@@ -648,7 +653,16 @@ async def execute_tool(
         "mark_draft_ready",
         "finish_agent_run",
     }
-    if tool_name in telemetry_tools:
+    # Context governance handlers use run_id as part of their functional
+    # contract, not only for telemetry.  Keeping it here lets a long-running
+    # CLI resolve the manifest bound to its AgentRun without asking the model
+    # to copy an opaque UUID between tool calls.
+    run_bound_context_tools = {
+        "prepare_task_context",
+        "search_task_context",
+        "submit_context_evidence",
+    }
+    if tool_name in telemetry_tools or tool_name in run_bound_context_tools:
         # These handlers need run_id as part of their public contract. Keep it
         # in arguments instead of consuming it as out-of-band auto-telemetry.
         run_id = run_id or str(arguments.get("run_id") or "").strip() or None
@@ -721,7 +735,7 @@ async def execute_tool(
             effective_project_id,
             {"tool": tool_name, "arguments": arguments},
         )
-        if raw_result.get("status", "ok") == "ok":
+        if raw_result.get("status", "ok") in _MCP_SUCCESS_STATUSES:
             try:
                 _safe_commit(db)
             except Exception:

@@ -793,11 +793,16 @@ async def detect_and_stream_plan(
     outline_batch_count: int = 1,
     selected_outline_node_id: str | None = None,
     force_chapter_writing: bool = False,
+    intent_override: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None] | None:
     """Return a plan SSE generator, or None when the legacy agent should handle it."""
     model = resolve_assistant_model(model)
-    intent = detect_intent(message)
-    strong_chapter_writing = force_chapter_writing or has_strong_chapter_writing_intent(message)
+    intent = dict(intent_override) if isinstance(intent_override, dict) else detect_intent(message)
+    strong_chapter_writing = (
+        force_chapter_writing
+        or (intent_override is None and has_strong_chapter_writing_intent(message))
+        or bool(intent and intent.get("intent_type") == "chapter")
+    )
     if strong_chapter_writing and (
         intent is None or intent.get("intent_type") not in {"chapter", "external_writing"}
     ):
@@ -809,12 +814,16 @@ async def detect_and_stream_plan(
             "chapter_number": extract_chapter_number(message, allow_bare=True),
             "rewrite": has_chapter_rewrite_intent(message),
         }
-    outline_followup = _outline_direction_followup_intent(
-        db,
-        project_id,
-        conversation_id=conversation_id,
-        message=message,
-        detected_intent=intent,
+    outline_followup = (
+        None
+        if intent_override is not None
+        else _outline_direction_followup_intent(
+            db,
+            project_id,
+            conversation_id=conversation_id,
+            message=message,
+            detected_intent=intent,
+        )
     )
     if outline_followup is not None:
         intent = outline_followup
@@ -837,6 +846,7 @@ async def detect_and_stream_plan(
             intent.get("chapter_number"),
             intent.get("outline_query", ""),
             selected_outline_node_id,
+            infer_number_from_query=intent_override is None,
         )
 
     memory_context = _build_memory_context(db, project_id, message)
@@ -909,7 +919,11 @@ async def detect_and_stream_plan(
             "outline_query": message,
             "requirements": message,
             "chapter_number": intent.get("chapter_number"),
-            "rewrite": has_chapter_rewrite_intent(message),
+            "rewrite": (
+                bool(intent.get("rewrite"))
+                if intent_override is not None
+                else has_chapter_rewrite_intent(message)
+            ),
         }
         if is_local_cli_provider(_model_provider(model)):
             graph = plan_local_cli_writing(

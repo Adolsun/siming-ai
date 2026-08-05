@@ -11,13 +11,26 @@ from ....services.context_orchestrator import ContextOrchestrator
 
 def _manifest_id_from_args(db: Session, project_id: str, args: dict[str, Any]) -> str:
     manifest_id = str(args.get("context_manifest_id") or args.get("manifest_id") or "").strip()
-    if manifest_id:
-        return manifest_id
     run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        return ""
-    run = db.query(AgentRun).filter(AgentRun.id == run_id, AgentRun.project_id == project_id).first()
-    return str(run.context_manifest_id or "") if run else ""
+    run = (
+        db.query(AgentRun)
+        .filter(AgentRun.id == run_id, AgentRun.project_id == project_id)
+        .first()
+        if run_id
+        else None
+    )
+    run_manifest_id = str(run.context_manifest_id or "").strip() if run else ""
+
+    # Prefer a valid explicit ID.  If a CLI model copied or fabricated an
+    # invalid UUID, recover through the authoritative manifest bound to its
+    # run instead of trapping the task in a retry loop.
+    if manifest_id:
+        if ContextOrchestrator(db).get_manifest(manifest_id, project_id):
+            return manifest_id
+        if run_manifest_id:
+            return run_manifest_id
+        return manifest_id
+    return run_manifest_id
 
 
 async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any]) -> dict:
@@ -29,6 +42,13 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
     task_arguments = args.get("arguments") if isinstance(args.get("arguments"), dict) else args
     requested_manifest_id = str(args.get("context_manifest_id") or args.get("manifest_id") or "").strip()
     manifest = orchestrator.get_manifest(requested_manifest_id, project_id) if requested_manifest_id else None
+    run_manifest = (
+        orchestrator.get_manifest(str(run.context_manifest_id), project_id)
+        if run and run.context_manifest_id
+        else None
+    )
+    if requested_manifest_id and manifest is None and run_manifest is not None:
+        manifest = run_manifest
     if requested_manifest_id and manifest is None:
         return {
             "tool": "prepare_task_context",
@@ -47,11 +67,6 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
     has_scoped_target = any(
         key in task_arguments and task_arguments.get(key) not in (None, "", [], {})
         for key in scoped_target_keys
-    )
-    run_manifest = (
-        orchestrator.get_manifest(str(run.context_manifest_id), project_id)
-        if run and run.context_manifest_id
-        else None
     )
     run_query = (
         run_manifest.query_json
@@ -107,6 +122,7 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
         "detail": "Task context prepared." if manifest.status == "ready" else "Task context requires confirmation or rebuild completion.",
         "data": {
             "manifest_id": manifest.id,
+            "context_manifest_id": manifest.id,
             "context_manifest": orchestrator.manifest_payload(manifest, include_content=True),
         },
     }

@@ -24,8 +24,16 @@ def file_prompt_instruction(
         else "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，不要修改文件，"
         "不要调用 Siming MCP 或其他外部工具。"
     )
+    identity = (
+        "你是司命任务执行 Agent，可使用已配置的 Siming MCP 工具。"
+        "必须先读取任务文件，并以文件中的 SYSTEM、当前作用域 ID 和 USER 指令为准；"
+        "不要根据通用 MCP 工具目录自行改成作品列表或其他任务。"
+        if allow_mcp
+        else "你是司命内部的文本生成执行器，不是代码助手。"
+    )
     return (
-        "你是司命内部的文本生成执行器，不是代码助手。"
+        identity
+        + "\n"
         f"请读取 UTF-8 任务文件：{prompt_file}\n"
         "严格按文件中的 SYSTEM/USER 指令完成任务。"
         f"{tool_rule}"

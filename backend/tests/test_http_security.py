@@ -1,5 +1,6 @@
 """Security regressions for the loopback desktop HTTP boundary."""
 
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +11,41 @@ from app.bootstrap.app_factory import (
     create_app,
     resolve_frontend_file,
 )
+from app.bootstrap.http_security import GatewayRequestLimitMiddleware
+
+
+def test_limited_streaming_post_delegates_disconnect_after_replaying_body() -> None:
+    observed: list[dict] = []
+
+    async def downstream(scope, receive, send) -> None:
+        observed.append(await receive())
+        observed.append(await receive())
+
+    incoming = iter([
+        {"type": "http.request", "body": b"{}", "more_body": False},
+        {"type": "http.disconnect"},
+    ])
+
+    async def receive() -> dict:
+        return next(incoming)
+
+    async def send(message: dict) -> None:
+        return None
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/projects/project-1/ai/workspace-assistant/stream",
+        "headers": [(b"content-length", b"2")],
+        "client": ("127.0.0.1", 12345),
+    }
+    middleware = GatewayRequestLimitMiddleware(downstream, enabled=True)
+    asyncio.run(middleware(scope, receive, send))
+
+    assert observed == [
+        {"type": "http.request", "body": b"{}", "more_body": False},
+        {"type": "http.disconnect"},
+    ]
 
 
 def test_foreign_host_is_rejected() -> None:

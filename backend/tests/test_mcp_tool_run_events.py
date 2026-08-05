@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.mcp.adapter import execute_tool, _build_args_summary, _log_run_tool_event
+from app.mcp.adapter import execute_tool, _build_args_summary, _format_tool_result, _log_run_tool_event
 
 
 class BuildArgsSummaryTest(unittest.TestCase):
@@ -36,6 +36,20 @@ class BuildArgsSummaryTest(unittest.TestCase):
         args = {f"field_{i}": f"value_{i}" for i in range(50)}
         result = _build_args_summary(args)
         self.assertLessEqual(len(result), 300)
+
+
+class FormatToolResultTest(unittest.TestCase):
+    def test_ready_context_manifest_is_not_an_mcp_error(self):
+        result = _format_tool_result({
+            "tool": "prepare_task_context",
+            "status": "ready",
+            "detail": "Task context prepared.",
+            "data": {"context_manifest_id": "manifest-1"},
+        })
+
+        self.assertFalse(result.is_error)
+        payload = json.loads(result.content[0]["text"])
+        self.assertEqual(payload["status"], "ready")
 
 
 class LogRunToolEventTest(unittest.TestCase):
@@ -105,6 +119,25 @@ class ExecuteToolRunIdTest(unittest.TestCase):
         calls = mock_log.call_args_list
         self.assertEqual(calls[0][0][2], "tool_start")  # event_type
         self.assertEqual(calls[1][0][2], "tool_result")
+
+    @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
+    @patch("app.mcp.adapter._log_run_tool_event")
+    def test_run_id_is_preserved_for_context_governance_tools(self, mock_log, mock_exec):
+        mock_exec.return_value = {
+            "tool": "prepare_task_context",
+            "status": "ok",
+            "detail": "ok",
+            "data": {"context_manifest_id": "manifest-1"},
+        }
+        db = MagicMock()
+        asyncio.run(execute_tool(
+            db, "p1", "prepare_task_context",
+            {"task_type": "writing", "run_id": "run123"},
+            allowed_tiers={"readonly"},
+        ))
+
+        passed_args = mock_exec.call_args.args[2]["arguments"]
+        self.assertEqual(passed_args["run_id"], "run123")
 
     @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
     @patch("app.mcp.adapter._log_run_tool_event")

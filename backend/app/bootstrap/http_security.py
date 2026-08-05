@@ -410,7 +410,12 @@ class GatewayRequestLimitMiddleware:
                 message = messages[index]
                 index += 1
                 return message
-            return {"type": "http.request", "body": b"", "more_body": False}
+            # StreamingResponse continuously waits for ``http.disconnect``.
+            # Repeating an already-completed request here creates a zero-wait
+            # loop that monopolizes the event loop for every limited SSE POST.
+            # Once the buffered body has been replayed, resume the real ASGI
+            # receive channel so disconnect listening blocks normally.
+            return await receive()
 
         await self.app(scope, replay_receive, send)
 

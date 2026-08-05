@@ -333,9 +333,12 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("你好，我在。", response.text)
-        self.assertIn("local_cli_mode", response.text)
+        self.assertIn("local_cli_mcp_mode", response.text)
         self.assertNotIn("json_repair", response.text)
         self.assertNotIn("模型返回的工具格式不合法", response.text)
+        call = mock_stream.call_args.kwargs
+        self.assertTrue(call["extra_body"]["local_cli_allow_mcp"])
+        self.assertIn(project_id, str(call["messages"]))
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
@@ -793,10 +796,15 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("未找到第 151 章的大纲节点", response.text)
         self.assertNotIn("plan_created", response.text)
 
-    @unittest.skip("legacy regex/preflight router removed; the model now selects tools")
-    def test_workspace_chapter_plan_bare_number_starts_local_cli_agent(self):
-        project_id = self.create_project("Bare Chapter Local CLI Project")
-        self.create_outline_node(project_id, "第151章 新的死线")
+    @patch("app.services.agent.local_cli_routing.classify_local_cli_workspace_request", new_callable=AsyncMock)
+    @patch("app.services.agent.bridge.detect_and_stream_plan", new_callable=AsyncMock)
+    def test_workspace_chapter_request_uses_managed_mcp_cli_plan(
+        self,
+        mock_plan,
+        mock_route,
+    ):
+        project_id = self.create_project("MCP Local CLI Chapter Project")
+        self.create_outline_node(project_id, "第一章 荒山剖骨")
         db = SessionLocal()
         try:
             db.add(APIConfig(
@@ -812,47 +820,31 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         finally:
             db.close()
 
-        created_coroutines = []
-
-        def capture_task(coroutine):
-            created_coroutines.append(coroutine)
-
-            class DummyTask:
-                pass
-
-            return DummyTask()
-
-        with patch("app.services.local_cli_agent_worker.asyncio.create_task", side_effect=capture_task):
-            response = self.client.post(
-                f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
-                json={
-                    "scope": "project",
-                    "message": "帮我写151章",
-                    "model": "opencode_cli:opencode/deepseek-v4-flash-free",
-                    "auto_apply": True,
-                },
-            )
-
-        for coroutine in created_coroutines:
-            coroutine.close()
+        mock_route.return_value = {
+            "route": "chapter_write",
+            "chapter_number": None,
+            "outline_query": "",
+            "reason": "用户要求写新正文",
+        }
+        mock_plan.return_value = async_chunks(
+            'data: {"type":"status","tool":"start_local_cli_agent_run"}\n\n'
+            'data: [DONE]\n\n'
+        )
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "写新正文",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("local_cli_writing", response.text)
         self.assertIn("start_local_cli_agent_run", response.text)
-        self.assertNotIn("local_cli_mode", response.text)
-        self.assertNotIn("只有 `read` 工具可用", response.text)
-
-        db = SessionLocal()
-        try:
-            run = db.query(AgentRun).filter(
-                AgentRun.project_id == project_id,
-                AgentRun.source == "internal_cli",
-                AgentRun.client_name == "opencode_cli",
-            ).one_or_none()
-            self.assertIsNotNone(run)
-            self.assertIn("writing", run.title)
-        finally:
-            db.close()
+        call = mock_plan.call_args.kwargs
+        self.assertTrue(call["force_chapter_writing"])
+        self.assertEqual(call["message"], "写新正文")
 
     def test_chapter_writer_rejects_local_runtime_model(self):
         project_id = self.create_project("Local Runtime Writer Guard Project")

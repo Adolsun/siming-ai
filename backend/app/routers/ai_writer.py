@@ -50,6 +50,7 @@ from ..prompts.workspace_assistant import (
     MAX_ITERATIONS,
 )
 from ..services.agent.prompt_builder import build_system_prompt, get_workspace_pack, inject_assistant_mode
+from ..ai.local_cli_adapter import is_local_cli_provider
 from ..services.skills.service import select_relevant_skills, build_skill_prompt_section
 from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
@@ -1146,6 +1147,13 @@ async def workspace_assistant_stream(
     # switching a task between iterations.
     payload.model = resolve_assistant_model(payload.model)
 
+    # Local CLI requests are routed by the selected CLI itself below.  Siming
+    # consumes that structured decision and never classifies the user's wording
+    # with a keyword/regular-expression gate at this entry point.
+    try:
+        selected_provider = LLMGateway.provider_for_model(payload.model)
+    except Exception:
+        selected_provider = ""
     async def event_generator(run_db: Session):
         db = run_db
         if payload.canonical_conversation_id and not payload.conversation_id:
@@ -1163,8 +1171,8 @@ async def workspace_assistant_stream(
                 )
                 commit_session(db)
             payload.conversation_id = execution_conversation.id
-        # The model sees the authorized workspace tools and decides which data
-        # to read or mutate. Do not pre-route equivalent requests by wording.
+        # API models use native function calls. Local Agent CLIs use their
+        # configured Siming MCP catalog and choose tools themselves.
         conversation = None
         user_msg_db = None
         assistant_msg_db = None
@@ -1266,11 +1274,15 @@ async def workspace_assistant_stream(
                 payload.model,
                 cwd=project_folder,
             )
+            local_cli_mcp_enabled = local_cli_extra_body is not None
+            if local_cli_mcp_enabled:
+                local_cli_extra_body = dict(local_cli_extra_body)
+                local_cli_extra_body["local_cli_allow_mcp"] = True
             if assistant_run.operation_id:
                 local_cli_extra_body = dict(local_cli_extra_body or {})
                 local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
-            selected_context: list[str] = []
+            selected_context: list[str] = [f"当前作品 project_id：{project_id}"]
             if payload.creation_session_id:
                 creation_session = novel_creation_session_store(db).session(
                     payload.creation_session_id
@@ -1395,8 +1407,12 @@ async def workspace_assistant_stream(
             if not supports_function_calling:
                 yield _sse_event({
                     "type": "status",
-                    "message": "当前模型不支持稳定工具调用，已切换为文本/计划编排模式。",
-                    "tool": "local_cli_mode",
+                    "message": (
+                        "本机 CLI 已连接 Siming MCP，可自行选择项目读写工具。"
+                        if local_cli_mcp_enabled
+                        else "当前模型不支持稳定工具调用，已切换为文本/计划编排模式。"
+                    ),
+                    "tool": "local_cli_mcp_mode" if local_cli_mcp_enabled else "local_cli_mode",
                 })
 
             for iteration in range(1, MAX_ITERATIONS + 1):
@@ -2174,8 +2190,87 @@ async def workspace_assistant_stream(
             yield _sse_event({"type": "error", "message": f"服务器错误: {exc}"})
             yield _sse_event("[DONE]")
 
+    stream_factory = event_generator
+    if is_local_cli_provider(selected_provider):
+        async def cli_routed_event_generator(source_db: Session):
+            from ..services.agent.bridge import detect_and_stream_plan
+            from ..services.agent.local_cli_routing import classify_local_cli_workspace_request
+
+            yield _sse_event({
+                "type": "status",
+                "message": "正在由本机 CLI 判断任务执行线路...",
+                "tool": "local_cli_route",
+            })
+            try:
+                route = await classify_local_cli_workspace_request(
+                    model=payload.model or "",
+                    message=payload.message,
+                    selected_outline_node_id=payload.selected_outline_node_id,
+                )
+            except Exception as exc:
+                yield _sse_event({
+                    "type": "status",
+                    "message": f"本机 CLI 未返回有效线路，继续按普通项目协作执行：{exc}",
+                    "tool": "local_cli_route_fallback",
+                })
+                async for event in event_generator(source_db):
+                    yield event
+                return
+
+            route_name = str(route.get("route") or "general")
+            yield _sse_event({
+                "type": "status",
+                "message": f"本机 CLI 已选择执行线路：{route_name}",
+                "tool": "local_cli_route",
+            })
+            intent_override = None
+            if route_name in {"chapter_write", "chapter_rewrite"}:
+                intent_override = {
+                    "intent_type": "chapter",
+                    "mode": "quality" if payload.assistant_mode == "quality" else "fast",
+                    "outline_query": route.get("outline_query") or "",
+                    "requirements": payload.message,
+                    "chapter_number": route.get("chapter_number"),
+                    "rewrite": route_name == "chapter_rewrite",
+                }
+            elif route_name == "cataloging":
+                intent_override = {
+                    "intent_type": "project_init",
+                    "requirements": payload.message,
+                }
+
+            if intent_override is None:
+                async for event in event_generator(source_db):
+                    yield event
+                return
+
+            generator = await detect_and_stream_plan(
+                source_db,
+                project_id,
+                message=payload.message,
+                conversation_id=payload.conversation_id,
+                scope=payload.scope,
+                model=payload.model,
+                assistant_mode=payload.assistant_mode,
+                outline_batch_count=payload.outline_batch_count,
+                selected_outline_node_id=payload.selected_outline_node_id,
+                force_chapter_writing=route_name in {"chapter_write", "chapter_rewrite"},
+                intent_override=intent_override,
+            )
+            if generator is None:
+                yield _sse_event({
+                    "type": "error",
+                    "message": "本机 CLI 已选择执行线路，但司命未能建立对应计划，本轮没有写入。",
+                })
+                yield _sse_event("[DONE]")
+                return
+            async for event in generator:
+                yield event
+
+        stream_factory = cli_routed_event_generator
+
     return StreamingResponse(
-        detached_assistant_stream(event_generator),
+        detached_assistant_stream(stream_factory),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

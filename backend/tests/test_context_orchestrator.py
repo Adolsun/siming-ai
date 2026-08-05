@@ -1,12 +1,13 @@
 """Focused coverage for auditable task-context governance."""
 import asyncio
+import json
 import unittest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import AgentRun, Base, Chapter, ContextManifestItem, ModelContextProfile, OutlineNode, Project
+from app.database.models import AgentRun, Base, Chapter, ContextManifest, ContextManifestItem, ModelContextProfile, OutlineNode, Project
 from app.services.context_orchestrator import ContextOrchestrator
 
 
@@ -196,6 +197,63 @@ class ContextOrchestratorTestCase(unittest.TestCase):
             "context_manifest_id": first_id,
         }))
         self.assertEqual(reused["data"]["manifest_id"], first_id)
+
+    def test_run_bound_manifest_recovers_from_invalid_model_supplied_id(self):
+        from app.services.workspace.tools.context_governance import (
+            prepare_task_context,
+            submit_context_evidence,
+        )
+
+        run = AgentRun(project_id="p1", source="mcp", title="writing")
+        self.db.add(run)
+        self.db.flush()
+        prepared = asyncio.run(prepare_task_context(self.db, "p1", {
+            "task_type": "writing",
+            "run_id": run.id,
+            "arguments": {"outline_node_id": "o1"},
+        }))
+        manifest_id = prepared["data"]["context_manifest_id"]
+        self.assertEqual(run.context_manifest_id, manifest_id)
+
+        submitted = asyncio.run(submit_context_evidence(self.db, "p1", {
+            "run_id": run.id,
+            "context_manifest_id": "model-invented-manifest-id",
+            "sources": [],
+        }))
+        self.assertNotEqual(submitted["detail"], "Context manifest not found")
+        self.assertEqual(submitted["data"]["manifest_id"], manifest_id)
+
+    def test_mcp_ready_manifest_is_committed_and_bound_to_run(self):
+        from app.mcp.adapter import execute_tool
+
+        run = AgentRun(project_id="p1", source="mcp", title="writing")
+        self.db.add(run)
+        self.db.commit()
+
+        result = asyncio.run(execute_tool(
+            self.db,
+            "p1",
+            "prepare_task_context",
+            {
+                "task_type": "writing",
+                "run_id": run.id,
+                "execution_route": "external_mcp",
+                "arguments": {"outline_node_id": "o1"},
+            },
+            allowed_tiers={"readonly"},
+        ))
+        self.assertFalse(result.is_error)
+        payload = json.loads(result.content[0]["text"])
+        self.assertEqual(payload["status"], "ready")
+        manifest_id = payload["data"]["context_manifest_id"]
+
+        # Expire the current identity map and verify both records from the
+        # committed database state, matching a later MCP process/tool call.
+        self.db.expire_all()
+        persisted = self.db.query(ContextManifest).filter(ContextManifest.id == manifest_id).first()
+        rebound_run = self.db.query(AgentRun).filter(AgentRun.id == run.id).first()
+        self.assertIsNotNone(persisted)
+        self.assertEqual(rebound_run.context_manifest_id, manifest_id)
 
     def test_external_route_cannot_bypass_evidence_with_internal_manifest(self):
         from app.services.workspace.tools.chapters import create_chapter

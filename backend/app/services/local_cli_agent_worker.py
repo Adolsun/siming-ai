@@ -43,10 +43,11 @@ _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 
 
 _OPENCODE_WRITING_RECOVERY_PROMPT = (
-    "Your previous response produced chapter prose but did not finish the required "
-    "Siming MCP write workflow. Do not rewrite or print the chapter again. Reuse the "
-    "complete chapter text from your immediately preceding response and continue now "
-    "until it is stored in Siming: call prepare_external_writing_context if needed, "
+    "Your previous response did not finish the required Siming MCP write workflow. "
+    "Do not print chapter prose to stdout. If a complete chapter already exists in the "
+    "session, reuse it; otherwise generate it now directly as the content argument of "
+    "save_external_chapter_draft. Continue until it is stored in Siming: call "
+    "prepare_external_writing_context if needed, "
     "save_external_chapter_draft, record_external_quality_review, create_chapter, "
     "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
     "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
@@ -110,6 +111,20 @@ def _has_fresh_writing_chapter(db: Session, run_id: str, project_id: str) -> boo
     if since is not None:
         query = query.filter((Chapter.created_at >= since) | (Chapter.updated_at >= since))
     return query.first() is not None
+
+
+def _has_completed_writing_archive(db: Session, run_id: str, project_id: str) -> bool:
+    """Return true once the formal chapter and post-write archive both exist."""
+    if not _has_fresh_writing_chapter(db, run_id, project_id):
+        return False
+    from app.database.models import AgentRunEvent
+
+    return db.query(AgentRunEvent).filter(
+        AgentRunEvent.run_id == run_id,
+        AgentRunEvent.event_type == "tool_result",
+        AgentRunEvent.status == "ok",
+        AgentRunEvent.message.like("archive_chapter_after_write:%"),
+    ).first() is not None
 
 
 async def _continue_opencode_writing_session(
@@ -263,11 +278,14 @@ def _select_cli_config(db: Session, provider: str | None = None) -> APIConfig | 
 
 
 def _task_prompt(task_file: Path) -> str:
-    return (
+    prompt = (
         "你是 Siming 启动的本机 CLI Agent。请读取这个任务文件并严格执行：\n"
         f"{task_file}\n\n"
         "不要把长正文或大量 JSON 输出到聊天/终端；必须通过任务文件指定的 Siming MCP 工具写入数据和汇报进度。"
     )
+    # OpenCode is normally a Windows .cmd launcher; keep argv single-line so
+    # cmd.exe cannot discard the task path after the first newline.
+    return " ".join(part.strip() for part in prompt.splitlines() if part.strip())
 
 
 def _workflow_section(task_type: str, *, rewrite: bool = False) -> str:
@@ -297,11 +315,16 @@ def _workflow_section(task_type: str, *, rewrite: bool = False) -> str:
 ## Required Workflow: Writing
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
 2. Call `prepare_task_context` with this run_id and use its returned baseline manifest.
-3. Use `search_task_context` only for a task-specific gap; direct mirror reads are not evidence.
+3. Do not use shell/write tools or temporary files for chapter prose. Do not repeat broad
+   project searches: the governed writing context is the primary context source. Use
+   `search_task_context` only for one concrete missing fact.
 4. Call `submit_context_evidence` with every selected required source before a formal write.
 5. Call `prepare_external_writing_context` with `context_manifest_id` to get the compatible quality prompt wrapper.
-6. Read relevant project files directly when useful, but write only through Siming MCP tools.
-7. Call `save_external_chapter_draft` with `context_manifest_id` for long chapter text instead of printing it.
+6. Generate the complete chapter directly inside the `content` argument of
+   `save_external_chapter_draft`; do not first print it, save it to a local file, or spend
+   another model turn explaining your plan.
+7. Call `save_external_chapter_draft` with `context_manifest_id`; after it succeeds,
+   prioritize the formal database write over optional additional analysis.
 {formal_write}
 9. Call `archive_chapter_after_write` with the same manifest and standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
 10. Call `get_project_archive_status` before reporting completion.
@@ -436,19 +459,42 @@ async def _run_cli_process(
             **hidden_subprocess_kwargs(),
         )
         _PROCESSES[run_id] = proc
+        completed_by_database = False
         try:
-            stdout, stderr = await communicate_with_cli_quota_detection(
+            communication = asyncio.create_task(communicate_with_cli_quota_detection(
                 proc,
                 input_bytes=stdin_text.encode("utf-8") if stdin_text is not None else None,
                 timeout_seconds=None,
                 operation_id=operation_id,
-            )
+            ))
+            while not communication.done():
+                await asyncio.sleep(2)
+                if task_type != "writing":
+                    continue
+                db.expire_all()
+                if not _has_completed_writing_archive(db, run_id, project_id):
+                    continue
+                completed_by_database = True
+                add_event(
+                    db,
+                    run_id,
+                    "workflow_completed",
+                    status="ok",
+                    message="章节已正式入库并完成写后归档；正在结束本机 CLI 进程",
+                    model_source=f"{provider}:local_cli",
+                    tool_mode="siming_mcp_database_completion",
+                    storage_target="database_authoritative",
+                    next_action="finish_parent_plan",
+                )
+                await terminate_cli_process_tree(proc)
+                break
+            stdout, stderr = await communication
         except CLIQuotaLimitError as exc:
             stdout = exc.stdout.encode("utf-8")
             stderr = exc.stderr.encode("utf-8")
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
-        if task_type == "writing":
+        if task_type == "writing" and not completed_by_database:
             proc, out_text, err_text = await _continue_opencode_writing_session(
                 db,
                 run_id=run_id,
@@ -490,7 +536,7 @@ async def _run_cli_process(
                 run.summary = quota_error[:1000]
                 commit_session(db)
             return
-        if proc.returncode == 0:
+        if proc.returncode == 0 or completed_by_database:
             add_event(
                 db,
                 run_id,

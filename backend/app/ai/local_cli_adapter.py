@@ -1251,10 +1251,18 @@ class LocalCLIAdapter(BaseAdapter):
         execution_model = effective_local_cli_model(self._provider, model)
         prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
 
-        launch = self._launch(
-            self._file_prompt_instruction(prompt_file, attachments, allow_mcp=allow_mcp),
-            execution_model,
+        instruction = self._file_prompt_instruction(
+            prompt_file,
+            attachments,
+            allow_mcp=allow_mcp,
         )
+        # OpenCode is commonly installed as a Windows .cmd launcher. Embedded
+        # newlines in one argv value are then truncated at the first line, so
+        # the Agent sees only its identity and never receives the task path.
+        # Keep the complete prompt in the UTF-8 file and flatten only this safe
+        # pointer instruction into one command-line argument.
+        instruction = " ".join(part.strip() for part in instruction.splitlines() if part.strip())
+        launch = self._launch(instruction, execution_model)
         args = list(launch.args)
         self._ensure_opencode_option(args, "--pure")
         self._ensure_opencode_option(args, "--format", "json")

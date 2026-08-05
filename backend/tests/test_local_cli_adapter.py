@@ -466,8 +466,25 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             allow_mcp=True,
         )
         self.assertIn("允许使用已配置的 Siming MCP", instruction)
+        self.assertIn("以文件中的 SYSTEM、当前作用域 ID 和 USER 指令为准", instruction)
+        self.assertIn("不要根据通用 MCP 工具目录自行改成作品列表", instruction)
+        self.assertNotIn("你是司命项目助手", instruction)
         self.assertIn("写入后再次读取验证", instruction)
         self.assertNotIn("不要调用 Siming MCP", instruction)
+
+    def test_opencode_launch_flattens_task_pointer_for_windows_cmd(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            launch, prompt_file = adapter._opencode_family_launch(
+                prompt="[SYSTEM]\nroute the request\n[USER]\nwrite chapter one",
+                model="opencode/deepseek-v4-flash-free",
+                cwd=directory,
+                attachments=[],
+                allow_mcp=False,
+            )
+            rendered = " ".join(launch.args)
+            self.assertIn(prompt_file, rendered)
+            self.assertNotIn("\n", rendered)
 
     def test_normalize_plain_output_is_preserved(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")

@@ -29,8 +29,10 @@ from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.local_cli_agent_worker import (
     _extract_opencode_session_id,
+    _has_completed_writing_archive,
     _opencode_recovery_args,
     _run_cli_process,
+    _task_prompt as _managed_task_prompt,
     start_local_cli_agent_worker,
     write_task_file,
 )
@@ -83,6 +85,32 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn('phase="merged"', text)
         self.assertIn("Do not call `save_external_cataloging_facts`", text)
         self.assertIn("Preserve the source novel language", text)
+
+    def test_managed_opencode_task_pointer_is_single_line(self):
+        prompt = _managed_task_prompt(Path(r"D:\novels\.siming\runs\run-1\task.md"))
+        self.assertNotIn("\n", prompt)
+        self.assertIn("run-1", prompt)
+
+    def test_database_completion_requires_chapter_and_archive_event(self):
+        project = self._project()
+        run = create_run(self.db, project.id, source="internal_cli", client_name="opencode_cli")
+        self.db.add(Chapter(
+            project_id=project.id,
+            title="第一章",
+            content="正文",
+            word_count=2,
+        ))
+        self.db.flush()
+        self.assertFalse(_has_completed_writing_archive(self.db, run.id, project.id))
+        from app.services.external_agent.run_service import add_event
+        add_event(
+            self.db,
+            run.id,
+            "tool_result",
+            status="ok",
+            message="archive_chapter_after_write: 写后归档完成",
+        )
+        self.assertTrue(_has_completed_writing_archive(self.db, run.id, project.id))
 
     def test_rewrite_task_file_requires_update_version_flow(self):
         project = self._project()
