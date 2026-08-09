@@ -114,11 +114,10 @@ class GatewayStabilityTestCase(unittest.TestCase):
 
     def test_quota_errors_are_not_retried(self):
         FakeAdapter.error = LLMError(
-            "本机 CLI 提供方额度/限额已耗尽或触发速率限制："
-            "Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]"
+            "OpenAI API 错误: Error code: 403 - token quota is not enough"
         )
 
-        with self.assertRaisesRegex(LLMError, "Free usage exceeded"):
+        with self.assertRaisesRegex(LLMError, "token quota is not enough"):
             asyncio.run(LLMGateway.chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 model="gemini:gemini-2.5-flash",

@@ -11,10 +11,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, ModelDownloadTask, OperationRun, Project
+from app.modules.operations.infrastructure.service import SqlAlchemyOperationService
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.external_agent.run_service import (
     add_event as add_agent_event,
+)
+from app.services.external_agent.run_service import (
     create_run as create_agent_run,
+)
+from app.services.external_agent.run_service import (
     update_run_status as update_agent_run_status,
 )
 from app.services.external_agent.write_requests import confirm_write, request_write
@@ -37,6 +42,38 @@ def _db():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     return engine, Session, Session()
+
+
+def test_operation_service_deletes_only_terminal_records():
+    _engine, Session, db = _db()
+    completed = ensure_operation(
+        db,
+        source_kind="test",
+        source_id="delete-completed",
+        title="Delete completed",
+        status="completed",
+    )
+    running = ensure_operation(
+        db,
+        source_kind="test",
+        source_id="keep-running",
+        title="Keep running",
+        status="running",
+    )
+    db.commit()
+    completed_id = completed.id
+    running_id = running.id
+    db.close()
+
+    service = SqlAlchemyOperationService()
+    with patch("app.modules.operations.infrastructure.service.SessionLocal", Session):
+        assert service.delete(running_id) == "not_terminal"
+        assert service.delete(completed_id) == "ok"
+        assert service.delete(completed_id) == "not_found"
+
+    with Session() as verify:
+        assert verify.get(OperationRun, running_id) is not None
+        assert verify.get(OperationRun, completed_id) is None
 
 
 def test_health_is_derived_from_heartbeat_activity_and_output_independently():

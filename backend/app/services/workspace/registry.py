@@ -19,6 +19,7 @@ from ...modules.context.interfaces.tool_definitions import (
 from ...modules.continuity.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as CONTINUITY_TOOL_DEFINITIONS,
 )
+from ...modules.creation.interfaces.agent_scope import CREATION_AGENT_TOOL_NAMES
 from ...modules.creation.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as CREATION_TOOL_DEFINITIONS,
 )
@@ -159,6 +160,15 @@ class ToolRegistry(ToolSpecRegistryMixin):
                 td for name, td in self._tools.items() if name in allowed_names and td.expose_to_mcp
             ]
 
+        if permission_pack == "creation_session":
+            # A one-turn local CLI grant receives only the creation assistant's
+            # surface, never the wider project-management or filesystem tools.
+            return [
+                td
+                for name, td in self._tools.items()
+                if name in CREATION_AGENT_TOOL_NAMES and td.expose_to_mcp
+            ]
+
         # Non-linear pack inclusion.
         #
         # Internal LLM tools intentionally do not sit below project_management:
@@ -221,6 +231,7 @@ registry = ToolRegistry()
 _TOOL_REGISTRATION_ORDER = (
     "list_projects",
     "get_project_info",
+    "get_project_creation_brief",
     "get_project_files_info",
     "list_project_files",
     "read_project_file",
@@ -229,6 +240,7 @@ _TOOL_REGISTRATION_ORDER = (
     "sync_project_files",
     "create_project",
     "update_project_info",
+    "update_project_creation_brief",
     "delete_project",
     "export_project",
     "get_export_word_count",

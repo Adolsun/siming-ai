@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Modal, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Modal, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
 import {
   DeleteOutlined,
   InfoCircleOutlined,
@@ -35,6 +35,7 @@ import {
   StepDetailModal,
 } from './assistant'
 import { motionAwareScrollBehavior } from '../utils/motion'
+import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
@@ -66,6 +67,12 @@ interface ActiveAssistantExecution {
   conversationId: string | null
   run: WorkspaceAssistantRun | null
   terminalHandled: boolean
+}
+
+interface CliPermissionRequest {
+  originalMessage: string
+  provider: string
+  detail: string
 }
 
 class AssistantRunRequestError extends Error {
@@ -171,6 +178,17 @@ function WorkspaceAssistantChat({
   const [canceling, setCanceling] = useState(false)
   const [cancelPending, setCancelPending] = useState(false)
   const [runtimeAnnouncement, setRuntimeAnnouncement] = useState('')
+  const [nextCliGrant, setNextCliGrant] = useState(false)
+  const [cliPermissionRequest, setCliPermissionRequest] = useState<CliPermissionRequest | null>(null)
+
+  const selectedProvider = String(defaultModel || '').split(':', 1)[0]
+  const isLocalCliModel = selectedProvider.endsWith('_cli')
+  const isOpenCodeCliModel = selectedProvider === 'opencode_cli'
+
+  useEffect(() => {
+    setNextCliGrant(false)
+    setCliPermissionRequest(null)
+  }, [defaultModel])
 
   useEffect(() => {
     mountedRef.current = true
@@ -978,17 +996,54 @@ function WorkspaceAssistantChat({
   }
   resumePersistedRunRef.current = resumePersistedRun
 
-  const sendMessage = async () => {
+  const sendMessage = async (options?: {
+    text?: string
+    grantProjectAgentOnce?: boolean
+    readPaths?: string[]
+  }) => {
     if (generating || historyLoading) {
       message.info(generating ? '当前任务仍在执行' : '正在加载对话，请稍候')
       return
     }
-    const userText = input.trim()
+    const userText = String(options?.text ?? input).trim()
     if (!userText) {
       message.warning('请输入要发送给AI的内容')
       return
     }
 
+    const proposedReadPaths = isOpenCodeCliModel
+      ? (options?.readPaths ?? extractExplicitLocalPaths(userText))
+      : []
+    if (
+      isOpenCodeCliModel
+      && options?.readPaths === undefined
+      && proposedReadPaths.length > 0
+    ) {
+      Modal.confirm({
+        title: '仅允许 OpenCode 读取这些路径一次？',
+        okText: '创建只读快照并发送',
+        cancelText: '取消',
+        content: (
+          <div className="workspace-assistant-cli-grant-copy">
+            <p>路径文字本身不会被当作授权。确认后，司命才会为这一条消息创建受限的只读快照：</p>
+            <ul>
+              {proposedReadPaths.map((path) => <li key={path}><code>{path}</code></li>)}
+            </ul>
+            <p>OpenCode 只能读取隔离副本，不能访问原路径、父目录或相邻文件；不会获得 Shell 或写文件权限。</p>
+            <p>密钥、凭据、网络路径、符号链接及过大的目录会被后端拒绝；本轮结束后快照自动删除。</p>
+          </div>
+        ),
+        onOk: () => void sendMessage({ ...options, readPaths: proposedReadPaths }),
+      })
+      return
+    }
+    const grantedReadPaths = isOpenCodeCliModel ? proposedReadPaths : []
+
+    const grantProjectAgentOnce = isLocalCliModel && Boolean(
+      options?.grantProjectAgentOnce || nextCliGrant,
+    )
+    setNextCliGrant(false)
+    setCliPermissionRequest(null)
     setGenerating(true)
     cancelRequestedRef.current = false
     setRunLogs([{ key: `${Date.now()}-start`, tool: scope, status: 'running', message: '正在提交给AI助手' }])
@@ -1020,7 +1075,7 @@ function WorkspaceAssistantChat({
         data: createEmptyWorkspaceResponse([{ tool: scope, status: 'running', detail: 'AI 正在搜索和分析...' }]),
       },
     ])
-    setInput('')
+    if (options?.text === undefined) setInput('')
 
     try {
       const history = messages.slice(-8).map((item) => ({
@@ -1044,6 +1099,11 @@ function WorkspaceAssistantChat({
           temperature: 0.3,
           max_tokens: undefined,
           auto_apply: true,
+          local_cli_permission_grant: grantProjectAgentOnce
+            ? 'project_agent_once'
+            : 'chat_only',
+          local_cli_read_permission_grant: grantedReadPaths.length > 0 ? 'read_once' : 'none',
+          local_cli_read_paths: grantedReadPaths,
           history,
         }),
         signal: controller.signal,
@@ -1248,6 +1308,31 @@ function WorkspaceAssistantChat({
           setRuntimeAnnouncement('任务已完成')
           void fetchConversations()
           Promise.resolve(onApplied?.()).catch(() => undefined)
+        } else if (event.type === 'permission_required') {
+          completed = true
+          execution.terminalHandled = true
+          const permissionMessage = event.message || '本机 CLI 需要你的授权才能继续。'
+          setCliPermissionRequest({
+            originalMessage: event.original_message || userText,
+            provider: event.provider || selectedProvider,
+            detail: event.detail || '',
+          })
+          if (event.run) {
+            execution.run = event.run as WorkspaceAssistantRun
+            setCurrentRun(event.run as WorkspaceAssistantRun)
+          }
+          updateAssistantById(execution.assistantMessageId, (item) => ({
+            ...item,
+            content: permissionMessage,
+            status: 'completed',
+          }))
+          addRunLog({
+            tool: 'cli_permission',
+            status: 'waiting_user',
+            message: '本轮未授权，等待你决定是否仅本次允许并重试',
+          })
+          setRuntimeAnnouncement('本机 CLI 正在等待你的授权决定')
+          void fetchConversations()
         } else if (event.type === 'error') {
           throw new Error(event.message || 'AI助手执行失败')
         }
@@ -1292,6 +1377,8 @@ function WorkspaceAssistantChat({
     }
   }
 
+  const modelUnavailable = !modelsLoading && modelOptions.length === 0
+
   return (
     <section className="workspace-assistant-chat" data-testid={`${scope}-ai-chat`}>
       <div className="workspace-assistant-sr-status" role="status" aria-live="polite" aria-atomic="true">
@@ -1314,7 +1401,7 @@ function WorkspaceAssistantChat({
               size="small"
               type="primary"
               icon={<PlusOutlined />}
-              disabled={generating}
+              disabled={generating || modelUnavailable}
               onClick={startNewConversation}
             >新对话</Button>
           </Space>
@@ -1341,15 +1428,122 @@ function WorkspaceAssistantChat({
             <Button
               aria-label="管理模型"
               size="small"
-              type={modelOptions.length === 0 ? 'link' : 'text'}
+              type="text"
               icon={<SettingOutlined />}
               onClick={onManageModels}
-            >
-              {modelOptions.length === 0 ? '去设置' : null}
-            </Button>
+            />
           </Tooltip>
         </div>
       </div>
+
+      {modelUnavailable && (
+        <Alert
+          className="workspace-assistant-readiness"
+          type="warning"
+          showIcon
+          message="先准备一个可用模型"
+          description="完成一次真实对话测试后，就可以在这里讨论剧情、调用工具并写入作品。"
+          action={<Button size="small" onClick={onManageModels}>配置模型</Button>}
+        />
+      )}
+
+      {isLocalCliModel && !modelUnavailable && (
+        <Alert
+          className="workspace-assistant-cli-permission"
+          type={nextCliGrant ? 'warning' : 'info'}
+          showIcon
+          message={nextCliGrant ? '下一条消息已获得单次 CLI 代理权限' : '本机 CLI 已内化到此聊天'}
+          description={nextCliGrant
+            ? (isOpenCodeCliModel
+              ? '下一条消息可使用仅限当前作品的临时 Siming MCP；发送后授权自动失效。'
+              : '发送后授权自动失效；不会修改该 CLI 的全局配置。')
+            : (isOpenCodeCliModel
+              ? '默认是隔离对话；单次授权后仅连接当前作品范围的临时 MCP。消息中出现本地路径时会另行确认，只提供临时只读快照。'
+              : '默认是隔离对话，不读取项目目录、不调用 MCP、不自动批准 CLI 权限。需要代理操作时，由你单次授权。')}
+          action={nextCliGrant ? (
+            <Button size="small" onClick={() => setNextCliGrant(false)}>取消授权</Button>
+          ) : (
+            <Button
+              size="small"
+              onClick={() => {
+                Modal.confirm({
+                  title: '仅授权下一条消息？',
+                  okText: '仅授权下一条',
+                  cancelText: '保持安全对话',
+                  content: (
+                    <div className="workspace-assistant-cli-grant-copy">
+                      {isOpenCodeCliModel ? (
+                        <>
+                          <p>OpenCode 会在隔离临时目录中启动，并直接连接只包含当前作品工具的临时 Siming MCP。</p>
+                          <p>不会向 OpenCode 暴露作品目录、Shell 或其他程序的 MCP，也不会启用全局 MCP 配置。</p>
+                        </>
+                      ) : (
+                        <>
+                          <p>该 CLI 将以当前作品目录为工作目录，并可使用已配置的 Siming MCP。</p>
+                          <p>部分 CLI 会用自动批准模式完成命令或工具调用；其系统权限仍由 CLI 自身决定。请只对你信任的任务授权。</p>
+                        </>
+                      )}
+                      <p>授权只持续这一条消息，且不会扫描或修改 CLI 的全局配置。</p>
+                    </div>
+                  ),
+                  onOk: () => setNextCliGrant(true),
+                })
+              }}
+            >
+              授权下一条代理操作
+            </Button>
+          )}
+        />
+      )}
+
+      {cliPermissionRequest && (
+        <Alert
+          className="workspace-assistant-cli-permission"
+          type="warning"
+          showIcon
+          message="CLI 请求额外权限，本轮已安全停止"
+          description={cliPermissionRequest.detail || '尚未读取项目或调用 MCP。你可以仅授权这一次并重试原请求。'}
+          action={(
+            <Space size={4}>
+              <Button size="small" onClick={() => setCliPermissionRequest(null)}>不允许</Button>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  const request = cliPermissionRequest
+                  Modal.confirm({
+                    title: '仅本次允许并重试？',
+                    okText: '允许并重试',
+                    cancelText: '取消',
+                    content: (
+                      <div className="workspace-assistant-cli-grant-copy">
+                        {isOpenCodeCliModel ? (
+                          <>
+                            <p>OpenCode 将在隔离临时目录中重新执行原请求，并仅连接当前作品范围的临时 Siming MCP。</p>
+                            <p>不会开放项目目录或其他 MCP；授权会在本次请求结束后自动失效。</p>
+                          </>
+                        ) : (
+                          <>
+                            <p>CLI 将重新执行原请求，并可访问当前作品目录、使用已配置的 Siming MCP。</p>
+                            <p>部分 CLI 会用自动批准模式执行命令；授权会在本次请求结束后自动失效。</p>
+                          </>
+                        )}
+                        <p>司命不会因此修改该 CLI 的全局配置。</p>
+                      </div>
+                    ),
+                    onOk: () => void sendMessage({
+                      text: request.originalMessage,
+                      grantProjectAgentOnce: true,
+                    }),
+                  })
+                }}
+              >
+                仅本次允许并重试
+              </Button>
+            </Space>
+          )}
+        />
+      )}
 
       <div className="workspace-assistant-history">
         {conversations.length > 0 ? conversations.map((conversation) => (
@@ -1487,6 +1681,7 @@ function WorkspaceAssistantChat({
         messagesRef={messagesRef}
         onScroll={handleMessagesScroll}
         projectId={projectId}
+        emptyDescription={modelUnavailable ? '模型准备好后，从这里开始第一次对话。' : undefined}
         onStorageRepaired={() => {
           onApplied?.()
         }}
@@ -1495,6 +1690,8 @@ function WorkspaceAssistantChat({
       <Composer
         input={input}
         generating={generating}
+        disabled={modelUnavailable}
+        disabledPlaceholder="请先配置并验证一个可用模型"
         cancelPending={cancelPending || canceling}
         selectedText={selectedText}
         showSelectionTag={showSelectionTag}

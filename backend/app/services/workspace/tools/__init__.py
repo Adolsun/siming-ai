@@ -40,7 +40,15 @@ from .worldbuilding import (
     update_worldbuilding_entry,
 )
 from .worldbuilding_writer import worldbuilding_writer
-from .projects import create_project, delete_project, get_project_info, list_projects, update_project_info
+from .projects import (
+    create_project,
+    delete_project,
+    get_project_creation_brief,
+    get_project_info,
+    list_projects,
+    update_project_creation_brief,
+    update_project_info,
+)
 from .project_files import (
     get_project_files_info,
     list_project_files,
@@ -202,8 +210,10 @@ __all__ = [
     "list_memories",
     "list_projects",
     "get_project_info",
+    "get_project_creation_brief",
     "create_project",
     "update_project_info",
+    "update_project_creation_brief",
     "delete_project",
     "get_project_files_info",
     "list_project_files",

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import threading
@@ -59,12 +60,19 @@ class LocalRuntimeManager:
         self._requested_context_length: int | None = None
         self._adapter_signature = ""
         self._port: int | None = None
+        self._api_key: str | None = None
         self._last_adjustment: str | None = None
         self._last_log_path: str | None = None
 
     @property
     def base_url(self) -> str | None:
         return f"http://127.0.0.1:{self._port}/v1" if self._port else None
+
+    @property
+    def api_key(self) -> str | None:
+        """Return the per-process credential without exposing it in status APIs."""
+
+        return self._api_key
 
     def status(self) -> dict:
         running = bool(self._port and self._healthy())
@@ -82,6 +90,22 @@ class LocalRuntimeManager:
             "adjustment": self._last_adjustment,
             "log_path": self._last_log_path,
         }
+
+    @staticmethod
+    def _default_context_length(model_context: int | None, recommended_context: int) -> int:
+        """Use a memory-safe starting context without reducing model capability."""
+
+        capacity = int(model_context or 0)
+        recommendation = max(1, int(recommended_context or 8192))
+        return min(capacity, recommendation) if capacity > 0 else recommendation
+
+    @staticmethod
+    def _launch_profiles(nvidia_available: bool, context: int) -> list[tuple[int, int]]:
+        """Try GPU first, then preserve the same context on CPU/RAM."""
+
+        if nvidia_available:
+            return [(99, context), (0, context)]
+        return [(0, context)]
 
     def ensure_running(
         self,
@@ -107,23 +131,30 @@ class LocalRuntimeManager:
             # The catalog value is a useful starting point, not a ceiling.
             # Users with large VRAM/unified memory may select a model's full
             # or RoPE-scaled context window.
-            context = context_length or model.context_length or profile.recommended_context
+            context = context_length or self._default_context_length(
+                model.context_length,
+                profile.recommended_context,
+            )
             if (
                 self._model_key == model_key
                 and self._requested_context_length == context
                 and self._adapter_signature == signature
                 and self._healthy()
             ):
+                # A previous HTTP caller may have disconnected after launch.
+                # Reconcile durable state before returning the healthy process.
+                self._mark_runtime_running()
                 return self.base_url or ""
 
             self.stop()
             # Never silently shrink a context selected by the user. A failed
             # launch reports llama.cpp's diagnostic so the user can choose a
             # lower value deliberately, instead of losing project evidence.
-            launch_profiles = [(99 if profile.nvidia_available else 0, context)]
+            launch_profiles = self._launch_profiles(profile.nvidia_available, context)
             last_error = "本地模型运行时启动失败"
             for attempt, (gpu_layers, attempt_context) in enumerate(launch_profiles):
                 port = _free_port()
+                runtime_api_key = secrets.token_urlsafe(32)
                 command = self._build_command(
                     runtime.executable_path,
                     model.file_path,
@@ -133,6 +164,7 @@ class LocalRuntimeManager:
                     max(2, profile.cpu_count - 1),
                     gpu_layers,
                     adapters,
+                    api_key=runtime_api_key,
                 )
                 stdout_path, stderr_path = self._launch_log_paths(model.model_key, attempt)
                 self._last_log_path = str(stderr_path)
@@ -142,7 +174,8 @@ class LocalRuntimeManager:
                             f"\n\n=== {datetime.utcnow().isoformat()}Z "
                             f"model={model.model_key} gpu_layers={gpu_layers} "
                             f"context={attempt_context} ===\n"
-                            f"command={json.dumps(command, ensure_ascii=False)}\n"
+                            "command="
+                            f"{json.dumps(self._redacted_command(command), ensure_ascii=False)}\n"
                         ).encode("utf-8", errors="replace")
                     )
                     stderr.flush()
@@ -151,6 +184,7 @@ class LocalRuntimeManager:
                         **_hidden_process_kwargs(stdout=stdout, stderr=stderr),
                     )
                 self._port = port
+                self._api_key = runtime_api_key
                 self._model_key = model_key
                 self._context_length = attempt_context
                 self._requested_context_length = context
@@ -158,7 +192,7 @@ class LocalRuntimeManager:
                 self._last_adjustment = (
                     None
                     if attempt == 0
-                    else f"已自动降级为 GPU 层 {gpu_layers}、上下文 {attempt_context}"
+                    else f"GPU 加载未成功，已改用 CPU/系统内存；上下文仍为 {attempt_context}"
                 )
                 self._record_start(runtime, model.id)
 
@@ -203,6 +237,7 @@ class LocalRuntimeManager:
             port = self._port
             self._process = None
             self._port = None
+            self._api_key = None
             self._model_key = None
             self._context_length = None
             self._requested_context_length = None
@@ -241,6 +276,7 @@ class LocalRuntimeManager:
         thread_count: int,
         gpu_layers: int,
         adapters: list[ModelAdapter],
+        api_key: str | None = None,
     ) -> list[str]:
         command = [
             executable_path,
@@ -262,10 +298,27 @@ class LocalRuntimeManager:
             "--no-webui",
             "--gpu-layers",
             str(gpu_layers),
+            "--cors-origins",
+            "localhost",
         ]
+        if api_key:
+            command.extend(["--api-key", api_key])
         for adapter in adapters:
             command.extend(["--lora-scaled", adapter.file_path, str(adapter.weight or 1.0)])
         return command
+
+    @staticmethod
+    def _redacted_command(command: list[str]) -> list[str]:
+        """Keep diagnostics useful without writing the runtime credential."""
+
+        redacted = list(command)
+        try:
+            key_index = redacted.index("--api-key") + 1
+        except ValueError:
+            return redacted
+        if key_index < len(redacted):
+            redacted[key_index] = "<redacted>"
+        return redacted
 
     @staticmethod
     def _launch_log_paths(model_key: str, attempt: int) -> tuple[Path, Path]:

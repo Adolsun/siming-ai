@@ -143,10 +143,15 @@
     padding-inline: 12px;
   }
 
-  .project-workspace-breadcrumb > span,
-  .project-workspace-title,
+  .project-workspace-separator,
+  .project-workspace-view-title,
   .project-workspace-actions .ant-btn > span:not(.ant-btn-icon) {
     display: none;
+  }
+
+  .project-workspace-title {
+    display: inline-flex;
+    max-width: 180px;
   }
 
   .project-workspace-content {
@@ -160,9 +165,14 @@
     padding-inline: 8px;
   }
 
-  .project-workspace-breadcrumb .ant-btn-link > span:not(.anticon),
-  .project-workspace-breadcrumb > span {
+  .project-workspace-home > span:not(.anticon),
+  .project-workspace-separator,
+  .project-workspace-view-title {
     display: none;
+  }
+
+  .project-workspace-title {
+    max-width: min(38vw, 150px);
   }
 
   .project-workspace-actions {

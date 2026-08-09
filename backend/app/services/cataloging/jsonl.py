@@ -17,6 +17,32 @@ from ..story_granularity import (
 )
 
 
+_LEDGER_WRAPPER_FIELDS = {
+    "completed_beat": "events",
+    "revealed_clue": "reader_known_facts",
+    "storyline_state": "storyline_progress",
+}
+_WRAPPED_CANDIDATE_TYPES = set(VALID_ITEM_TYPES) | set(_LEDGER_WRAPPER_FIELDS) | {
+    "narrative_promise",
+}
+_CHARACTER_RELATION_NAMES = {
+    "allies_with",
+    "brother_of",
+    "child_of",
+    "conflicts_with",
+    "enemy_of",
+    "father_of",
+    "friend_of",
+    "grandfather_of",
+    "grandmother_of",
+    "mother_of",
+    "parent_of",
+    "rival_of",
+    "sibling_of",
+    "sister_of",
+}
+
+
 def clean_jsonl_text(text: str) -> str:
     value = (text or "").strip()
     if value.startswith("```"):
@@ -71,6 +97,9 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     wrapped = raw.get("candidate")
     if isinstance(wrapped, dict):
         raw = wrapped
+    wrapper_type, wrapper_payload = _single_candidate_wrapper(raw)
+    if wrapper_payload is not None and not isinstance(raw.get("payload"), dict) and not isinstance(raw.get("data"), dict):
+        return _normalize_wrapper_payload(wrapper_type, wrapper_payload)
     payload = raw.get("payload")
     if not isinstance(payload, dict):
         payload = raw.get("data")
@@ -180,6 +209,61 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _single_candidate_wrapper(raw: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """Recognize model output shaped as ``{"candidate_type": {...}}``.
+
+    Some local models follow the semantic JSON schema literally and use the
+    candidate type as a single wrapper key instead of repeating it in a
+    top-level ``type`` field.  Treating that valid shape as an unknown type
+    caused narrative ledger and chapter-link data to disappear during
+    cataloging retries.
+    """
+
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for key, value in raw.items():
+        normalized = str(key).strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in _WRAPPED_CANDIDATE_TYPES and isinstance(value, dict):
+            matches.append((normalized, value))
+    if len(matches) != 1:
+        return "", None
+    return matches[0]
+
+
+def _normalize_wrapper_payload(wrapper_type: str, value: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(value)
+    if wrapper_type in _LEDGER_WRAPPER_FIELDS or wrapper_type == "narrative_promise":
+        label_key = {
+            "completed_beat": "beat",
+            "revealed_clue": "clue",
+            "narrative_promise": "promise",
+            "storyline_state": "storyline",
+        }[wrapper_type]
+        entry = dict(payload)
+        label = entry.get(label_key)
+        if label and not entry.get("title"):
+            entry["title"] = label
+        if wrapper_type == "narrative_promise":
+            canonical = (
+                "foreshadowing_resolved"
+                if str(entry.get("status") or "").strip().lower() in {"fulfilled", "resolved", "closed"}
+                else "foreshadowing_planted"
+            )
+        else:
+            canonical = _LEDGER_WRAPPER_FIELDS[wrapper_type]
+        normalized: dict[str, Any] = {canonical: [entry]}
+        for key in ("chapter", "chapter_id", "chapter_title", "confidence", "evidence"):
+            if payload.get(key) not in (None, ""):
+                normalized[key] = payload[key]
+        return normalized
+    if wrapper_type == "worldbuilding_timeline":
+        related = payload.get("related_worldbuilding")
+        if not payload.get("title") and isinstance(related, list) and related:
+            payload["title"] = related[0]
+        if not payload.get("event_description"):
+            payload["event_description"] = payload.get("description") or payload.get("event") or ""
+    return payload
+
+
 def _merge_key_value_lines(payload: dict[str, Any], values: list[Any]) -> None:
     for value in values:
         if not isinstance(value, str):
@@ -212,6 +296,17 @@ def _raw_type(raw: dict[str, Any], payload: dict[str, Any]) -> str:
         or payload.get("category_type")
         or ""
     )
+    if not value:
+        wrapper_type, _ = _single_candidate_wrapper(raw)
+        value = wrapper_type
+    if not value:
+        # A few API models put the candidate type in ``payload.node_type``
+        # even though that field is reserved for outline granularity.  Accept
+        # it only when it is an actual candidate type; values such as
+        # chapter/section/volume must continue to mean outline node types.
+        node_type_hint = _norm(str(payload.get("node_type") or ""))
+        if node_type_hint in VALID_ITEM_TYPES:
+            value = node_type_hint
     return str(value).strip()
 
 
@@ -234,6 +329,11 @@ def _canonical_candidate_type(raw_type: str, action: str, payload: dict[str, Any
     text = _norm(raw_type)
     op = _norm(action)
     if text in VALID_ITEM_TYPES:
+        if text == "chapter_link" and _looks_like_character_relationship(payload):
+            payload.setdefault("source_name", payload.get("source"))
+            payload.setdefault("target_name", payload.get("target"))
+            payload.setdefault("relationship_type", payload.get("relation"))
+            return "character_relationship"
         return text
     aliases = {
         "summary": "chapter_summary",
@@ -293,6 +393,10 @@ def _canonical_candidate_type(raw_type: str, action: str, payload: dict[str, Any
         "link": "chapter_link",
         "chapter_link": "chapter_link",
         "章节关联": "chapter_link",
+        "completed_beat": "chapter_summary",
+        "revealed_clue": "chapter_summary",
+        "narrative_promise": "chapter_summary",
+        "storyline_state": "chapter_summary",
     }
     if text in aliases:
         item_type = aliases[text]
@@ -300,6 +404,19 @@ def _canonical_candidate_type(raw_type: str, action: str, payload: dict[str, Any
             return "outline_update"
         return item_type
     return _infer_candidate_type(payload, op)
+
+
+def _looks_like_character_relationship(payload: dict[str, Any]) -> bool:
+    if not payload.get("source") or not payload.get("target"):
+        return False
+    relation = _norm(str(payload.get("relationship_type") or payload.get("relation") or ""))
+    if not relation:
+        return False
+    return (
+        relation in _CHARACTER_RELATION_NAMES
+        or relation.endswith("_of")
+        or any(marker in relation for marker in ("亲属", "父子", "父女", "母子", "母女", "兄弟", "姐妹", "敌对", "冲突"))
+    )
 
 
 def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
@@ -315,6 +432,20 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
     if "character_names" in keys or "worldbuilding_titles" in keys or "outline_title" in keys:
         return "chapter_link"
     state_keys = set(CHARACTER_STATE_FIELDS)
+    # Prefer explicit domain fields over the generic ``name`` key.  Otherwise
+    # malformed-but-recoverable worldbuilding cards such as
+    # {name, dimension, description} become characters.
+    if keys & {"dimension", "category", "entry_title", "worldbuilding_title", "world_title", "setting_title"}:
+        if "event_description" in keys and keys & {"title", "entry_title", "name"}:
+            return "worldbuilding_timeline"
+        return "worldbuilding_update" if action == "update" else "worldbuilding_create"
+    # Scene fields are stronger evidence than narrative-state fields.  Some
+    # providers include entry/exit state on an outline scene, which previously
+    # caused it to be misclassified as a chapter summary.
+    if "parent_title" in keys or "related_characters" in keys or "scene_number" in keys:
+        return "outline_update" if action == "update" else "outline_create"
+    if keys & set(SECTION_SCENE_STATE_FIELDS):
+        return "outline_update" if action == "update" else "outline_create"
     if "name" in keys or "character_name" in keys or "target_name" in keys:
         if "event_description" in keys or "event" in keys:
             return "character_timeline"
@@ -339,11 +470,7 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
         return "chapter_summary"
     if "event_description" in keys and ("title" in keys or "entry_title" in keys or "dimension" in keys):
         return "worldbuilding_timeline"
-    if keys & {"dimension", "category", "entry_title", "worldbuilding_title", "world_title", "setting_title"}:
-        return "worldbuilding_update" if action == "update" else "worldbuilding_create"
     if "node_type" in keys or "parent_title" in keys or "related_characters" in keys:
-        return "outline_update" if action == "update" else "outline_create"
-    if keys & set(SECTION_SCENE_STATE_FIELDS):
         return "outline_update" if action == "update" else "outline_create"
     if "summary_text" in keys or "key_events" in keys:
         return "chapter_summary"
@@ -397,6 +524,7 @@ def _normalize_payload_fields(
     if item_type.startswith("worldbuilding_"):
         title = (
             payload.get("title")
+            or payload.get("name")
             or payload.get("entry_title")
             or payload.get("worldbuilding_title")
             or payload.get("world_title")
@@ -406,9 +534,25 @@ def _normalize_payload_fields(
         if title:
             payload["title"] = title
         if not payload.get("content"):
-            payload["content"] = payload.get("description") or payload.get("event_description") or ""
+            payload["content"] = (
+                payload.get("description")
+                or payload.get("event_description")
+                or payload.get("significance")
+                or ""
+            )
         _normalize_dimension_alias(payload)
     if item_type.startswith("outline_"):
+        candidate_type_hint = _norm(str(payload.get("node_type") or ""))
+        if candidate_type_hint in VALID_ITEM_TYPES:
+            # Restore the semantic outline granularity after consuming the
+            # provider's misplaced candidate type.
+            payload["node_type"] = (
+                "section"
+                if payload.get("scene_number") is not None
+                or payload.get("parent_title")
+                or set(payload.keys()) & set(SECTION_SCENE_STATE_FIELDS)
+                else "chapter"
+            )
         if not payload.get("title"):
             payload["title"] = raw.get("target_name") or payload.get("outline_title") or ""
         if not payload.get("node_type") and set(payload.keys()) & set(SECTION_SCENE_STATE_FIELDS):

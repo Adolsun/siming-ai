@@ -51,6 +51,7 @@ import { apiClient } from '../api/client'
 import { StructuredStageEditor } from './novel-creation/StructuredStageEditor'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { motionAwareScrollBehavior } from '../utils/motion'
+import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import {
   defaultInterviewRuntime,
   startNovelCreationSession,
@@ -70,6 +71,7 @@ const { Title, Paragraph, Text } = Typography
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
 const CHAT_MESSAGE_CHAR_LIMIT = 1_000_000
 const LONG_CREATION_TEXT_THRESHOLD = 20_000
+const LOCAL_CLI_WRITE_INTENT = /(?:修改|改成|改为|调整|更新|写入|保存|补充|新增|生成|删除|移除|替换|确认|锁定|解锁|撤销|恢复|导入|创建|建项|立项|回改|设置)/
 
 interface ApiResponse<T> {
   code: number
@@ -438,11 +440,14 @@ function GuiAssistantChat() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
     const compactViewport = window.matchMedia('(max-width: 1180px)')
     const closePanelWhenCompact = (event: MediaQueryListEvent) => {
-      if (event.matches) setCreationPanelOpen(false)
+      // A compact rail may close to protect chat space, but a focused editor
+      // is an active task. Keep it open across window resizing so the user's
+      // form and unsaved working memory never appear to vanish.
+      if (event.matches && !expandedArtifact) setCreationPanelOpen(false)
     }
     compactViewport.addEventListener('change', closePanelWhenCompact)
     return () => compactViewport.removeEventListener('change', closePanelWhenCompact)
-  }, [])
+  }, [expandedArtifact])
 
   const {
     defaultModel,
@@ -451,9 +456,17 @@ function GuiAssistantChat() {
   } = useModelOptions()
   const [selectedModelOverride, setSelectedModelOverride] = useState<string>()
   const selectedModel = selectedModelOverride || defaultModel || undefined
+  const selectedProvider = String(selectedModel || '').split(':', 1)[0]
+  const isLocalCliModel = selectedProvider.endsWith('_cli')
+  const supportsTransientCreationMcp = selectedProvider === 'opencode_cli'
+  const [nextLocalCliGrant, setNextLocalCliGrant] = useState(false)
   const interviewModelSource = selectedModelOverride
     ? 'conversation_override'
     : selectedModel ? 'global_default' : 'unconfigured'
+
+  useEffect(() => {
+    setNextLocalCliGrant(false)
+  }, [selectedModel])
   const novelInterview = useNovelCreationInterviewController({
     model: selectedModel,
     modelSource: interviewModelSource,
@@ -507,7 +520,7 @@ function GuiAssistantChat() {
     }
   }, [adoptNovelInterviewSession, location.search, systemSessionId])
 
-  const openArtifactEditor = async (artifact: CreationArtifactSummary, sessionIdOverride?: string) => {
+  const openArtifactEditor = useCallback(async (artifact: CreationArtifactSummary, sessionIdOverride?: string) => {
     const targetSessionId = sessionIdOverride || systemSessionId || activeCreationRun?.session_id
     if (!targetSessionId) {
       message.error('找不到这项立项数据所属的会话')
@@ -537,7 +550,7 @@ function GuiAssistantChat() {
     } finally {
       setArtifactDetailLoading(false)
     }
-  }
+  }, [activeCreationRun?.session_id, adoptNovelInterviewSession, systemSessionId])
 
   const saveExpandedArtifact = useCallback(async () => {
     const targetSessionId = expandedArtifactSessionId || systemSessionId
@@ -632,7 +645,7 @@ function GuiAssistantChat() {
     if (!artifact) return
     openedRequestedArtifactRef.current = `${systemSessionId}:${requestedArtifact}`
     void openArtifactEditor(artifact)
-  }, [creationArtifacts, requestedArtifact, systemSessionId])
+  }, [creationArtifacts, openArtifactEditor, requestedArtifact, systemSessionId])
 
   useEffect(() => {
     if (!systemSessionId) {
@@ -986,14 +999,16 @@ function GuiAssistantChat() {
     setSystemConversationId(undefined)
     systemConversationIdRef.current = undefined
     setMessages([])
-    void apiClient.get<ApiResponse<{ sessions: CreationSessionContext[] }>>(
-      '/novel-creation/sessions',
-      { include_completed: true, project_id: activeProjectId },
+    void apiClient.post<ApiResponse<{ session: CreationSessionContext }>>(
+      `/projects/${activeProjectId}/creation-brief/ensure`,
     ).then((response) => {
-      const linked = response.data.data.sessions?.[0]
+      const linked = response.data.data.session
       if (linked) adoptNovelInterviewSession(linked.id, linked.user_brief || '')
       else resetNovelInterview()
-    }).catch(() => resetNovelInterview())
+    }).catch(() => {
+      resetNovelInterview()
+      message.warning('作品已打开，但立项资料暂未能同步；可稍后重试')
+    })
     fetchConversations(activeProjectId).then((items) => {
       if (items[0]) fetchMessages(items[0].id)
     })
@@ -1261,7 +1276,12 @@ function GuiAssistantChat() {
     }
   }
 
-  const handleSystemAssistantMessage = async (text: string, originalText?: string) => {
+  const handleSystemAssistantMessage = async (
+    text: string,
+    originalText?: string,
+    grantLocalCliOnce = false,
+    localCliReadPaths: string[] = [],
+  ) => {
     const sourceText = originalText || text
     const forceFreshCreation = (
       Boolean(activeProjectId) && shouldUseNovelCreation(sourceText, true)
@@ -1392,6 +1412,9 @@ function GuiAssistantChat() {
           message: sourceText,
           model: selectedModel || null,
           history: messages.slice(-12).map((item) => ({ role: item.role, content: item.content })),
+          local_cli_permission_grant: grantLocalCliOnce ? 'creation_agent_once' : 'chat_only',
+          local_cli_read_permission_grant: localCliReadPaths.length > 0 ? 'read_once' : 'none',
+          local_cli_read_paths: localCliReadPaths,
         })
         const run = response.data.data.run
         if (run) setActiveCreationRun(run)
@@ -1818,12 +1841,73 @@ function GuiAssistantChat() {
     }
   }
 
-  const sendMessage = async () => {
+  const sendMessage = async (options?: {
+    grantLocalCliOnce?: boolean
+    readPaths?: string[]
+  }) => {
     const text = inputValue.trim()
     // Allow sending if there are pending files (even without text)
     if ((!text && pendingFiles.length === 0) || streaming) return
     // If only files without text, use a default message
     const effectiveText = text || '请帮我处理这些文件'
+    const grantLocalCliOnce = isLocalCliModel && Boolean(
+      options?.grantLocalCliOnce || nextLocalCliGrant,
+    )
+    const proposedReadPaths = supportsTransientCreationMcp
+      ? (options?.readPaths ?? extractExplicitLocalPaths(effectiveText))
+      : []
+    if (
+      supportsTransientCreationMcp
+      && options?.readPaths === undefined
+      && proposedReadPaths.length > 0
+    ) {
+      Modal.confirm({
+        title: '仅允许 OpenCode 读取这些路径一次？',
+        okText: '创建只读快照并发送',
+        cancelText: '取消',
+        content: (
+          <div className="gui-chat-cli-grant-copy">
+            <p>路径文字本身不会被当作授权。确认后，司命才会为这一条消息创建受限的只读快照：</p>
+            <ul>
+              {proposedReadPaths.map((path) => <li key={path}><code>{path}</code></li>)}
+            </ul>
+            <p>OpenCode 只能读取隔离副本，不能访问原路径、父目录或相邻文件；不会获得 Shell 或写文件权限。</p>
+            <p>密钥、凭据、网络路径、符号链接及过大的目录会被后端拒绝；本轮结束后快照自动删除。</p>
+          </div>
+        ),
+        onOk: () => void sendMessage({ ...options, readPaths: proposedReadPaths }),
+      })
+      return
+    }
+    const grantedReadPaths = supportsTransientCreationMcp ? proposedReadPaths : []
+    if (
+      isLocalCliModel
+      && systemSessionId
+      && !grantLocalCliOnce
+      && LOCAL_CLI_WRITE_INTENT.test(effectiveText)
+    ) {
+      Modal.confirm({
+        title: '允许本机 CLI 仅修改本轮立项数据？',
+        okText: '允许本轮修改',
+        cancelText: '保持只读',
+        content: (
+          <div className="gui-chat-cli-grant-copy">
+            <p>CLI 本身仍处于隔离环境，不能读取项目目录、Shell 或其他程序的配置文件。</p>
+            <p>{supportsTransientCreationMcp
+              ? '司命会向当前 OpenCode 子进程注入仅含本立项会话工具的临时 MCP；OpenCode 将直接调用并回读验证。'
+              : '司命会通过受控工具桥执行立项白名单操作，并校验当前会话与数据版本。'}</p>
+            <p>授权在这条消息结束后自动失效，不会扫描或修改该 CLI 的全局 MCP 配置。</p>
+          </div>
+        ),
+        onOk: () => void sendMessage({
+          ...options,
+          grantLocalCliOnce: true,
+          readPaths: grantedReadPaths,
+        }),
+      })
+      return
+    }
+    setNextLocalCliGrant(false)
 
     const isLongCreationText = pendingFiles.length === 0
       && effectiveText.length > LONG_CREATION_TEXT_THRESHOLD
@@ -1891,7 +1975,12 @@ function GuiAssistantChat() {
 
     const continuesSystemCreation = systemBlueprints.length > 0 && !/(写|续写|重写|查看|打开).{0,8}第?\d+\s*章/.test(text)
     if (!activeProjectId || shouldUseNovelCreation(text, Boolean(activeProjectId)) || continuesSystemCreation) {
-      await handleSystemAssistantMessage(messageWithContext, displayText)
+      await handleSystemAssistantMessage(
+        messageWithContext,
+        displayText,
+        grantLocalCliOnce,
+        grantedReadPaths,
+      )
       return
     }
 
@@ -1973,6 +2062,9 @@ function GuiAssistantChat() {
           temperature: 0.3,
           max_tokens: undefined,
           auto_apply: true,
+          local_cli_permission_grant: grantLocalCliOnce ? 'project_agent_once' : 'chat_only',
+          local_cli_read_permission_grant: grantedReadPaths.length > 0 ? 'read_once' : 'none',
+          local_cli_read_paths: grantedReadPaths,
           outline_batch_count: 3,
           history,
         }),
@@ -2917,10 +3009,19 @@ function GuiAssistantChat() {
 
   const renderCreationRunCard = () => {
     if (!activeCreationRun) return null
-    const isRunning = ['queued', 'running'].includes(activeCreationRun.status)
-    const isWaiting = ['waiting_user', 'waiting_author'].includes(activeCreationRun.status)
-    const isPaused = activeCreationRun.status === 'paused'
-    const canRetry = ['failed', 'cancelled', 'interrupted'].includes(activeCreationRun.status)
+    const runArtifact = creationArtifacts.find((item) => item.artifact === activeCreationRun.stage)
+    const artifactStatus = runArtifact?.stored_status || runArtifact?.status
+    const artifactAlreadyConfirmed = ['waiting_user', 'waiting_author'].includes(activeCreationRun.status)
+      && artifactStatus === 'confirmed'
+      && !runArtifact?.conflict
+    const effectiveRunStatus = artifactAlreadyConfirmed ? 'completed' : activeCreationRun.status
+    const effectiveRunMessage = artifactAlreadyConfirmed
+      ? '阶段内容已由作者确认，立项数据和任务状态已同步。'
+      : activeCreationRun.current_message
+    const isRunning = ['queued', 'running'].includes(effectiveRunStatus)
+    const isWaiting = ['waiting_user', 'waiting_author'].includes(effectiveRunStatus)
+    const isPaused = effectiveRunStatus === 'paused'
+    const canRetry = ['failed', 'cancelled', 'interrupted'].includes(effectiveRunStatus)
     const statusLabels: Record<string, string> = {
       queued: '排队中',
       running: '正在生成',
@@ -2943,18 +3044,18 @@ function GuiAssistantChat() {
       all: '完整立项',
     }
     return (
-      <Card className={`gui-chat-creation-run gui-chat-creation-run-${activeCreationRun.status}`} variant="outlined">
+      <Card className={`gui-chat-creation-run gui-chat-creation-run-${effectiveRunStatus}`} variant="outlined">
         <div className="gui-chat-creation-run-head">
           <div>
             <Text type="secondary" className="gui-chat-creation-run-kicker">立项任务</Text>
             <Title level={5}>{stageLabels[activeCreationRun.stage] || activeCreationRun.stage}</Title>
           </div>
-          <Tag color={isRunning ? 'processing' : isWaiting ? 'gold' : activeCreationRun.status === 'failed' ? 'error' : 'default'}>
-            {statusLabels[activeCreationRun.status] || activeCreationRun.status}
+          <Tag color={isRunning ? 'processing' : isWaiting ? 'gold' : effectiveRunStatus === 'failed' ? 'error' : effectiveRunStatus === 'completed' ? 'success' : 'default'}>
+            {statusLabels[effectiveRunStatus] || effectiveRunStatus}
           </Tag>
         </div>
         <Paragraph className="gui-chat-creation-run-message">
-          {activeCreationRun.current_message || '任务状态正在同步…'}
+          {effectiveRunMessage || '任务状态正在同步…'}
         </Paragraph>
         <Space size={[8, 8]} wrap>
           {activeCreationRun.model_source && <Tag>模型：{activeCreationRun.model_source}</Tag>}
@@ -3084,10 +3185,18 @@ function GuiAssistantChat() {
     if (!systemSessionId || artifactAction) return
     setArtifactAction(artifact.artifact)
     try {
-      await apiClient.post(`/novel-creation/sessions/${systemSessionId}/stages/${artifact.artifact}/confirm`, {
+      const confirmed = await apiClient.post<ApiResponse<{ runs?: NovelCreationRunSummary[] }>>(`/novel-creation/sessions/${systemSessionId}/stages/${artifact.artifact}/confirm`, {
         confirm: true,
         source: 'author',
         expected_revision: artifact.revision,
+      })
+      const confirmedRun = [...(confirmed.data.data.runs || [])]
+        .reverse()
+        .find((run) => run.stage === artifact.artifact)
+      setActiveCreationRun((current) => {
+        if (!current || current.stage !== artifact.artifact) return current
+        if (confirmedRun && (confirmedRun.id || confirmedRun.run_id) === (current.id || current.run_id)) return confirmedRun
+        return { ...current, status: 'completed', current_message: '阶段内容已由作者确认' }
       })
       if (artifact.artifact === 'final_review') {
         const applied = await apiClient.post<ApiResponse<{ project_id: string; warnings?: string[] }>>(
@@ -3262,7 +3371,9 @@ function GuiAssistantChat() {
           </Space>
         </div>
         <div className="gui-chat-creation-panel-summary">
-          <Text type="secondary">结构化资料是当前作品的事实来源。聊天修改完成后会自动同步到这里。</Text>
+          <Text type="secondary">
+            这里统一维护立项与正文事实。创作约束、创意方向和文风可随时修改，并会进入后续项目助手与正文创作上下文。
+          </Text>
           {creationConsistency && (
             <div className={`gui-chat-consistency-summary${creationConsistency.valid ? ' is-valid' : ' has-issues'}`}>
               <Tag color={creationConsistency.valid ? 'success' : creationConsistency.summary.blocking ? 'error' : undefined}>
@@ -3670,6 +3781,45 @@ function GuiAssistantChat() {
 
         <div className="gui-chat-composer">
           {renderPendingFiles()}
+          {isLocalCliModel && systemSessionId && (
+            <Alert
+              className="gui-chat-cli-permission"
+              type={nextLocalCliGrant ? 'warning' : 'info'}
+              showIcon
+              message={nextLocalCliGrant ? '下一条消息可修改当前立项数据' : '本机 CLI 已安全内化到聊天'}
+              description={nextLocalCliGrant
+                ? supportsTransientCreationMcp
+                  ? '仅下一条有效；OpenCode 将直连当前会话的临时 Siming MCP，结束即销毁，不改全局配置。'
+                  : '仅下一条有效；司命通过受控工具桥校验并执行立项操作，CLI 无法访问项目目录或全局配置。'
+                : '默认可对话和读取立项数据；需要写入时由你单次授权。消息中出现本地路径时会另行确认，并只提供临时只读快照。不会自动扫描或修改全局 MCP 配置。'}
+              action={nextLocalCliGrant ? (
+                <Button size="small" onClick={() => setNextLocalCliGrant(false)}>取消授权</Button>
+              ) : (
+                <Button
+                  size="small"
+                  onClick={() => {
+                    Modal.confirm({
+                      title: '仅授权下一条消息修改立项？',
+                      okText: '仅授权下一条',
+                      cancelText: '保持只读',
+                      content: (
+                        <div className="gui-chat-cli-grant-copy">
+                          <p>{supportsTransientCreationMcp
+                            ? 'OpenCode 会直接连接只包含当前立项会话工具的临时 Siming MCP。'
+                            : '司命会通过受控工具桥执行经过白名单校验的立项工具。'}</p>
+                          <p>CLI 不会获得项目文件、Shell 或其他程序的全局配置权限。</p>
+                          <p>授权在下一条消息结束后自动失效。</p>
+                        </div>
+                      ),
+                      onOk: () => setNextLocalCliGrant(true),
+                    })
+                  }}
+                >
+                  授权下一条修改
+                </Button>
+              )}
+            />
+          )}
           <Input.TextArea
             aria-label="给司命的消息"
             value={inputValue}
@@ -3703,7 +3853,7 @@ function GuiAssistantChat() {
                 <Button
                   type="primary"
                   icon={<SendOutlined />}
-                  onClick={sendMessage}
+                  onClick={() => void sendMessage()}
                   disabled={!inputValue.trim() && pendingFiles.length === 0}
                 >
                   发送

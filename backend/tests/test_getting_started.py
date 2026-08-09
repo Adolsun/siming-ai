@@ -92,7 +92,7 @@ def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     }
     with Session() as db, patch("app.routers.getting_started.resolve_opencode_command", return_value=inspected["command"]), patch(
         "app.routers.getting_started.inspect_opencode", return_value=inspected
-    ), patch("app.routers.getting_started.auto_configure_mcp_for_provider", return_value={"status": "configured"}):
+    ), patch("app.services.external_agent.mcp_auto_config.auto_configure_mcp_for_provider") as auto_configure:
         result = configure_opencode(
             OpenCodeConfigureRequest(model="opencode/deepseek-v4-flash-free"),
             db,
@@ -104,6 +104,8 @@ def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     assert saved.is_global_default is False
     assert saved.readiness_status == "unverified"
     assert saved.cli_command == inspected["command"]
+    assert "mcp_auto_setup" not in result.data
+    auto_configure.assert_not_called()
 
 
 def test_summary_status_does_not_launch_cli_probes():
@@ -347,7 +349,7 @@ def test_activation_falls_back_to_next_free_model_before_saving_config():
         new=AsyncMock(side_effect=[RuntimeError("free usage quota exceeded"), None]),
     ) as test_model, patch.object(opencode_onboarding, "_save_activated_config") as save_config, patch(
         "app.services.external_agent.mcp_auto_config.auto_configure_mcp_for_provider"
-    ):
+    ) as auto_configure:
         opencode_onboarding._activation_worker("job-1")
 
     assert test_model.await_args_list == [
@@ -355,6 +357,7 @@ def test_activation_falls_back_to_next_free_model_before_saving_config():
         call(job["command"], "opencode/second-free"),
     ]
     save_config.assert_called_once_with(job["command"], "opencode/second-free")
+    auto_configure.assert_not_called()
     assert any(item.kwargs.get("status") == "ready" for item in update.call_args_list)
 
 

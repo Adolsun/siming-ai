@@ -15,7 +15,6 @@ from ..database.session import get_db
 from ..modules.model_runtime.application.getting_started import (
     get_getting_started_configuration,
 )
-from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
@@ -264,15 +263,13 @@ def configure_opencode(payload: OpenCodeConfigureRequest, db: Session = Depends(
         model=model,
         cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
     )
-    mcp_setup = auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
     return ApiResponse.success(
         data={
             "provider": config.provider,
             "model": config.model,
             "command": config.command,
             "cli_args": config.cli_args,
-            "mcp_auto_setup": mcp_setup,
             "status": _getting_started_status(db),
         },
-        message="OpenCode 已交给司命管理，下一步测试免费模型",
+        message="OpenCode 模型已保存；如需连接 MCP，请在系统设置中单独授权",
     )

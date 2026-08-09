@@ -82,11 +82,11 @@ def detect_hardware() -> HardwareProfile:
     gpu_name, vram_gb = _nvidia_gpu()
     ram_gb = _ram_gb()
     if vram_gb >= 24 and ram_gb >= 32:
-        profile, model, context = "quality", "qwen3.5-27b-q4", 262144
+        profile, model, context = "quality", "qwen3.5-27b-q4", 32768
     elif vram_gb >= 12 or ram_gb >= 32:
-        profile, model, context = "standard", "qwen3.5-9b-q4", 262144
+        profile, model, context = "standard", "qwen3.5-9b-q4", 16384
     else:
-        profile, model, context = "light", "qwen3.5-4b-q4", 262144
+        profile, model, context = "light", "qwen3.5-4b-q4", 8192
     return HardwareProfile(
         os=platform.system(),
         arch=platform.machine(),

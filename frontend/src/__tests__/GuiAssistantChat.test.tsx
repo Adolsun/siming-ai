@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { message } from 'antd'
@@ -361,6 +361,54 @@ describe('GuiAssistantChat new-book handoff', () => {
     })
   })
 
+  it('uses the confirmed artifact as the source of truth over a stale waiting task snapshot', async () => {
+    const baseGet = mockGet.getMockImplementation()
+    const basePost = mockPost.getMockImplementation()
+    mockGet.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/artifacts') {
+        return Promise.resolve({ data: { data: {
+          revision: 8,
+          artifacts: [{
+            artifact: 'concepts',
+            label: '创意方案',
+            status: 'confirmed',
+            stored_status: 'confirmed',
+            source: 'author',
+            revision: 8,
+            locked_paths: [],
+            flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [] },
+          }],
+        } } })
+      }
+      return baseGet?.(url, ...args)
+    })
+    mockPost.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/agent-turn') {
+        return Promise.resolve({ data: { data: {
+          reply: '创意方案已生成。',
+          run: {
+            id: 'run-waiting',
+            session_id: 'session-1',
+            stage: 'concepts',
+            status: 'waiting_user',
+            operation_id: 'operation-waiting',
+            current_message: '阶段结果已保存，等待作者确认',
+          },
+          tool_results: [],
+        } } })
+      }
+      return basePost?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('阶段内容已由作者确认，立项数据和任务状态已同步。')).toBeInTheDocument()
+    expect(screen.queryByText('等待确认')).not.toBeInTheDocument()
+  })
+
   it('shows a preserved candidate when an old task conflicts with newer author data', async () => {
     const baseGet = mockGet.getMockImplementation()
     mockGet.mockImplementation((url: string, ...args: unknown[]) => {
@@ -479,9 +527,38 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
 
     expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
-    expect(await screen.findByDisplayValue('灰港遗忘症')).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: /灰港遗忘症/ }))
+    expect(await screen.findByDisplayValue('灰港遗忘症')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /返回作品资料/ })).toBeInTheDocument()
     expect(panel).toBeInTheDocument()
+  })
+
+  it('keeps the focused structured editor visible when the window becomes compact', async () => {
+    const mediaListeners = new Set<(event: MediaQueryListEvent) => void>()
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: (_event: string, listener: (event: MediaQueryListEvent) => void) => mediaListeners.add(listener),
+      removeEventListener: (_event: string, listener: (event: MediaQueryListEvent) => void) => mediaListeners.delete(listener),
+    }))
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    const input = await screen.findByRole('textbox', { name: '给司命的消息' })
+    await user.type(input, '我要创建一本新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    const panel = await screen.findByRole('complementary', { name: '作品资料' })
+    await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
+    expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
+
+    act(() => {
+      for (const listener of mediaListeners) {
+        listener({ matches: true } as MediaQueryListEvent)
+      }
+    })
+
+    expect(panel).toHaveClass('gui-chat-creation-panel-open')
+    expect(panel).toHaveClass('gui-chat-creation-panel-editor-open')
+    expect(screen.getByRole('heading', { name: '创意方案' })).toBeVisible()
   })
 
   it.skip('shows actual runtime diagnostics after a legacy interview response', async () => {
@@ -712,5 +789,23 @@ describe('GuiAssistantChat new-book handoff', () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
       '/novel-creation/sessions/session-1/imports', expect.any(FormData), { timeout: 0 },
     ))
+  })
+
+  it('does not treat a pasted local path as consent and asks for a read-only snapshot', async () => {
+    modelState.defaultModel = 'opencode_cli:opencode/deepseek-v4-flash-free'
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(
+      await screen.findByRole('textbox', { name: '给司命的消息' }),
+      '请读取 "C:\\Novel Notes\\人物设定.md"',
+    )
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByRole('dialog', { name: '仅允许 OpenCode 读取这些路径一次？' })).toBeInTheDocument()
+    expect(screen.getByText('C:\\Novel Notes\\人物设定.md')).toBeInTheDocument()
+    expect(screen.getByText(/路径文字本身不会被当作授权/)).toBeInTheDocument()
+    expect(screen.getByText(/不能访问原路径、父目录或相邻文件/)).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/agent-turn', expect.anything())
   })
 })

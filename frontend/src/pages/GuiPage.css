@@ -73,6 +73,18 @@
   overflow: auto;
 }
 
+.gui-page-brand .gui-page-version {
+  display: inline;
+  margin-left: 4px;
+  color: var(--ant-color-text-quaternary, var(--ant-color-text-tertiary));
+  font-variant-numeric: tabular-nums;
+}
+
+.gui-page-brand-collapsed {
+  justify-content: center;
+  padding: 10px;
+}
+
 .gui-embedded-page {
   box-sizing: border-box;
   margin: 0 auto;

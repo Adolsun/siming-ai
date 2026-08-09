@@ -555,7 +555,7 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.queryByRole('textbox', { name: '阶段 JSON 原文' })).not.toBeInTheDocument()
     await user.clear(toneInput)
     await user.type(toneInput, '记忆有明确代价')
-    await user.click(screen.getByRole('button', { name: '保存修改' }))
+    await user.click(screen.getByRole('button', { name: '保存并同步' }))
 
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style', expect.objectContaining({

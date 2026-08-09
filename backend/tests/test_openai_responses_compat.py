@@ -7,13 +7,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-from openai import NotFoundError
+import pytest
+from openai import NotFoundError, PermissionDeniedError
 
 from app.ai.openai_adapter import OpenAIAdapter
 from app.core.exceptions import LLMError
 from app.modules.model_runtime.application.verification import ModelProbeRequest
 from app.modules.model_runtime.infrastructure.verification import (
+    DEFAULT_API_PROBE_TIMEOUT_SECONDS,
     ProviderModelVerification,
+    _api_probe_timeout_seconds,
     _list_openai,
     _openai_client,
     _probe_openai,
@@ -25,6 +28,54 @@ from app.schemas.config import ModelListRequest
 def _not_found(path: str) -> NotFoundError:
     response = httpx.Response(404, request=httpx.Request("POST", path))
     return NotFoundError("route not found", response=response, body={"detail": "Not Found"})
+
+
+def _permission_denied(path: str, message: str) -> PermissionDeniedError:
+    response = httpx.Response(403, request=httpx.Request("POST", path))
+    return PermissionDeniedError(
+        message,
+        response=response,
+        body={"error": {"message": message}},
+    )
+
+
+def test_api_probe_timeout_defaults_to_slow_proxy_safe_window_and_is_bounded():
+    assert _api_probe_timeout_seconds(ModelProbeRequest(provider="custom_proxy")) == (
+        DEFAULT_API_PROBE_TIMEOUT_SECONDS
+    )
+    assert _api_probe_timeout_seconds(
+        ModelProbeRequest(provider="custom_proxy", timeout_seconds=5)
+    ) == 15
+    assert _api_probe_timeout_seconds(
+        ModelProbeRequest(provider="custom_proxy", timeout_seconds=90)
+    ) == 90
+    assert _api_probe_timeout_seconds(
+        ModelProbeRequest(provider="custom_proxy", timeout_seconds=999)
+    ) == 180
+
+
+def test_api_probe_classifies_quota_403_before_authentication():
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=_permission_denied(
+        "https://api.deepseek.com/chat/completions",
+        "token quota is not enough",
+    ))
+    client.close = AsyncMock()
+
+    with (
+        patch(
+            "app.modules.model_runtime.infrastructure.verification.AsyncOpenAI",
+            return_value=client,
+        ),
+        pytest.raises(LLMError, match="quota or rate limit reached"),
+    ):
+        asyncio.run(_probe_openai(ModelProbeRequest(
+            provider="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+            api_protocol="chat_completions",
+        )))
 
 
 class _ReasoningItem:

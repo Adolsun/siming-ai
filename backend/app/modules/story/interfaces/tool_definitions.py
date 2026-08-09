@@ -19,7 +19,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="get_project_info",
-        description="读取作品设置与基础信息。默认读取当前作品，也可传入作品ID。不会读取API Key。",
+        description="读取作品设置、基础信息及关联立项约束（含目标字数、目标章节和已确认状态）。默认读取当前作品，也可传入作品ID。不会读取API Key。",
         input_schema={
             "id": {"type": "string", "description": "可选，作品ID。不传则读取当前作品"},
             "project_id": {"type": "string", "description": "兼容字段，同id"},
@@ -27,6 +27,44 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         tool_type="read",
         estimated_cost="free",
         handler_name="get_project_info",
+    ),
+    ToolDef(
+        name="get_project_creation_brief",
+        description="读取当前正式作品的立项资料，包括创作约束、目标字数/章节、创意方向、文风与世界观，以及各项状态。正文创作前应读取；不会修改数据。",
+        input_schema={
+            "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
+            "id": {"type": "string", "description": "兼容字段，同project_id"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler_name="get_project_creation_brief",
+    ),
+    ToolDef(
+        name="update_project_creation_brief",
+        description="创建或修改正式作品的权威立项资料。适用于作者直接调整，也适用于导入作品：先读取章节、大纲、角色和世界观，再按用户要求从现有小说回填创作约束、创意方向、文风与世界观。更新会影响后续项目助手和正文创作上下文。",
+        input_schema={
+            "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
+            "expected_revision": {"type": "integer", "description": "可选，刚读取到的立项资料版本；防止覆盖并发修改"},
+            "constraints": {
+                "type": "object",
+                "description": "局部创作约束，如brief、genre、target_audience、platform、target_words、target_chapters、world_tone、story_structure、pacing、writing_style、special_requirements、avoid",
+                "additionalProperties": True,
+            },
+            "creative_direction": {
+                "type": "object",
+                "description": "局部创意方向；可传selected中的title、logline、premise、world_hook、core_conflict、story_engine、opening_hook等，也可传options和selected_concept_id",
+                "additionalProperties": True,
+            },
+            "world_style": {
+                "type": "object",
+                "description": "局部文风与世界观数据，字段会与现有内容合并",
+                "additionalProperties": True,
+            },
+        },
+        tool_type="write",
+        writes_project_data=True,
+        estimated_cost="free",
+        handler_name="update_project_creation_brief",
     ),
     ToolDef(
         name="get_project_files_info",

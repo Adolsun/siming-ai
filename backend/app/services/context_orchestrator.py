@@ -36,6 +36,8 @@ from ..database.models import (
     ContextRebuildJob,
     ContextRebuildProject,
     Foreshadowing,
+    LocalModel,
+    LocalModelTaskSetting,
     ModelContextProfile,
     NarrativeDebt,
     OutlineNode,
@@ -554,7 +556,62 @@ class ContextOrchestrator:
     # ------------------------------------------------------------------
     # Model profiles and global budgets
     # ------------------------------------------------------------------
-    def resolve_model_profile(self, model: str | None) -> ResolvedModelContextProfile:
+    @staticmethod
+    def _local_task_type(task_type: str | None) -> str:
+        return {
+            "new_project": "planning",
+            "review": "evaluation",
+            "rewrite": "writing",
+        }.get(str(task_type or ""), str(task_type or "chat"))
+
+    def _local_context_window(self, model_name: str, task_type: str | None) -> int | None:
+        """Resolve the context the managed runtime will actually launch with."""
+
+        model = (
+            self.db.query(LocalModel)
+            .filter(LocalModel.model_key == model_name)
+            .first()
+        )
+        capacity = max(0, int(model.context_length or 0)) if model else 0
+        local_task = self._local_task_type(task_type)
+        setting = (
+            self.db.query(LocalModelTaskSetting)
+            .filter(LocalModelTaskSetting.task_type == local_task)
+            .first()
+        )
+        if (
+            setting
+            and setting.model_key == model_name
+            and int(setting.context_length or 0) > 0
+        ):
+            requested = int(setting.context_length)
+            return min(requested, capacity) if capacity else requested
+
+        # An explicitly started runtime is the strongest evidence when no
+        # task-specific setting will cause the adapter to restart it.
+        try:
+            from .local_runtime import get_runtime_manager
+
+            runtime = get_runtime_manager().status()
+        except Exception:
+            runtime = {}
+        if runtime.get("running") and runtime.get("model_key") == model_name:
+            running_context = int(runtime.get("context_length") or 0)
+            if running_context > 0:
+                return min(running_context, capacity) if capacity else running_context
+
+        if not model:
+            return None
+        from .local_runtime.hardware import detect_hardware
+
+        recommended = max(1, int(detect_hardware().recommended_context or 8192))
+        return min(recommended, capacity) if capacity else recommended
+
+    def resolve_model_profile(
+        self,
+        model: str | None,
+        task_type: str | None = None,
+    ) -> ResolvedModelContextProfile:
         raw = str(model or "").strip()
         provider = "unknown"
         model_name = raw or "unknown"
@@ -576,13 +633,35 @@ class ContextOrchestrator:
             )
             .first()
         )
+        local_context = (
+            self._local_context_window(model_name, task_type)
+            if provider == "local_llama_cpp"
+            else None
+        )
         if profile:
+            configured_window = max(
+                1,
+                int(profile.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS),
+            )
             return ResolvedModelContextProfile(
                 provider=provider,
                 model_name=model_name,
-                context_window_tokens=max(1, int(profile.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS)),
+                context_window_tokens=(
+                    min(configured_window, local_context)
+                    if local_context
+                    else configured_window
+                ),
                 max_output_tokens=int(profile.max_output_tokens) if profile.max_output_tokens else None,
                 safety_margin_tokens=max(0, int(profile.safety_margin_tokens or DEFAULT_SAFETY_MARGIN_TOKENS)),
+                known=True,
+            )
+        if local_context:
+            return ResolvedModelContextProfile(
+                provider=provider,
+                model_name=model_name,
+                context_window_tokens=local_context,
+                max_output_tokens=None,
+                safety_margin_tokens=DEFAULT_SAFETY_MARGIN_TOKENS,
                 known=True,
             )
         return ResolvedModelContextProfile(
@@ -624,7 +703,7 @@ class ContextOrchestrator:
         arguments = dict(arguments or {})
         key = _task_key(task_type)
         contract = TASK_CONTEXT_CONTRACTS[key]
-        profile = self.resolve_model_profile(model)
+        profile = self.resolve_model_profile(model, key)
         budget = self.budget_for(contract, profile)
         blocked_reason = self.project_rebuild_block_reason(project_id)
 

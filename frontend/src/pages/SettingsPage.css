@@ -43,6 +43,10 @@
   white-space: normal;
 }
 
+.settings-readiness-time {
+  font-size: 12px;
+}
+
 .settings-readiness-banner {
   align-items: center;
   background: var(--ant-color-warning-bg);
@@ -83,6 +87,24 @@
   min-height: 48px;
 }
 
+.settings-model-empty {
+  background: var(--ant-color-fill-quaternary);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  padding: 22px;
+}
+
+.settings-model-empty-title {
+  display: block;
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.settings-model-empty .ant-typography {
+  margin-bottom: 14px;
+  max-width: 680px;
+}
+
 @media (max-width: 980px) {
   .settings-card .ant-table-wrapper {
     overflow-x: auto;
@@ -96,5 +118,75 @@
 
   .settings-card .ant-card-body {
     padding: 16px;
+  }
+}
+.settings-cli-integrations > .ant-card-body {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-cli-unscanned {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px;
+  border: 1px dashed var(--ant-color-border);
+  border-radius: 10px;
+  background: var(--ant-color-fill-quaternary);
+}
+
+.settings-cli-unscanned > .anticon {
+  margin-top: 3px;
+  color: var(--ant-color-text-secondary);
+  font-size: 22px;
+}
+
+.settings-cli-unscanned .ant-typography {
+  margin-bottom: 0;
+}
+
+.settings-cli-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-cli-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 10px;
+  background: var(--ant-color-bg-container);
+}
+
+.settings-cli-item-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-cli-item-main > .ant-typography {
+  max-width: min(620px, 55vw);
+}
+
+.settings-cli-consent ul {
+  margin: 10px 0 14px;
+  padding-left: 22px;
+}
+
+.settings-cli-consent li + li {
+  margin-top: 6px;
+}
+
+@media (max-width: 760px) {
+  .settings-cli-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-cli-item-main > .ant-typography {
+    max-width: calc(100vw - 80px);
   }
 }

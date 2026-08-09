@@ -782,11 +782,17 @@ def patch_creation_artifact(
     if validator:
         validator(stage, document)
     affected = creation_artifact_dependencies(session, stage)["affected_artifacts"]
+    preserve_author_confirmation = (
+        source == "author" and artifact.get("status") == "confirmed"
+    )
     save_stage(
         session,
         stage,
         document,
-        confirm=False,
+        # A direct edit to already-confirmed facts is itself an explicit author
+        # decision. Keep it confirmed; assistant/model edits still require a
+        # separate review so automation cannot silently approve itself.
+        confirm=preserve_author_confirmation,
         source=source,
         change_type="patch",
         change_summary=summary,
@@ -1222,36 +1228,47 @@ def derive_stage(
     if stage == "opening_outline":
         return _opening_outline(blueprint, form)
     stages = draft.get("stages", {})
-    opening = _dict(stages.get("opening_outline", {}).get("data")) or _opening_outline(blueprint, form)
+    opening_state = _dict(stages.get("opening_outline"))
+    opening_confirmed = opening_state.get("status") == "confirmed"
+    # Opening detail is optional when writing the core project record. Never
+    # synthesize three chapters merely to make the final review pass; include
+    # it only after the author has explicitly confirmed it.
+    opening = _dict(opening_state.get("data")) if opening_confirmed else {}
     characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters", draft)
     world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style", draft)
     blocking = []
-    for required_stage in ("constraints", "concepts", "world_style", "characters", "locations", "macro_outline", "opening_outline"):
+    for required_stage in ("constraints", "concepts", "world_style", "characters", "locations", "macro_outline"):
         status = _dict(stages.get(required_stage)).get("status")
         if status != "confirmed":
             blocking.append(f"{STAGE_LABELS[required_stage]}尚未确认或需要重新生成")
-    opening_chapter_count = _opening_outline_chapter_count(form)
-    if len(opening.get("chapters", [])) != opening_chapter_count:
-        blocking.append(f"前{opening_chapter_count}章细纲不完整")
-    section_counts: dict[str, int] = {}
-    for section in opening.get("sections", []):
-        parent = _text(section.get("parent_client_id"))
-        section_counts[parent] = section_counts.get(parent, 0) + 1
-    chapter_ids = [
-        _text(chapter.get("client_id"))
-        for chapter in opening.get("chapters", [])
-        if isinstance(chapter, dict)
-    ]
-    if any(not chapter_id or section_counts.get(chapter_id, 0) not in range(2, 7) for chapter_id in chapter_ids):
-        blocking.append("每章必须包含2至6个场景事件")
+    if opening_confirmed:
+        opening_chapter_count = _opening_outline_chapter_count(form)
+        if len(opening.get("chapters", [])) != opening_chapter_count:
+            blocking.append(f"已确认的前{opening_chapter_count}章细纲不完整")
+        section_counts: dict[str, int] = {}
+        for section in opening.get("sections", []):
+            parent = _text(section.get("parent_client_id"))
+            section_counts[parent] = section_counts.get(parent, 0) + 1
+        chapter_ids = [
+            _text(chapter.get("client_id"))
+            for chapter in opening.get("chapters", [])
+            if isinstance(chapter, dict)
+        ]
+        if any(not chapter_id or section_counts.get(chapter_id, 0) not in range(2, 7) for chapter_id in chapter_ids):
+            blocking.append("已确认的开篇细纲中，每章必须包含2至6个场景事件")
     if not characters.get("characters"):
         blocking.append("缺少角色档案")
     if not world.get("worldbuilding"):
         blocking.append("缺少世界观条目")
+    warnings = ["后续章节仅保留宏观卷纲，写作前再按批次展开细纲"]
+    if not opening_confirmed:
+        warnings.append(
+            "开篇细纲尚未确认，本次只写入核心立项资料；可在正式作品中继续生成和完善章节。"
+        )
     return {
         "ready": not blocking,
         "blocking": blocking,
-        "warnings": ["后续章节仅保留宏观卷纲，写作前再按批次展开细纲"],
+        "warnings": warnings,
         "counts": {
             "characters": len(characters.get("characters", [])),
             "worldbuilding": len(world.get("worldbuilding", [])),
@@ -1405,7 +1422,7 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
     stages = draft.get("stages", {})
     unconfirmed = [
         STAGE_LABELS[name]
-        for name in ("constraints", "concepts", "world_style", "characters", "locations", "macro_outline", "opening_outline")
+        for name in ("constraints", "concepts", "world_style", "characters", "locations", "macro_outline")
         if _dict(stages.get(name)).get("status") != "confirmed"
     ]
     if unconfirmed:
@@ -1417,7 +1434,8 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
     world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style")
     locations = _dict(stages.get("locations", {}).get("data")) or derive_stage(session, "locations")
     macro = _dict(stages.get("macro_outline", {}).get("data")) or derive_stage(session, "macro_outline")
-    opening = _dict(stages.get("opening_outline", {}).get("data")) or derive_stage(session, "opening_outline")
+    opening_state = _dict(stages.get("opening_outline"))
+    opening = _dict(opening_state.get("data")) if opening_state.get("status") == "confirmed" else {}
     character_rows = _list(characters.get("characters"))
     protagonist = next((row for row in character_rows if row.get("role_type") == "protagonist"), character_rows[0] if character_rows else {})
     supporting = [row for row in character_rows if row is not protagonist]
@@ -1438,6 +1456,7 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
         "worldbuilding_relations": _list(locations.get("relations")),
         "volume_outline": _list(macro.get("volumes")),
         "outline": _list(opening.get("chapters")) + _list(opening.get("sections")),
+        "apply_warnings": _list(final.get("warnings")),
         "novel_creation_schema_version": SCHEMA_VERSION,
     })
     return blueprint

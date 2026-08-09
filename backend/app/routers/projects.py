@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from ..architecture.uow import commit_session
 from ..core.response import ApiResponse
+from ..database.session import get_db
 from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.application.projects import ProjectWorkspace
 from ..modules.story.interfaces.dependencies import get_story_command
@@ -51,6 +54,45 @@ def get_project(
     workspace: Annotated[ProjectWorkspace, Depends(get_project_workspace)],
 ):
     return ApiResponse.success(data=workspace.get(project_id))
+
+
+@router.get("/projects/{project_id}/creation-brief")
+def get_project_creation_brief(project_id: str, db: Session = Depends(get_db)):
+    """Read the authoritative, editable brief linked to a formal project."""
+    from ..services.novel_creation_workspace import serialize_session
+    from ..services.project_creation_context import (
+        project_creation_context,
+        resolve_project_creation_session,
+    )
+
+    session = resolve_project_creation_session(db, project_id)
+    if session is None:
+        return ApiResponse.success(data={"session": None, "context": None})
+    return ApiResponse.success(data={
+        "session": serialize_session(session, include_runs=False),
+        "context": project_creation_context(session),
+    })
+
+
+@router.post("/projects/{project_id}/creation-brief/ensure")
+def ensure_project_creation_brief(project_id: str, db: Session = Depends(get_db)):
+    """Create an editable brief for imported/legacy projects when requested."""
+    from ..services.novel_creation_workspace import serialize_session
+    from ..services.project_creation_context import (
+        ensure_project_creation_session,
+        project_creation_context,
+    )
+
+    try:
+        session = ensure_project_creation_session(db, project_id)
+        commit_session(db)
+        db.refresh(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ApiResponse.success(data={
+        "session": serialize_session(session, include_runs=False),
+        "context": project_creation_context(session),
+    })
 
 
 @router.put("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])

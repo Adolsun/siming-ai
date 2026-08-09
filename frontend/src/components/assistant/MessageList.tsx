@@ -48,6 +48,7 @@ interface MessageListProps {
   onScroll: () => void
   projectId: string
   onStorageRepaired?: () => void
+  emptyDescription?: string
 }
 
 export function MessageList({
@@ -60,6 +61,7 @@ export function MessageList({
   onScroll,
   projectId,
   onStorageRepaired,
+  emptyDescription = '直接提出需求，AI会读取项目资料并决定是否调用工具。',
 }: MessageListProps) {
   return (
     <>
@@ -164,7 +166,7 @@ export function MessageList({
             </div>
           ))
         ) : (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="直接提出需求，AI会读取项目资料并决定是否调用工具。" />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyDescription} />
         )}
 
         {generating && (

@@ -106,6 +106,7 @@ function NovelCreationWizardPage() {
   const formDirtyRef = useRef(false)
   const editTickRef = useRef(0)
   const editedDuringRunRef = useRef(false)
+  const editorOriginalTextRef = useRef('')
 
   const requestedSessionId = searchParams.get('session') || undefined
   const requestedRunId = searchParams.get('run')
@@ -590,7 +591,9 @@ function NovelCreationWizardPage() {
       : (session?.draft?.stages?.[stage]?.data || {})
     setEditorStage(stage)
     setEditorData(data)
-    setEditorText(JSON.stringify(data, null, 2))
+    const serialized = JSON.stringify(data, null, 2)
+    setEditorText(serialized)
+    editorOriginalTextRef.current = serialized
     setEditorOpen(true)
   }
 
@@ -615,6 +618,21 @@ function NovelCreationWizardPage() {
     } catch (error) {
       message.error(error instanceof SyntaxError ? '结构内容不是有效 JSON，请检查括号和引号' : errorText(error))
     }
+  }
+
+  const closeEditor = () => {
+    if (editorText === editorOriginalTextRef.current) {
+      setEditorOpen(false)
+      return
+    }
+    Modal.confirm({
+      title: '放弃尚未保存的修改？',
+      content: '关闭后，本次在完整编辑器中的修改不会写入立项数据。',
+      okText: '放弃修改',
+      okButtonProps: { danger: true },
+      cancelText: '继续编辑',
+      onOk: () => setEditorOpen(false),
+    })
   }
 
   const createProject = async () => {
@@ -1054,8 +1072,20 @@ function NovelCreationWizardPage() {
         })()}
       </div>
 
-      <Modal title={`编辑：${stageLabels[editorStage] || (editorStage === 'concepts' ? '创意方向' : editorStage)}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={960}>
-        <Alert type="info" showIcon message="直接修改需要调整的字段" description="保存后，下游已经确认的阶段会标记为需要重新校验。列表和复杂关系可以展开逐项编辑。" />
+      <Modal
+        className="creation-editor-modal"
+        title={`完整编辑器 · ${stageLabels[editorStage] || (editorStage === 'concepts' ? '创意方向' : editorStage)}`}
+        open={editorOpen}
+        onCancel={closeEditor}
+        onOk={saveEditor}
+        okText="保存并同步"
+        cancelText="取消"
+        width={1120}
+        maskClosable={false}
+        keyboard={false}
+        destroyOnHidden
+      >
+        <Alert type="info" showIcon message="只展开需要修改的部分" description="列表默认收起，先定位再编辑可以减少误改。保存后，受影响的下游内容会标记为需要重新校验；内部关联标识由司命维护。" />
         <div className="creation-structured-editor">
           <StructuredStageEditor data={editorData} onChange={updateStructuredEditor} />
         </div>

@@ -78,6 +78,44 @@
   font-size: 12px;
 }
 
+.workspace-assistant-readiness {
+  flex: 0 0 auto;
+}
+
+.workspace-assistant-readiness .ant-alert-description {
+  line-height: 1.55;
+}
+
+.workspace-assistant-cli-permission {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.workspace-assistant-cli-permission .ant-alert-description {
+  line-height: 1.55;
+}
+
+.workspace-assistant-cli-permission .ant-alert-content {
+  min-width: 0;
+  flex: 1 1 calc(100% - 28px);
+}
+
+.workspace-assistant-cli-permission .ant-alert-action {
+  flex: 0 0 100%;
+  margin-top: 8px;
+  margin-inline-start: 0;
+  padding-inline-start: 28px;
+}
+
+.workspace-assistant-cli-grant-copy p {
+  margin: 0 0 8px;
+}
+
+.workspace-assistant-cli-grant-copy p:last-child {
+  margin-bottom: 0;
+}
+
 /* ── Conversation history ── */
 .workspace-assistant-history {
   display: grid;

@@ -3,7 +3,7 @@
  * Contains Settings, External Agent / MCP, AI Chat, and Terminal.
  * Uses its own layout (no workspace sidebar).
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Layout, Menu, Tooltip, Typography } from 'antd'
 import {
@@ -25,6 +25,7 @@ import TerminalPage from './TerminalPage'
 import ModelCenterPage from './ModelCenterPage'
 import TabCache from '../components/TabCache'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import AppVersion from '../components/AppVersion'
 import { GettingStartedPanel } from './GettingStartedPage'
 import './GuiPage.css'
 
@@ -32,6 +33,14 @@ const { Sider, Content } = Layout
 const { Title } = Typography
 
 type GuiTab = 'settings' | 'external-agent' | 'ai-chat' | 'quick-start' | 'models' | 'terminal'
+
+const COMPACT_NAVIGATION_QUERY = '(max-width: 760px)'
+
+function isCompactNavigation() {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(COMPACT_NAVIGATION_QUERY).matches
+}
 
 const MENU_ITEMS = [
   {
@@ -84,6 +93,28 @@ function GuiPage() {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<GuiTab>('ai-chat')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [compactNavigation, setCompactNavigation] = useState(isCompactNavigation)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+
+    const mediaQuery = window.matchMedia(COMPACT_NAVIGATION_QUERY)
+    const handleChange = (event: MediaQueryListEvent) => setCompactNavigation(event.matches)
+    setCompactNavigation(mediaQuery.matches)
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange)
+      return () => mediaQuery.removeEventListener('change', handleChange)
+    }
+
+    mediaQuery.addListener(handleChange)
+    return () => mediaQuery.removeListener(handleChange)
+  }, [])
+
+  const navigationCollapsed = sidebarCollapsed || compactNavigation
+  const navigationItems = navigationCollapsed
+    ? MENU_ITEMS.flatMap((group) => group.children)
+    : MENU_ITEMS
 
   return (
     <Layout className="gui-page-shell">
@@ -91,29 +122,31 @@ function GuiPage() {
         width={188}
         collapsedWidth={56}
         collapsible
-        collapsed={sidebarCollapsed}
+        collapsed={navigationCollapsed}
         onCollapse={setSidebarCollapsed}
         trigger={null}
         theme="light"
         className="gui-page-sider"
       >
-        <div className="gui-page-brand">
-          <BookOutlined />
-          {!sidebarCollapsed && (
+        <div className={`gui-page-brand${navigationCollapsed ? ' gui-page-brand-collapsed' : ''}`}>
+          {(!navigationCollapsed || compactNavigation) && <BookOutlined />}
+          {!navigationCollapsed && (
             <div>
               <Title level={5}>司命</Title>
-              <span>创作控制台</span>
+              <span>创作控制台 <AppVersion className="gui-page-version" /></span>
             </div>
           )}
-          <Tooltip title={sidebarCollapsed ? '展开导航' : '收起导航'} placement="right">
-            <Button
-              type="text"
-              size="small"
-              icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-              aria-label={sidebarCollapsed ? '展开导航' : '收起导航'}
-              onClick={() => setSidebarCollapsed((value) => !value)}
-            />
-          </Tooltip>
+          {!compactNavigation && (
+            <Tooltip title={sidebarCollapsed ? '展开导航' : '收起导航'} placement="right">
+              <Button
+                type="text"
+                size="small"
+                icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                aria-label={sidebarCollapsed ? '展开导航' : '收起导航'}
+                onClick={() => setSidebarCollapsed((value) => !value)}
+              />
+            </Tooltip>
+          )}
         </div>
 
         {/* Navigation menu */}
@@ -121,13 +154,13 @@ function GuiPage() {
           mode="inline"
           selectedKeys={[activeTab]}
           onClick={({ key }) => setActiveTab(key as GuiTab)}
-          items={MENU_ITEMS}
-          inlineCollapsed={sidebarCollapsed}
+          items={navigationItems}
+          inlineCollapsed={navigationCollapsed}
           className="gui-page-menu"
         />
 
         <div className="gui-page-footer">
-          {sidebarCollapsed ? (
+          {navigationCollapsed ? (
             <>
               <Tooltip title="进入作品库" placement="right">
                 <Button

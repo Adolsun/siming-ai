@@ -20,7 +20,10 @@ from ..modules.assistant.interfaces.system_conversation_dependencies import (
     get_system_conversation_store,
 )
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
-from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
+from ..services.project_creation_context import (
+    get_project_creation_context,
+    resolve_project_creation_session,
+)
 from ..services.context_builders import (
     _build_chapter_detail_context,
     _build_character_ai_context,
@@ -50,7 +53,7 @@ from ..prompts.workspace_assistant import (
     MAX_ITERATIONS,
 )
 from ..services.agent.prompt_builder import build_system_prompt, get_workspace_pack, inject_assistant_mode
-from ..ai.local_cli_adapter import is_local_cli_provider
+from ..ai.local_cli_adapter import CLIPermissionRequiredError, is_local_cli_provider
 from ..services.skills.service import select_relevant_skills, build_skill_prompt_section
 from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
@@ -1274,28 +1277,60 @@ async def workspace_assistant_stream(
                 payload.model,
                 cwd=project_folder,
             )
-            local_cli_mcp_enabled = local_cli_extra_body is not None
-            if local_cli_mcp_enabled:
+            local_cli_selected = is_local_cli_provider(selected_provider)
+            local_cli_permission_granted = (
+                local_cli_selected
+                and payload.local_cli_permission_grant == "project_agent_once"
+            )
+            local_cli_mcp_enabled = local_cli_permission_granted
+            if local_cli_selected:
+                transient_opencode_mcp = (
+                    selected_provider == "opencode_cli" and local_cli_permission_granted
+                )
+                local_cli_read_permission_granted = (
+                    selected_provider == "opencode_cli"
+                    and payload.local_cli_read_permission_grant == "read_once"
+                    and bool(payload.local_cli_read_paths)
+                )
                 local_cli_extra_body = dict(local_cli_extra_body)
-                local_cli_extra_body["local_cli_allow_mcp"] = True
+                local_cli_extra_body.update(
+                    {
+                        "local_cli_permission_granted": local_cli_permission_granted,
+                        "local_cli_allow_mcp": local_cli_permission_granted,
+                        "local_cli_read_permission_granted": local_cli_read_permission_granted,
+                        "local_cli_read_paths": (
+                            list(payload.local_cli_read_paths)
+                            if local_cli_read_permission_granted else []
+                        ),
+                        # OpenCode receives an inline one-process MCP config and
+                        # therefore never needs the real project directory.
+                        "local_cli_isolated": transient_opencode_mcp or not local_cli_permission_granted,
+                        "local_cli_mcp_permission_pack": "project_management",
+                        "local_cli_mcp_project_id": project_id,
+                    }
+                )
             if assistant_run.operation_id:
                 local_cli_extra_body = dict(local_cli_extra_body or {})
                 local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = [f"当前作品 project_id：{project_id}"]
-            if payload.creation_session_id:
-                creation_session = novel_creation_session_store(db).session(
-                    payload.creation_session_id
+            creation_session = resolve_project_creation_session(
+                db,
+                project_id,
+                payload.creation_session_id,
+            )
+            creation_context = get_project_creation_context(
+                db,
+                project_id,
+                creation_session.id if creation_session else None,
+            )
+            if creation_session and creation_context:
+                selected_context.append(
+                    "当前作品关联的权威立项数据（不得把 confirmed 误报为待确认）：\n"
+                    f"{json.dumps(creation_context, ensure_ascii=False)}\n"
+                    "需要更多立项细节时，先调用 get_project_info；它会返回 creation_session_id、"
+                    "目标字数、目标章节和各工件状态，再按该 session_id 使用立项读取工具。"
                 )
-                if creation_session and project_id in {
-                    creation_session.created_project_id,
-                    creation_session.source_project_id,
-                }:
-                    selected_context.append(
-                        "当前作品关联的立项数据："
-                        f"creation_session_id={creation_session.id}，revision={int(creation_session.revision or 0)}。"
-                        "当用户询问、补充或修改作品设定时，先读取这份立项数据，再使用立项工具做局部更新。"
-                    )
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
             if selected_character:
@@ -1472,6 +1507,8 @@ async def workspace_assistant_stream(
                                 if not reasoning_buffer:
                                     reasoning_buffer = chunk.get("reasoning_content", "")
                                 provider_state = chunk.get("provider_state") or []
+                    except CLIPermissionRequiredError:
+                        raise
                     except LLMError as e:
                         fc_error = e
                         if "API Key" in str(e) or "提供商" in str(e):
@@ -1507,6 +1544,8 @@ async def workspace_assistant_stream(
                             raw_buffer.append(chunk)
                             report_model_activity(chunk)
                             yield _sse_event({"type": "thinking_delta", "delta": chunk})
+                    except CLIPermissionRequiredError:
+                        raise
                     except Exception as stream_err:
                         stream_error = stream_err
                         yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
@@ -2171,6 +2210,51 @@ async def workspace_assistant_stream(
                 final_reply="任务已取消，本轮不会再写入章节。",
             )
             raise
+        except CLIPermissionRequiredError as exc:
+            permission_message = (
+                "本机 CLI 需要额外权限才能继续。本轮没有访问项目目录、调用 MCP "
+                "或执行写入；你可以在聊天窗口选择“仅本次允许并重试”。"
+            )
+            permission_payload = {
+                "tool_logs": tool_logs,
+                "outcome": "waiting_user",
+                "permission_required": {
+                    "kind": "local_cli_project_agent",
+                    "scope": "project_agent_once",
+                    "provider": selected_provider,
+                    "detail": str(exc),
+                },
+            }
+            if assistant_msg_db:
+                assistant_msg_db.content = permission_message
+                assistant_msg_db.status = "completed"
+                assistant_msg_db.payload_json = json.dumps(
+                    permission_payload,
+                    ensure_ascii=False,
+                )
+                commit_session(db)
+            mark_assistant_run(
+                db,
+                assistant_run,
+                status="completed",
+                phase="cli_permission_required",
+                final_reply=permission_message,
+                outcome="waiting_user",
+            )
+            if assistant_run:
+                db.refresh(assistant_run)
+            yield _sse_event(
+                {
+                    "type": "permission_required",
+                    "message": permission_message,
+                    "detail": str(exc),
+                    "permission_scope": "project_agent_once",
+                    "provider": selected_provider,
+                    "original_message": payload.message,
+                    "run": run_payload(assistant_run) if assistant_run else None,
+                }
+            )
+            yield _sse_event("[DONE]")
         except LLMError as exc:
             if assistant_msg_db:
                 assistant_msg_db.content = str(exc)

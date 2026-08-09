@@ -140,8 +140,8 @@ def ensure_project_folder(db: Session, project: Project) -> Path:
     return folder.resolve()
 
 
-def project_manifest(project: Project) -> dict[str, Any]:
-    return {
+def project_manifest(project: Project, creation: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
         "store_version": STORE_VERSION,
         "id": project.id,
         "title": project.title,
@@ -156,11 +156,19 @@ def project_manifest(project: Project) -> dict[str, Any]:
         "daily_word_goal": project.daily_word_goal,
         "updated_at": datetime.utcnow().isoformat(),
     }
+    if creation:
+        payload["creation"] = creation
+    return payload
 
 
 def write_project_manifest(db: Session, project: Project) -> None:
+    from .project_creation_context import get_project_creation_context
+
     folder = ensure_project_folder(db, project)
-    _write_json(folder / MANIFEST_NAME, project_manifest(project))
+    _write_json(
+        folder / MANIFEST_NAME,
+        project_manifest(project, get_project_creation_context(db, project.id)),
+    )
     invalidate_project(project.id)
 
 

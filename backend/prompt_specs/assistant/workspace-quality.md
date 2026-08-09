@@ -50,6 +50,7 @@ golden_cases:
 【其他任务】
 - 补大纲：先读取大纲树和近期章节，再用 outline_writer 生成章级节点及 2-6 个 section，最后 create_outline_nodes。
 - 新书立项：结构化 artifact 是事实来源；修改前读取目标、revision、锁定字段和依赖，只改作者指定对象，写入携带 expected_revision，大改前说明影响范围。
+- 正式作品：写正文、扩纲或讨论长期方向前，优先用 get_project_creation_brief 读取创作约束、目标篇幅、创意方向和文风；用户要求从现有小说回填或调整这些数据时，先读取相关章节/大纲/角色/世界观，再调用 update_project_creation_brief。后续创作不得忽略已保存的立项资料。
 - 立项生成、调整、重试和确认使用各自的确定性工具；冲突或失败时保留原数据，如实返回修改与 stale 摘要，不得伪装完成；最终确认前不创建正式作品。
 - 建档或拆书：创建可恢复任务，按章节或分块检查点推进；运行很久不等于卡住，以任务健康度为准。
 - 本机 CLI：用户明确选择本机 Agent 时调用 start_local_cli_agent_run；CLI 可读镜像，但必须通过司命工具写库。

@@ -20,7 +20,13 @@ REQUIRED_TOOLS = {
 PATCH_MARKER = "MCP_STANDARD_JSON_PATCH_SMOKE"
 
 
-def _run_mcp(executable: Path, env: dict[str, str], requests: list[dict]) -> list[dict]:
+def _run_mcp(
+    executable: Path,
+    env: dict[str, str],
+    requests: list[dict],
+    *,
+    cwd: Path,
+) -> list[dict]:
     completed = subprocess.run(
         [str(executable), "--mcp-server", "--permission-pack", "project_management"],
         input="".join(json.dumps(item) + "\n" for item in requests),
@@ -31,6 +37,7 @@ def _run_mcp(executable: Path, env: dict[str, str], requests: list[dict]) -> lis
         timeout=30,
         check=False,
         env=env,
+        cwd=cwd,
     )
     if completed.returncode != 0:
         raise SystemExit(
@@ -90,10 +97,35 @@ def main() -> int:
         },
     ]
     with tempfile.TemporaryDirectory(prefix="siming-packaged-mcp-smoke-") as temp_dir:
+        temp_path = Path(temp_dir)
+        foreign_agent_dir = temp_path / "foreign-agent"
+        foreign_agent_dir.mkdir()
+        # Reproduce the packaged Hermes/CWD incident.  The invalid value for a
+        # real Siming field proves that the packaged process does not merely
+        # ignore unknown keys: it must not load this foreign dotenv at all.
+        (foreign_agent_dir / ".env").write_text(
+            "\n".join(
+                [
+                    "SIMING_RUNTIME_PROFILE=foreign-agent-value",
+                    "TERMINAL_MODAL_IMAGE=nikolaik/python-nodejs:python3.11-nodejs20",
+                    "TERMINAL_TIMEOUT=60",
+                    "TERMINAL_LIFETIME_SECONDS=300",
+                    "BROWSERBASE_PROXIES=true",
+                    "BROWSERBASE_ADVANCED_STEALTH=false",
+                    "BROWSER_SESSION_TIMEOUT=300",
+                    "BROWSER_INACTIVITY_TIMEOUT=120",
+                    "WEB_TOOLS_DEBUG=false",
+                    "VISION_TOOLS_DEBUG=false",
+                    "MOA_TOOLS_DEBUG=false",
+                    "IMAGE_TOOLS_DEBUG=false",
+                ]
+            ),
+            encoding="utf-8",
+        )
         env = os.environ.copy()
         env["SIMING_HOME"] = temp_dir
-        env["SIMING_CONTENT_ROOT"] = str(Path(temp_dir) / "projects")
-        responses = _run_mcp(executable, env, requests)
+        env["SIMING_CONTENT_ROOT"] = str(temp_path / "projects")
+        responses = _run_mcp(executable, env, requests, cwd=foreign_agent_dir)
         creation_payload = _tool_payload(next((item for item in responses if item.get("id") == 4), None))
         session_id = str(creation_payload.get("data", {}).get("session_id") or "")
         if not session_id:
@@ -126,7 +158,7 @@ def main() -> int:
                     "arguments": {"session_id": session_id},
                 },
             },
-        ])
+        ], cwd=foreign_agent_dir)
         patch_payload = _tool_payload(next((item for item in patch_responses if item.get("id") == 5), None))
         verify_payload = _tool_payload(next((item for item in patch_responses if item.get("id") == 6), None))
     initialize = next((item for item in responses if item.get("id") == 1), None)
@@ -146,7 +178,10 @@ def main() -> int:
         raise SystemExit(f"packaged MCP standard JSON Patch failed: {patch_payload}")
     if PATCH_MARKER not in json.dumps(verify_payload, ensure_ascii=False):
         raise SystemExit("packaged MCP standard JSON Patch was not persisted")
-    print(f"Packaged MCP smoke test passed: {len(names)} tools; write and JSON Patch paths OK")
+    print(
+        f"Packaged MCP smoke test passed: {len(names)} tools; foreign dotenv isolation, "
+        "write, and JSON Patch paths OK"
+    )
     return 0
 
 

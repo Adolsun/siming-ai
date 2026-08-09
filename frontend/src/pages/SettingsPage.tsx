@@ -34,6 +34,8 @@ import {
   DownloadOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
+  ApiOutlined,
+  RollbackOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { projectKeys } from '../features/projects'
@@ -137,6 +139,26 @@ interface UpdateStatus {
   downloaded?: boolean
 }
 
+interface CliIntegration {
+  provider: string
+  label: string
+  detected: boolean
+  command?: string | null
+  config_path?: string | null
+  configured: boolean
+  can_restore: boolean
+  changed?: boolean
+  status?: string
+  detail?: string
+}
+
+interface CliIntegrationScan {
+  status: string
+  clients: CliIntegration[]
+  detected_count: number
+  supported_count: number
+}
+
 interface SettingsPageProps {
   embedded?: boolean
 }
@@ -175,6 +197,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
   const [installingUpdate, setInstallingUpdate] = useState(false)
   const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'gateway'>('ai')
+  const [pendingModelsOpen, setPendingModelsOpen] = useState(false)
+  const [cliIntegrations, setCliIntegrations] = useState<CliIntegrationScan | null>(null)
+  const [cliScanLoading, setCliScanLoading] = useState(false)
+  const [cliAction, setCliAction] = useState<string | null>(null)
 
   const fetchConfigs = useCallback(async () => {
     const result = await modelConfigsQuery.refetch()
@@ -210,6 +236,80 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       setLauncherLoading(false)
     }
   }, [embedded])
+
+  const scanCliIntegrations = async () => {
+    setCliScanLoading(true)
+    try {
+      const res = await apiClient.post<{ code: number; data: CliIntegrationScan }>('/config/cli-integrations/scan')
+      setCliIntegrations(res.data.data)
+      if (res.data.data.detected_count) message.success(`已找到 ${res.data.data.detected_count} 个本机 CLI；尚未修改任何配置`)
+      else message.info('没有找到受支持的本机 CLI；尚未修改任何配置')
+    } catch (err: any) {
+      message.error(err.message || '扫描本机 CLI 失败')
+    } finally {
+      setCliScanLoading(false)
+    }
+  }
+
+  const configureCliIntegration = (client: CliIntegration) => {
+    Modal.confirm({
+      title: `允许司命自动配置 ${client.label}？`,
+      width: 560,
+      icon: <SafetyCertificateOutlined />,
+      content: (
+        <div className="settings-cli-consent">
+          <Paragraph>只有确认后，司命才会修改这个 CLI 的配置；其他 CLI 不受影响。</Paragraph>
+          <ul>
+            <li>写入名为 siming 的 MCP 服务，并保留其他服务配置。</li>
+            <li>不会改变该 CLI 现有的沙箱、审批或工具权限设置。</li>
+            <li>修改前会保存可还原快照；若文件之后又被修改，还原会停止，避免覆盖新内容。</li>
+          </ul>
+          {client.config_path && <Text type="secondary">当前配置：<Text code>{client.config_path}</Text></Text>}
+        </div>
+      ),
+      okText: '我知情，自动配置',
+      cancelText: '取消',
+      onOk: async () => {
+        setCliAction(`configure:${client.provider}`)
+        try {
+          const res = await apiClient.post<{ code: number; data: CliIntegration }>(`/config/cli-integrations/${client.provider}/configure`)
+          const result = res.data.data
+          if (result.status === 'configured' && result.changed) message.success(`${client.label} 已配置，可随时在这里还原`)
+          else if (result.status === 'configured') message.info(`${client.label} 已是所需配置；未修改任何文件`)
+          else message.warning(result.detail || `${client.label} 未发生修改`)
+          await scanCliIntegrations()
+        } catch (err: any) {
+          message.error(err.message || `${client.label} 配置失败`)
+        } finally {
+          setCliAction(null)
+        }
+      },
+    })
+  }
+
+  const restoreCliIntegration = (client: CliIntegration) => {
+    Modal.confirm({
+      title: `还原 ${client.label} 的司命配置？`,
+      content: '司命会先确认配置文件仍与自动配置完成时一致；如果你或其他程序后来改过文件，将停止还原且不会覆盖新内容。',
+      okText: '检查并还原',
+      cancelText: '取消',
+      onOk: async () => {
+        setCliAction(`restore:${client.provider}`)
+        try {
+          const res = await apiClient.post<{ code: number; data: CliIntegration }>(`/config/cli-integrations/${client.provider}/restore`)
+          const result = res.data.data
+          if (result.status === 'restored') message.success(`${client.label} 已还原`)
+          else if (result.status === 'conflict') message.warning(result.detail)
+          else message.info(result.detail || '没有需要还原的配置')
+          await scanCliIntegrations()
+        } catch (err: any) {
+          message.error(err.message || `${client.label} 还原失败`)
+        } finally {
+          setCliAction(null)
+        }
+      },
+    })
+  }
 
   useEffect(() => {
     fetchContentRoot()
@@ -674,6 +774,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         <Space direction="vertical" size={0}>
           <Tag color={readinessColor(status)}>{READINESS_LABELS[status]}</Tag>
           <Text type="secondary" className="settings-readiness-message">{record.readiness_message}</Text>
+          {record.last_tested_at && (
+            <Text type="secondary" className="settings-readiness-time">
+              上次验证：{new Date(record.last_tested_at).toLocaleString('zh-CN')}
+            </Text>
+          )}
         </Space>
       ),
     },
@@ -698,16 +803,14 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       key: 'action',
       render: (_: any, record: ModelConfig) => (
         <Space wrap>
-          {!record.is_usable && (
-            <Button
-              type="primary"
-              icon={<ReloadOutlined />}
-              loading={verifyingProvider === record.provider}
-              onClick={() => void verifySavedConfig(record.provider)}
-            >
-              测试并启用
-            </Button>
-          )}
+          <Button
+            type={record.is_usable ? 'default' : 'primary'}
+            icon={<ReloadOutlined />}
+            loading={verifyingProvider === record.provider}
+            onClick={() => void verifySavedConfig(record.provider)}
+          >
+            {record.is_usable ? '重新验证' : '测试并启用'}
+          </Button>
           {record.is_usable && globalModel.provider !== record.provider && (
             <Button onClick={() => void handleSetGlobal(record.provider)}>设为默认</Button>
           )}
@@ -733,6 +836,13 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
   const readyConfigs = configs.filter((config) => config.is_usable)
   const pendingConfigs = configs.filter((config) => !config.is_usable)
+
+  const revealPendingModels = () => {
+    setPendingModelsOpen(true)
+    window.requestAnimationFrame(() => {
+      document.getElementById('pending-model-configs')?.scrollIntoView({ block: 'nearest' })
+    })
+  }
 
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
   const customModelSelection = isCustomProviderSelection(modalProvider)
@@ -960,52 +1070,157 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         ready={Boolean(globalModel.provider)}
         detail={globalModel.provider && globalModel.model
           ? `当前默认：${providerLabel(globalModel.provider)} · ${normalizeDefaultModel(globalModel.provider, globalModel.model)}`
-          : '请对一个配置执行真实对话测试；仅检测到工具不代表已经登录或有可用额度。'}
+          : pendingConfigs.length > 0
+            ? `已检测到 ${pendingConfigs.length} 个配置。请先选择一个完成真实对话测试；仅检测到工具不代表已经登录或有可用额度。`
+            : '先添加一个模型配置，再完成真实对话测试。测试成功后才会出现在创作入口中。'}
       />
 
       <Card
         className="settings-card"
         title="可用模型"
-        extra={
+        extra={readyConfigs.length > 0 ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => handleAddOrEdit()}>
             添加配置
           </Button>
-        }
+        ) : undefined}
       >
-        <Table
-          dataSource={readyConfigs}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          pagination={false}
-          locale={{ emptyText: '还没有通过真实对话测试的模型' }}
-          scroll={{ x: 900 }}
-        />
+        {loading || readyConfigs.length > 0 ? (
+          <Table
+            dataSource={readyConfigs}
+            columns={columns}
+            rowKey="id"
+            loading={loading}
+            pagination={false}
+            locale={{ emptyText: '还没有通过真实对话测试的模型' }}
+            scroll={{ x: 900 }}
+          />
+        ) : (
+          <div className="settings-model-empty" role="status">
+            <Text strong className="settings-model-empty-title">
+              {pendingConfigs.length > 0 ? '配置已经找到，下一步是验证可用性' : '先添加一个模型配置'}
+            </Text>
+            <Paragraph type="secondary">
+              {pendingConfigs.length > 0
+                ? '完成一次真实对话测试后，这个模型会自动进入新书立项和项目助手。'
+                : '可以选择本机 CLI 或云端 API；保存后还需要完成一次真实对话测试。'}
+            </Paragraph>
+            <Space wrap>
+              {pendingConfigs.length > 0 ? (
+                <Button type="primary" onClick={revealPendingModels}>查看并验证现有配置</Button>
+              ) : (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => handleAddOrEdit()}>添加第一个配置</Button>
+              )}
+              {pendingConfigs.length > 0 && (
+                <Button icon={<PlusOutlined />} onClick={() => handleAddOrEdit()}>添加其他配置</Button>
+              )}
+            </Space>
+          </div>
+        )}
       </Card>
 
-      <Collapse
-        className="settings-card settings-pending-models"
-        items={[{
-          key: 'pending-models',
-          label: <Space><Text strong>检测到但尚未可用</Text><Tag>{pendingConfigs.length}</Tag></Space>,
-          children: (
-            <>
-              <Paragraph type="secondary">
-                这里的 CLI 或 API 配置尚未验证登录、模型和额度。测试成功前不会出现在助手、新书或写作模型列表中。
-              </Paragraph>
-              <Table
-                dataSource={pendingConfigs}
-                columns={columns}
-                rowKey="id"
-                loading={loading}
-                pagination={false}
-                locale={{ emptyText: '没有待验证的配置' }}
-                scroll={{ x: 900 }}
-              />
-            </>
-          ),
-        }]}
-      />
+      <div id="pending-model-configs">
+        <Collapse
+          className="settings-card settings-pending-models"
+          activeKey={pendingModelsOpen ? ['pending-models'] : []}
+          onChange={(keys) => setPendingModelsOpen(keys.includes('pending-models'))}
+          items={[{
+            key: 'pending-models',
+            label: <Space><Text strong>检测到但尚未可用</Text><Tag>{pendingConfigs.length}</Tag></Space>,
+            children: (
+              <>
+                <Paragraph type="secondary">
+                  这里的 CLI 或 API 配置尚未验证登录、模型和额度。测试成功前不会出现在助手、新书或写作模型列表中。
+                </Paragraph>
+                <Table
+                  dataSource={pendingConfigs}
+                  columns={columns}
+                  rowKey="id"
+                  loading={loading}
+                  pagination={false}
+                  locale={{ emptyText: '没有待验证的配置' }}
+                  scroll={{ x: 900 }}
+                />
+              </>
+            ),
+          }]}
+        />
+      </div>
+
+      {!launcherSettings?.gateway_headless && (
+        <Card
+          className="settings-card settings-cli-integrations"
+          title={<span><ApiOutlined /> 本机 CLI 连接</span>}
+          extra={(
+            <Button
+              icon={<DesktopOutlined />}
+              aria-label={cliIntegrations ? '重新扫描本机 CLI' : '扫描本机 CLI'}
+              loading={cliScanLoading}
+              onClick={() => void scanCliIntegrations()}
+            >
+              {cliIntegrations ? '重新扫描' : '扫描本机 CLI'}
+            </Button>
+          )}
+        >
+          <Alert
+            showIcon
+            type="info"
+            message="默认不扫描，也不修改其他 CLI"
+            description="只有点击“扫描本机 CLI”后才会读取受支持 CLI 的安装与配置状态；扫描本身只读。找到后，你可以逐个决定是否自动配置或还原。"
+          />
+          {!cliIntegrations ? (
+            <div className="settings-cli-unscanned" role="status">
+              <DesktopOutlined />
+              <div>
+                <Text strong>尚未扫描本机 CLI</Text>
+                <Paragraph type="secondary">司命没有在后台读取或修改 Claude Code、Codex、OpenCode 等工具的配置。</Paragraph>
+              </div>
+            </div>
+          ) : cliIntegrations.clients.length === 0 ? (
+            <div className="settings-cli-unscanned" role="status">
+              <DesktopOutlined />
+              <div><Text strong>未检测到受支持的 CLI</Text><Paragraph type="secondary">本次扫描未修改任何配置。</Paragraph></div>
+            </div>
+          ) : (
+            <div className="settings-cli-list">
+              {cliIntegrations.clients.map((client) => (
+                <div className="settings-cli-item" key={client.provider}>
+                  <div className="settings-cli-item-main">
+                    <Space wrap>
+                      <Text strong>{client.label}</Text>
+                      <Tag color="blue">已检测到</Tag>
+                      <Tag color={client.configured ? 'success' : 'default'}>{client.configured ? '已连接司命' : '尚未连接'}</Tag>
+                    </Space>
+                    <Text type="secondary" ellipsis={{ tooltip: client.command || client.config_path || undefined }}>
+                      {client.command || client.config_path || '已找到配置目录'}
+                    </Text>
+                  </div>
+                  <Space wrap className="settings-cli-item-actions">
+                    <Button
+                      type={client.configured ? 'default' : 'primary'}
+                      icon={<SafetyCertificateOutlined />}
+                      loading={cliAction === `configure:${client.provider}`}
+                      disabled={Boolean(cliAction && cliAction !== `configure:${client.provider}`)}
+                      aria-label={`${client.configured ? '重新配置' : '自动配置'} ${client.label}`}
+                      onClick={() => configureCliIntegration(client)}
+                    >
+                      {client.configured ? '重新配置' : '自动配置'}
+                    </Button>
+                    <Button
+                      icon={<RollbackOutlined />}
+                      loading={cliAction === `restore:${client.provider}`}
+                      disabled={!client.can_restore || Boolean(cliAction && cliAction !== `restore:${client.provider}`)}
+                      aria-label={`还原 ${client.label}`}
+                      onClick={() => restoreCliIntegration(client)}
+                    >
+                      还原
+                    </Button>
+                  </Space>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       <Collapse
         className="settings-card"
@@ -1187,7 +1402,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               <Form.Item
                 name="cli_args"
                 label="CLI 参数"
-                extra="JSON 数组或普通参数字符串。可使用 {prompt} 和 {model} 占位符。"
+                extra="JSON 数组或普通参数字符串。可使用 {prompt} 和 {model} 占位符；默认参数不绕过审批，项目权限只在聊天中由你单次授权。"
               >
                 <Input.TextArea
                   rows={3}

@@ -30,6 +30,7 @@ from app.modules.model_runtime.domain.policy import (
 )
 
 from .local_cli import (
+    CLIPermissionRequiredError,
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     LocalCLIAdapter,
     detect_cli_quota_error,
@@ -71,6 +72,8 @@ def _is_auth_error(error: BaseException) -> bool:
 
 
 def _is_non_retryable(error: BaseException) -> bool:
+    if isinstance(error, CLIPermissionRequiredError):
+        return True
     text = str(error)
     if "InvalidToken" in text or "登录凭据无效" in text:
         return True

@@ -7,7 +7,18 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import AgentRun, Base, Chapter, ContextManifest, ContextManifestItem, ModelContextProfile, OutlineNode, Project
+from app.database.models import (
+    AgentRun,
+    Base,
+    Chapter,
+    ContextManifest,
+    ContextManifestItem,
+    LocalModel,
+    LocalModelTaskSetting,
+    ModelContextProfile,
+    OutlineNode,
+    Project,
+)
 from app.services.context_orchestrator import ContextOrchestrator
 
 
@@ -44,6 +55,81 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.assertLessEqual(manifest.estimated_input_tokens, manifest.input_budget_tokens)
         self.assertEqual(manifest.status, "ready")
         self.assertTrue(any("Unknown model context profile" in warning for warning in manifest.warnings_json))
+
+    def test_local_model_manifest_uses_task_context_instead_of_fixed_16k(self):
+        self.db.add(LocalModel(
+            model_key="local-qwen",
+            display_name="Local Qwen",
+            context_length=262144,
+            status="installed",
+        ))
+        self.db.add(LocalModelTaskSetting(
+            task_type="writing",
+            model_key="local-qwen",
+            context_length=8192,
+        ))
+        self.db.commit()
+
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="local_llama_cpp:local-qwen",
+            arguments={"outline_node_id": "o1"},
+        )
+
+        self.assertEqual(manifest.context_window_tokens, 8192)
+        self.assertTrue(manifest.contract_json["model_profile_known"])
+
+    def test_local_model_default_tracks_hardware_and_model_capacity(self):
+        self.db.add(LocalModel(
+            model_key="small-context",
+            display_name="Small Context",
+            context_length=12000,
+            status="installed",
+        ))
+        self.db.commit()
+
+        with patch(
+            "app.services.local_runtime.hardware.detect_hardware",
+            return_value=type("Profile", (), {"recommended_context": 32768})(),
+        ), patch(
+            "app.services.local_runtime.manager.LocalRuntimeManager.status",
+            return_value={"running": False},
+        ):
+            profile = self.service.resolve_model_profile(
+                "local_llama_cpp:small-context",
+                "planning",
+            )
+
+        self.assertEqual(profile.context_window_tokens, 12000)
+        self.assertTrue(profile.known)
+
+    def test_local_context_profile_cannot_exceed_runtime_task_setting(self):
+        self.db.add(LocalModel(
+            model_key="local-qwen",
+            display_name="Local Qwen",
+            context_length=262144,
+            status="installed",
+        ))
+        self.db.add(LocalModelTaskSetting(
+            task_type="cataloging",
+            model_key="local-qwen",
+            context_length=16384,
+        ))
+        self.db.add(ModelContextProfile(
+            provider="local_llama_cpp",
+            model_name="local-qwen",
+            context_window_tokens=65536,
+            safety_margin_tokens=512,
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile(
+            "local_llama_cpp:local-qwen",
+            "cataloging",
+        )
+
+        self.assertEqual(profile.context_window_tokens, 16384)
 
     def test_missing_writing_anchor_requires_confirmation(self):
         manifest = self.service.prepare(

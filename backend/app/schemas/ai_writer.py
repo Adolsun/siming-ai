@@ -28,6 +28,21 @@ class WorkspaceAssistantRequest(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=1)
     outline_batch_count: int = Field(3, ge=1, le=12, description="Preferred number of consecutive outline chapters to plan")
     auto_apply: bool = Field(True, description="Apply tool actions proposed by the model")
+    local_cli_permission_grant: Literal["chat_only", "project_agent_once"] = Field(
+        "chat_only",
+        description=(
+            "One-turn user grant for a local CLI to use the scoped Siming MCP tools"
+        ),
+    )
+    local_cli_read_permission_grant: Literal["none", "read_once"] = Field(
+        "none",
+        description="One-turn consent to snapshot explicitly named local paths for OpenCode",
+    )
+    local_cli_read_paths: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Absolute files/directories explicitly confirmed by the user for this turn",
+    )
     history: list[dict] = Field(default_factory=list)
 
 

@@ -13,9 +13,9 @@ import traceback
 from copy import deepcopy
 from typing import Any
 
-from app.services.workspace.registry import ToolDef, registry
-from app.mcp.schemas import McpTool, McpToolResult, make_json_result, make_text_result
 from app.mcp.permissions import filter_tools, is_allowed
+from app.mcp.schemas import McpTool, McpToolResult, make_json_result, make_text_result
+from app.services.workspace.registry import ToolDef, registry
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +594,74 @@ def _managed_chapter_write_guard(
     return None
 
 
+def _creation_session_scope_error(
+    db: Any,
+    td: ToolDef,
+    tool_name: str,
+    arguments: dict[str, Any],
+    creation_session_id: str,
+) -> str | None:
+    """Bind a transient creation MCP process to exactly one draft session."""
+
+    bound_id = str(creation_session_id or "").strip()
+    if not bound_id:
+        return "Creation-session MCP is missing its required session binding"
+
+    # Session-addressed tools do not need the model to repeat an opaque ID and
+    # cannot be redirected to a different draft.
+    if "session_id" in (td.input_schema or {}):
+        supplied = str(arguments.get("session_id") or "").strip()
+        if supplied and supplied != bound_id:
+            return f"Creation session scope mismatch for {tool_name}"
+        arguments["session_id"] = bound_id
+
+    from app.modules.creation.infrastructure.models import (
+        NovelCreationArtifactVersion,
+        NovelCreationEntity,
+        NovelCreationMaterialImport,
+        NovelCreationStageRun,
+    )
+
+    def _record_session(model: Any, record_id: str) -> str:
+        record = db.get(model, record_id) if record_id else None
+        return str(getattr(record, "session_id", "") or "")
+
+    entity_id = str(arguments.get("entity_id") or "").strip()
+    if entity_id and _record_session(NovelCreationEntity, entity_id) != bound_id:
+        return f"Creation entity is outside the authorized session: {entity_id}"
+
+    for key in ("version_id", "against_version_id"):
+        version_id = str(arguments.get(key) or "").strip()
+        if version_id and _record_session(NovelCreationArtifactVersion, version_id) != bound_id:
+            return f"Creation artifact version is outside the authorized session: {version_id}"
+
+    import_id = str(arguments.get("import_id") or "").strip()
+    if import_id and _record_session(NovelCreationMaterialImport, import_id) != bound_id:
+        return f"Creation import is outside the authorized session: {import_id}"
+
+    run_id = str(arguments.get("run_id") or "").strip()
+    if run_id and _record_session(NovelCreationStageRun, run_id) != bound_id:
+        return f"Creation run is outside the authorized session: {run_id}"
+
+    operation_id = str(arguments.get("operation_id") or "").strip()
+    if operation_id:
+        stage_run = db.query(NovelCreationStageRun).filter(
+            NovelCreationStageRun.operation_id == operation_id,
+            NovelCreationStageRun.session_id == bound_id,
+        ).first()
+        material_import = db.query(NovelCreationMaterialImport).filter(
+            NovelCreationMaterialImport.operation_id == operation_id,
+            NovelCreationMaterialImport.session_id == bound_id,
+        ).first()
+        if not stage_run and not material_import:
+            return f"Creation operation is outside the authorized session: {operation_id}"
+
+    # Creation tools do not need an out-of-band project selector. Dropping it
+    # prevents a model from widening a creation-only turn into project access.
+    arguments.pop("project_id", None)
+    return None
+
+
 async def execute_tool(
     db: Any,
     project_id: str,
@@ -603,6 +671,7 @@ async def execute_tool(
     allowed_tiers: set[str] | None = None,
     permission_pack: str | None = None,
     run_id: str | None = None,
+    creation_session_id: str = "",
 ) -> McpToolResult:
     """Execute an allowed MCP tool and return a structured MCP result.
 
@@ -614,6 +683,7 @@ async def execute_tool(
         allowed_tiers: Permission tiers to allow.
         permission_pack: Permission pack name. If set, overrides allowed_tiers.
         run_id: Optional external Agent run ID for automatic telemetry.
+        creation_session_id: One-session boundary for the transient creation pack.
 
     Returns:
         McpToolResult with structured content.
@@ -635,6 +705,20 @@ async def execute_tool(
             json.dumps({"status": "denied", "detail": f"Permission denied: {tool_name}"}),
             is_error=True,
         )
+
+    if permission_pack == "creation_session":
+        scope_error = _creation_session_scope_error(
+            db,
+            td,
+            tool_name,
+            arguments,
+            creation_session_id,
+        )
+        if scope_error:
+            return make_text_result(
+                json.dumps({"status": "denied", "detail": scope_error}, ensure_ascii=False),
+                is_error=True,
+            )
 
     # Extract project_id/run_id from arguments if present (out-of-band MCP arguments)
     effective_project_id = str(arguments.pop("project_id", "") or project_id or "").strip()

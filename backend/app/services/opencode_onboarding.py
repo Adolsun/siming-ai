@@ -879,13 +879,6 @@ def _activation_worker(job_id: str) -> None:
         model_results = probe.model_results
         if probe.selected_model:
             _save_activated_config(command, probe.selected_model)
-            try:
-                from app.services.external_agent.mcp_auto_config import (
-                    auto_configure_mcp_for_provider,
-                )
-                auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
-            except Exception:
-                pass
             _update_activation(
                 job_id,
                 status="ready",

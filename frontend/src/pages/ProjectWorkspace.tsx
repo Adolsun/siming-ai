@@ -279,15 +279,16 @@ function ProjectWorkspace() {
         </Sider>
         <div className="project-workspace-column">
           <header className="project-workspace-header">
-            <div className="project-workspace-breadcrumb">
+            <nav className="project-workspace-breadcrumb" aria-label="项目位置">
               <Button
                 type="link"
                 icon={<HomeOutlined />}
+                className="project-workspace-home"
                 onClick={() => navigate('/dashboard')}
               >
                 作品库
               </Button>
-              <span aria-hidden="true">/</span>
+              <span className="project-workspace-separator" aria-hidden="true">/</span>
               <Button
                 type="link"
                 onClick={() => selectView('writer')}
@@ -295,9 +296,9 @@ function ProjectWorkspace() {
               >
                 {projectTitle || '未命名作品'}
               </Button>
-              <span aria-hidden="true">/</span>
-              <span>{PAGE_TITLES[activeKey]}</span>
-            </div>
+              <span className="project-workspace-separator" aria-hidden="true">/</span>
+              <span className="project-workspace-view-title">{PAGE_TITLES[activeKey]}</span>
+            </nav>
             <div className="project-workspace-actions">
               <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
               <ThemeSwitcher />

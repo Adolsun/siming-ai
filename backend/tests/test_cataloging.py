@@ -339,6 +339,165 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_try_create_candidate_recovers_candidate_type_misplaced_in_node_type(self):
+        """DeepSeek may use node_type for the candidate type itself.
+
+        This mirrors the packaged-app incident where scenes were stored as
+        chapter summaries and worldbuilding cards were stored as characters.
+        """
+        db = self.Session()
+        try:
+            project = Project(title="DeepSeek Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第二章 吐纳", content="陆家议事厅内灵气骤变。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            raw_candidates = [
+                {
+                    "node_type": "outline_create",
+                    "title": "议事厅对峙",
+                    "parent_title": "第二章 吐纳",
+                    "scene_number": 1,
+                    "purpose": "揭示旁支矛盾",
+                    "entry_state": "众人争执",
+                    "exit_state": "真相初显",
+                    "summary": "特昂糖在议事厅与旁支对峙。",
+                },
+                {
+                    "node_type": "worldbuilding_create",
+                    "name": "陆家护族大阵",
+                    "dimension": "power_system",
+                    "description": "与陆家血脉绑定的祖传防护阵法。",
+                    "significance": "后续危机的重要防线。",
+                },
+                {
+                    "node_type": "worldbuilding_create",
+                    "name": "游戏世界规则",
+                    "dimension": "culture",
+                    "description": "物品会自动归位，NPC 行为遵循固定模式。",
+                },
+            ]
+
+            results = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(raw_candidates)
+            ]
+
+            self.assertTrue(all("candidate" in result for result in results))
+            candidates = [result["candidate"] for result in results]
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates],
+                ["outline_create", "worldbuilding_create", "worldbuilding_create"],
+            )
+            outline_payload = json.loads(candidates[0].raw_payload)
+            self.assertEqual(outline_payload["node_type"], "section")
+            self.assertEqual(outline_payload["title"], "议事厅对峙")
+            world_payload = json.loads(candidates[1].raw_payload)
+            self.assertEqual(world_payload["title"], "陆家护族大阵")
+            self.assertEqual(world_payload["content"], "与陆家血脉绑定的祖传防护阵法。")
+        finally:
+            db.close()
+
+    def test_try_create_candidate_accepts_single_key_cataloging_wrappers(self):
+        db = self.Session()
+        try:
+            project = Project(title="Wrapped Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章 穿越·着陆", content="特昂糖揭露账目问题。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            samples = [
+                {
+                    "completed_beat": {
+                        "beat": "特昂糖当众揭露账目问题",
+                        "chapter": 1,
+                        "evidence": "陆承宇拿出证据证实",
+                    }
+                },
+                {
+                    "revealed_clue": {
+                        "clue": "石狮子眉心闪光",
+                        "chapter": 1,
+                        "evidence": "眉心闪了一下",
+                    }
+                },
+                {
+                    "narrative_promise": {
+                        "promise": "特昂糖的回归之路",
+                        "chapter": 1,
+                        "description": "必须回到原来的世界",
+                        "status": "open",
+                    }
+                },
+                {
+                    "storyline_state": {
+                        "storyline": "主脉与旁支的矛盾",
+                        "chapter": 1,
+                        "state": "矛盾暂时平息但未解决",
+                    }
+                },
+                {
+                    "worldbuilding_timeline": {
+                        "event": "议事厅账目对峙",
+                        "description": "周氏被迫退让",
+                        "related_worldbuilding": ["陆家", "护族大阵"],
+                    }
+                },
+                {
+                    "chapter_link": {
+                        "source": "第一章 穿越·着陆",
+                        "target": "护族大阵",
+                        "relation": "introduces",
+                        "description": "第一章引入护族大阵",
+                    }
+                },
+                {
+                    "chapter_link": {
+                        "source": "陆老爷子",
+                        "target": "特昂糖",
+                        "relation": "grandfather_of",
+                        "description": "陆老爷子是特昂糖的爷爷",
+                    }
+                },
+            ]
+
+            created = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(samples)
+            ]
+
+            self.assertTrue(all("candidate" in result for result in created), created)
+            candidates = [result["candidate"] for result in created]
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates],
+                [
+                    "chapter_summary",
+                    "chapter_summary",
+                    "chapter_summary",
+                    "chapter_summary",
+                    "worldbuilding_timeline",
+                    "chapter_link",
+                    "character_relationship",
+                ],
+            )
+            narrative_payloads = [json.loads(candidate.raw_payload) for candidate in candidates[:4]]
+            self.assertTrue(all(payload.get("narrative_state") for payload in narrative_payloads))
+            timeline_payload = json.loads(candidates[4].raw_payload)
+            self.assertEqual(timeline_payload["title"], "陆家")
+            self.assertEqual(timeline_payload["event_description"], "周氏被迫退让")
+            relationship_payload = json.loads(candidates[6].raw_payload)
+            self.assertEqual(relationship_payload["relationship_type"], "grandfather_of")
+        finally:
+            db.close()
+
     def test_unknown_empty_type_error_contains_fields_and_snippet(self):
         db = self.Session()
         try:

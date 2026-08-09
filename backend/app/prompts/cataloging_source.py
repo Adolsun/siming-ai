@@ -70,6 +70,8 @@ def get_fact_extraction_rules() -> str:
 
 def get_cataloging_candidate_schema() -> str:
     return """【允许的候选 type 与 payload】
+每一行顶层都必须包含标准字段 type，例如 {"type":"worldbuilding_create", ...}。type 决定候选类别；不要把候选类别写进 node_type。
+node_type 只用于 outline_create/outline_update 的层级，而且只能是 chapter、section 或 volume；世界观、角色等候选不得输出 node_type。
 - chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}}
 - outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
 - character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"...", "age":"...", "appearance":"...", "personality":"...", "background":"...", "abilities":["..."], "tone_style":"...", "catchphrases":["..."], "emotion_tendency":"...", "custom_system_prompt":"..."}

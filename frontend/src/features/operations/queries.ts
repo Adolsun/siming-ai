@@ -32,6 +32,18 @@ export function useOperationAction(limit = 30) {
   })
 }
 
+export function useDeleteOperations(limit = 30) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async (operationIds: string[]) => {
+      for (const operationId of operationIds) {
+        await apiClient.delete(`/operations/${operationId}`)
+      }
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: operationKeys.list(limit) }),
+  })
+}
+
 export async function markOperationAttentionRead(operationIds: string[]) {
   await apiClient.post('/operations/attention/read', { operation_ids: operationIds })
 }

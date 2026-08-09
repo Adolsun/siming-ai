@@ -90,6 +90,28 @@ export interface TrainingJob {
   log_tail?: string
 }
 
+export interface LocalModelQualificationCase {
+  id: string
+  label: string
+  passed: boolean
+  detail: string
+  elapsed_seconds: number
+  output_preview: string
+  input_characters: number
+}
+
+export interface LocalModelQualification {
+  version: string
+  model_key: string
+  context_length: number
+  rating: 'qualified' | 'limited' | 'failed'
+  passed: boolean
+  passed_count: number
+  total_count: number
+  elapsed_seconds: number
+  cases: LocalModelQualificationCase[]
+}
+
 export interface CatalogResponse {
   usage_enabled?: boolean
   usage_disabled_reason?: string | null

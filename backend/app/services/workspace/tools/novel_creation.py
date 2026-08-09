@@ -5132,7 +5132,11 @@ async def apply_novel_blueprint(
             "outline": [],
             "relationships": [],
             "worldbuilding_relations": [],
-            "warnings": [],
+            "warnings": [
+                str(item)
+                for item in blueprint.get("apply_warnings", [])
+                if str(item).strip()
+            ],
         }
         characters_by_name: dict[str, Character] = {}
 

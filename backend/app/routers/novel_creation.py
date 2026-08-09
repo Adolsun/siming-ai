@@ -1001,6 +1001,11 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
                 commit_session(db)
             if producing_run.operation_id:
                 get_operation_service().complete_author_confirmation(producing_run.operation_id)
+        # The submission result is serialized before the run changes from
+        # waiting_user to completed. Re-serialize after confirmation so every
+        # caller receives one coherent snapshot instead of a confirmed
+        # artifact paired with a stale waiting task.
+        result["data"] = serialize_session(session)
     return _tool_response(result)
 
 
@@ -1313,6 +1318,9 @@ class CreationAgentRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    local_cli_permission_grant: Literal["chat_only", "creation_agent_once"] = "chat_only"
+    local_cli_read_permission_grant: Literal["none", "read_once"] = "none"
+    local_cli_read_paths: list[str] = Field(default_factory=list, max_length=8)
 
 
 @router.post("/novel-creation/agent-turn")
@@ -1328,6 +1336,11 @@ async def creation_agent_turn(payload: CreationAgentRequest, db: Session = Depen
         message=payload.message,
         model=payload.model,
         history=payload.history,
+        local_cli_write_granted=payload.local_cli_permission_grant == "creation_agent_once",
+        local_cli_read_paths=(
+            list(payload.local_cli_read_paths)
+            if payload.local_cli_read_permission_grant == "read_once" else []
+        ),
     )
     return ApiResponse.success(data=result)
 

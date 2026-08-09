@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Badge, Button, Drawer, Empty, Flex, Progress, Space, Spin, Tooltip, Typography, message } from 'antd'
-import { CheckOutlined, CloseCircleOutlined, ClockCircleOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { Badge, Button, Drawer, Empty, Flex, Popconfirm, Progress, Space, Spin, Tooltip, Typography, message } from 'antd'
+import { CheckOutlined, CloseCircleOutlined, ClockCircleOutlined, DeleteOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { PersistentOutcome } from '../../../components/interaction'
 import {
   operationKeys,
   markOperationAttentionRead,
   toInteractionProjection,
   updateOperationInCache,
+  useDeleteOperations,
   useOperationAction,
   useOperations,
 } from '..'
@@ -20,6 +21,7 @@ const { Paragraph, Text, Title } = Typography
 
 const NON_TERMINAL_STATUSES = new Set<OperationRun['status']>(['queued', 'running', 'waiting_user', 'paused'])
 const COMPUTING_STATUSES = new Set<OperationRun['status']>(['queued', 'running'])
+const TERMINAL_STATUSES = new Set<OperationRun['status']>(['completed', 'failed', 'cancelled', 'interrupted'])
 
 export interface OperationAttemptGroup {
   latest: OperationRun
@@ -82,13 +84,16 @@ function hoursSince(value?: string | null) {
   return Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 3_600_000))
 }
 
-function OperationItem({ operation, history, onAction, onOpen }: {
+function OperationItem({ operation, history, onAction, onDelete, onOpen, deletePending }: {
   operation: OperationRun
   history?: OperationRun[]
   onAction: (operation: OperationRun, action: string) => Promise<void>
+  onDelete: (operations: OperationRun[]) => Promise<void>
   onOpen: (operation: OperationRun) => void
+  deletePending?: boolean
 }) {
   const active = NON_TERMINAL_STATUSES.has(operation.status)
+  const canDelete = TERMINAL_STATUSES.has(operation.status)
   const computing = COMPUTING_STATUSES.has(operation.status)
   const progress = operation.progress || { mode: 'indeterminate' }
   const interaction = toInteractionProjection(operation)
@@ -107,11 +112,36 @@ function OperationItem({ operation, history, onAction, onOpen }: {
             {operation.current_message || '正在等待新的运行信息'}
           </Paragraph>
         </div>
-        {operation.status !== 'waiting_user' && (operation.attention?.action_url || operation.resume_url) && (
-          <Button size="small" onClick={() => onOpen(operation)}>
-            {operation.attention?.action_label || '查看'}
-          </Button>
-        )}
+        <Space size={4}>
+          {operation.status !== 'waiting_user' && (operation.attention?.action_url || operation.resume_url) && (
+            <Button size="small" onClick={() => onOpen(operation)}>
+              {operation.attention?.action_label || '查看'}
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm
+              title={`删除任务“${operation.title}”？`}
+              description={history?.length
+                ? `会删除当前记录及 ${history.length} 次历史尝试，且无法撤销。`
+                : '任务记录删除后无法撤销。'}
+              okText="删除"
+              cancelText="保留"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => onDelete([operation, ...(history || [])])}
+            >
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                loading={deletePending}
+                aria-label={`删除任务记录：${operation.title}`}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
       </Flex>
 
       {computing && progress.mode === 'determinate' && Boolean(progress.total) ? (
@@ -196,6 +226,11 @@ export default function GlobalOperationCenter() {
     isPending: actionPending,
     variables: actionVariables,
   } = useOperationAction(30)
+  const {
+    mutateAsync: deleteOperations,
+    isPending: deletePending,
+    variables: deletingOperationIds,
+  } = useDeleteOperations(30)
   const [open, setOpen] = useState(false)
   const [navTarget, setNavTarget] = useState<HTMLElement | null>(null)
   const [streamDisconnected, setStreamDisconnected] = useState(false)
@@ -277,6 +312,16 @@ export default function GlobalOperationCenter() {
     }
   }, [runOperationAction])
 
+  const deleteFinishedOperations = useCallback(async (items: OperationRun[]) => {
+    const ids = items.map((item) => item.id)
+    try {
+      await deleteOperations(ids)
+      message.success(items.length > 1 ? `已删除任务及 ${items.length - 1} 次历史尝试` : '任务记录已删除')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除任务记录失败')
+    }
+  }, [deleteOperations])
+
   const openResult = useCallback((operation: OperationRun) => {
     const target = operation.attention?.action_url || operation.resume_url
     if (target) navigate(target)
@@ -322,8 +367,15 @@ export default function GlobalOperationCenter() {
   )
 
   const renderGroups = (groups: OperationAttemptGroup[]) => groups.map((group) => (
-    <div key={group.latest.id} aria-busy={actionId === group.latest.id}>
-      <OperationItem operation={group.latest} history={group.history} onAction={runAction} onOpen={openResult} />
+    <div key={group.latest.id} aria-busy={actionId === group.latest.id || Boolean(deletePending && deletingOperationIds?.includes(group.latest.id))}>
+      <OperationItem
+        operation={group.latest}
+        history={group.history}
+        onAction={runAction}
+        onDelete={deleteFinishedOperations}
+        onOpen={openResult}
+        deletePending={Boolean(deletePending && deletingOperationIds?.includes(group.latest.id))}
+      />
     </div>
   ))
 

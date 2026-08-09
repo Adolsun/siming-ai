@@ -1,21 +1,22 @@
 """Tests for local CLI model adapter helpers."""
 
-import unittest
 import asyncio
 import json
 import sys
 import tempfile
 import time
+import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from app.core.exceptions import LLMError
 from app.ai.local_cli_adapter import (
+    OPENCODE_DEFAULT_MODEL,
+    CLIPermissionRequiredError,
     CLIStalledError,
     LocalCLIAdapter,
-    OPENCODE_DEFAULT_MODEL,
     communicate_with_cli_quota_detection,
     detect_cli_auth_error,
+    detect_cli_permission_request,
     detect_cli_quota_error,
     discover_local_cli_models,
     ensure_opencode_logging_args,
@@ -26,6 +27,8 @@ from app.ai.local_cli_adapter import (
     parse_cli_args,
     parse_cli_launch,
 )
+from app.ai.local_cli_prompt import prepare_opencode_launch
+from app.core.exceptions import LLMError
 
 
 class LocalCLIAdapterHelperTestCase(unittest.TestCase):
@@ -56,18 +59,15 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertEqual(launch.args, ["-p", "hello"])
         self.assertIsNone(launch.stdin_text)
 
-    def test_claude_default_args_bypass_permissions(self):
+    def test_claude_default_args_are_safe(self):
         launch = parse_cli_launch(None, "claude_cli", "hello", "claude-code")
-        self.assertEqual(
-            launch.args,
-            ["--permission-mode", "bypassPermissions", "-p", "hello"],
-        )
+        self.assertEqual(launch.args, ["-p", "hello"])
 
     def test_codex_default_launch_reads_prompt_from_stdin(self):
         launch = parse_cli_launch(None, "codex_cli", "hello", "codex-cli")
         self.assertEqual(
             launch.args,
-            ["exec", "--dangerously-bypass-approvals-and-sandbox", "-"],
+            ["exec", "-"],
         )
         self.assertEqual(launch.stdin_text, "hello")
 
@@ -89,14 +89,13 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             finally:
                 Path(output_file).unlink(missing_ok=True)
 
-    def test_opencode_default_args_bypass_permissions(self):
+    def test_opencode_default_args_are_safe(self):
         launch = parse_cli_launch(None, "opencode_cli", "hello", OPENCODE_DEFAULT_MODEL)
         self.assertEqual(
             launch.args,
             [
                 "run",
                 "--pure",
-                "--dangerously-skip-permissions",
                 "--format",
                 "json",
                 "--model",
@@ -111,11 +110,11 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertIsNone(launch.stdin_text)
         self.assertIn(prompt, launch.args)
 
-    def test_mimocode_default_args_bypass_permissions(self):
+    def test_mimocode_default_args_are_safe(self):
         launch = parse_cli_launch(None, "mimocode_cli", "hello", "mimocode-cli")
         self.assertEqual(
             launch.args,
-            ["run", "--dangerously-skip-permissions", "hello"],
+            ["run", "hello"],
         )
 
     @patch("app.ai.local_cli_adapter.subprocess.run")
@@ -212,26 +211,60 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             self.assertEqual(launch.args[-1], prompt_file)
             self.assertEqual(Path(prompt_file).read_text(encoding="utf-8"), "中文任务")
 
-    def test_cursor_default_args_bypass_permissions(self):
+    def test_cursor_default_args_are_safe(self):
         launch = parse_cli_launch(None, "cursor_cli", "hello", "cursor-agent")
-        self.assertIn("--force", launch.args)
-        self.assertIn("--approve-mcps", launch.args)
-        self.assertIn("--trust", launch.args)
+        self.assertNotIn("--force", launch.args)
+        self.assertNotIn("--approve-mcps", launch.args)
+        self.assertNotIn("--trust", launch.args)
 
-    def test_kilocode_default_args_auto_approve(self):
+    def test_kilocode_default_args_are_safe(self):
         launch = parse_cli_launch(None, "kilocode_cli", "hello", "kilocode-cli")
-        self.assertEqual(launch.args, ["run", "--auto", "hello"])
+        self.assertEqual(launch.args, ["run", "hello"])
 
-    def test_qwen_code_default_args_use_yolo(self):
+    def test_qwen_code_default_args_are_safe(self):
         launch = parse_cli_launch(None, "qwen_code_cli", "hello", "qwen-code-cli")
         self.assertEqual(
             launch.args,
-            ["--approval-mode", "yolo", "--output-format", "text", "hello"],
+            ["--output-format", "text", "hello"],
         )
 
-    def test_hermes_default_args_use_yolo(self):
+    def test_hermes_default_args_are_safe(self):
         launch = parse_cli_launch(None, "hermes_cli", "hello", "hermes-agent")
-        self.assertEqual(launch.args, ["--yolo", "--oneshot", "hello"])
+        self.assertEqual(launch.args, ["--oneshot", "hello"])
+
+    def test_ungranted_turn_strips_legacy_auto_approval_flags(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
+        args = ["--permission-mode", "bypassPermissions", "-p", "hello"]
+
+        adapter._apply_provider_runtime_options(
+            args,
+            model="claude-code",
+            cwd=tempfile.gettempdir(),
+            permission_granted=False,
+        )
+
+        self.assertNotIn("--permission-mode", args)
+        self.assertNotIn("bypassPermissions", args)
+        self.assertNotIn("--dangerously-skip-permissions", args)
+
+    def test_one_turn_grant_adds_provider_permission_flags(self):
+        cases = {
+            "claude_cli": "--dangerously-skip-permissions",
+            "codex_cli": "--dangerously-bypass-approvals-and-sandbox",
+            "cursor_cli": "--approve-mcps",
+            "qwen_code_cli": "--approval-mode",
+            "hermes_cli": "--yolo",
+        }
+        for provider, expected in cases.items():
+            adapter = LocalCLIAdapter(api_key="", base_url=provider, cli_command="cli")
+            args = ["run", "hello"]
+            adapter._apply_provider_runtime_options(
+                args,
+                model="provider-default",
+                cwd=tempfile.gettempdir(),
+                permission_granted=True,
+            )
+            self.assertIn(expected, args, provider)
 
     def test_openclaw_default_args_use_local_agent(self):
         launch = parse_cli_launch(None, "openclaw_cli", "hello", "openclaw-agent")
@@ -322,6 +355,20 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertIn(
             "Rate limit exceeded",
             detect_cli_quota_error('error.error="AI_APICallError: Rate limit exceeded. Please try again later."'),
+        )
+
+    def test_cli_permission_prompts_are_detected(self):
+        self.assertIn(
+            "聊天窗口确认",
+            detect_cli_permission_request("Allow MCP server siming? [y/n]"),
+        )
+        self.assertIn(
+            "聊天窗口确认",
+            detect_cli_permission_request("是否允许使用 MCP 工具？"),
+        )
+        self.assertIn(
+            "token quota is not enough",
+            detect_cli_quota_error("token quota is not enough; add credit before retrying"),
         )
 
     def test_opencode_logging_args_are_inserted_before_run(self):
@@ -442,6 +489,82 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             cwd = LocalCLIAdapter._runtime_cwd(None)
         self.assertEqual(cwd, r"D:\novels")
 
+    def test_isolated_cli_retries_transient_network_failure_and_cleans_each_workspace(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        run_once = AsyncMock(side_effect=[LLMError("unknown certificate verification error"), "CLI_OK"])
+        sleep = AsyncMock()
+
+        with patch.object(adapter, "_run_once", run_once), patch(
+            "app.ai.local_cli_adapter.asyncio.sleep",
+            sleep,
+        ):
+            result = asyncio.run(adapter._run(
+                "Reply exactly CLI_OK",
+                "opencode/deepseek-v4-flash-free",
+                {"local_cli_isolated": True},
+            ))
+
+        self.assertEqual(result, "CLI_OK")
+        self.assertEqual(run_once.await_count, 2)
+        sleep.assert_awaited_once_with(1)
+        workspaces = [Path(call.args[2]["_local_cli_isolated_cwd"]) for call in run_once.await_args_list]
+        self.assertEqual(len(set(workspaces)), 2)
+        self.assertTrue(all(not workspace.exists() for workspace in workspaces))
+
+    def test_explicitly_granted_nonisolated_cli_does_not_retry_transient_failure(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        run_once = AsyncMock(side_effect=[LLMError("stream error"), "unexpected success"])
+
+        with patch.object(adapter, "_run_once", run_once):
+            with self.assertRaisesRegex(LLMError, "stream error"):
+                asyncio.run(adapter._run(
+                    "prompt",
+                    "model",
+                    {
+                        "local_cli_isolated": False,
+                        "local_cli_permission_granted": True,
+                    },
+                ))
+
+        self.assertEqual(run_once.await_count, 1)
+
+    def test_ungranted_cli_permission_prompt_stops_without_waiting_for_timeout(self):
+        async def run_prompting_cli():
+            code = (
+                "import time; "
+                "print('Allow MCP server siming? [y/n]', flush=True); "
+                "time.sleep(5)"
+            )
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                code,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
+            )
+            return await communicate_with_cli_quota_detection(
+                process,
+                timeout_seconds=10,
+                poll_seconds=0.02,
+                stop_on_permission_request=True,
+            )
+
+        started = time.monotonic()
+        with self.assertRaises(CLIPermissionRequiredError):
+            asyncio.run(run_prompting_cli())
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_isolated_cli_does_not_retry_authentication_failure(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="qwen_code_cli", cli_command="qwen")
+        run_once = AsyncMock(side_effect=LLMError("No auth type is selected"))
+
+        with patch.object(adapter, "_run_once", run_once):
+            with self.assertRaisesRegex(LLMError, "No auth type"):
+                asyncio.run(adapter._run("prompt", "model", {"local_cli_isolated": True}))
+
+        self.assertEqual(run_once.await_count, 1)
+
     def test_agent_cli_prompt_is_written_as_utf8_task_file(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
         with tempfile.TemporaryDirectory() as directory:
@@ -485,6 +608,74 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             rendered = " ".join(launch.args)
             self.assertIn(prompt_file, rendered)
             self.assertNotIn("\n", rendered)
+
+    def test_opencode_isolated_read_hides_global_config_and_external_paths(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            _launch, _prompt_file, env = prepare_opencode_launch(
+                adapter,
+                prompt="读取本轮快照",
+                model="opencode/deepseek-v4-flash-free",
+                cwd=directory,
+                attachments=[],
+                allow_mcp=False,
+                isolated=True,
+                permission_granted=False,
+            )
+
+            config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+            self.assertFalse(config["mcp"]["siming"]["enabled"])
+            self.assertEqual(config["permission"]["*"], "deny")
+            self.assertEqual(config["permission"]["read"], "allow")
+            self.assertEqual(config["permission"]["external_directory"], "deny")
+            self.assertTrue(env["XDG_CONFIG_HOME"].startswith(str(Path(directory).resolve())))
+            self.assertEqual(env["OPENCODE_CONFIG_DIR"], env["XDG_CONFIG_HOME"])
+            self.assertEqual(env["NO_MCP"], "1")
+
+    def test_opencode_grant_injects_only_process_scoped_siming_mcp(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "app.ai.local_cli_prompt.resolve_siming_mcp_server",
+            return_value={
+                "mode": "source",
+                "command": r"D:\Siming\python.exe",
+                "args": [
+                    r"D:\Siming\moshu-mcp-server.py",
+                    "--permission-pack",
+                    "creation_session",
+                    "--creation-session-id",
+                    "session-1",
+                ],
+                "cwd": r"D:\Siming",
+            },
+        ):
+            launch, _prompt_file, env = prepare_opencode_launch(
+                adapter,
+                prompt="更新目标字数",
+                model="opencode/deepseek-v4-flash-free",
+                cwd=directory,
+                attachments=[],
+                allow_mcp=True,
+                isolated=True,
+                permission_granted=True,
+                mcp_permission_pack="creation_session",
+                mcp_creation_session_id="session-1",
+            )
+
+        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(set(config["mcp"]), {"siming_turn"})
+        self.assertEqual(
+            config["mcp"]["siming_turn"]["command"][-2:],
+            ["--creation-session-id", "session-1"],
+        )
+        self.assertEqual(config["permission"]["*"], "deny")
+        self.assertEqual(config["permission"]["siming_turn_*"], "allow")
+        self.assertEqual(config["permission"]["external_directory"], "deny")
+        self.assertTrue(env["XDG_CONFIG_HOME"].startswith(str(Path(directory).resolve())))
+        self.assertEqual(env["OPENCODE_CONFIG_DIR"], env["XDG_CONFIG_HOME"])
+        self.assertNotIn("NO_MCP", env)
+        self.assertNotIn("--auto", launch.args)
+        self.assertNotIn("--dangerously-skip-permissions", launch.args)
 
     def test_normalize_plain_output_is_preserved(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")

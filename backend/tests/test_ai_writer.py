@@ -12,6 +12,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 from fastapi.testclient import TestClient
 
 from app.core.exceptions import LLMError
+from app.ai.local_cli_adapter import CLIPermissionRequiredError
 from app.database.models import (
     Chapter,
     ChapterCharacter,
@@ -333,12 +334,88 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("你好，我在。", response.text)
-        self.assertIn("local_cli_mcp_mode", response.text)
+        self.assertIn("local_cli_mode", response.text)
         self.assertNotIn("json_repair", response.text)
         self.assertNotIn("模型返回的工具格式不合法", response.text)
         call = mock_stream.call_args.kwargs
-        self.assertTrue(call["extra_body"]["local_cli_allow_mcp"])
+        self.assertFalse(call["extra_body"]["local_cli_allow_mcp"])
+        self.assertFalse(call["extra_body"]["local_cli_permission_granted"])
+        self.assertTrue(call["extra_body"]["local_cli_isolated"])
         self.assertIn(project_id, str(call["messages"]))
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_one_turn_cli_grant_enables_project_mcp(self, mock_stream, _mock_supports):
+        project_id = self.create_project("CLI Agent Project")
+        mock_stream.return_value = async_chunks("已完成。")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "读取项目并整理设定",
+                "model": "claude_cli:claude-code",
+                "local_cli_permission_grant": "project_agent_once",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("local_cli_mcp_mode", response.text)
+        call = mock_stream.call_args.kwargs
+        self.assertTrue(call["extra_body"]["local_cli_allow_mcp"])
+        self.assertTrue(call["extra_body"]["local_cli_permission_granted"])
+        self.assertFalse(call["extra_body"]["local_cli_isolated"])
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_opencode_path_grant_is_separate_and_read_only(
+        self, mock_stream, _mock_supports,
+    ):
+        project_id = self.create_project("CLI Read Snapshot Project")
+        mock_stream.return_value = async_chunks("已读取参考资料。")
+        granted_path = r"D:\references\world.md"
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": f"请阅读 {granted_path}",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "local_cli_read_permission_grant": "read_once",
+                "local_cli_read_paths": [granted_path],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        call = mock_stream.call_args.kwargs
+        self.assertTrue(call["extra_body"]["local_cli_read_permission_granted"])
+        self.assertEqual(call["extra_body"]["local_cli_read_paths"], [granted_path])
+        self.assertFalse(call["extra_body"]["local_cli_permission_granted"])
+        self.assertFalse(call["extra_body"]["local_cli_allow_mcp"])
+        self.assertTrue(call["extra_body"]["local_cli_isolated"])
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_surfaces_cli_permission_request_in_chat(self, mock_stream, _mock_supports):
+        project_id = self.create_project("CLI Permission Project")
+        mock_stream.return_value = async_error_chunks(
+            CLIPermissionRequiredError("Allow MCP server siming? [y/n]")
+        )
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "请读取项目资料",
+                "model": "claude_cli:claude-code",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"type":"permission_required"', response.text)
+        self.assertIn('"permission_scope":"project_agent_once"', response.text)
+        self.assertIn("本轮没有访问项目目录", response.text)
+        self.assertNotIn('"type":"error"', response.text)
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")

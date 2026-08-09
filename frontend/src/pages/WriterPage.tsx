@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Collapse,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -21,6 +22,7 @@ import {
   DiffOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
@@ -408,7 +410,7 @@ function WriterPage({ projectId }: WriterPageProps) {
             <Title level={4} style={{ margin: 0 }}><FileTextOutlined /> 章节</Title>
             <Space size={6}>
               <Button aria-label="刷新章节列表" icon={<ReloadOutlined />} onClick={fetchChapters} loading={loading} />
-              <Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>新建</Button>
+              <Button type="primary" icon={<PlusOutlined />} aria-label="新建章节" onClick={startCreate}>新建</Button>
             </Space>
           </div>
           <List
@@ -418,7 +420,15 @@ function WriterPage({ projectId }: WriterPageProps) {
             renderItem={(chapter) => (
               <List.Item
                 className={`writer-chapter-item${chapter.id === selectedId ? ' writer-chapter-item-active' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-label={`打开章节：${chapter.title}`}
                 onClick={() => confirmLeave(() => setSelectedId(chapter.id))}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  confirmLeave(() => setSelectedId(chapter.id))
+                }}
               >
                 <List.Item.Meta
                   title={<span className="writer-chapter-title" title={chapter.title}>{chapter.title}</span>}
@@ -452,14 +462,20 @@ function WriterPage({ projectId }: WriterPageProps) {
             </div>
             <Space>
               {selectedId && !creating && (
-                <Button
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={confirmDeleteChapter}
-                  aria-label={`删除本章：${detail?.title || editorTitle}`}
+                <Dropdown
+                  trigger={['click']}
+                  placement="bottomRight"
+                  menu={{
+                    items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除本章' }],
+                    onClick: ({ key }) => {
+                      if (key === 'delete') confirmDeleteChapter()
+                    },
+                  }}
                 >
-                  删除本章
-                </Button>
+                  <Button icon={<MoreOutlined />} aria-label={`章节操作：${detail?.title || editorTitle}`}>
+                    章节操作
+                  </Button>
+                </Dropdown>
               )}
               <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!creating && !isDirty} onClick={() => form.submit()}>
                 {creating ? '创建章节' : '保存改动'}

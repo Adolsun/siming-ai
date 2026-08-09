@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
+from app.core.exceptions import AppException
 from app.services.deepseek_system_chat import stream_deepseek_system_chat
 
 _logger = logging.getLogger(__name__)
@@ -85,7 +87,14 @@ async def complete_system_chat(
         provider = (model or "").split(":", 1)[0].lower()
         model_identity = "司命系统设置中的默认模型"
     messages = [
-        {"role": "system", "content": _system_prompt(model_identity, _system_context(context), history_text)},
+        {
+            "role": "system",
+            "content": _system_prompt(
+                model_identity,
+                _system_context(context),
+                history_text,
+            ),
+        },
         {"role": "user", "content": message},
     ]
     try:
@@ -106,7 +115,10 @@ async def complete_system_chat(
         if not reply:
             raise RuntimeError("没有收到模型的文字回复")
     except Exception as exc:
-        _logger.warning("System chat failed: %s", exc, exc_info=True)
+        if isinstance(exc, AppException):
+            _logger.warning("System chat failed: %s", exc)
+        else:
+            _logger.warning("System chat failed: %s", exc, exc_info=True)
         detail = str(exc).strip() or f"({type(exc).__name__})"
         if len(detail) > 500:
             detail = detail[:500] + "..."
