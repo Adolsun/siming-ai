@@ -6,7 +6,7 @@ ARG PYTHON_IMAGE=python:3.11-slim
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend-build
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --registry=https://registry.npmmirror.com
 COPY frontend/ ./
 RUN npm run build
 
@@ -30,6 +30,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY backend/requirements-gateway.txt /tmp/requirements.txt
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && addgroup --system --gid 10001 siming \

@@ -1,6 +1,5 @@
 services:
   siming-gateway:
-    image: ghcr.io/teangtang1122/siming-ai-gateway:${SIMING_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -20,7 +19,8 @@ services:
       SIMING_HOME: /data
       SIMING_CONTENT_ROOT: /data/projects
     volumes:
-      - siming-gateway-data:/data
+      # Bind existing source-deployment data by setting SIMING_GATEWAY_DATA=/opt/siming-gateway/data
+      - ${SIMING_GATEWAY_DATA:-siming-gateway-data}:/data
 
 volumes:
   siming-gateway-data:
