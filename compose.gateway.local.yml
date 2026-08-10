@@ -1,0 +1,28 @@
+services:
+  siming-gateway:
+    image: siming-gateway:local
+    build:
+      context: .
+      dockerfile: deploy/gateway-runtime.Dockerfile
+      args:
+        SIMING_VERSION: ${SIMING_VERSION:-dev}
+        PYTHON_IMAGE: ${SIMING_PYTHON_IMAGE:-python:3.11-slim}
+    restart: unless-stopped
+    ports:
+      - "${SIMING_GATEWAY_PORT:-8000}:8000"
+    environment:
+      SIMING_RUNTIME_PROFILE: gateway
+      SIMING_GATEWAY_HEADLESS: "true"
+      SIMING_GATEWAY_NAME: ${SIMING_GATEWAY_NAME:-司命 Gateway}
+      SIMING_GATEWAY_ADVERTISED_URL: ${SIMING_GATEWAY_ADVERTISED_URL:-}
+      SIMING_GATEWAY_ALLOWED_HOSTS: ${SIMING_GATEWAY_ALLOWED_HOSTS:-localhost,127.0.0.1,*.local,*.ts.net}
+      SIMING_GATEWAY_BOOTSTRAP_KEY: ${SIMING_GATEWAY_BOOTSTRAP_KEY:?请先设置至少 12 位的管理口令}
+      DATABASE_URL: sqlite:////data/siming.db
+      SIMING_HOME: /data
+      SIMING_CONTENT_ROOT: /data/projects
+    volumes:
+      # Bind existing source-deployment data by setting SIMING_GATEWAY_DATA=/opt/siming-gateway/data
+      - ${SIMING_GATEWAY_DATA:-siming-gateway-data}:/data
+
+volumes:
+  siming-gateway-data:
