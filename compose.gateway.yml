@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         SIMING_VERSION: ${SIMING_VERSION:-dev}
+        NODE_IMAGE: ${SIMING_NODE_IMAGE:-node:22-alpine}
     restart: unless-stopped
     ports:
       - "${SIMING_GATEWAY_PORT:-8000}:8000"
