@@ -42,7 +42,7 @@
     "backend/app/services/cataloging/orchestrator.py:_compact_local_runtime_context": 158,
     "backend/app/services/cataloging/orchestrator.py:_extract_run": 446,
     "backend/app/services/cataloging/orchestrator.py:_extract_run_merged": 282,
-    "backend/app/services/chapter_revision.py:preview_de_ai_revision": 602,
+    "backend/app/services/chapter_revision.py:preview_de_ai_revision": 612,
     "backend/app/services/content_store.py:refresh_project_from_files": 286,
     "backend/app/services/deconstruct/import_service.py:import_deconstruct_report": 470,
     "backend/app/services/deconstruct/orchestrator.py:run_deconstruct_job": 247,
