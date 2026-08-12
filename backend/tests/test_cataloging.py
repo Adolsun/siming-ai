@@ -8,22 +8,32 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.exceptions import ValidationError
 from app.database.models import (
     Base,
     CatalogingCandidate,
     CatalogingFact,
     Chapter,
+    ChapterGovernanceReview,
     Character,
     CharacterAIConfig,
     CharacterAlias,
     CharacterRelationship,
     CharacterVersion,
+    Foreshadowing,
+    NarrativeDebt,
     OutlineNode,
     Project,
     WorldbuildingEntry,
 )
 from app.services.cataloging.applier import apply_candidates_for_run
-from app.services.cataloging.candidate_store import try_create_candidate
+from app.services.cataloging.candidate_io import candidate_has_usable_summary, candidate_payload
+from app.services.cataloging.candidate_store import (
+    recover_candidates_from_raw_output,
+    try_create_candidate,
+    try_create_candidates,
+)
+from app.services.cataloging.candidate_validation import inspect_candidate_coverage
 from app.services.cataloging.context import build_light_context
 from app.services.context_builders import _build_world_context
 from app.services.cataloging.job_control import (
@@ -38,9 +48,54 @@ from app.services.cataloging.job_control import (
 from app.services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
 from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.cataloging import orchestrator as cataloging_orchestrator
+from app.services.cataloging.jsonl import (
+    candidate_response_attempts,
+    parse_candidate_response_records,
+)
 from app.services.cataloging.background_compactor import merge_background
 from app.services.cataloging.worldbuilding_ops import _normalize_dimension
 from app.services.character_merge_service import build_character_merge_preview, find_duplicate_character_candidates, merge_characters
+from app.routers.cataloging import recover_current_cataloging_chapter
+
+
+def complete_summary_payload(
+    summary_text: str,
+    *,
+    scene_count: int = 1,
+    characters: list[str] | None = None,
+    worldbuilding: list[str] | None = None,
+    relationships: list[dict] | None = None,
+    character_profiles: list[str] | None = None,
+    narrative_state: dict | None = None,
+    **extra,
+) -> dict:
+    return {
+        "summary_text": summary_text,
+        "coverage_manifest": {
+            "scene_count": scene_count,
+            "characters": characters or [],
+            "worldbuilding": worldbuilding or [],
+            "relationships": relationships or [],
+            "character_profiles": character_profiles or [],
+        },
+        "narrative_state": narrative_state or {
+            "events": [],
+            "timeline_events": [],
+            "foreshadowing_planted": [],
+            "foreshadowing_resolved": [],
+            "storyline_progress": [],
+            "new_storylines": [],
+            "reader_known_facts": [],
+            "character_known_facts": [],
+            "unresolved_actions": [],
+        },
+        "narrative_review": {
+            "source": "provided",
+            "outcome": "assessed",
+            "evidence": "test fixture",
+        },
+        **extra,
+    }
 
 
 class CatalogingServiceTestCase(unittest.TestCase):
@@ -68,7 +123,10 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 title="第1章 开端",
                 content="张三来到青云宗。",
             )
-            db.add(chapter)
+            db.add_all([
+                chapter,
+                Character(project_id=project.id, name="李四", background="青云宗弟子。"),
+            ])
             db.commit()
 
             job = create_cataloging_job(db, project.id, "auto", None, [])
@@ -110,9 +168,12 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertEqual(db.query(Character).count(), 2)
             self.assertEqual(db.query(WorldbuildingEntry).count(), 1)
             self.assertEqual(db.query(CharacterRelationship).count(), 1)
-            self.assertEqual(db.query(OutlineNode).count(), 2)
+            self.assertEqual(db.query(OutlineNode).count(), 3)
+            volume = db.query(OutlineNode).filter(OutlineNode.node_type == "volume").one()
+            chapter_node = db.query(OutlineNode).filter(OutlineNode.node_type == "chapter").one()
+            self.assertEqual(chapter_node.parent_id, volume.id)
             section = db.query(OutlineNode).filter(OutlineNode.node_type == "section").first()
-            self.assertIsNotNone(section.parent_id)
+            self.assertEqual(section.parent_id, chapter_node.id)
             self.assertIsNotNone(chapter.summary)
             self.assertEqual(chapter.summary.summary_text, "张三来到青云宗。")
             self.assertIsNotNone(chapter.outline_node_id)
@@ -305,6 +366,80 @@ class CatalogingServiceTestCase(unittest.TestCase):
             payload = json.loads(candidate.raw_payload)
             self.assertIn("narrative_state", payload)
             self.assertEqual(len(payload["narrative_state"]["events"]), 1)
+            self.assertIn("The relay opens.", payload["summary_text"])
+            self.assertTrue(candidate_has_usable_summary(candidate))
+        finally:
+            db.close()
+
+    def test_rich_narrative_candidate_without_summary_text_recovers_existing_run(self):
+        """Regression for DeepSeek omitting only the redundant summary field."""
+
+        db = self.Session()
+        try:
+            project = Project(title="Recovered Summary Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章 穿越", content="正文")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            summary = CatalogingCandidate(
+                job_id=job.id,
+                chapter_run_id=run.id,
+                project_id=project.id,
+                chapter_id=chapter.id,
+                item_type="chapter_summary",
+                operation="upsert",
+                raw_payload=json.dumps({
+                    "type": "chapter_summary",
+                    "coverage_manifest": {
+                        "scene_count": 1,
+                        "characters": [],
+                        "worldbuilding": [],
+                        "relationships": [],
+                        "character_profiles": [],
+                    },
+                    "narrative_state": {
+                        "events": [
+                            "主角穿越到陌生世界并确认自己的新身份。",
+                            "家族议事中旁支发难，主角发现阵法账目异常。",
+                            "父亲拿出查账结果，暂时化解本章冲突。",
+                        ],
+                        "unresolved_actions": ["调查石狮子眉心闪光。"],
+                    },
+                    "narrative_review": "本章已完成叙事治理检查。",
+                }, ensure_ascii=False),
+                status="pending",
+                sort_order=0,
+                source_task="chapter_cataloging",
+            )
+            outline = CatalogingCandidate(
+                job_id=job.id,
+                chapter_run_id=run.id,
+                project_id=project.id,
+                chapter_id=chapter.id,
+                item_type="outline_create",
+                operation="create",
+                raw_payload=json.dumps({
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": chapter.title,
+                    "summary": "主角发现阵法账目异常。",
+                }, ensure_ascii=False),
+                status="pending",
+                sort_order=1,
+                source_task="chapter_cataloging",
+            )
+            db.add_all([summary, outline])
+            db.flush()
+
+            recovered = candidate_payload(summary)
+            coverage = inspect_candidate_coverage([summary, outline])
+            self.assertTrue(candidate_has_usable_summary(summary))
+            self.assertIn("家族议事", recovered["summary_text"])
+            self.assertTrue(coverage.is_complete)
         finally:
             db.close()
 
@@ -336,6 +471,634 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertEqual(relationship["candidate"].item_type, "character_relationship")
             self.assertIn("candidate", worldbuilding)
             self.assertEqual(worldbuilding["candidate"].item_type, "worldbuilding_create")
+        finally:
+            db.close()
+
+    def test_api_aggregate_archive_expands_and_applies_without_data_loss(self):
+        """Regression for the one-object DeepSeek response seen in chapter two."""
+
+        db = self.Session()
+        try:
+            project = Project(title="Aggregate API Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第二章 吐纳", content="林七完成吐纳并教给同伴。")
+            character = Character(project_id=project.id, name="林七")
+            world = WorldbuildingEntry(
+                project_id=project.id,
+                title="吐纳体系",
+                dimension="power_system",
+                content="旧路径。",
+            )
+            db.add_all([chapter, character, world])
+            db.commit()
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            aggregate = {
+                "chapter_summary": {
+                    "title": chapter.title,
+                    "summary": "林七完成吐纳并优化路径。",
+                    "narrative_state": "修炼线正式推进。",
+                    "narrative_review": "本章已检查修炼线和未决行动。",
+                },
+                "character_state_updates": [{
+                    "name": "林七",
+                    "operation": "update",
+                    "data": {
+                        "background": "林七在本章完成首次吐纳。",
+                        "aliases": ["小七"],
+                        "appearance": "黑衣少年",
+                        "age": "约十六岁",
+                        "life_status": "alive",
+                        "current_location": "练功院",
+                        "realm_or_level": "引气入体",
+                        "physical_state": "稳定",
+                        "mental_state": "专注",
+                        "current_goal": "验证新路径",
+                        "active_conflict": "传统路径效率低",
+                        "abilities_state": "能感知灵气",
+                        "items_or_assets": "吐纳笔记",
+                    },
+                }],
+                "worldbuilding_entries": [{
+                    "operation": "update",
+                    "dimension": "power_system",
+                    "title": "吐纳体系",
+                    "content": "林七将弯折路径改直后，灵气留存增加。",
+                }],
+                "outline_creates": [
+                    {
+                        "title": chapter.title,
+                        "node_type": "chapter",
+                        "summary": "完成吐纳并验证新路径。",
+                    },
+                    {
+                        "title": "首次吐纳",
+                        "node_type": "section",
+                        "parent_id": chapter.title,
+                        "scene_number": 1,
+                        "purpose": "验证路径",
+                        "location": "练功院",
+                    },
+                ],
+                "chapter_links": [{
+                    "source_type": "character",
+                    "source_name": "林七",
+                    "target_type": "outline",
+                    "target_name": chapter.title,
+                    "relation": "主角",
+                    "order": 1,
+                }],
+                "narrative_ledger": [{
+                    "type": "completed_beat",
+                    "title": "首次吐纳完成",
+                    "description": "林七成功引气入体。",
+                    "evidence": "灵气在丹田稳定停留。",
+                }],
+            }
+
+            results = try_create_candidates(
+                db,
+                job,
+                run,
+                json.dumps(aggregate, ensure_ascii=False),
+                0,
+            )
+            candidates = [result["candidate"] for result in results if result.get("candidate")]
+
+            self.assertFalse([result for result in results if result.get("bad_line") or result.get("skipped")])
+            self.assertEqual(len(candidates), 7)
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates].count("character_state_update"),
+                1,
+            )
+            section_candidate = next(
+                candidate
+                for candidate in candidates
+                if candidate.item_type == "outline_create"
+                and json.loads(candidate.raw_payload).get("node_type") == "section"
+            )
+            section_payload = json.loads(section_candidate.raw_payload)
+            self.assertEqual(section_payload["parent_title"], chapter.title)
+            self.assertNotIn("parent_id", section_payload)
+
+            events = apply_candidates_for_run(db, job, run)
+            self.assertEqual(len(events), 7)
+            volume = db.query(OutlineNode).filter(OutlineNode.node_type == "volume").one()
+            chapter_node = db.query(OutlineNode).filter(OutlineNode.node_type == "chapter").one()
+            section = db.query(OutlineNode).filter(OutlineNode.node_type == "section").one()
+            self.assertEqual(chapter_node.parent_id, volume.id)
+            self.assertEqual(section.parent_id, chapter_node.id)
+            self.assertNotEqual(section.parent_id, chapter.title)
+            self.assertEqual(character.current_location, "练功院")
+            self.assertIn("首次吐纳", character.background)
+            self.assertIn("改直", world.content)
+        finally:
+            db.close()
+
+    def test_typed_chapter_summary_with_aggregate_arrays_expands_all_cards(self):
+        """Regression for a typed DeepSeek summary wrapping the other cards."""
+
+        db = self.Session()
+        try:
+            project = Project(title="Typed Aggregate API Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章 穿越", content="主角介入家族议事。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            aggregate = {
+                "type": "chapter_summary",
+                "summary_text": "主角介入家族议事并发现阵法账目异常。",
+                "coverage_manifest": {
+                    "scene_count": 1,
+                    "characters": ["主角"],
+                    "worldbuilding": ["护族大阵"],
+                    "relationships": [],
+                    "character_profiles": [],
+                },
+                "narrative_state": {
+                    "events": ["主角指出阵法账目异常。"],
+                    "unresolved_actions": ["调查石狮子闪光。"],
+                },
+                "narrative_review": "本章已完成叙事治理检查并记录未决行动。",
+                "character_state_updates": [{
+                    "character_name": "主角",
+                    "appearance": "三岁幼童",
+                    "age": "三岁",
+                    "life_status": "alive",
+                    "current_location": "家族议事厅",
+                    "physical_state": "头疼",
+                    "mental_state": "冷静",
+                    "current_goal": "调查账目",
+                    "active_conflict": "旁支阻挠",
+                    "abilities_state": "观察灵气",
+                    "items_or_assets": "无",
+                }],
+                "worldbuilding_entries": [{
+                    "type": "worldbuilding_create",
+                    "dimension": "power_system",
+                    "name": "护族大阵",
+                    "description": "依靠灵石维持的家族阵法。",
+                }],
+                "outline_creates": [{
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": chapter.title,
+                    "summary": "主角揭穿阵法账目异常。",
+                }],
+                "chapter_links": [{
+                    "type": "chapter_link",
+                    "source_type": "character",
+                    "source_name": "主角",
+                    "target_type": "chapter",
+                    "target_name": chapter.title,
+                    "relation": "主角出场",
+                }, {
+                    "type": "chapter_link",
+                    "worldbuilding_titles": ["护族大阵"],
+                    "description": "本章涉及护族大阵。",
+                }],
+            }
+
+            results = try_create_candidates(
+                db,
+                job,
+                run,
+                json.dumps(aggregate, ensure_ascii=False),
+                0,
+            )
+            candidates = [result["candidate"] for result in results if result.get("candidate")]
+            coverage = inspect_candidate_coverage(candidates)
+
+            self.assertFalse([
+                result
+                for result in results
+                if result.get("bad_line") or result.get("skipped")
+            ])
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates],
+                [
+                    "chapter_summary",
+                    "character_state_update",
+                    "worldbuilding_create",
+                    "outline_create",
+                    "chapter_link",
+                    "chapter_link",
+                ],
+            )
+            self.assertTrue(coverage.is_complete)
+        finally:
+            db.close()
+
+    def test_candidate_response_parser_accepts_common_provider_shapes(self):
+        summary = {
+            "type": "chapter_summary",
+            "summary_text": "主角发现阵法异常。",
+            "narrative_state": {"events": ["发现异常"]},
+        }
+        outline = {
+            "type": "outline_create",
+            "node_type": "chapter",
+            "title": "第一章",
+            "summary": "主角发现阵法异常。",
+        }
+        typed_aggregate = {
+            **summary,
+            "outline_creates": [outline],
+        }
+        cases = {
+            "jsonl": "\n".join([
+                json.dumps(summary, ensure_ascii=False),
+                json.dumps(outline, ensure_ascii=False),
+            ]),
+            "array": json.dumps([summary, outline], ensure_ascii=False, indent=2),
+            "fenced_typed_aggregate": (
+                "模型结果如下：\n```json\n"
+                + json.dumps(typed_aggregate, ensure_ascii=False, indent=2)
+                + "\n```"
+            ),
+            "collection_wrapper": json.dumps(
+                {"candidates": [summary, outline]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "string_output_wrapper": json.dumps(
+                {"output": json.dumps([summary, outline], ensure_ascii=False)},
+                ensure_ascii=False,
+            ),
+            "mixed_json_and_prose": (
+                json.dumps(summary, ensure_ascii=False)
+                + "\n下面是大纲：\n"
+                + json.dumps(outline, ensure_ascii=False, indent=2)
+            ),
+        }
+
+        for label, response in cases.items():
+            with self.subTest(label=label):
+                records = parse_candidate_response_records(response)
+                self.assertEqual(
+                    [record.get("type") for record in records],
+                    ["chapter_summary", "outline_create"],
+                )
+
+    def test_failed_run_recovers_complete_typed_aggregate_from_raw_output(self):
+        db = self.Session()
+        try:
+            project = Project(title="Raw Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="第一章 穿越",
+                content="主角发现阵法异常。",
+            )
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+
+            summary_line = json.dumps({
+                "type": "chapter_summary",
+                "summary_text": "主角发现阵法异常。",
+            }, ensure_ascii=False)
+            created_summary = try_create_candidate(db, job, run, summary_line, 0)
+            self.assertIn("candidate", created_summary)
+
+            aggregate = {
+                "type": "chapter_summary",
+                "summary_text": "主角发现阵法异常并决定追查。",
+                "coverage_manifest": {
+                    "scene_count": 1,
+                    "characters": [],
+                    "worldbuilding": ["护族大阵"],
+                    "relationships": [],
+                    "character_profiles": [],
+                },
+                "narrative_state": {
+                    "events": ["发现阵法异常"],
+                    "unresolved_actions": ["追查异常来源"],
+                },
+                "outline_creates": [{
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": chapter.title,
+                    "summary": "主角发现异常并决定追查。",
+                }],
+                "worldbuilding_entries": [{
+                    "type": "worldbuilding_create",
+                    "title": "护族大阵",
+                    "dimension": "power_system",
+                    "content": "阵法依赖灵石维持。",
+                }],
+                "chapter_links": [{
+                    "type": "chapter_link",
+                    "worldbuilding_titles": ["护族大阵"],
+                    "description": "本章发现阵法异常。",
+                }],
+            }
+            response = json.dumps(aggregate, ensure_ascii=False, indent=2)
+            run.raw_output = (
+                f"=== MERGED CATALOGING ===\n{response}\n\n"
+                f"=== MERGED CATALOGING RETRY 2 ===\n{response}\n\n"
+                f"=== MERGED CATALOGING RETRY 3 ===\n{response}"
+            )
+            run.status = "failed"
+            db.flush()
+
+            self.assertEqual(len(candidate_response_attempts(run.raw_output)), 3)
+            recovered = recover_candidates_from_raw_output(db, job, run)
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            coverage = inspect_candidate_coverage(candidates)
+
+            self.assertEqual(recovered["attempt_from_end"], 1)
+            self.assertTrue(recovered["coverage"].is_complete)
+            self.assertTrue(coverage.is_complete)
+            self.assertEqual(
+                {candidate.item_type for candidate in candidates},
+                {"chapter_summary", "outline_create", "worldbuilding_create", "chapter_link"},
+            )
+
+            count_before = len(candidates)
+            recovered_again = recover_candidates_from_raw_output(db, job, run)
+            self.assertTrue(recovered_again["coverage"].is_complete)
+            self.assertEqual(
+                db.query(CatalogingCandidate).filter(
+                    CatalogingCandidate.chapter_run_id == run.id,
+                ).count(),
+                count_before,
+            )
+        finally:
+            db.close()
+
+    def test_try_create_candidate_recovers_candidate_type_misplaced_in_node_type(self):
+        """DeepSeek may use node_type for the candidate type itself.
+
+        This mirrors the packaged-app incident where scenes were stored as
+        chapter summaries and worldbuilding cards were stored as characters.
+        """
+        db = self.Session()
+        try:
+            project = Project(title="DeepSeek Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第二章 吐纳", content="陆家议事厅内灵气骤变。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            raw_candidates = [
+                {
+                    "node_type": "outline_create",
+                    "title": "议事厅对峙",
+                    "parent_title": "第二章 吐纳",
+                    "scene_number": 1,
+                    "purpose": "揭示旁支矛盾",
+                    "entry_state": "众人争执",
+                    "exit_state": "真相初显",
+                    "summary": "特昂糖在议事厅与旁支对峙。",
+                },
+                {
+                    "node_type": "worldbuilding_create",
+                    "name": "陆家护族大阵",
+                    "dimension": "power_system",
+                    "description": "与陆家血脉绑定的祖传防护阵法。",
+                    "significance": "后续危机的重要防线。",
+                },
+                {
+                    "node_type": "worldbuilding_create",
+                    "name": "游戏世界规则",
+                    "dimension": "culture",
+                    "description": "物品会自动归位，NPC 行为遵循固定模式。",
+                },
+            ]
+
+            results = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(raw_candidates)
+            ]
+
+            self.assertTrue(all("candidate" in result for result in results))
+            candidates = [result["candidate"] for result in results]
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates],
+                ["outline_create", "worldbuilding_create", "worldbuilding_create"],
+            )
+            outline_payload = json.loads(candidates[0].raw_payload)
+            self.assertEqual(outline_payload["node_type"], "section")
+            self.assertEqual(outline_payload["title"], "议事厅对峙")
+            world_payload = json.loads(candidates[1].raw_payload)
+            self.assertEqual(world_payload["title"], "陆家护族大阵")
+            self.assertEqual(world_payload["content"], "与陆家血脉绑定的祖传防护阵法。")
+        finally:
+            db.close()
+
+    def test_try_create_candidate_accepts_single_key_cataloging_wrappers(self):
+        db = self.Session()
+        try:
+            project = Project(title="Wrapped Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章 穿越·着陆", content="特昂糖揭露账目问题。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            samples = [
+                {
+                    "completed_beat": {
+                        "beat": "特昂糖当众揭露账目问题",
+                        "chapter": 1,
+                        "evidence": "陆承宇拿出证据证实",
+                    }
+                },
+                {
+                    "revealed_clue": {
+                        "clue": "石狮子眉心闪光",
+                        "chapter": 1,
+                        "evidence": "眉心闪了一下",
+                    }
+                },
+                {
+                    "narrative_promise": {
+                        "promise": "特昂糖的回归之路",
+                        "chapter": 1,
+                        "description": "必须回到原来的世界",
+                        "status": "open",
+                    }
+                },
+                {
+                    "storyline_state": {
+                        "storyline": "主脉与旁支的矛盾",
+                        "chapter": 1,
+                        "state": "矛盾暂时平息但未解决",
+                    }
+                },
+                {
+                    "worldbuilding_timeline": {
+                        "event": "议事厅账目对峙",
+                        "description": "周氏被迫退让",
+                        "related_worldbuilding": ["陆家", "护族大阵"],
+                    }
+                },
+                {
+                    "chapter_link": {
+                        "source": "第一章 穿越·着陆",
+                        "target": "护族大阵",
+                        "relation": "introduces",
+                        "description": "第一章引入护族大阵",
+                    }
+                },
+                {
+                    "chapter_link": {
+                        "source": "陆老爷子",
+                        "target": "特昂糖",
+                        "relation": "grandfather_of",
+                        "description": "陆老爷子是特昂糖的爷爷",
+                    }
+                },
+            ]
+
+            created = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(samples)
+            ]
+
+            self.assertTrue(all("candidate" in result for result in created), created)
+            candidates = [result["candidate"] for result in created]
+            self.assertEqual(
+                [candidate.item_type for candidate in candidates],
+                [
+                    "chapter_summary",
+                    "chapter_summary",
+                    "chapter_summary",
+                    "chapter_summary",
+                    "worldbuilding_timeline",
+                    "chapter_link",
+                    "character_relationship",
+                ],
+            )
+            narrative_payloads = [json.loads(candidate.raw_payload) for candidate in candidates[:4]]
+            self.assertTrue(all(payload.get("narrative_state") for payload in narrative_payloads))
+            timeline_payload = json.loads(candidates[4].raw_payload)
+            self.assertEqual(timeline_payload["title"], "陆家")
+            self.assertEqual(timeline_payload["event_description"], "周氏被迫退让")
+            relationship_payload = json.loads(candidates[6].raw_payload)
+            self.assertEqual(relationship_payload["relationship_type"], "grandfather_of")
+        finally:
+            db.close()
+
+    def test_typed_ledger_candidates_populate_structured_narrative_governance(self):
+        db = self.Session()
+        try:
+            project = Project(title="Typed Ledger Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="第一章 穿越·着陆",
+                content="石狮异动，特昂糖决定追查回归之路。",
+            )
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            samples = [
+                {"type": "completed_beat", "beat": "特昂糖确认自己已经穿越", "evidence": "她认出陌生院落"},
+                {"type": "revealed_clue", "clue": "石狮眉心会发光", "evidence": "石狮眉心闪了一下"},
+                {
+                    "type": "narrative_promise",
+                    "promise": "寻找返回原世界的方法",
+                    "status": "open",
+                    "evidence": "特昂糖决定追查穿越原因",
+                },
+                {"type": "storyline_state", "storyline": "回归主线", "state": "开始调查"},
+                {
+                    "type": "narrative_promise",
+                    "promise": "石狮异动已经解释",
+                    "status": "fulfilled",
+                    "evidence": "只有标题相似，没有原治理项 ID",
+                },
+                {
+                    "type": "chapter_summary",
+                    "summary_text": "特昂糖确认穿越，并开始调查石狮与回归线索。",
+                    "narrative_state": {
+                        "unresolved_actions": [
+                            {"title": "查明石狮异动原因", "evidence": "本章尚未查明"},
+                        ],
+                    },
+                },
+            ]
+            created = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(samples)
+            ]
+
+            self.assertTrue(all("candidate" in result for result in created), created)
+            payloads = [json.loads(result["candidate"].raw_payload) for result in created]
+            self.assertEqual(payloads[0]["narrative_state"]["events"][0]["title"], "特昂糖确认自己已经穿越")
+            self.assertEqual(payloads[1]["narrative_state"]["reader_known_facts"][0]["title"], "石狮眉心会发光")
+            self.assertEqual(payloads[2]["narrative_state"]["foreshadowing_planted"][0]["title"], "寻找返回原世界的方法")
+            self.assertEqual(payloads[3]["narrative_state"]["storyline_progress"][0]["title"], "回归主线")
+            self.assertEqual(payloads[4]["narrative_state"]["foreshadowing_resolved"][0]["status"], "pending_review")
+
+            events = apply_candidates_for_run(db, job, run)
+
+            self.assertTrue(all(event["type"] == "candidate_applied" for event in events), events)
+            hooks = db.query(Foreshadowing).all()
+            debts = db.query(NarrativeDebt).all()
+            self.assertEqual(len(hooks), 1)
+            self.assertEqual(hooks[0].title, "寻找返回原世界的方法")
+            self.assertEqual(hooks[0].status, "open")
+            self.assertEqual(len(debts), 1)
+            self.assertEqual(debts[0].title, "查明石狮异动原因")
+            self.assertEqual(debts[0].status, "open")
+            self.assertTrue(any(
+                "unlinked_foreshadowing_resolution"
+                in event["data"]["new_value"]["narrative_governance"]["warnings"]
+                for event in events
+                if event.get("data", {}).get("new_value", {}).get("narrative_governance")
+            ))
+            review = db.query(ChapterGovernanceReview).one()
+            self.assertEqual(review.status, "assessed")
+            self.assertEqual(review.source, "provided")
+            self.assertEqual(review.findings_count, 3)
+        finally:
+            db.close()
+
+    def test_missing_chapter_outline_title_falls_back_to_source_chapter(self):
+        db = self.Session()
+        try:
+            project = Project(title="Outline Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章 穿越·着陆", content="正文。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            result = try_create_candidate(
+                db,
+                job,
+                run,
+                json.dumps({
+                    "type": "outline_create",
+                    "payload": {"node_type": "chapter", "summary": "特昂糖在陆家醒来。"},
+                }, ensure_ascii=False),
+                0,
+            )
+
+            self.assertIn("candidate", result)
+            payload = json.loads(result["candidate"].raw_payload)
+            self.assertEqual(payload["title"], chapter.title)
         finally:
             db.close()
 
@@ -376,6 +1139,17 @@ class CatalogingServiceTestCase(unittest.TestCase):
             examples = [
                 {"type": "character_state_update", "current_location": "山门"},
                 {"type": "character_create", "name": "未命名角色"},
+                {
+                    "type": "character_update",
+                    "name": "边界石碑之谜",
+                    "description": "石碑阵纹异动，成为后续线索。",
+                    "evidence": "章末石碑发光。",
+                },
+                {
+                    "type": "character_create",
+                    "name": "巫妖争夺遗骨",
+                    "summary": "两个势力围绕遗骨展开争夺。",
+                },
                 {"type": "worldbuilding_create", "title": "灵气潮汐", "dimension": "power_system"},
                 {"type": "worldbuilding_timeline", "event_description": "灵潮出现"},
             ]
@@ -387,8 +1161,60 @@ class CatalogingServiceTestCase(unittest.TestCase):
 
             self.assertTrue(all(item.get("skipped") for item in results))
             self.assertTrue(any("未命名角色" in item.get("reason", "") for item in results))
+            self.assertTrue(any("边界石碑之谜" in item.get("reason", "") for item in results))
+            self.assertTrue(any("巫妖争夺遗骨" in item.get("reason", "") for item in results))
             self.assertTrue(any("世界观候选" in item.get("reason", "") for item in results))
             self.assertEqual(db.query(CatalogingCandidate).count(), 0)
+        finally:
+            db.close()
+
+    def test_try_create_candidate_accepts_character_with_persistable_person_detail(self):
+        db = self.Session()
+        try:
+            project = Project(title="Character Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="陆老爷子按住刀柄。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            result = try_create_candidate(db, job, run, json.dumps({
+                "type": "character_create",
+                "name": "陆老爷子",
+                "role_type": "mentor",
+                "personality": "沉稳谨慎",
+            }, ensure_ascii=False), 0)
+
+            self.assertFalse(result.get("skipped"))
+            self.assertEqual(result["candidate"].target_name, "陆老爷子")
+        finally:
+            db.close()
+
+    def test_character_candidate_reduces_descriptive_role_to_enum(self):
+        db = self.Session()
+        try:
+            project = Project(title="Canonical Role Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="特昂糖推门而入。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            result = try_create_candidate(db, job, run, json.dumps({
+                "type": "character_create",
+                "name": "特昂糖",
+                "role_type": "主角，穿越者，陆家三岁孙女",
+                "background": "前世为研究员，现为陆家幼女",
+            }, ensure_ascii=False), 0)
+
+            payload = candidate_payload(result["candidate"])
+            self.assertEqual(payload["role_type"], "protagonist")
+            self.assertNotIn("穿越者", payload["role_type"])
+            self.assertIn("穿越者、陆家三岁孙女", payload["background"])
         finally:
             db.close()
 
@@ -737,7 +1563,15 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 body = "\n".join([
                     json.dumps({
                         "type": "chapter_summary",
-                        "payload": {"summary_text": "A hidden identity is revealed.", "key_events": ["reveal"]},
+                        "payload": complete_summary_payload(
+                            "A hidden identity is revealed.",
+                            characters=["Master", "Black Cloak"],
+                            key_events=["reveal"],
+                        ),
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "outline_create",
+                        "payload": {"title": "Reveal", "node_type": "chapter", "summary": "Identity reveal."},
                     }, ensure_ascii=False),
                     json.dumps({
                         "type": "character_merge_candidate",
@@ -747,6 +1581,18 @@ class CatalogingServiceTestCase(unittest.TestCase):
                             "confidence_reason": "same contact",
                             "evidence_points": ["same signal"],
                         },
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "character_state_update",
+                        "payload": {"name": "Master", "life_status": "alive"},
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "character_state_update",
+                        "payload": {"name": "Black Cloak", "life_status": "alive"},
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "chapter_link",
+                        "payload": {"character_names": ["Master", "Black Cloak"]},
                     }, ensure_ascii=False),
                 ]) + "\n"
             yield body[:40]
@@ -775,7 +1621,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertTrue(any('"type":"fact_extracted"' in event for event in events))
             self.assertEqual(db.query(CatalogingFact).count(), 2)
-            self.assertEqual(db.query(CatalogingCandidate).count(), 2)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 6)
             self.assertEqual(run.status, "awaiting_confirmation")
         finally:
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
@@ -792,7 +1638,10 @@ class CatalogingServiceTestCase(unittest.TestCase):
             body = "\n".join([
                 json.dumps({
                     "type": "chapter_summary",
-                    "payload": {"summary_text": "The door opens.", "key_events": ["door opens"]},
+                    "payload": complete_summary_payload(
+                        "The door opens.",
+                        key_events=["door opens"],
+                    ),
                 }, ensure_ascii=False),
                 json.dumps({
                     "type": "outline_create",
@@ -831,6 +1680,313 @@ class CatalogingServiceTestCase(unittest.TestCase):
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
             db.close()
 
+    def test_extract_run_projects_outline_from_summary_without_retry(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        prompts = []
+
+        async def fake_stream(messages, **kwargs):
+            prompts.append(messages[1]["content"])
+            yield json.dumps({
+                "type": "chapter_summary",
+                "payload": complete_summary_payload("Only a summary was returned."),
+            }, ensure_ascii=False) + "\n"
+
+        try:
+            project = Project(title="Coverage Gate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第2章", content="人物在院中继续行动。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(prompts), 1)
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            outlines = [item for item in candidates if item.item_type == "outline_create"]
+            self.assertEqual(len(outlines), 1)
+            self.assertEqual(outlines[0].source_task, "deterministic_required_outline")
+            self.assertIn("Only a summary was returned.", outlines[0].raw_payload)
+            self.assertEqual(run.status, "awaiting_confirmation")
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_review_only_coverage_warning_is_not_a_hard_run_error(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+
+        async def fake_stream(messages, **kwargs):
+            yield json.dumps({
+                "chapter_summary": complete_summary_payload(
+                    "周氏在院中安顿家人。",
+                    characters=[],
+                ),
+                "chapter_outline": {
+                    "title": "第一章",
+                    "summary": "周氏在院中安顿家人。",
+                    "node_type": "chapter",
+                    "status": "completed",
+                },
+            }, ensure_ascii=False) + "\n"
+
+        try:
+            project = Project(title="Review Warning Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章", content="周氏在院中安顿家人。")
+            db.add_all([chapter, Character(project_id=project.id, name="周氏")])
+            db.commit()
+            job = create_cataloging_job(db, project.id, "auto", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            asyncio.run(collect())
+
+            self.assertEqual(run.status, "awaiting_confirmation")
+            self.assertIsNone(run.error)
+            self.assertIn("原文角色", run.review_warning or "")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_accepts_required_summary_outline_skeleton(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(messages, **kwargs):
+            calls.append(messages)
+            yield json.dumps({
+                "chapter_summary": complete_summary_payload(
+                    "The required skeleton was returned.",
+                    narrative_state={"events": ["The archive starts."]},
+                ),
+                "chapter_outline": {
+                    "title": "第2章",
+                    "summary": "The required skeleton was returned.",
+                    "node_type": "chapter",
+                    "status": "completed",
+                },
+            }, ensure_ascii=False) + "\n"
+
+        try:
+            project = Project(title="Required Skeleton Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第2章", content="The archive starts.")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            asyncio.run(collect())
+
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(candidates), 2)
+            self.assertEqual(
+                {candidate.item_type for candidate in candidates},
+                {"chapter_summary", "outline_create"},
+            )
+            outline = next(item for item in candidates if item.item_type == "outline_create")
+            self.assertNotEqual(outline.source_task, "deterministic_required_outline")
+            self.assertTrue(inspect_candidate_coverage(candidates).is_complete)
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_recovers_pretty_summary_only_without_retry(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(messages, **kwargs):
+            calls.append(messages)
+            body = json.dumps({
+                "type": "chapter_summary",
+                **complete_summary_payload("Pretty summary only."),
+            }, ensure_ascii=False, indent=2)
+            yield body[:41]
+            yield body[41:]
+
+        try:
+            project = Project(title="Pretty Summary Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第2章", content="人物继续行动。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            asyncio.run(collect())
+
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(
+                {candidate.item_type for candidate in candidates},
+                {"chapter_summary", "outline_create"},
+            )
+            outline = next(item for item in candidates if item.item_type == "outline_create")
+            self.assertEqual(outline.source_task, "deterministic_required_outline")
+            self.assertTrue(inspect_candidate_coverage(candidates).is_complete)
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_merged_recovers_pretty_json_array_without_retry(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(messages, **kwargs):
+            calls.append(messages)
+            body = json.dumps([
+                {
+                    "type": "chapter_summary",
+                    **complete_summary_payload(
+                        "The sealed door opens.",
+                        narrative_state={"events": ["The door opens."]},
+                    ),
+                },
+                {
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": "Door",
+                    "summary": "The sealed door opens.",
+                },
+            ], ensure_ascii=False, indent=2)
+            yield body[:53]
+            yield body[53:]
+
+        try:
+            project = Project(title="Pretty Array Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="Door",
+                content="The sealed door opens.",
+            )
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [
+                    event
+                    async for event in cataloging_orchestrator._extract_run(db, job, run)
+                ]
+
+            events = asyncio.run(collect())
+
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(
+                {candidate.item_type for candidate in candidates},
+                {"chapter_summary", "outline_create"},
+            )
+            self.assertTrue(inspect_candidate_coverage(candidates).is_complete)
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_merged_recovers_complete_body_after_stream_disconnect(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(messages, **kwargs):
+            calls.append(messages)
+            yield json.dumps({
+                "type": "chapter_summary",
+                **complete_summary_payload(
+                    "The relay activates.",
+                    narrative_state={"events": ["The relay activates."]},
+                ),
+                "outline_creates": [{
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": "Relay",
+                    "summary": "The relay activates.",
+                }],
+            }, ensure_ascii=False, indent=2)
+            raise RuntimeError("peer closed after sending the complete body")
+
+        try:
+            project = Project(title="Interrupted Complete Response Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="Relay",
+                content="The relay activates.",
+            )
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
+
+            async def collect():
+                return [
+                    event
+                    async for event in cataloging_orchestrator._extract_run(db, job, run)
+                ]
+
+            events = asyncio.run(collect())
+
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(inspect_candidate_coverage(candidates).is_complete)
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
     def test_extract_run_local_runtime_forces_staged_pipeline(self):
         os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
         db = self.Session()
@@ -845,10 +2001,19 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     "payload": {"summary": "The local model should use staged facts."},
                 }, ensure_ascii=False) + "\n"
             else:
-                body = json.dumps({
-                    "type": "chapter_summary",
-                    "payload": {"summary_text": "The local model resolved compact candidates.", "key_events": ["ok"]},
-                }, ensure_ascii=False) + "\n"
+                body = "\n".join([
+                    json.dumps({
+                        "type": "chapter_summary",
+                        "payload": complete_summary_payload(
+                            "The local model resolved compact candidates.",
+                            key_events=["ok"],
+                        ),
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "outline_create",
+                        "payload": {"title": "Local Door", "node_type": "chapter", "summary": "The door opens."},
+                    }, ensure_ascii=False),
+                ]) + "\n"
             yield body
 
         try:
@@ -882,7 +2047,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertNotIn("single_stage_cataloging", calls[1][0][1]["content"])
             self.assertEqual(calls[1][1]["max_tokens"], 4096)
             self.assertEqual(db.query(CatalogingFact).count(), 1)
-            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 2)
             self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
             self.assertEqual(run.status, "awaiting_confirmation")
         finally:
@@ -909,10 +2074,16 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     "payload": {"summary": "final"},
                 }, ensure_ascii=False) + "\n"
             else:
-                body = json.dumps({
-                    "type": "chapter_summary",
-                    "payload": {"summary_text": "final", "key_events": ["ok"]},
-                }, ensure_ascii=False) + "\n"
+                body = "\n".join([
+                    json.dumps({
+                        "type": "chapter_summary",
+                        "payload": complete_summary_payload("final", key_events=["ok"]),
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "type": "outline_create",
+                        "payload": {"title": "Retry", "node_type": "chapter", "summary": "final"},
+                    }, ensure_ascii=False),
+                ]) + "\n"
             yield body
 
         try:
@@ -965,7 +2136,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             body = "\n".join([
                 json.dumps({
                     "type": "chapter_summary",
-                    "payload": {"summary_text": "final", "key_events": ["ok"]},
+                    "payload": complete_summary_payload("final", key_events=["ok"]),
                 }, ensure_ascii=False),
                 json.dumps({
                     "type": "outline_create",
@@ -1024,10 +2195,19 @@ class CatalogingServiceTestCase(unittest.TestCase):
             if len(calls) <= 3:
                 yield "我无法抽取。"
                 return
-            body = json.dumps({
-                "type": "chapter_summary",
-                "payload": {"summary_text": "fallback facts reached candidate stage", "key_events": ["ok"]},
-            }, ensure_ascii=False) + "\n"
+            body = "\n".join([
+                json.dumps({
+                    "type": "chapter_summary",
+                    "payload": complete_summary_payload(
+                        "fallback facts reached candidate stage",
+                        key_events=["ok"],
+                    ),
+                }, ensure_ascii=False),
+                json.dumps({
+                    "type": "outline_create",
+                    "payload": {"title": "第1章 开端", "node_type": "chapter", "summary": "fallback"},
+                }, ensure_ascii=False),
+            ]) + "\n"
             yield body
 
         try:
@@ -1049,7 +2229,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertEqual(len(calls), 4)
             self.assertTrue(any('"type":"cataloging_warning"' in event and '"stage":"fact_extraction"' in event for event in events))
             self.assertGreaterEqual(db.query(CatalogingFact).count(), 2)
-            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 2)
             self.assertEqual(run.status, "awaiting_confirmation")
         finally:
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
@@ -1155,6 +2335,15 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 job,
                 run,
                 "chapter_summary",
+                {"narrative_state": {"events": [{"title": "ledger only"}]}},
+                "edited",
+            )
+            self.assertFalse(has_usable_chapter_summary(db, run))
+            create_manual_candidate(
+                db,
+                job,
+                run,
+                "chapter_summary",
                 {"summary_text": "manual summary", "key_events": ["fixed"]},
                 "edited",
             )
@@ -1167,6 +2356,87 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertIsNone(run.error)
             self.assertEqual(job.status, "waiting_confirmation")
             self.assertEqual(job.blocked_chapter_id, run.chapter_id)
+        finally:
+            db.close()
+
+    def test_recover_current_endpoint_reparses_raw_output_before_review(self):
+        db = self.Session()
+        try:
+            project = Project(title="Endpoint Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="第一章 回收",
+                content="主角发现了旧档案。",
+            )
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            run.status = "failed"
+            run.error = "候选覆盖不完整，缺少 chapter-level outline"
+            run.raw_output = "=== MERGED CATALOGING ===\n" + json.dumps({
+                "type": "chapter_summary",
+                **complete_summary_payload(
+                    "主角发现了旧档案。",
+                    narrative_state={"events": ["发现旧档案"]},
+                ),
+                "outline_creates": [{
+                    "type": "outline_create",
+                    "node_type": "chapter",
+                    "title": chapter.title,
+                    "summary": "主角发现了旧档案。",
+                }],
+            }, ensure_ascii=False, indent=2)
+            job.status = "paused_on_failure"
+            job.blocked_chapter_id = run.chapter_id
+            db.commit()
+
+            response = recover_current_cataloging_chapter(project.id, job.id, db)
+            candidates = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+            ).all()
+
+            self.assertEqual(run.status, "awaiting_confirmation")
+            self.assertEqual(job.status, "waiting_confirmation")
+            self.assertTrue(inspect_candidate_coverage(candidates).is_complete)
+            self.assertEqual(response.data["recovered_candidates"], 2)
+        finally:
+            db.close()
+
+    def test_recover_current_endpoint_keeps_incomplete_raw_output_failed(self):
+        db = self.Session()
+        try:
+            project = Project(title="Incomplete Endpoint Recovery Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第一章", content="只有摘要。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            run.status = "failed"
+            run.raw_output = "=== MERGED CATALOGING ===\n" + json.dumps({
+                "type": "chapter_summary",
+                "summary_text": "只有摘要。",
+            }, ensure_ascii=False)
+            job.status = "paused_on_failure"
+            job.blocked_chapter_id = run.chapter_id
+            db.commit()
+
+            with self.assertRaises(ValidationError) as raised:
+                recover_current_cataloging_chapter(project.id, job.id, db)
+
+            self.assertNotIn("chapter-level outline", str(raised.exception))
+            self.assertIn("coverage declaration", str(raised.exception))
+            self.assertEqual(run.status, "failed")
+            self.assertEqual(
+                db.query(CatalogingCandidate).filter(
+                    CatalogingCandidate.chapter_run_id == run.id,
+                ).count(),
+                0,
+            )
         finally:
             db.close()
 

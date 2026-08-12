@@ -879,13 +879,6 @@ def _activation_worker(job_id: str) -> None:
         model_results = probe.model_results
         if probe.selected_model:
             _save_activated_config(command, probe.selected_model)
-            try:
-                from app.services.external_agent.mcp_auto_config import (
-                    auto_configure_mcp_for_provider,
-                )
-                auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
-            except Exception:
-                pass
             _update_activation(
                 job_id,
                 status="ready",
@@ -1061,13 +1054,45 @@ def open_opencode_authentication(job_id: str) -> dict[str, Any]:
 
 
 def resume_incomplete_opencode_activations() -> int:
-    from app.database.models import OpenCodeActivationJob
+    from app.database.models import APIConfig, OpenCodeActivationJob, OperationRun
     from app.database.session import SessionLocal
+    from app.modules.model_runtime.infrastructure.readiness import READINESS_READY
+    from app.services.operation_runtime import update_operation
 
     with SessionLocal() as db:
         jobs = db.query(OpenCodeActivationJob).filter(
-            OpenCodeActivationJob.status.in_(["pending", "running"])
+            OpenCodeActivationJob.status.in_(["pending", "running", "auth_required"])
         ).all()
+        if jobs and db.query(APIConfig.id).filter(
+            APIConfig.readiness_status == READINESS_READY
+        ).first():
+            now = datetime.now(UTC).replace(tzinfo=None)
+            for job in jobs:
+                job.status = "ready"
+                job.phase = "ready"
+                job.percent = 100
+                job.message = "系统中已有可用模型，已停止重复检测"
+                job.error = None
+                job.failure_kind = None
+                job.next_action = None
+                job.completed_at = job.completed_at or now
+                if job.operation_id:
+                    operation = db.query(OperationRun).filter(
+                        OperationRun.id == job.operation_id
+                    ).first()
+                    if operation:
+                        update_operation(
+                            db,
+                            operation,
+                            status="completed",
+                            phase="ready",
+                            message=job.message,
+                            event_type="activation_skipped",
+                            result={"reason": "usable_model_already_available"},
+                            outcome="completed",
+                        )
+            commit_session(db)
+            return 0
         job_ids: list[str] = []
         for job in jobs:
             if job.phase in {"authenticating", "credential_required"} or job.auth_status in {

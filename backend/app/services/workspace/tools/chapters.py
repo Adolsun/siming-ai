@@ -31,7 +31,15 @@ from ....services.chapter_service import (
     restore_chapter_from_snapshot,
     snapshot_to_item,
 )
-from ....services.narrative_governance import create_narrative_checkpoint
+from ....services.narrative_governance import (
+    create_narrative_checkpoint,
+    mark_governance_items_stale_for_chapter,
+)
+from ....services.cataloging.launcher import (
+    AUTO_CHAPTER_WRITE_SOURCE,
+    create_and_queue_cataloging_job,
+    resolve_write_cataloging_route,
+)
 from ....services.narrative_ledger import restore_ledger_checkpoint
 from ....services.style_rules import _repair_forbidden_sentence_text
 from ...operation_runtime import current_operation_id
@@ -211,6 +219,52 @@ def _chapter_version_data(chapter: Chapter) -> dict[str, Any]:
     }
 
 
+def _attach_automatic_cataloging(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Launch canonical single-chapter cataloging after a successful write."""
+
+    data = result.get("data")
+    if result.get("status") != "ok" or not isinstance(data, dict):
+        return result
+    chapter_data = data.get("chapter") if isinstance(data.get("chapter"), dict) else data
+    chapter_id = str(chapter_data.get("chapter_id") or chapter_data.get("id") or "").strip()
+    if not chapter_id or int(chapter_data.get("word_count") or 0) <= 0:
+        return result
+    try:
+        model_override, backend_override, provider_override = resolve_write_cataloging_route(
+            db,
+            args,
+            project_id=project_id,
+        )
+        _job, launch = create_and_queue_cataloging_job(
+            db,
+            project_id,
+            [chapter_id],
+            execution_mode="auto",
+            model_override=model_override,
+            backend_override=backend_override,
+            provider_override=provider_override,
+            trigger_source=AUTO_CHAPTER_WRITE_SOURCE,
+            run_now=True,
+        )
+        data["cataloging_job"] = launch
+        result["detail"] = f"{result.get('detail') or '章节已保存'}；已启动正式建档"
+    except Exception as exc:
+        # The chapter is already safely committed.  Surface a retryable task
+        # warning instead of rolling back or pretending cataloging succeeded.
+        data["cataloging_job"] = {
+            "auto_started": False,
+            "status": "failed_to_start",
+            "error": str(exc)[:2000],
+        }
+        result["detail"] = f"{result.get('detail') or '章节已保存'}；正式建档启动失败，可在任务列表重试"
+    return result
+
+
 def _chapter_snapshots(db: Session, chapter: Chapter) -> list[ChapterSnapshot]:
     return (
         db.query(ChapterSnapshot)
@@ -361,6 +415,7 @@ async def _persist_created_chapter(
         return result
 
     reused_empty = existing_chapter is not None
+    stale_count = 0
     if existing_chapter:
         chapter = existing_chapter
         ensure_current_snapshot(db, chapter, "manual_save")
@@ -370,6 +425,13 @@ async def _persist_created_chapter(
         chapter.word_count = count_words(content)
         chapter.context_manifest_id = context_manifest_id
         chapter.updated_at = datetime.utcnow()
+        stale_count = mark_governance_items_stale_for_chapter(
+            db,
+            project_id,
+            chapter.id,
+            reason=f"{chapter.title} 已由写作工具补全，旧治理结论需要复检",
+            actor="ai_insert",
+        )
         db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
     else:
         chapter = Chapter(
@@ -411,6 +473,7 @@ async def _persist_created_chapter(
             "narrative_checkpoint_id": checkpoint.id,
             "context_manifest_id": context_manifest_id,
             "reused_empty_chapter": reused_empty,
+            "governance_invalidated_count": stale_count,
         },
     }
     _raise_if_chapter_write_cancelled(db, claim_id, claim_token)
@@ -539,7 +602,7 @@ async def create_chapter(
     claim_token = reservation.get("claim_token")
     project = db.query(Project).filter(Project.id == project_id).first()
     try:
-        return await _persist_created_chapter(
+        result = await _persist_created_chapter(
             db,
             project_id,
             args,
@@ -551,6 +614,11 @@ async def create_chapter(
             claim_id=claim_id,
             claim_token=claim_token,
         )
+        # The "opened existing chapter" idempotent path did not change the
+        # chapter and therefore must not create another cataloging job.
+        if isinstance(result.get("data"), dict) and "reused_empty_chapter" in result["data"]:
+            return _attach_automatic_cataloging(db, project_id, args, result)
+        return result
     except asyncio.CancelledError:
         db.rollback()
         fail_chapter_write_claim(
@@ -580,6 +648,9 @@ def _persist_updated_chapter(
 ) -> dict:
     _raise_if_chapter_write_cancelled(db, claim_id, claim_token)
     ensure_current_snapshot(db, chapter, "manual_save")
+    previous_title = chapter.title
+    previous_content = chapter.content or ""
+    previous_outline_id = chapter.outline_node_id
     if args.get("title"):
         chapter.title = str(args.get("title")).strip()[:200]
     if new_content is not None:
@@ -594,6 +665,20 @@ def _persist_updated_chapter(
     chapter.updated_at = datetime.utcnow()
     trigger_type = (str(args.get("trigger_type") or "ai_insert").strip() or "ai_insert")[:50]
     db.add(create_snapshot(chapter, trigger_type))
+    narrative_content_changed = (
+        chapter.title != previous_title
+        or (chapter.content or "") != previous_content
+        or chapter.outline_node_id != previous_outline_id
+    )
+    stale_count = 0
+    if narrative_content_changed:
+        stale_count = mark_governance_items_stale_for_chapter(
+            db,
+            project_id,
+            chapter.id,
+            reason=f"{chapter.title} 已更新为 v{chapter.current_version}，旧治理结论需要复检",
+            actor=trigger_type,
+        )
     checkpoint = create_narrative_checkpoint(
         db,
         project_id,
@@ -630,6 +715,8 @@ def _persist_updated_chapter(
             "narrative_checkpoint_id": checkpoint.id,
             "rewritten": rewrite,
             "idempotency_key": idempotency_key,
+            "governance_invalidated_count": stale_count,
+            "narrative_content_changed": narrative_content_changed,
         },
     }
     _raise_if_chapter_write_cancelled(db, claim_id, claim_token)
@@ -805,7 +892,7 @@ async def update_chapter(
             }
 
     try:
-        return _persist_updated_chapter(
+        result = _persist_updated_chapter(
             db,
             project_id,
             args,
@@ -819,6 +906,10 @@ async def update_chapter(
             claim_id=claim_id,
             claim_token=claim_token,
         )
+        commit_session(db)
+        if bool((result.get("data") or {}).get("narrative_content_changed")):
+            return _attach_automatic_cataloging(db, project_id, args, result)
+        return result
     except asyncio.CancelledError:
         db.rollback()
         if rewrite:
@@ -882,6 +973,13 @@ async def restore_chapter_version(
         }
     restored = restore_chapter_from_snapshot(db, chapter, snapshot)
     ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
+    stale_count = mark_governance_items_stale_for_chapter(
+        db,
+        project_id,
+        chapter.id,
+        reason=f"{chapter.title} 已恢复历史版本，原治理结论需要复检",
+        actor="chapter_restore",
+    )
     if project:
         queue_content_sync(
             db,
@@ -892,7 +990,7 @@ async def restore_chapter_version(
                 source="workspace_tool",
             ),
         )
-    return {
+    result = {
         "tool": "restore_chapter_version",
         "status": "ok",
         "detail": f"已将「{chapter.title}」恢复到 v{snapshot.version_number}，当前记录为 v{chapter.current_version or 1}",
@@ -904,8 +1002,11 @@ async def restore_chapter_version(
             "ledger_checkpoint_id": ledger_restore["ledger_checkpoint_id"],
             "ledger_restored_count": ledger_restore["restored_count"],
             "ledger_conflicts": ledger_restore["conflicts"],
+            "governance_invalidated_count": stale_count,
         },
     }
+    commit_session(db)
+    return _attach_automatic_cataloging(db, project_id, args, result)
 
 
 async def diff_chapter_versions(

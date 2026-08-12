@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +64,25 @@ class NovelCreationStageEventResponse(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class NovelCreationRunCardPresentation(BaseModel):
+    """Author-facing interpretation of a durable run's factual evidence."""
+
+    status: Literal[
+        "queued", "running", "waiting_user", "paused", "completed",
+        "partial_success", "failed", "cancelled", "interrupted",
+    ]
+    label: str
+    message: str
+    show_retry: bool = False
+    judged_by: Literal["model", "fallback"] = "model"
+    reason: Optional[str] = None
+    raw_status: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    resolved_model: Optional[str] = None
+    route: Optional[Literal["api", "cli", "unknown"]] = None
+
+
 class NovelCreationStageRunResponse(BaseModel):
     """Stable wire contract for one durable novel-creation stage run."""
 
@@ -90,6 +109,7 @@ class NovelCreationStageRunResponse(BaseModel):
     warning: Optional[str] = None
     diagnostic_count: int = 0
     current_message: Optional[str] = None
+    card_presentation: Optional[NovelCreationRunCardPresentation] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

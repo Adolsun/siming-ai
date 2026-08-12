@@ -13,7 +13,7 @@ class NarrativeGovernanceCommandPort(Protocol):
         item_type: str,
         item_id: str,
         values: dict,
-    ) -> bool: ...
+    ) -> dict | None: ...
 
 _commands: NarrativeGovernanceCommandPort | None = None
 

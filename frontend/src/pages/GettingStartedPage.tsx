@@ -87,6 +87,7 @@ interface GettingStartedStatus {
   has_usable_models: boolean
   recommended_action?: string
   global_model?: { provider: string; model: string } | null
+  available_model?: { provider: string; model: string } | null
   activation_job?: ActivationJob | null
   official_links?: { model_docs?: string }
 }
@@ -171,7 +172,8 @@ export function GettingStartedPanel() {
       const next = await getGettingStartedStatus(false, refresh) as GettingStartedStatus
       queryClient.setQueryData(onboardingKeys.detail(), next)
       void queryClient.invalidateQueries({ queryKey: onboardingKeys.summary() })
-      if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
+      if (next.has_usable_models) setJob(null)
+      else if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
       setSelectedModel((current) => current || next.recommended_model || next.free_models?.[0]?.id)
     } catch (error) {
       setSetupError(errorText(error))
@@ -180,12 +182,17 @@ export function GettingStartedPanel() {
 
   useEffect(() => {
     if (!status) return
+    if (status.has_usable_models) {
+      setJob(null)
+      return
+    }
     const activationJob = status.activation_job || null
     if (activationJob && activationJob.status !== 'ready') setJob(activationJob)
     setSelectedModel((current) => current || status.recommended_model || status.free_models?.[0]?.id)
   }, [status])
 
   useEffect(() => {
+    if (status?.has_usable_models) return
     const authRunning = ['running', 'submitted'].includes(job?.auth_status || '')
     if (!job || (!['pending', 'running'].includes(job.status) && !authRunning)) return
     const timer = window.setTimeout(async () => {
@@ -202,7 +209,7 @@ export function GettingStartedPanel() {
       }
     }, 1000)
     return () => window.clearTimeout(timer)
-  }, [fetchStatus, job])
+  }, [fetchStatus, job, status?.has_usable_models])
 
   const startActivation = async () => {
     setSetupError('')
@@ -253,7 +260,7 @@ export function GettingStartedPanel() {
   }
 
   const currentStep = useMemo(() => {
-    if (job?.status === 'ready' || status?.is_global_default) return 2
+    if (job?.status === 'ready' || status?.has_usable_models) return 2
     if (job && ['discovering_models', 'testing', 'auth_required', 'authenticating', 'credential_required'].includes(job.phase)) return 1
     return 0
   }, [job, status])
@@ -263,9 +270,10 @@ export function GettingStartedPanel() {
     return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || (statusQuery.error instanceof Error ? statusQuery.error.message : '请确认司命仍在运行。')} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
   }
 
-  const ready = job?.status === 'ready' || (status.is_global_default && status.has_usable_models !== false)
-  const activeModel = status.global_model
-    ? `${status.global_model.provider}:${status.global_model.model}`
+  const ready = job?.status === 'ready' || status.has_usable_models
+  const availableModel = status.global_model || status.available_model
+  const activeModel = availableModel
+    ? `${availableModel.provider}:${availableModel.model}`
     : job?.selected_model
       ? `opencode_cli:${job.selected_model}`
       : undefined

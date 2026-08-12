@@ -76,6 +76,8 @@ class SqlAlchemySystemConversationStore:
         identifier = (scope_id or "").strip() or None
         if normalized != "system" and not identifier:
             raise ValueError(f"{normalized} scope requires scope_id")
+        if normalized == "system":
+            identifier = None
         return normalized, identifier
 
     def _apply_scope(
@@ -87,6 +89,8 @@ class SqlAlchemySystemConversationStore:
             if payload.get("creation_session_id"):
                 conversation.scope_type = "creation"
                 conversation.scope_id = payload["creation_session_id"]
+                conversation.creation_session_id = payload["creation_session_id"]
+                conversation.project_id = None
             return
         scope_type, scope_id = self._normalize_scope(
             str(payload.get("scope_type") or conversation.scope_type or "system"),
@@ -94,9 +98,8 @@ class SqlAlchemySystemConversationStore:
         )
         conversation.scope_type = scope_type
         conversation.scope_id = scope_id
-        conversation.project_id = scope_id if scope_type == "project" else payload.get("project_id")
-        if scope_type == "creation":
-            conversation.creation_session_id = scope_id
+        conversation.project_id = scope_id if scope_type == "project" else None
+        conversation.creation_session_id = scope_id if scope_type == "creation" else None
 
     def list(self, *, scope_type: str | None = None, scope_id: str | None = None) -> dict[str, Any]:
         query = self._session.query(SystemAssistantConversation)

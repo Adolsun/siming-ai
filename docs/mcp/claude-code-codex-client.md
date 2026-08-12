@@ -496,15 +496,11 @@ create_chapter({
   "outline_node_id": "NODE_ID"
 })
 
-# 6. Apply story updates
-apply_external_story_updates({
-  "chapter_id": "CHAPTER_ID",
-  "updates": {
-    "characters": [{"id": "CHAR_ID", "current_location": "New Location"}],
-    "chapter_summary": "Brief summary..."
-  },
-  "mode": "auto"
-})
+# 6. Follow the cataloging_job returned by create_chapter
+# If next_action is continue_external_cataloging, continue the merged loop.
+get_next_external_cataloging_chapter({"job_id": "JOB_ID", "phase": "merged"})
+save_external_cataloging_candidates({"job_id": "JOB_ID", "phase": "merged", "candidates": [...]})
+apply_pending_cataloging({"job_id": "JOB_ID"})
 ```
 
 ### Creating a New Novel Without Siming API
@@ -640,7 +636,7 @@ current status, outline nodes, and worldbuilding entries, so it must follow
 | `draft_novel_blueprint` | Generate blueprint schema |
 | `review_novel_blueprint` | Review blueprint |
 | `apply_novel_blueprint` | Create project from blueprint |
-| `apply_external_story_updates` | Apply character/worldbuilding updates |
+| Canonical merged cataloging tools | Apply chapter summary, outline, character, worldbuilding and narrative-state candidates |
 | `search_chapters` | Search existing chapters |
 | `search_characters` | Search characters |
 | `search_worldbuilding` | Search worldbuilding |

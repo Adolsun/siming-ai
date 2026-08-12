@@ -11,6 +11,7 @@ def _is_metadata_event(data: dict) -> bool:
     part_type = str(part.get("type") or "").strip().lower().replace("-", "_")
     metadata_types = {
         "step_start", "step_finish", "message_start", "message_finish",
+        "tool", "tool_use", "tool_result", "tool_call",
         "tool_start", "tool_finish",
     }
     return event_type in metadata_types or part_type in metadata_types

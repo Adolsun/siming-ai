@@ -17,6 +17,7 @@ from ..database.models import (
     OutlineNodeCharacter,
 )
 from ..schemas.character import CharacterResponse
+from .character_role_types import normalize_character_role_type
 
 
 def loads_list(raw: Optional[str]) -> list[str]:
@@ -47,7 +48,7 @@ def character_to_dict(character: Character) -> dict:
         background=character.background,
         abilities=loads_list(character.abilities),
         aliases=character_aliases(character),
-        role_type=character.role_type,
+        role_type=normalize_character_role_type(character.role_type),
         age=character.age,
         life_status=character.life_status,
         current_location=character.current_location,
@@ -113,7 +114,7 @@ def snapshot_character(character: Character) -> dict:
         "background": character.background,
         "abilities": loads_list(character.abilities),
         "aliases": character_aliases(character),
-        "role_type": character.role_type,
+        "role_type": normalize_character_role_type(character.role_type),
         "age": character.age,
         "life_status": character.life_status,
         "current_location": character.current_location,

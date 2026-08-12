@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { message } from 'antd'
 
-const { mockGet, mockPost, mockPatch, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockPostForm, mockPatch, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
+  mockPostForm: vi.fn(),
   mockPatch: vi.fn(),
   mockDelete: vi.fn(),
   mockNavigate: vi.fn(),
@@ -14,7 +15,7 @@ const { mockGet, mockPost, mockPatch, mockDelete, mockNavigate, modelState } = v
 }))
 
 vi.mock('../api/client', () => ({
-  apiClient: { get: mockGet, post: mockPost, patch: mockPatch, delete: mockDelete },
+  apiClient: { get: mockGet, post: mockPost, postForm: mockPostForm, patch: mockPatch, delete: mockDelete },
 }))
 
 vi.mock('../hooks/useModelOptions', () => ({
@@ -361,6 +362,128 @@ describe('GuiAssistantChat new-book handoff', () => {
     })
   })
 
+  it('uses the confirmed artifact as the source of truth over a stale waiting task snapshot', async () => {
+    const baseGet = mockGet.getMockImplementation()
+    const basePost = mockPost.getMockImplementation()
+    mockGet.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/artifacts') {
+        return Promise.resolve({ data: { data: {
+          revision: 8,
+          artifacts: [{
+            artifact: 'concepts',
+            label: '创意方案',
+            status: 'confirmed',
+            stored_status: 'confirmed',
+            source: 'author',
+            revision: 8,
+            locked_paths: [],
+            flow: { can_view: true, can_generate: true, can_confirm: false, blocked_by: [], soft_dependencies: [] },
+          }],
+        } } })
+      }
+      return baseGet?.(url, ...args)
+    })
+    mockPost.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/agent-turn') {
+        return Promise.resolve({ data: { data: {
+          reply: '创意方案已生成。',
+          run: {
+            id: 'run-waiting',
+            session_id: 'session-1',
+            stage: 'concepts',
+            status: 'waiting_user',
+            operation_id: 'operation-waiting',
+            current_message: '阶段结果已保存，等待作者确认',
+          },
+          tool_results: [],
+        } } })
+      }
+      return basePost?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('阶段内容已由作者确认，立项数据和任务状态已同步。')).toBeInTheDocument()
+    expect(screen.queryByText('等待确认')).not.toBeInTheDocument()
+  })
+
+  it('uses the selected model presentation when a raw failed run actually saved the artifact', async () => {
+    const baseGet = mockGet.getMockImplementation()
+    const basePost = mockPost.getMockImplementation()
+    mockGet.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/artifacts') {
+        return Promise.resolve({ data: { data: {
+          revision: 8,
+          artifacts: [{
+            artifact: 'characters',
+            label: '角色与关系',
+            status: 'generated',
+            stored_status: 'generated',
+            source: 'assistant',
+            revision: 8,
+            locked_paths: [],
+            flow: { can_view: true, can_generate: true, can_confirm: true, blocked_by: [], soft_dependencies: [] },
+          }],
+        } } })
+      }
+      return baseGet?.(url, ...args)
+    })
+    mockPost.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/agent-turn') {
+        return Promise.resolve({ data: { data: {
+          reply: '同时写了 4 条关系，其余内容未改动。',
+          run: {
+            id: 'run-characters-failed',
+            session_id: 'session-1',
+            stage: 'characters',
+            status: 'failed',
+            operation_id: 'operation-characters-failed',
+            current_message: '请先选择一个创意方向',
+          },
+          tool_results: [],
+        } } })
+      }
+      if (url === '/novel-creation/runs/run-characters-failed/card-presentation') {
+        return Promise.resolve({ data: { data: { run: {
+          id: 'run-characters-failed',
+          session_id: 'session-1',
+          stage: 'characters',
+          status: 'failed',
+          operation_id: 'operation-characters-failed',
+          current_message: '请先选择一个创意方向',
+          card_presentation: {
+            status: 'waiting_user',
+            label: '等待确认',
+            message: '角色与关系已经写入作品资料，当前等待你确认。',
+            show_retry: false,
+            judged_by: 'model',
+            raw_status: 'failed',
+          },
+        } } } })
+      }
+      return basePost?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    const input = await screen.findByRole('textbox', { name: '给司命的消息' })
+    await user.type(input, '我要创建一本新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('角色与关系已经写入作品资料，当前等待你确认。')).toBeInTheDocument()
+    expect(screen.getByText('等待确认')).toBeInTheDocument()
+    expect(screen.queryByText('失败')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /按原输入重试/ })).not.toBeInTheDocument()
+    expect(mockPost).toHaveBeenCalledWith(
+      '/novel-creation/runs/run-characters-failed/card-presentation',
+      expect.objectContaining({ model: 'openai:test' }),
+      { timeout: 0 },
+    )
+  })
+
   it('shows a preserved candidate when an old task conflicts with newer author data', async () => {
     const baseGet = mockGet.getMockImplementation()
     mockGet.mockImplementation((url: string, ...args: unknown[]) => {
@@ -479,9 +602,38 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
 
     expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
-    expect(await screen.findByDisplayValue('灰港遗忘症')).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: /灰港遗忘症/ }))
+    expect(await screen.findByDisplayValue('灰港遗忘症')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /返回作品资料/ })).toBeInTheDocument()
     expect(panel).toBeInTheDocument()
+  })
+
+  it('keeps the focused structured editor visible when the window becomes compact', async () => {
+    const mediaListeners = new Set<(event: MediaQueryListEvent) => void>()
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: (_event: string, listener: (event: MediaQueryListEvent) => void) => mediaListeners.add(listener),
+      removeEventListener: (_event: string, listener: (event: MediaQueryListEvent) => void) => mediaListeners.delete(listener),
+    }))
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    const input = await screen.findByRole('textbox', { name: '给司命的消息' })
+    await user.type(input, '我要创建一本新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    const panel = await screen.findByRole('complementary', { name: '作品资料' })
+    await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
+    expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
+
+    act(() => {
+      for (const listener of mediaListeners) {
+        listener({ matches: true } as MediaQueryListEvent)
+      }
+    })
+
+    expect(panel).toHaveClass('gui-chat-creation-panel-open')
+    expect(panel).toHaveClass('gui-chat-creation-panel-editor-open')
+    expect(screen.getByRole('heading', { name: '创意方案' })).toBeVisible()
   })
 
   it.skip('shows actual runtime diagnostics after a legacy interview response', async () => {
@@ -646,14 +798,28 @@ describe('GuiAssistantChat new-book handoff', () => {
     })
     mockPost.mockImplementation((url: string) => {
       if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
-      if (url === '/novel-creation/sessions/session-1/imports') return Promise.resolve({ data: { data: {
-        id: 'import-1', source_file_id: 'import-1', session_id: 'session-1', operation_id: 'operation-import-1',
-        filename: '八卷大纲.md', status: 'running', text_length: 0, chunk_count: 0, processed_chunks: 0, input_revision: 1,
-      } } })
       if (url === '/novel-creation/imports/import-1/apply') return Promise.resolve({ data: { data: {
         applied: [{ artifact: 'characters', count: 12 }, { artifact: 'macro_outline', count: 8 }], skipped: [], revision: 3,
       } } })
       return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    mockPostForm.mockImplementation((url: string, body: unknown) => {
+      if (url === '/novel-creation/assistant-input/route-file') {
+        expect(body).toBeInstanceOf(FormData)
+        return Promise.resolve({ data: { data: {
+          route: 'creation_material', resolved_instruction: '整理为作品大纲资料',
+          clarification_question: '', source_context: '# 第一卷\n卷纲内容',
+          source_coverage: { coverage: 'full', source_chars: 11, included_chars: 11, omitted_chars: 0 },
+        } } })
+      }
+      if (url === '/novel-creation/sessions/session-1/imports') {
+        expect(body).toBeInstanceOf(FormData)
+        return Promise.resolve({ data: { data: {
+          id: 'import-1', source_file_id: 'import-1', session_id: 'session-1', operation_id: 'operation-import-1',
+          filename: '八卷大纲.md', status: 'running', text_length: 0, chunk_count: 0, processed_chunks: 0, input_revision: 1,
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected FORM POST ${url}`))
     })
 
     const user = userEvent.setup()
@@ -681,6 +847,15 @@ describe('GuiAssistantChat new-book handoff', () => {
   it('accepts up to one million characters and turns long creation text into a durable import', async () => {
     const longText = `长篇设定：${'宗门与人物关系。'.repeat(2500)}`
     mockPost.mockImplementation((url: string, body: any) => {
+      if (url === '/novel-creation/assistant-input/route') {
+        expect(body.source_text).toBe(longText)
+        expect(body.user_instruction).toBe('')
+        return Promise.resolve({ data: { data: {
+          route: 'creation_material', resolved_instruction: '整理成长篇作品设定',
+          clarification_question: '', source_context: longText.slice(0, 16000),
+          source_coverage: { coverage: 'distributed', source_chars: longText.length, included_chars: 16000 },
+        } } })
+      }
       if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
       if (url === '/ai/system-assistant/conversations') return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '长文本' } } } })
       if (url === '/ai/system-assistant/conversations/conversation-1/turns/start') {
@@ -690,6 +865,9 @@ describe('GuiAssistantChat new-book handoff', () => {
           messages: [{ id: 'user-long' }, { id: 'assistant-long' }],
         } } })
       }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    mockPostForm.mockImplementation((url: string, body: unknown) => {
       if (url === '/novel-creation/sessions/session-1/imports') {
         expect(body).toBeInstanceOf(FormData)
         return Promise.resolve({ data: { data: {
@@ -698,7 +876,7 @@ describe('GuiAssistantChat new-book handoff', () => {
           chunk_count: 3, processed_chunks: 0, input_revision: 1,
         } } })
       }
-      return Promise.reject(new Error(`unexpected POST ${url}`))
+      return Promise.reject(new Error(`unexpected FORM POST ${url}`))
     })
 
     const user = userEvent.setup()
@@ -709,8 +887,135 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
     expect(await screen.findByText(/已提交长文本/)).toHaveTextContent(longText.length.toLocaleString('zh-CN'))
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+    await waitFor(() => expect(mockPostForm).toHaveBeenCalledWith(
       '/novel-creation/sessions/session-1/imports', expect.any(FormData), { timeout: 0 },
     ))
+  })
+
+  it('reads an instruction embedded in a TXT before choosing how to handle it', async () => {
+    const fileText = '给司命的要求：请把以下设定整理到当前作品资料中。\n\n角色：林野。'
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    mockPostForm.mockImplementation((url: string, body: FormData) => {
+      if (url === '/novel-creation/assistant-input/route-file') {
+        expect(body.get('user_instruction')).toBe('')
+        expect(body.get('file')).toBeInstanceOf(File)
+        return Promise.resolve({ data: { data: {
+          route: 'creation_material', resolved_instruction: '把设定整理到当前作品资料中',
+          clarification_question: '', source_context: fileText,
+          source_coverage: { coverage: 'full', source_chars: fileText.length, included_chars: fileText.length },
+        } } })
+      }
+      if (url === '/novel-creation/sessions/session-1/imports') {
+        return Promise.resolve({ data: { data: {
+          id: 'import-embedded', source_file_id: 'file-embedded', session_id: 'session-1', operation_id: 'operation-embedded',
+          filename: '角色设定.txt', status: 'running', text_length: fileText.length,
+          chunk_count: 1, processed_chunks: 0, input_revision: 1,
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected FORM POST ${url}`))
+    })
+
+    const user = userEvent.setup()
+    const { container } = render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    const upload = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement)
+    await user.upload(upload, new File([fileText], '角色设定.txt', { type: 'text/plain' }))
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    await waitFor(() => expect(mockPostForm).toHaveBeenCalledWith(
+      '/novel-creation/assistant-input/route-file', expect.any(FormData), { timeout: 0 },
+    ))
+    await waitFor(() => expect(mockPostForm).toHaveBeenCalledWith(
+      '/novel-creation/sessions/session-1/imports', expect.any(FormData), { timeout: 0 },
+    ))
+  })
+
+  it('can ask more than once without losing the original TXT', async () => {
+    const fileText = '林野来到灰港。'
+    let routeCalls = 0
+    mockPost.mockImplementation((url: string, body?: any) => {
+      if (url === '/ai/system-assistant/conversations') {
+        return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '灰港.txt' } } } })
+      }
+      if (url === '/ai/system-assistant/conversations/conversation-1/turns') {
+        return Promise.resolve({ data: { data: { conversation: { id: 'conversation-1', title: '灰港.txt' } } } })
+      }
+      if (url === '/novel-creation/system-chat') {
+        expect(body.message).toContain(fileText)
+        expect(body.message).toContain('总结这份内容')
+        expect(body.context.readOnly).toBe(true)
+        return Promise.resolve({ data: { data: { reply: '这段内容讲述林野来到灰港。' } } })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    mockPostForm.mockImplementation((url: string, body: FormData) => {
+      if (url !== '/novel-creation/assistant-input/route-file') {
+        return Promise.reject(new Error(`unexpected FORM POST ${url}`))
+      }
+      routeCalls += 1
+      expect((body.get('file') as File).name).toBe('灰港.txt')
+      if (routeCalls === 1) {
+        return Promise.resolve({ data: { data: {
+          route: 'clarify', resolved_instruction: '', clarification_question: '你想分析它，还是写入作品资料？',
+          source_context: fileText, source_coverage: { coverage: 'full', source_chars: fileText.length },
+        } } })
+      }
+      const clarificationHistory = JSON.parse(String(body.get('clarification_history')))
+      if (routeCalls === 2) {
+        expect(clarificationHistory).toEqual([
+          { question: '你想分析它，还是写入作品资料？', answer: '分析一下' },
+        ])
+        return Promise.resolve({ data: { data: {
+          route: 'clarify', resolved_instruction: '', clarification_question: '你更需要总结，还是文学点评？',
+          source_context: fileText, source_coverage: { coverage: 'full', source_chars: fileText.length },
+        } } })
+      }
+      expect(clarificationHistory).toEqual([
+        { question: '你想分析它，还是写入作品资料？', answer: '分析一下' },
+        { question: '你更需要总结，还是文学点评？', answer: '总结' },
+      ])
+      return Promise.resolve({ data: { data: {
+        route: 'reference', resolved_instruction: '总结这份内容', clarification_question: '',
+        source_context: fileText, source_coverage: { coverage: 'full', source_chars: fileText.length },
+      } } })
+    })
+
+    const user = userEvent.setup()
+    const { container } = render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    const upload = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement)
+    await user.upload(upload, new File([fileText], '灰港.txt', { type: 'text/plain' }))
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    expect(await screen.findByText('你想分析它，还是写入作品资料？')).toBeInTheDocument()
+
+    const input = screen.getByRole('textbox', { name: '给司命的消息' })
+    await user.type(input, '分析一下')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    expect(await screen.findByText('你更需要总结，还是文学点评？')).toBeInTheDocument()
+    expect(screen.getByText(/原始内容和此前回答已保留/)).toBeInTheDocument()
+
+    await user.type(input, '总结')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    expect(await screen.findByText('这段内容讲述林野来到灰港。')).toBeInTheDocument()
+    expect(routeCalls).toBe(3)
+  })
+
+  it('does not treat a pasted local path as consent and asks for a read-only snapshot', async () => {
+    modelState.defaultModel = 'opencode_cli:opencode/deepseek-v4-flash-free'
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(
+      await screen.findByRole('textbox', { name: '给司命的消息' }),
+      '请读取 "C:\\Novel Notes\\人物设定.md"',
+    )
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByRole('dialog', { name: '仅允许 OpenCode 读取这些路径一次？' })).toBeInTheDocument()
+    expect(screen.getByText('C:\\Novel Notes\\人物设定.md')).toBeInTheDocument()
+    expect(screen.getByText(/路径文字本身不会被当作授权/)).toBeInTheDocument()
+    expect(screen.getByText(/不能访问原路径、父目录或相邻文件/)).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/agent-turn', expect.anything())
   })
 })

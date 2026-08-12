@@ -32,6 +32,7 @@ from .local_cli import (
     DEFAULT_LOCAL_CLI_TIMEOUT,
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     LocalCLIAdapter,
+    detect_cli_quota_error,
     is_local_cli_provider,
     local_cli_model_options,
 )
@@ -39,6 +40,9 @@ from .local_cli import (
 API_PROTOCOL_AUTO = "auto"
 API_PROTOCOL_CHAT = "chat_completions"
 API_PROTOCOL_RESPONSES = "responses"
+DEFAULT_API_PROBE_TIMEOUT_SECONDS = 60
+MIN_API_PROBE_TIMEOUT_SECONDS = 15
+MAX_API_PROBE_TIMEOUT_SECONDS = 180
 
 
 def _provider_label(provider: str) -> str:
@@ -82,6 +86,17 @@ def _protocol_candidates(protocol: str) -> list[str]:
     return [API_PROTOCOL_CHAT, API_PROTOCOL_RESPONSES]
 
 
+def _api_probe_timeout_seconds(request: ModelProbeRequest) -> int:
+    """Return a bounded timeout that also works for slower reasoning proxies."""
+
+    if request.timeout_seconds is None:
+        return DEFAULT_API_PROBE_TIMEOUT_SECONDS
+    return max(
+        MIN_API_PROBE_TIMEOUT_SECONDS,
+        min(MAX_API_PROBE_TIMEOUT_SECONDS, int(request.timeout_seconds)),
+    )
+
+
 def _base_url_candidates(base_url: str, *, allow_v1_fallback: bool) -> list[str]:
     normalized = base_url.rstrip("/")
     candidates = [normalized]
@@ -108,6 +123,7 @@ def _openai_client(*, api_key: str, base_url: str) -> AsyncOpenAI:
 
 async def _probe_openai(request: ModelProbeRequest) -> dict:
     attempts: list[str] = []
+    timeout_seconds = _api_probe_timeout_seconds(request)
     for base_url in _base_url_candidates(
         request.base_url,
         allow_v1_fallback=_is_custom(request.provider),
@@ -123,7 +139,7 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                             max_output_tokens=512,
                             store=False,
                         ),
-                        timeout=30,
+                        timeout=timeout_seconds,
                     )
                     reply = str(getattr(response, "output_text", "") or "").strip()
                     reasoning = responses_reasoning_content(response).strip()
@@ -134,7 +150,7 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                             messages=[{"role": "user", "content": "Reply with exactly: OK"}],
                             max_tokens=512,
                         ),
-                        timeout=30,
+                        timeout=timeout_seconds,
                     )
                     message = response.choices[0].message
                     reply = str(message.content or "").strip()
@@ -156,13 +172,13 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                 raise LLMError(f"{_provider_label(request.provider)} request timed out") from exc
             except OpenAIAPIError as exc:
                 status = _error_status(exc)
+                if status in {402, 429} or detect_cli_quota_error(str(exc)):
+                    raise LLMError(
+                        f"{_provider_label(request.provider)} quota or rate limit reached"
+                    ) from exc
                 if status in {401, 403}:
                     raise LLMError(
                         f"{_provider_label(request.provider)} API key is invalid"
-                    ) from exc
-                if status == 429:
-                    raise LLMError(
-                        f"{_provider_label(request.provider)} quota or rate limit reached: {exc}"
                     ) from exc
                 prefix = f"HTTP {status}: " if status else ""
                 attempts.append(f"{_protocol_label(protocol)} @ {base_url}: {prefix}{exc}"[:600])

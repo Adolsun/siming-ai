@@ -117,6 +117,7 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     run.started_at = None
     run.completed_at = None
     run.error = None
+    run.review_warning = None
     run.raw_output = None
     job.status = "running"
     job.current_chapter_id = run.chapter_id
@@ -136,6 +137,7 @@ def reset_run_for_resolution_retry(db: Session, job: CatalogingJob, run: Catalog
     run.status = "facts_saved"
     run.completed_at = None
     run.error = None
+    run.review_warning = None
     job.status = "running"
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
@@ -168,6 +170,7 @@ def mark_run_skipped(db: Session, job: CatalogingJob, run: CatalogingChapterRun)
     run.status = "skipped_by_user"
     run.completed_at = datetime.utcnow()
     run.error = None
+    run.review_warning = None
     job.status = "running"
     job.blocked_chapter_id = None
     job.context_integrity = "skipped_chapter"

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Modal, message } from 'antd'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockDelete, mockGet, mockPost } = vi.hoisted(() => ({
   mockDelete: vi.fn(),
@@ -10,6 +11,10 @@ const { mockDelete, mockGet, mockPost } = vi.hoisted(() => ({
 
 vi.mock('../api/client', () => ({
   apiClient: { delete: mockDelete, get: mockGet, post: mockPost },
+}))
+
+vi.mock('../shared/operations/queries', () => ({
+  useOperations: () => ({ data: [] }),
 }))
 
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
@@ -120,6 +125,12 @@ async function sendChapterRequest() {
 }
 
 describe('WorkspaceAssistantChat cancellation and recovery', () => {
+  afterEach(() => {
+    Modal.destroyAll()
+    message.destroy()
+    document.querySelectorAll('.ant-modal-root').forEach((node) => node.remove())
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     vi.unstubAllGlobals()
@@ -364,5 +375,53 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     const deleteButton = screen.getByRole('button', { name: '删除对话：旧对话' })
     expect(selectButton.contains(deleteButton)).toBe(false)
     expect(deleteButton.parentElement).toBe(selectButton.parentElement)
+  })
+
+  it('explains the isolated one-turn MCP scope for OpenCode', async () => {
+    const user = userEvent.setup()
+    render(
+      <WorkspaceAssistantChat
+        projectId="project-1"
+        scope="project"
+        defaultModel="opencode_cli:opencode/deepseek-v4-flash-free"
+        modelOptions={[{
+          value: 'opencode_cli:opencode/deepseek-v4-flash-free',
+          label: 'opencode CLI · opencode/deepseek-v4-flash-free',
+        }]}
+      />,
+    )
+
+    expect(await screen.findByText(/单次授权后仅连接当前作品范围的临时 MCP/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '授权下一条代理操作' }))
+
+    expect(screen.getByText(/OpenCode 会在隔离临时目录中启动/)).toBeInTheDocument()
+    expect(screen.getByText(/不会向 OpenCode 暴露作品目录、Shell 或其他程序的 MCP/)).toBeInTheDocument()
+    expect(screen.queryByText(/该 CLI 将以当前作品目录为工作目录/)).not.toBeInTheDocument()
+  })
+
+  it('requires a separate one-turn read snapshot confirmation for a pasted path', async () => {
+    const user = userEvent.setup()
+    render(
+      <WorkspaceAssistantChat
+        projectId="project-1"
+        scope="project"
+        defaultModel="opencode_cli:opencode/deepseek-v4-flash-free"
+        modelOptions={[{
+          value: 'opencode_cli:opencode/deepseek-v4-flash-free',
+          label: 'opencode CLI · opencode/deepseek-v4-flash-free',
+        }]}
+      />,
+    )
+
+    await user.type(
+      screen.getByPlaceholderText(/告诉AI你想写什么/),
+      '请读取 "C:\\Novel Notes\\世界观.md"',
+    )
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByRole('dialog', { name: '仅允许 OpenCode 读取这些路径一次？' })).toBeInTheDocument()
+    expect(screen.getByText('C:\\Novel Notes\\世界观.md')).toBeInTheDocument()
+    expect(screen.getByText(/只能读取隔离副本/)).toBeInTheDocument()
+    expect(screen.getByText(/本轮结束后快照自动删除/)).toBeInTheDocument()
   })
 })

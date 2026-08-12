@@ -7,6 +7,7 @@ import {
   Progress,
   Input,
   InputNumber,
+  Modal,
   Select,
   Space,
   Table,
@@ -26,7 +27,13 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../../api/client'
 import { useGlobalModelActions } from '../../shared/query/modelConfigs'
-import type { CatalogResponse, DownloadTask, HardwareProfile, LocalModel } from './types'
+import type {
+  CatalogResponse,
+  DownloadTask,
+  HardwareProfile,
+  LocalModel,
+  LocalModelQualification,
+} from './types'
 
 const { Text } = Typography
 
@@ -53,17 +60,19 @@ interface Props {
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
   const [customModel, setCustomModel] = useState({
-    modelKey: '', displayName: '', sourceUrl: '', filePath: '', contextLength: 262144,
+    modelKey: '', displayName: '', sourceUrl: '', filePath: '', contextLength: 16384,
   })
+  const [qualifyingModel, setQualifyingModel] = useState<string | null>(null)
+  const [qualification, setQualification] = useState<LocalModelQualification | null>(null)
   const { setGlobalModel } = useGlobalModelActions()
   const usageEnabled = catalog?.usage_enabled !== false
   const usageDisabledReason = catalog?.usage_disabled_reason || '本地 AI 模型暂时已停用，请使用 API 或本机 CLI 模型。'
 
-  const contextForModel = (modelKey?: string | null) => (
-    catalog?.items.find((item) => item.model_key === modelKey)?.context_length
-    || hardware?.recommended_context
-    || 8192
-  )
+  const contextForModel = (modelKey?: string | null) => {
+    const capacity = catalog?.items.find((item) => item.model_key === modelKey)?.context_length
+    const recommended = hardware?.recommended_context || 16384
+    return capacity ? Math.min(capacity, recommended) : recommended
+  }
 
   useEffect(() => {
     setModelRoot(catalog?.model_root || '')
@@ -178,6 +187,23 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     }
   }
 
+  const qualify = async (model: LocalModel) => {
+    setQualifyingModel(model.model_key)
+    const hide = message.loading('正在执行真实任务验证，可能需要几分钟…', 0)
+    try {
+      const response = await apiClient.post<{ data: LocalModelQualification }>('/local-models/qualify', {
+        model_key: model.model_key,
+        context_length: contextForModel(model.model_key),
+      })
+      setQualification(response.data.data)
+    } catch (error: any) {
+      message.error(error.message)
+    } finally {
+      hide()
+      setQualifyingModel(null)
+    }
+  }
+
   const saveTaskModel = async (task: string, modelKey?: string | null, contextLength?: number) => {
     if (!modelKey) {
       await apiClient.delete(`/local-models/task-settings/${task}`)
@@ -224,7 +250,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     }
   }
 
-  const activeDownloads = downloads.filter((item) => !['completed', 'failed', 'cancelled'].includes(item.status))
+  const visibleDownloads = downloads.filter((item) => !['completed', 'cancelled'].includes(item.status))
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -323,10 +349,10 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
         </Space>
       </Card>
 
-      {activeDownloads.length > 0 && (
+      {visibleDownloads.length > 0 && (
         <Card size="small" title="下载进度">
           <Space direction="vertical" style={{ width: '100%' }}>
-            {activeDownloads.map((task) => {
+            {visibleDownloads.map((task) => {
               const percent = task.total_bytes
                 ? Math.min(100, Math.round(task.downloaded_bytes / task.total_bytes * 100))
                 : 0
@@ -341,8 +367,13 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                   </Space>
                   <Space.Compact style={{ width: '100%' }}>
                     <Progress percent={percent} status={task.status === 'failed' ? 'exception' : 'active'} />
-                    <Button onClick={() => resumeDownload(task.id)}>继续下载</Button>
+                    {task.status === 'failed' && (
+                      <Button onClick={() => resumeDownload(task.id)}>重试并续传</Button>
+                    )}
                   </Space.Compact>
+                  {task.error_message && (
+                    <Text type={task.status === 'failed' ? 'danger' : 'warning'}>{task.error_message}</Text>
+                  )}
                 </div>
               )
             })}
@@ -386,7 +417,10 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
             {
               title: '建议硬件',
               width: 130,
-              render: (_, model: LocalModel) => `${model.recommended_vram_gb || 0}GB 显存`,
+              render: (_, model: LocalModel) =>
+                model.recommended_vram_gb != null
+                  ? `${model.recommended_vram_gb}GB 显存`
+                  : '由用户确认',
             },
             {
               title: '状态',
@@ -400,7 +434,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
             },
             {
               title: '操作',
-              width: 360,
+              width: 450,
               render: (_, model: LocalModel) => model.status !== 'installed' ? (
                 <Button
                   type={hardware?.recommended_model === model.model_key ? 'primary' : 'default'}
@@ -413,6 +447,14 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                 <Space wrap>
                   <Button disabled={!usageEnabled} icon={<PlayCircleOutlined />} onClick={() => start(model)}>加载</Button>
                   <Button disabled={!usageEnabled} icon={<ThunderboltOutlined />} onClick={() => benchmark(model)}>测速</Button>
+                  <Button
+                    disabled={!usageEnabled}
+                    icon={<ExperimentOutlined />}
+                    loading={qualifyingModel === model.model_key}
+                    onClick={() => qualify(model)}
+                  >
+                    任务验证
+                  </Button>
                   <Button disabled={!usageEnabled} onClick={() => makeDefault(model)}>设为默认</Button>
                   <Tooltip title="删除模型文件，不删除作品数据">
                     <Button danger icon={<DeleteOutlined />} onClick={() => remove(model)} />
@@ -472,6 +514,52 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
         icon={<ExperimentOutlined />}
         message="任务模型是本地运行时的显式覆盖；清空后会跟随系统全局默认模型/API/CLI，不会再自动抢占建档或新书生成。"
       />
+
+      <Modal
+        open={Boolean(qualification)}
+        title="本地模型任务验证"
+        width={720}
+        footer={<Button type="primary" onClick={() => setQualification(null)}>知道了</Button>}
+        onCancel={() => setQualification(null)}
+      >
+        {qualification && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type={qualification.passed ? 'success' : qualification.rating === 'limited' ? 'warning' : 'error'}
+              message={qualification.passed ? '当前上下文可完成关键任务' : '当前模型或上下文仅部分合格'}
+              description={
+                `通过 ${qualification.passed_count}/${qualification.total_count} 项；` +
+                `使用 ${Math.round(qualification.context_length / 1024)}K 上下文，耗时 ${qualification.elapsed_seconds} 秒。`
+              }
+            />
+            {qualification.cases.map((item) => (
+              <Card
+                key={item.id}
+                size="small"
+                title={item.label}
+                extra={<Tag color={item.passed ? 'success' : 'error'}>{item.passed ? '通过' : '未通过'}</Tag>}
+              >
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  <Text>{item.detail}</Text>
+                  <Text type="secondary">
+                    输入 {item.input_characters.toLocaleString()} 字符 · {item.elapsed_seconds} 秒
+                  </Text>
+                  {item.output_preview && (
+                    <Typography.Paragraph
+                      code
+                      ellipsis={{ rows: 3, expandable: true, symbol: '展开模型输出' }}
+                      style={{ marginBottom: 0 }}
+                    >
+                      {item.output_preview}
+                    </Typography.Paragraph>
+                  )}
+                </Space>
+              </Card>
+            ))}
+          </Space>
+        )}
+      </Modal>
     </Space>
   )
 }

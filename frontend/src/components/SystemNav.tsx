@@ -3,6 +3,7 @@ import { Button, Space, Tooltip, Typography } from 'antd'
 import { BookOutlined, ExperimentOutlined, HomeOutlined, PlusOutlined, RocketOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 import { useGatewayRuntime } from './GatewayRuntimeContext'
+import AppVersion from './AppVersion'
 
 const { Text } = Typography
 
@@ -44,6 +45,7 @@ function SystemNav({ current }: SystemNavProps) {
       <button className="system-nav-brand" type="button" aria-label="返回作品库" onClick={() => navigate('/dashboard')}>
         <BookOutlined aria-hidden="true" />
         <Text strong>司命</Text>
+        <AppVersion className="system-nav-version" />
       </button>
       <Space size={4} className="system-nav-links">
         {navItems.map((item) => (

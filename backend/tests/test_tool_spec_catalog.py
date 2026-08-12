@@ -75,15 +75,6 @@ def test_creation_operation_contract_requires_operation_id():
         spec.validate_input({})
 
 
-def test_continuity_tool_validates_enums_before_execution():
-    spec = registry.get_spec("archive_chapter_after_write")
-    assert spec is not None
-    value = spec.validate_input({"chapter_id": "chapter-1", "mode": "manual"})
-    assert value.mode == "manual"
-    with pytest.raises(ValidationError):
-        spec.validate_input({"chapter_id": "chapter-1", "mode": "silent"})
-
-
 def test_unmigrated_tool_keeps_legacy_schema_projection():
     tool = registry.get("list_projects")
     spec = registry.get_spec("list_projects")

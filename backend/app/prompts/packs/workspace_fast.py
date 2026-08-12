@@ -27,9 +27,9 @@ def _build_system(
 
 PACK = PromptPack(
     name="workspace_fast",
-    version="3.0.0",
+    version="3.1.0",
     pack_type="workspace",
-    description="Compatibility fast workspace assistant — delegates to quality controller rules",
+    description="Compatibility fast workspace assistant — uses the focused writing controller",
     input_fields=["scope", "outline_batch_count", "auto_apply"],
     max_token_budget=4000,
     output_format="text_reply",
@@ -37,8 +37,8 @@ PACK = PromptPack(
     available_tools=sorted(ALL_WORKSPACE_TOOL_NAMES),
     unavailable_tools=[],
     forbidden_behaviors=[
-        "禁止降低质量版控制器规则",
-        "禁止跳过质量模式要求的上下文预检与章节评估",
+        "禁止跳过基础写作所需的上下文预检与连续性归档",
+        "禁止在基础写作中自动追加去除 AI 味或质量评审轮次",
         "禁止让不同入口产生不同工作流",
     ],
     default_temperature=0.3,

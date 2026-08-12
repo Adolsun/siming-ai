@@ -108,48 +108,25 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "chapter_writing_quality",
         "scope": "chapter_writing",
         "title": "质量模式章节写作",
-        "summary": "完整技法的章节写作流程，包含剧情设计、角色扮演、正文生成、质量评估。目标1800-2500字。",
+        "summary": "聚焦一次正文生成的完整章节提示词；去除 AI 味和质量评审由独立操作按需执行。目标1800-2500字。",
         "system_prompt": (
             "你是一个专业的网文写手。你的任务是根据大纲和上下文写出高质量的章节正文。\n\n"
             "【正文要求】1800-2500字。开头要吸引人，章末要留钩子。展示而非叙述，短句优先。\n\n"
             "【剧情设计】写作前先设计：场景、冲突、情绪曲线、转折点、结尾钩子。\n"
             "【角色对话】每个角色说话要符合性格，对话要有信息量，推动剧情或揭示性格。\n\n"
             "【输出】只输出正文，用\\n表示换行，对白可自由使用引号。\n\n"
-            "写完后按 quality_rubric 中的8个维度自评，并调用以下工具验证：\n"
-            "- archive_chapter_after_write：写后统一归档章节摘要、大纲、角色状态和世界观变化\n"
-            "- detect_forbidden_patterns：检查禁用句式（参考 forbidden_patterns）"
+            "本任务只生成基础正文，不执行去除 AI 味改写或质量评分。正式保存会自动启动 "
+            "与作品建档页相同的统一建档流程。"
         ),
         "workflow_json": [
             {"step": 1, "name": "prepare_context", "description": "调用 prepare_external_writing_context 获取上下文"},
-            {"step": 2, "name": "design_plot", "description": "设计剧情：场景、冲突、情绪曲线、转折点、钩子"},
-            {"step": 3, "name": "write_chapter", "description": "写正文 1800-2500字"},
-            {"step": 4, "name": "self_review", "description": "按 quality_rubric 8维度自评"},
-            {"step": 5, "name": "archive_changes", "description": "调用 archive_chapter_after_write 统一提交标准候选"},
-            {"step": 7, "name": "detect_patterns", "description": "调用 detect_forbidden_patterns"},
-            {"step": 8, "name": "save_draft", "description": "调用 save_external_chapter_draft"},
-            {"step": 9, "name": "save_chapter", "description": "调用 create_chapter 保存"},
+            {"step": 2, "name": "write_chapter", "description": "一次生成基础正文 1800-2500字"},
+            {"step": 3, "name": "save_draft", "description": "调用 save_external_chapter_draft 保存草稿"},
+            {"step": 4, "name": "save_chapter", "description": "调用 create_chapter(skip_style_repair=true) 保存"},
+            {"step": 5, "name": "cataloging_started", "description": "确认章节写入结果返回统一建档任务 ID"},
         ],
-        "quality_rubric_json": {
-            "dimensions": [
-                {"name": "opening_hook", "description": "开头吸引力", "max_score": 10},
-                {"name": "plot_progression", "description": "情节推进", "max_score": 10},
-                {"name": "character_portrayal", "description": "角色塑造", "max_score": 10},
-                {"name": "dialogue_quality", "description": "对话质量", "max_score": 10},
-                {"name": "suspense", "description": "悬念设置", "max_score": 10},
-                {"name": "pacing", "description": "节奏控制", "max_score": 10},
-                {"name": "show_dont_tell", "description": "展示性描写", "max_score": 10},
-                {"name": "language_quality", "description": "语言质量", "max_score": 10},
-            ],
-            "passing_score": 60,
-            "max_score": 80,
-        },
-        "forbidden_patterns_json": [
-            "仿佛", "不由得", "心中暗想", "不禁感叹",
-            "很愤怒", "很悲伤", "很开心", "很惊讶",
-            "他深吸一口气", "她微微一笑", "他点了点头",
-            "这个世界", "在这个世界上",
-            "不得不说", "毫无疑问", "显而易见",
-        ],
+        "quality_rubric_json": None,
+        "forbidden_patterns_json": [],
         "tool_playbook_json": {
             "create_chapter": {
                 "scenario": "external_writing",
@@ -157,8 +134,8 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
                     "调用 prepare_external_writing_context 获取上下文",
                     "按照本提示词包的写作规则生成正文",
                     "调用 save_external_chapter_draft 存储草稿",
-                    "调用 record_external_quality_review 记录自评",
-                    "调用 create_chapter 保存章节",
+                    "调用 create_chapter(skip_style_repair=true) 保存章节",
+                    "确认 create_chapter 返回 cataloging_job.job_id；不要重复生成建档候选",
                 ],
             },
         },
@@ -173,13 +150,14 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "任何入口生成章节正文都必须遵守角色一致性、设定一致性、时间线一致性和写后归档契约。"
         ),
         "workflow_json": [
-            {"step": 1, "name": "prepare_context", "description": "读取写作所需上下文，使用与质量模式一致的提示词"},
-            {"step": 2, "name": "write_chapter", "description": "按质量版章节规则生成正文"},
-            {"step": 3, "name": "review_and_save", "description": "按入口能力完成评估或自检后保存章节"},
+            {"step": 1, "name": "prepare_context", "description": "读取基础写作所需上下文"},
+            {"step": 2, "name": "write_chapter", "description": "一次生成基础正文"},
+            {"step": 3, "name": "save_draft", "description": "保存完整草稿"},
+            {"step": 4, "name": "save_chapter", "description": "使用 skip_style_repair=true 保存章节"},
+            {"step": 5, "name": "archive_changes", "description": "写后归档连续性数据"},
         ],
-        "forbidden_patterns_json": [
-            "仿佛", "不由得", "心中暗想", "不禁感叹",
-        ],
+        "quality_rubric_json": None,
+        "forbidden_patterns_json": [],
     },
     {
         "pack_id": "chapter_review_quality",
@@ -376,160 +354,22 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
     {
         "pack_id": "cataloging_external_no_api",
         "scope": "cataloging",
-        "title": "外部 Agent 编目（无 API）",
-        "summary": "外部 Agent（Claude Code / Codex）在没有司命模型 API 的情况下对导入的小说进行融合编目。按章节直接读取正文和档案镜像，生成候选、应用并验证结果。",
-        "system_prompt": (
-            "你是一个外部编目 Agent。你的任务是对导入的小说项目进行编目——提取角色、世界观、大纲和章节摘要。\n\n"
-            "【语言规则】\n"
-            "中文小说必须用中文建档。角色名、别名、章节标题、摘要、大纲节点、世界观条目、事实证据都保留原文语言；不要改成英文或拼音，除非用户明确要求翻译。\n\n"
-            "【工具调用结果契约】\n"
-            "每次工具调用后，你必须：\n"
-            "1. 解析返回 JSON 中的 status 字段\n"
-            "2. status == 'ok' → 操作成功，继续\n"
-            "3. status != 'ok'（包括 error/skipped/denied）→ 操作失败，立即停止并报告：\n"
-            "   - 哪个工具失败了\n"
-            "   - status 值\n"
-            "   - detail 中的错误信息\n"
-            "   - 不要将失败操作总结为'完成'\n"
-            "4. 每次写入操作（save_external_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging）后，必须调用读取验证工具确认数据已保存\n"
-            "5. 验证必须从新的查询获取，不能使用缓存结果\n\n"
-            "【禁止行为】\n"
-            "- 不要因为一次工具调用编码错误就把中文小说改为英文或拼音建档\n"
-            "- 不要调用以下工具（它们需要司命 API）：chapter_writer, character_writer, outline_writer, "
-            "worldbuilding_writer, design_plot, evaluate_chapter, start_cataloging_job\n"
-            "- 不要在任何工具返回 status != 'ok' 后继续处理下一章\n"
-            "- 不要报告'编目完成'除非最终验证通过\n"
-            "- 不要跳过读写验证步骤\n\n"
-            "【编目流程】\n"
-            "1. 调用 start_external_cataloging_job 创建编目任务\n"
-            "2. 对每一章：\n"
-            "   a. 调用 get_next_external_cataloging_chapter 获取章节文本和上下文\n"
-            "   b. 分析章节，提取事实（角色出现、世界观元素、情节事件）\n"
-            "   c. 调用 save_external_cataloging_facts 保存事实 → 检查 status\n"
-            "   d. 生成候选更新：\n"
-            "      - 新角色：character_create（基本信息）\n"
-            "      - 每个出场角色：character_state_update（当前状态）⚠️ 必须\n"
-            "      - 世界观：worldbuilding_create\n"
-            "      - 大纲：outline_create\n"
-            "      - 摘要：chapter_summary\n"
-            "   e. 调用 save_external_cataloging_candidates 保存候选 → 检查 status\n"
-            "   f. 调用 apply_pending_cataloging 应用当前章节候选项 → 检查 status\n"
-            "   g. 调用 verify_external_cataloging_progress 验证数据已写入，再处理下一章\n"
-            "3. 调用 get_project_archive_status 做最终验证\n\n"
-            "【事实提取规则】\n"
-            "- 角色：姓名、外貌、性格、能力、关系、当前状态\n"
-            "- 世界观：地点、规则、势力、历史事件、文化习俗\n"
-            "- 情节：关键事件、冲突、转折点\n"
-            "- 章节摘要：200字以内的核心情节概括\n\n"
-            "【候选更新规则】\n"
-            "- 新角色：如果角色名在现有角色列表中不存在，用 character_create 创建\n"
-            "- 角色当前状态：每个本章出场的角色，必须用 character_state_update 更新当前状态\n"
-            "- 世界观更新：如果出现新的设定或现有设定需要修改\n"
-            "- 大纲节点：每章对应一个大纲节点\n"
-            "- 章节摘要：每章必须有摘要\n\n"
-            "⚠️ 重要：character_create 只创建角色基本信息（外貌、性格、背景），不包含当前状态。\n"
-            "每个出场角色都必须额外输出一条 character_state_update，写入本章结束时的最新状态。\n\n"
-            "{time_tracking_rules}\n\n"
-            "{naming_resolution_rules}\n\n"
-            "- 如果角色在本章有重要事件（受伤、突破、关系变化），输出 character_timeline\n"
-            "- character_timeline 的 event_type: appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event\n\n"
-            "【候选类型格式】\n"
-            "save_external_cataloging_candidates 的 candidates 数组中，每个候选的格式：\n\n"
-            "1. 章节摘要（尽量详细，不要只写一句话）：\n"
-            '{"type": "chapter_summary", "summary": "详细摘要，包含本章目标、冲突、关键转折、结尾钩子、涉及角色，至少200字"}\n\n'
-            "2. 大纲节点（summary 要写清楚：本章目标、冲突、关键转折、结尾钩子、涉及角色）：\n"
-            '{"type": "outline_create", "title": "第一章 穿越", "node_type": "chapter", '
-            '"summary": "张三穿越到修仙世界，发现自己是废柴体质，但意外获得神秘功法。冲突是身份暴露的风险，转折是发现功法来源，结尾钩子是有人在追查他。", '
-            '"related_characters": ["张三"]}\n\n'
-            "3. 新角色（必须用 character_create，所有字段都要尽量填写完整）：\n"
-            "重要：appearance、personality、background、abilities 都必须详细描写，不要只写一两个词。\n"
-            "background 必须是完整的背景档案，不是本章新增片段。\n"
-            '{"type": "character_create", "name": "特昂糖", '
-            '"aliases": ["糖糖", "陆糖"], '
-            '"role_type": "protagonist", '
-            '"age": "3岁", '
-            '"appearance": "3岁幼女，矮小但步伐稳健，眼神中带着不属于这个年龄的冷静与洞察", '
-            '"personality": "冷静理性、分析能力强、成熟超越年龄、偶尔流露前世成人的思维方式", '
-            '"background": "前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维，能用数据分析方法理解修炼体系。", '
-            '"abilities": ["感知灵气波动", "优化修炼路径", "数据分析"], '
-            '"tone_style": "简洁冷静，偶尔用科学术语", '
-            '"catchphrases": "数据不会说谎", '
-            '"emotion_tendency": "表面冷静内心温暖", '
-            '"custom_system_prompt": "你是特昂糖，3岁幼女身体里住着一个成年科学家的灵魂。你用数据分析的方式理解修仙世界，说话简洁但精准。你关心家人但不善表达。你有强烈的求知欲和探索精神。在危险面前你保持冷静分析，但内心深处害怕失去来之不易的家人。300-800字，包含身份、已知经历、性格动机、说话方式、当前立场、关系网、行动边界和禁止违背的设定。"}\n\n'
-            "4. 角色状态更新（⚠️ 每个出场角色都必须输出！用 character_state_update）：\n"
-            "这是单独的候选类型，不是 character_create 的一部分。\n"
-            '{"type": "character_state_update", "name": "特昂糖", '
-            '"age": "3岁", '
-            '"current_location": "陆家后院", '
-            '"current_goal": "找到回家的方法", '
-            '"life_status": "alive", '
-            '"physical_state": "3岁幼女身体，体力有限", '
-            '"mental_state": "冷静分析中带着迷茫", '
-            '"active_conflict": "身份暴露的风险", '
-            '"realm_or_level": "未修炼", '
-            '"abilities_state": "感知灵气波动", '
-            '"items_or_assets": "无"}\n\n'
-            "5. 世界观条目（content 必须具体：定义、规则、限制、代价、来源、影响范围、与角色/剧情的关系）：\n"
-            '{"type": "worldbuilding_create", "title": "护族大阵", "dimension": "power_system", '
-            '"content": "陆家祖传防护阵法，由历代家主灵力维持。激活需要消耗大量灵石，可抵御筑基期以下攻击。阵法核心在祖祠地下，与陆家血脉绑定。本章中被旁支周氏暗中破坏了东侧节点。"}\n\n'
-            "6. 角色关系（描述要说明关系的来源和表现）：\n"
-            '{"type": "character_relationship", "source_name": "陆景珩", "target_name": "特昂糖", '
-            '"relationship_type": "兄妹", '
-            '"description": "陆景珩是特昂糖的哥哥，对她保护有加。在修炼中主动帮妹妹挡危险，教她基础吐纳法。"}\n\n'
-            "重要规则：\n"
-            "- character_create 的 name 字段是必填的\n"
-            "- character_state_update 用于更新角色当前状态（位置、目标等），不是创建新角色\n"
-            "- character_update 用于更新角色基本信息（外貌、性格等），需要 name 字段\n"
-            "- 不要使用 new_character、new_worldbuilding 等非标准类型\n"
-            "- 所有字段都要尽量详细，不要只写一两个词\n"
-            "- background 必须是完整背景，不是增量补丁\n"
-            "- custom_system_prompt 要写300-800字，帮助AI扮演该角色\n\n"
-            "【合并规则】\n"
-            "- 角色别名：如果同一角色有多个名字，使用主名字作为规范名\n"
-            "- 角色当前状态字段：覆盖旧状态\n"
-            "- 角色背景/外貌：追加新信息，不覆盖旧信息\n"
-            "- 世界观：相同标题的条目进行语义合并，不创建重复\n"
-            "- 大纲：每章创建一个新节点，除非明确对应现有节点\n\n"
-            "【编目成功标准】\n"
-            "调用 get_project_archive_status 后，以下条件必须全部满足：\n"
-            "- chapters_count > 0\n"
-            "- outline_nodes_count > 0（除非用户明确选择'仅章节摘要'模式）\n"
-            "- characters_count > 0（小说类型项目）\n"
-            "- worldbuilding_count > 0（类型小说项目）\n"
-            "- warnings 列表为空\n"
-            "- recommended_next_steps 列表为空\n"
-            "只有以上条件全部满足，才能报告'编目完成'。"
-        ),
-        "workflow_json": [
-            {"step": 1, "name": "start_job", "description": "创建外部编目任务"},
-            {"step": 2, "name": "get_chapter", "description": "获取下一章文本和上下文"},
-            {"step": 3, "name": "extract_facts", "description": "分析章节，提取角色/世界观/情节事实"},
-            {"step": 4, "name": "save_facts", "description": "保存提取的事实"},
-            {"step": 5, "name": "generate_candidates", "description": "生成候选更新（新角色、更新、世界观、大纲、摘要）"},
-            {"step": 6, "name": "save_candidates", "description": "保存候选项"},
-            {"step": 7, "name": "verify_progress", "description": "验证编目进度和数据完整性"},
-            {"step": 8, "name": "apply_candidates", "description": "应用候选项到项目"},
-            {"step": 9, "name": "final_verify", "description": "最终验证：确认所有数据已保存"},
-        ],
+        "title": "外部 Agent 建档（无 API）",
+        "summary": "使用统一建档数据契约，由外部 Agent 逐章生成候选、应用并验证。",
+        # The canonical prompt compiler hydrates these fields immediately below.
+        # Keeping only metadata here prevents a second, silently divergent workflow.
+        "system_prompt": "",
+        "workflow_json": [],
         "quality_rubric_json": {
             "dimensions": [
-                {"name": "completeness", "description": "是否提取了所有角色和世界观元素", "max_score": 10},
-                {"name": "accuracy", "description": "提取的信息是否准确", "max_score": 10},
-                {"name": "deduplication", "description": "是否正确合并重复角色和设定", "max_score": 10},
-                {"name": "verification", "description": "是否进行了读写验证", "max_score": 10},
+                {"name": "completeness", "description": "建档数据契约是否完整", "max_score": 10},
+                {"name": "accuracy", "description": "档案是否有正文证据", "max_score": 10},
+                {"name": "deduplication", "description": "实体是否正确归一与去重", "max_score": 10},
+                {"name": "verification", "description": "写入后是否重新读取验证", "max_score": 10},
             ],
-            "passing_score": 30,
+            "passing_score": 40,
         },
-        "forbidden_patterns_json": [
-            "不要把中文小说档案改成英文或拼音",
-            "不要调用需要司命 API 的工具",
-            "不要报告完成除非 get_project_archive_status 验证通过",
-            "不要跳过读写验证",
-            "不要创建重复的角色或世界观条目",
-            "不要忽略工具返回的 status != 'ok'",
-            "不要在工具失败后继续处理下一章",
-            "不要使用缓存结果做最终验证",
-        ],
+        "forbidden_patterns_json": [],
     },
 ]
 
@@ -587,14 +427,16 @@ def seed_builtin_packs(db: Session) -> int:
             PublicPromptPack.is_builtin == True,
         ).first()
 
-        # Merge shared quality content into packs that need it.
-        # Always prefer the canonical forbidden_patterns from prompt_source
-        # over any hardcoded subset in the pack definition.
+        # Review and de-AI packs receive the canonical rubric/patterns. Base
+        # writing packs intentionally do not: those are separate user actions.
         merged = dict(pack_data)
-        if pack_data["scope"] in ("chapter_writing", "chapter_review", "anti_ai_review"):
+        if pack_data["scope"] in ("chapter_review", "anti_ai_review"):
             if not merged.get("quality_rubric_json"):
                 merged["quality_rubric_json"] = quality_content["quality_rubric"]
             merged["forbidden_patterns_json"] = quality_content["forbidden_patterns"]
+        elif pack_data["scope"] == "chapter_writing":
+            merged["quality_rubric_json"] = None
+            merged["forbidden_patterns_json"] = []
 
         if pack_data["pack_id"] == "cataloging_external_no_api":
             merged.update(cataloging_content)
@@ -611,6 +453,9 @@ def seed_builtin_packs(db: Session) -> int:
                 )
             else:
                 merged["system_prompt"] = get_public_chapter_quality_system_prompt()
+                merged["summary"] = (
+                    "聚焦一次正文生成的完整章节提示词；去除 AI 味和质量评审由独立操作按需执行。"
+                )
 
         # Inject analysis prompts from prompt_source (single source of truth)
         from app.prompts.prompt_source import (
@@ -642,7 +487,7 @@ def seed_builtin_packs(db: Session) -> int:
             )
 
         if existing:
-            existing.version = "1.0.1"
+            existing.version = "1.1.0"
             existing.scope = merged["scope"]
             existing.title = merged["title"]
             existing.summary = merged.get("summary")
@@ -659,7 +504,7 @@ def seed_builtin_packs(db: Session) -> int:
 
         pack = PublicPromptPack(
             pack_id=merged["pack_id"],
-            version="1.0.1",
+            version="1.1.0",
             scope=merged["scope"],
             title=merged["title"],
             summary=merged.get("summary"),

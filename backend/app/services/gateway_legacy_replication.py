@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import ValidationError
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
+    ChapterGovernanceReview,
     ChapterQualityMetric,
     ChapterSummary,
     CharacterChangeLog,
@@ -21,6 +22,7 @@ from app.modules.continuity.infrastructure.models import (
     Foreshadowing,
     NarrativeCheckpoint,
     NarrativeDebt,
+    NarrativeGovernanceEvent,
     WorldbuildingTimeline,
     WorldbuildingVersion,
 )
@@ -122,6 +124,18 @@ RECORD_SPECS = (
         ChapterQualityMetric,
         "governance",
         "chapter_quality_metric",
+        "direct",
+    ),
+    RecordSpec(
+        ChapterGovernanceReview,
+        "governance",
+        "chapter_governance_review",
+        "direct",
+    ),
+    RecordSpec(
+        NarrativeGovernanceEvent,
+        "governance",
+        "narrative_governance_event",
         "direct",
     ),
 )

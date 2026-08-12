@@ -566,13 +566,17 @@ shared prompt. Do not call `save_external_cataloging_facts` or
 3. 调用 `report_agent_progress` 说明正在读取当前章节和档案镜像。
 4. 直接读取 `chapter_file` 指向的章节正文，并读取 `{project_folder}` 下的 `characters/`、`worldbuilding/`、`outline/`、`summaries/` 等镜像文件。不要要求司命把正文或卡片粘贴进提示词。
 5. 关注点与第一阶段事实抽取相同：只采集会影响大纲、角色、关系、世界观或后续连续性的内容；但不要输出 fact，不要调用 `save_external_cataloging_facts` 或 `list_cataloging_facts`。
-6. 直接调用 `save_external_cataloging_candidates` 保存候选，参数必须包含 `phase="merged"`。候选必须包含 chapter_summary、chapter 级 outline_create；有独立场景时创建 section 级 outline_create；同时创建/更新角色、世界观、关系和 chapter_link。
+6. 直接调用一次 `save_external_cataloging_candidates` 保存本章候选，参数必须包含 `phase="merged"`；同一次调用的 candidates 数组开头必须同时包含 chapter_summary、chapter 级 outline_create，不能只保存摘要后结束。chapter_summary 必须包含非空 summary_text、完整 narrative_state、narrative_review，以及 `coverage_manifest={{"scene_count": 独立场景数, "characters": [全部连续性角色名], "worldbuilding": [全部关键设定标题], "relationships": [{{"source_name":"角色A","target_name":"角色B","relationship_type":"关系"}}], "character_profiles": [本章新建或稳定档案变化的角色名]}}`，没有对应内容也必须显式写 []，不得虚构补卡。
+   同一角色在 coverage_manifest、状态卡、资料卡、关系端点和章节关联中必须统一使用角色卡稳定主名；昵称、亲属称谓和化名只写 aliases。禁止使用“主名（别名）”组合展示名，也禁止同一批候选在主名、别名之间切换。
+   `coverage_manifest` 是强制验收清单：系统按身份逐项核对，不按总数凑卡。每个角色必须有同名 character_state_update，每项设定必须有同标题 worldbuilding_create/update/timeline，每项关系必须有同端点同类型 character_relationship，每个 character_profiles 角色必须有 character_create/update，每个角色和设定必须被 chapter_link 覆盖；scene_count 大于 1 时必须为每个场景创建一条含场景状态字段的 section outline。新角色必须先生成完整角色档案，关系卡不得顺带制造空白角色。数量或身份不足不能结束本章。
+   解决伏笔或叙事债务时必须引用已有治理项的 resolves_item_id 或 resolves_dedupe_key；找不到稳定引用时标记待复核，不得按标题猜测关闭。
    每个本章出场或状态变化的角色，都必须保存 `character_state_update`；其中 `appearance` 与 `age` 是逐章状态字段，即使只是沿用上一章当前值也要填写，发生时间线变化时必须改成新状态。
-7. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
-   - `auto`：调用 `apply_pending_cataloging`。
-   - `manual`：不要应用候选，停在等待用户确认状态。
-8. 调用 `verify_external_cataloging_progress`，然后结束本轮。
-9. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用 `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
+7. 严格读取保存工具返回值：
+   - `candidate_set_complete=false`：只补齐 `missing_required_items` 后再次保存；禁止调用 apply 或宣布完成。
+   - `auto_applied=true`：候选已在同一事务中自动写入，禁止再次 save/apply。
+   - `chapter_run_status=awaiting_confirmation`：当前为手动确认，禁止应用并立即停止。
+8. 仅在 `auto_applied=true` 后调用一次 `verify_external_cataloging_progress`，随后立即结束当前 CLI 回合。
+9. 禁止再次调用 `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
 """
         elif stage == "full":
             stage_steps = f"""
@@ -615,14 +619,14 @@ shared prompt. Do not call `save_external_cataloging_facts` or
 2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
 {fact_steps}
 6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后生成候选；
-   调用 `save_external_cataloging_candidates` 保存。必须包含 chapter_summary、章级大纲，
-   有独立场景时还要创建 section 大纲，并正确关联角色、世界观和章节。
+   同一次调用 `save_external_cataloging_candidates` 时，candidates 数组开头必须同时包含 chapter_summary、章级大纲，不能只保存摘要后结束；chapter_summary 必须包含非空 summary_text、完整 narrative_state、narrative_review，以及 `coverage_manifest={{"scene_count": 独立场景数, "characters": [全部连续性角色名], "worldbuilding": [全部关键设定标题], "relationships": [明确且影响连续性的关系对象], "character_profiles": [本章新建或稳定档案变化的角色名]}}`，所有空项也显式写 []，不得虚构补卡。系统按角色名、设定标题和关系端点逐项验收，不接受重复候选凑数。
+   同一角色必须统一使用稳定主名；别名和称谓只写 aliases，不得使用“主名（别名）”组合展示名或在同批候选里切换身份写法。
+   每个清单角色都要有 character_state_update，每项清单设定都要有 worldbuilding 候选并分别建立 chapter_link；每个独立场景都要创建含场景状态字段的 section 大纲。
+   解决伏笔或叙事债务时必须引用已有治理项的 resolves_item_id 或 resolves_dedupe_key；找不到稳定引用时标记待复核，不得按标题猜测关闭。
    每个本章出场或状态变化的角色，都必须保存 `character_state_update`；其中 `appearance` 与 `age` 是逐章状态字段，即使只是沿用上一章当前值也要填写，发生时间线变化时必须改成新状态。
-7. 调用 `report_agent_progress` 说明候选已经保存，正在检查自动/手动模式。
-8. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
-   - `auto`：调用 `apply_pending_cataloging`。
-   - `manual`：不要应用候选，停在等待用户确认状态。
-9. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+7. 读取保存返回值；不完整时只补齐 missing_required_items 并再次保存；auto_applied=true 时禁止再次 save/apply；等待确认时立即停止。
+8. 仅在 auto_applied=true 后调用一次 `verify_external_cataloging_progress`，然后结束本轮。
+9. 验证完成后必须立即结束当前 CLI 回合。禁止重复保存、重复应用，禁止再次领取章节。
 10. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用
     `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
 """
@@ -930,6 +934,30 @@ async def _run_cli_turn(
     )
 
 
+def _finalize_completed_sidecars(db: Session, job: CatalogingJob) -> None:
+    """Close the Agent/operation records after MCP finishes the last chapter."""
+
+    if job.agent_run_id:
+        agent_run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
+        if agent_run and agent_run.status != "completed":
+            update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
+    if job.operation_id:
+        completed = int(job.completed_chapters or job.total_chapters or 0)
+        finish_operation(
+            job.operation_id,
+            message=f"作品建档完成，共处理 {completed} 章",
+            outcome="completed_with_tools",
+            result={
+                "summary": f"作品建档完成，共处理 {completed} 章",
+                "completed": [f"{completed} 章已完成"],
+                "incomplete": [],
+            },
+            attention={},
+            db=db,
+        )
+        unregister_operation_actions(job.operation_id)
+
+
 async def _coordinate_cataloging(job_id: str, provider: str) -> None:
     no_save_attempts: dict[str, int] = {}
     try:
@@ -937,7 +965,11 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             db = SessionLocal()
             try:
                 job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-                if not job or job.status in _TERMINAL_JOBS:
+                if not job:
+                    return
+                if job.status in _TERMINAL_JOBS:
+                    if job.status == "completed":
+                        _finalize_completed_sidecars(db, job)
                     return
                 if job.status == "paused":
                     return
@@ -952,22 +984,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.blocked_chapter_id = None
                     job.completed_at = datetime.utcnow()
                     commit_session(db)
-                    update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
-                    if job.operation_id:
-                        completed = int(job.completed_chapters or job.total_chapters or 0)
-                        finish_operation(
-                            job.operation_id,
-                            message=f"作品建档完成，共处理 {completed} 章",
-                            outcome="completed_with_tools",
-                            result={
-                                "summary": f"作品建档完成，共处理 {completed} 章",
-                                "completed": [f"{completed} 章已完成"],
-                                "incomplete": [],
-                            },
-                            attention={},
-                            db=db,
-                        )
-                        unregister_operation_actions(job.operation_id)
+                    _finalize_completed_sidecars(db, job)
                     return
                 if run.status == "failed":
                     job.status = "paused_on_failure"

@@ -592,9 +592,10 @@ for (const viewport of viewports) {
     await page.goto('/project/p1', { waitUntil: 'networkidle' })
     await expect(page.locator('.writer-editor-title')).toContainText('第一章 一夜变白的蓝花')
     await expect(page.getByText('已完成', { exact: true }).first()).toBeVisible()
-    await expect(page.getByRole('button', { name: /删除本章/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /章节操作/ })).toBeVisible()
     if (viewport.width === 1920) {
-      await page.getByRole('button', { name: /删除本章/ }).click()
+      await page.getByRole('button', { name: /章节操作/ }).click()
+      await page.getByRole('menuitem', { name: /删除本章/ }).click()
       await expect(page.getByRole('dialog', { name: /第一章 一夜变白的蓝花/ })).toBeVisible()
       await page.getByRole('button', { name: /取\s*消/ }).click()
     }

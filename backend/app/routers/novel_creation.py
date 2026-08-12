@@ -848,11 +848,49 @@ async def start_creation_stage_run(
     "/novel-creation/runs/{run_id}",
     response_model=ApiResponse[NovelCreationStageRunResponse],
 )
-async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
+async def get_creation_stage_run(
+    run_id: str,
+    model: str | None = None,
+    db: Session = Depends(get_db),
+):
     run = novel_creation_session_store(db).run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="阶段任务不存在")
-    return ApiResponse.success(data=serialize_run(run))
+    from ..services.novel_creation_run_presentation import present_serialized_run
+
+    return ApiResponse.success(data=await present_serialized_run(db, run=run, model=model))
+
+
+class NovelCreationRunCardRequest(BaseModel):
+    message: str = Field(default="", max_length=100_000)
+    model: str | None = None
+
+
+class NovelCreationRunCardResponse(BaseModel):
+    run: NovelCreationStageRunResponse
+
+
+@router.post(
+    "/novel-creation/runs/{run_id}/card-presentation",
+    response_model=ApiResponse[NovelCreationRunCardResponse],
+)
+async def adjudicate_creation_run_card(
+    run_id: str,
+    payload: NovelCreationRunCardRequest,
+    db: Session = Depends(get_db),
+):
+    """Re-evaluate a terminal card with the selected API or local-CLI model."""
+    run = novel_creation_session_store(db).run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="阶段任务不存在")
+    from ..services.novel_creation_run_presentation import present_serialized_run
+
+    return ApiResponse.success(data={"run": await present_serialized_run(
+        db,
+        run=run,
+        model=payload.model,
+        assistant_reply=payload.message,
+    )})
 
 
 @router.get("/novel-creation/runs/{run_id}/stream")
@@ -897,7 +935,14 @@ async def stream_creation_stage_run(
                     yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 sent = max([int(event.sequence or 0) for event in rows] or [sent])
                 if run.status in {"completed", "waiting_user", "waiting_author", "failed", "cancelled", "interrupted"}:
-                    yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
+                    from ..services.novel_creation_run_presentation import present_serialized_run
+
+                    terminal_run = await present_serialized_run(
+                        db,
+                        run=run,
+                        model=run.model_source,
+                    )
+                    yield "event: done\ndata: " + json.dumps(terminal_run, ensure_ascii=False) + "\n\n"
                     return
             finally:
                 db.close()
@@ -1001,6 +1046,11 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
                 commit_session(db)
             if producing_run.operation_id:
                 get_operation_service().complete_author_confirmation(producing_run.operation_id)
+        # The submission result is serialized before the run changes from
+        # waiting_user to completed. Re-serialize after confirmation so every
+        # caller receives one coherent snapshot instead of a confirmed
+        # artifact paired with a stale waiting task.
+        result["data"] = serialize_session(session)
     return _tool_response(result)
 
 
@@ -1255,6 +1305,86 @@ class SystemChatRequest(BaseModel):
     context: dict[str, Any] | None = None  # {blueprints, sessionId, brief, importedFiles, history}
 
 
+class AssistantInputRouteRequest(BaseModel):
+    source_name: str = Field(default="聊天长文本.txt", min_length=1, max_length=500)
+    source_text: str = Field(min_length=1, max_length=5_000_000)
+    source_kind: Literal["long_text", "attachment"] = "attachment"
+    user_instruction: str = Field(default="", max_length=1_000_000)
+    clarification_question: str = Field(default="", max_length=500)
+    clarification_answer: str = Field(default="", max_length=20_000)
+    clarification_already_asked: bool = False
+    clarification_history: list[dict[str, Any]] = Field(default_factory=list)
+    context_scope: Literal["system", "creation", "project"] = "system"
+    active_project_id: str = Field(default="", max_length=36)
+    creation_session_id: str = Field(default="", max_length=36)
+    history: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    model: str | None = None
+
+
+@router.post("/novel-creation/assistant-input/route")
+async def route_assistant_input(payload: AssistantInputRouteRequest):
+    """Let the selected model interpret chat instructions and document content together."""
+    from ..services.assistant_input_routing import classify_assistant_data_input
+
+    result = await classify_assistant_data_input(**payload.model_dump())
+    return ApiResponse.success(data=result, message="输入处理意图已判断")
+
+
+@router.post("/novel-creation/assistant-input/route-file")
+async def route_assistant_input_file(
+    file: UploadFile = File(...),
+    user_instruction: str = Form(default=""),
+    clarification_question: str = Form(default=""),
+    clarification_answer: str = Form(default=""),
+    clarification_already_asked: bool = Form(default=False),
+    clarification_history: str = Form(default="[]"),
+    context_scope: Literal["system", "creation", "project"] = Form(default="system"),
+    active_project_id: str = Form(default=""),
+    creation_session_id: str = Form(default=""),
+    history: str = Form(default="[]"),
+    model: str | None = Form(default=None),
+):
+    """Parse the real uploaded binary before asking the model to route it."""
+    from ..services.assistant_input_routing import classify_assistant_data_input
+    from ..services.novel_creation_imports import parse_creation_material
+
+    filename = (file.filename or "").strip()
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        source_text, _extension = parse_creation_material(filename, raw)
+    except ValueError as exc:
+        status_code = 413 if "25MB" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    try:
+        parsed_history = json.loads(history or "[]")
+    except (TypeError, ValueError):
+        parsed_history = []
+    try:
+        parsed_clarification_history = json.loads(clarification_history or "[]")
+    except (TypeError, ValueError):
+        parsed_clarification_history = []
+    result = await classify_assistant_data_input(
+        source_name=filename,
+        source_text=source_text,
+        source_kind="attachment",
+        user_instruction=user_instruction,
+        clarification_question=clarification_question,
+        clarification_answer=clarification_answer,
+        clarification_already_asked=clarification_already_asked,
+        clarification_history=(
+            parsed_clarification_history
+            if isinstance(parsed_clarification_history, list)
+            else []
+        ),
+        context_scope=context_scope,
+        active_project_id=active_project_id,
+        creation_session_id=creation_session_id,
+        history=parsed_history if isinstance(parsed_history, list) else [],
+        model=model,
+    )
+    return ApiResponse.success(data=result, message="文件内容与处理意图已判断")
+
+
 @router.post("/novel-creation/system-chat")
 async def system_chat(payload: SystemChatRequest, db: Session = Depends(get_db)):
     """General conversation endpoint for system assistant without project context."""
@@ -1313,6 +1443,9 @@ class CreationAgentRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    local_cli_permission_grant: Literal["chat_only", "creation_agent_once"] = "chat_only"
+    local_cli_read_permission_grant: Literal["none", "read_once"] = "none"
+    local_cli_read_paths: list[str] = Field(default_factory=list, max_length=8)
 
 
 @router.post("/novel-creation/agent-turn")
@@ -1328,6 +1461,11 @@ async def creation_agent_turn(payload: CreationAgentRequest, db: Session = Depen
         message=payload.message,
         model=payload.model,
         history=payload.history,
+        local_cli_write_granted=payload.local_cli_permission_grant == "creation_agent_once",
+        local_cli_read_paths=(
+            list(payload.local_cli_read_paths)
+            if payload.local_cli_read_permission_grant == "read_once" else []
+        ),
     )
     return ApiResponse.success(data=result)
 

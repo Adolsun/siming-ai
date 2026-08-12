@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from app.prompts.packs import PromptPack
 from app.prompts.packs.workspace_fast import PACK as WF
@@ -78,14 +79,16 @@ class TestWorkspacePacks(unittest.TestCase):
         quality = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         self.assertEqual(fast, quality)
 
-    def test_quality_pack_requires_evaluate_chapter(self):
+    def test_quality_pack_defers_evaluate_chapter(self):
         prompt = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
-        self.assertIn("evaluate_chapter", prompt)
+        self.assertIn("只有作者明确发起对应操作时", prompt)
+        self.assertNotIn("保存前必须评估", prompt)
 
-    def test_fast_pack_mandates_quality_evaluation(self):
+    def test_fast_pack_uses_focused_base_writing(self):
         prompt = WF.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
-        self.assertIn("evaluate_chapter", prompt)
-        self.assertIn("质量模式", prompt)
+        self.assertIn("【基础写作】", prompt)
+        self.assertIn("独立操作", prompt)
+        self.assertNotIn("保存前必须评估", prompt)
 
     def test_fast_pack_includes_quality_tools(self):
         for tool in ["evaluate_chapter", "design_plot", "roleplay_character", "dialogue_battle"]:
@@ -95,9 +98,8 @@ class TestWorkspacePacks(unittest.TestCase):
         for tool in ["evaluate_chapter", "design_plot", "roleplay_character", "dialogue_battle"]:
             self.assertIn(tool, WQ.available_tools)
 
-    def test_fast_pack_keeps_maintenance_tools(self):
-        """Fast mode still needs post-write archive sync."""
-        self.assertIn("archive_chapter_after_write", WF.available_tools)
+    def test_fast_pack_uses_formal_chapter_write_for_automatic_cataloging(self):
+        self.assertIn("create_chapter", WF.available_tools)
 
     def test_both_packs_have_function_calling_protocol(self):
         for pack in [WF, WQ]:
@@ -131,9 +133,10 @@ class TestChapterPacks(unittest.TestCase):
         prompt = CQ.build_system_prompt(style_context="测试风格")
         self.assertIn("对话核心规则", prompt)
 
-    def test_quality_includes_anti_ai_rules(self):
+    def test_quality_defers_anti_ai_rules_to_revision(self):
         prompt = CQ.build_system_prompt(style_context="测试风格")
-        self.assertIn("仿佛", prompt)  # tier1 banned word
+        self.assertNotIn("【去 AI 味】", prompt)
+        self.assertNotIn("命运的齿轮", prompt)
 
     def test_quality_includes_hooks(self):
         prompt = CQ.build_system_prompt(style_context="测试风格")
@@ -176,13 +179,13 @@ class TestChapterPacks(unittest.TestCase):
             prompt = pack.build_system_prompt(style_context="")
             self.assertIn("不要加章节标题", prompt, f"{pack.name} must forbid chapter title")
 
-    def test_fast_includes_banned_words(self):
+    def test_fast_defers_banned_word_cleanup(self):
         prompt = CF.build_system_prompt(style_context="")
-        self.assertIn("仿佛", prompt)
+        self.assertNotIn("仿佛", prompt)
 
-    def test_fast_includes_forbidden_sentence_templates(self):
+    def test_fast_does_not_bundle_de_ai_pass(self):
         prompt = CF.build_system_prompt(style_context="")
-        self.assertIn("去AI味", prompt)
+        self.assertNotIn("去AI味", prompt)
 
     def test_fast_includes_rhetoric_limits(self):
         prompt = CF.build_system_prompt(style_context="")
@@ -191,6 +194,26 @@ class TestChapterPacks(unittest.TestCase):
     def test_fast_includes_dialogue_core_rules(self):
         prompt = CF.build_system_prompt(style_context="")
         self.assertIn("对话核心规则", prompt)
+
+    def test_base_style_context_excludes_de_ai_constraints(self):
+        from app.prompts.style_prompts import build_style_context
+
+        project = SimpleNamespace(
+            narrative_perspective="third_person",
+            writing_style="natural",
+            short_sentences=False,
+            custom_style_prompt="保持冷峻语气",
+            forbidden_sentence_patterns="仿佛\n不由得",
+            rhetoric_guidelines="",
+        )
+        base = build_style_context(project, include_anti_ai=False)
+        revision = build_style_context(project, include_anti_ai=True)
+
+        self.assertNotIn("去AI味硬规则", base)
+        self.assertNotIn("【禁用句式", base)
+        self.assertIn("保持冷峻语气", base)
+        self.assertIn("去AI味硬规则", revision)
+        self.assertIn("仿佛", revision)
 
 
 class TestCatalogingPacks(unittest.TestCase):

@@ -18,6 +18,46 @@ from ..database.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _is_benign_windows_pipe_reset(context: dict[str, object]) -> bool:
+    """Identify one harmless asyncio/Windows transport shutdown callback.
+
+    A browser or health-check client can close a socket just before the
+    Proactor transport calls ``shutdown``. CPython reports WinError 10054 via
+    the event-loop exception handler even though the request and server remain
+    healthy. Keep the match deliberately narrow so real connection failures
+    and all application exceptions still reach the normal handler.
+    """
+
+    error = context.get("exception")
+    message = str(context.get("message") or "")
+    return (
+        sys.platform == "win32"
+        and isinstance(error, ConnectionResetError)
+        and getattr(error, "winerror", None) == 10054
+        and "_ProactorBasePipeTransport._call_connection_lost" in message
+    )
+
+
+def _install_windows_transport_exception_filter(
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[object, object | None]:
+    """Suppress only the known harmless Proactor close-race log entry."""
+
+    previous_handler = loop.get_exception_handler()
+
+    def handler(current_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+        if _is_benign_windows_pipe_reset(context):
+            logger.debug("Ignored harmless Windows Proactor connection-reset close race")
+            return
+        if previous_handler is not None:
+            previous_handler(current_loop, context)
+            return
+        current_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+    return handler, previous_handler
+
+
 @dataclass(frozen=True)
 class RuntimeBootstrapStatus:
     """User-visible result of the application bootstrap sequence."""
@@ -99,31 +139,6 @@ def _schedule_context_rebuild() -> None:
         logger.warning("Failed to schedule context rebuild: %s", exc)
 
 
-async def _configure_external_agents() -> None:
-    try:
-        from ..services.external_agent.mcp_auto_config import (
-            auto_configure_detected_mcp_clients,
-            ensure_detected_local_cli_model_configs,
-            migrate_legacy_external_agent_defaults,
-        )
-
-        result = await asyncio.to_thread(
-            auto_configure_detected_mcp_clients,
-            permission_pack="auto",
-        )
-        with SessionLocal() as db:
-            created_providers = ensure_detected_local_cli_model_configs(db)
-            defaults_migrated = migrate_legacy_external_agent_defaults(db)
-        logger.info(
-            "External Agent MCP auto-configuration: %s; providers added=%s; defaults migrated=%s",
-            result.get("detail"),
-            created_providers,
-            defaults_migrated,
-        )
-    except Exception as exc:
-        logger.warning("External Agent MCP auto-configuration failed: %s", exc)
-
-
 async def _bootstrap_runtime(app: FastAPI) -> RuntimeBootstrapStatus:
     """Prepare persistent state before accepting requests."""
     if "pytest" in sys.modules and not getattr(app.state, "force_test_bootstrap", False):
@@ -154,8 +169,6 @@ async def _bootstrap_runtime(app: FastAPI) -> RuntimeBootstrapStatus:
         await asyncio.to_thread(_resume_local_runtime_jobs)
     if "pytest" not in sys.modules:
         _schedule_context_rebuild()
-        if not settings.gateway_enabled:
-            asyncio.create_task(_configure_external_agents())
     return RuntimeBootstrapStatus(
         status="ready",
         database_mode=result.mode,
@@ -182,9 +195,13 @@ def _shutdown_runtime() -> None:
 @asynccontextmanager
 async def application_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run all stateful startup work in one observable lifecycle."""
+    loop = asyncio.get_running_loop()
+    installed_handler, previous_handler = _install_windows_transport_exception_filter(loop)
     app.state.runtime_bootstrap = RuntimeBootstrapStatus()
     try:
         app.state.runtime_bootstrap = await _bootstrap_runtime(app)
         yield
     finally:
         await asyncio.to_thread(_shutdown_runtime)
+        if loop.get_exception_handler() is installed_handler:
+            loop.set_exception_handler(previous_handler)

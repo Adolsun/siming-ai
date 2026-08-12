@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from ..core.response import ApiResponse
 from ..modules.assistant.application.system_conversations import SystemConversationStore
@@ -15,18 +16,30 @@ from ..modules.assistant.interfaces.system_conversation_dependencies import (
 router = APIRouter(tags=["system-assistant"])
 
 
-class SystemConversationCreate(BaseModel):
+class _ScopedPayload(BaseModel):
+    @model_validator(mode="after")
+    def validate_scope_pair(self):
+        scope_type = getattr(self, "scope_type", None)
+        scope_id = getattr(self, "scope_id", None)
+        if scope_type in {"creation", "project"} and not str(scope_id or "").strip():
+            raise ValueError(f"{scope_type} scope requires scope_id")
+        if scope_type == "system":
+            self.scope_id = None
+        return self
+
+
+class SystemConversationCreate(_ScopedPayload):
     title: str = ""
     scope_type: Literal["system", "creation", "project"] = "system"
     scope_id: str | None = None
 
 
-class SystemConversationScopePatch(BaseModel):
+class SystemConversationScopePatch(_ScopedPayload):
     scope_type: Literal["system", "creation", "project"]
     scope_id: str | None = None
 
 
-class SystemTurnCreate(BaseModel):
+class SystemTurnCreate(_ScopedPayload):
     user_content: str = Field(min_length=1, max_length=1_000_000)
     assistant_content: str = ""
     status: str = "completed"
@@ -42,7 +55,7 @@ class SystemTurnCreate(BaseModel):
     project_id: str | None = None
 
 
-class SystemTurnFinish(BaseModel):
+class SystemTurnFinish(_ScopedPayload):
     assistant_content: str = ""
     status: str = "completed"
     payload: dict[str, Any] | None = None
@@ -66,7 +79,12 @@ async def list_system_conversations(
     scope_type: Literal["system", "creation", "project"] | None = None,
     scope_id: str | None = None,
 ):
-    return ApiResponse.success(data=conversations.list(scope_type=scope_type, scope_id=scope_id))
+    data = await run_in_threadpool(
+        conversations.list,
+        scope_type=scope_type,
+        scope_id=scope_id,
+    )
+    return ApiResponse.success(data=data)
 
 
 @router.post("/ai/system-assistant/conversations")
@@ -77,11 +95,13 @@ async def create_system_conversation(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(data=conversations.create(
+    data = await run_in_threadpool(
+        conversations.create,
         payload.title,
         scope_type=payload.scope_type,
         scope_id=payload.scope_id,
-    ))
+    )
+    return ApiResponse.success(data=data)
 
 
 @router.patch("/ai/system-assistant/conversations/{conversation_id}/scope")
@@ -93,7 +113,12 @@ async def set_system_conversation_scope(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(data=conversations.set_scope(conversation_id, payload.model_dump()))
+    data = await run_in_threadpool(
+        conversations.set_scope,
+        conversation_id,
+        payload.model_dump(),
+    )
+    return ApiResponse.success(data=data)
 
 
 @router.get("/ai/system-assistant/conversations/{conversation_id}")
@@ -104,7 +129,9 @@ async def get_system_conversation(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(data=conversations.get(conversation_id))
+    return ApiResponse.success(
+        data=await run_in_threadpool(conversations.get, conversation_id)
+    )
 
 
 @router.post("/ai/system-assistant/conversations/{conversation_id}/turns/start")
@@ -116,9 +143,12 @@ async def start_system_turn(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(
-        data=conversations.start_turn(conversation_id, payload.model_dump())
+    data = await run_in_threadpool(
+        conversations.start_turn,
+        conversation_id,
+        payload.model_dump(),
     )
+    return ApiResponse.success(data=data)
 
 
 @router.patch("/ai/system-assistant/conversations/{conversation_id}/turns/{assistant_message_id}")
@@ -131,13 +161,13 @@ async def finish_system_turn(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(
-        data=conversations.finish_turn(
-            conversation_id,
-            assistant_message_id,
-            payload.model_dump(),
-        )
+    data = await run_in_threadpool(
+        conversations.finish_turn,
+        conversation_id,
+        assistant_message_id,
+        payload.model_dump(),
     )
+    return ApiResponse.success(data=data)
 
 
 @router.post("/ai/system-assistant/conversations/{conversation_id}/turns")
@@ -149,9 +179,12 @@ async def append_system_turn(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(
-        data=conversations.append_turn(conversation_id, payload.model_dump())
+    data = await run_in_threadpool(
+        conversations.append_turn,
+        conversation_id,
+        payload.model_dump(),
     )
+    return ApiResponse.success(data=data)
 
 
 @router.delete("/ai/system-assistant/conversations/{conversation_id}")
@@ -162,7 +195,9 @@ async def delete_system_conversation(
         Depends(get_system_conversation_store),
     ],
 ):
-    return ApiResponse.success(data=conversations.delete(conversation_id))
+    return ApiResponse.success(
+        data=await run_in_threadpool(conversations.delete, conversation_id)
+    )
 
 
 __all__ = [

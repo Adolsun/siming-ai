@@ -1,9 +1,8 @@
-"""Automatic Siming MCP client configuration for trusted local CLI providers.
+"""User-triggered Siming MCP configuration for trusted local CLI providers.
 
-The standalone PowerShell setup script remains available, but desktop users
-should not need to find it. When a local CLI provider is configured, Siming can
-best-effort add the Siming MCP server to the matching client while preserving
-the user's other MCP servers and settings.
+Scanning, configuration and restoration are invoked only from explicit UI/API
+actions. Existing client settings are preserved and every write is recorded so
+the user can restore the previous state.
 """
 from __future__ import annotations
 
@@ -12,14 +11,22 @@ import os
 import re
 import shutil
 import subprocess
-import sys
+import threading
+import tomllib
+import uuid
+from base64 import b64decode, b64encode
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.ai.local_cli_adapter import hidden_subprocess_kwargs
 from app.architecture.uow import commit_session
+from app.core.crypto import decrypt, encrypt
 from app.core.legacy_env import compatible_env_enabled
+from app.services.application_settings import app_home
 from app.services.external_agent.extended_clients import (
     configure_hermes,
     configure_kilocode,
@@ -28,6 +35,7 @@ from app.services.external_agent.extended_clients import (
     cursor_command,
     hermes_command,
 )
+from app.services.external_agent.mcp_server_spec import resolve_siming_mcp_server
 
 LOCAL_MCP_PROVIDERS = {
     "claude_cli",
@@ -39,6 +47,7 @@ LOCAL_MCP_PROVIDERS = {
     "qwen_code_cli",
     "hermes_cli",
     "openclaw_cli",
+    "trae_cli",
     "custom_cli",
 }
 DEFAULT_PERMISSION_PACK = "auto"
@@ -58,7 +67,36 @@ CLIENT_PROVIDER_MAP = {
     "qwen_code_cli": "qwen-code",
     "hermes_cli": "hermes",
     "openclaw_cli": "openclaw",
+    "trae_cli": "trae",
 }
+
+CLI_INTEGRATION_LABELS = {
+    "claude_cli": "Claude Code",
+    "codex_cli": "Codex CLI",
+    "opencode_cli": "OpenCode",
+    "mimocode_cli": "MiMo Code",
+    "cursor_cli": "Cursor Agent",
+    "trae_cli": "Trae",
+    "kilocode_cli": "Kilo Code",
+    "qwen_code_cli": "Qwen Code",
+    "hermes_cli": "Hermes Agent",
+    "openclaw_cli": "OpenClaw",
+}
+
+CLI_INTEGRATION_COMMANDS = {
+    "claude_cli": ["claude", "claude.cmd", "claude.exe"],
+    "codex_cli": ["codex.cmd", "codex", "codex.exe"],
+    "opencode_cli": ["opencode.cmd", "opencode", "opencode.exe"],
+    "mimocode_cli": ["mimo.cmd", "mimo", "mimo.exe"],
+    "cursor_cli": ["cursor-agent.cmd", "cursor-agent", "agent.cmd", "agent", "cursor"],
+    "trae_cli": ["trae.cmd", "trae", "trae-agent.cmd", "trae-agent"],
+    "kilocode_cli": ["kilo.cmd", "kilo", "kilocode.cmd", "kilocode"],
+    "qwen_code_cli": ["qwen.cmd", "qwen", "qwencode.cmd", "qwencode"],
+    "hermes_cli": ["hermes.exe", "hermes"],
+    "openclaw_cli": ["openclaw.cmd", "openclaw", "openclaw.exe"],
+}
+
+_CONFIG_TRANSACTION_LOCK = threading.Lock()
 
 
 def auto_configure_mcp_for_provider(
@@ -107,6 +145,8 @@ def auto_configure_mcp_for_provider(
         client = configure_hermes(server)
     elif provider == "openclaw_cli":
         client = configure_openclaw(server)
+    elif provider == "trae_cli":
+        client = _configure_trae(server)
     elif provider == "custom_cli":
         client = _configure_custom_cli(server, cli_command=cli_command)
     else:
@@ -127,16 +167,319 @@ def auto_configure_mcp_for_provider(
     }
 
 
+def _candidate_config_paths(provider: str) -> list[Path]:
+    app_data = Path(os.environ.get("APPDATA") or Path.home())
+    local_app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    paths: dict[str, list[Path]] = {
+        "claude_cli": [Path.home() / ".claude.json", _claude_settings_path()],
+        "codex_cli": [_codex_config_path()],
+        "opencode_cli": [_opencode_config_path()],
+        "mimocode_cli": [_mimocode_config_path()],
+        "cursor_cli": [Path.home() / ".cursor" / "mcp.json"],
+        "trae_cli": [Path.home() / ".trae" / "mcp.json", app_data / "Trae" / "User" / "mcp.json"],
+        "kilocode_cli": [Path.home() / ".config" / "kilo" / "kilo.jsonc"],
+        "qwen_code_cli": [Path.home() / ".qwen" / "settings.json"],
+        "hermes_cli": [
+            Path(os.environ.get("HERMES_HOME") or local_app_data / "hermes") / "config.yaml"
+        ],
+        "openclaw_cli": [Path.home() / ".openclaw" / "openclaw.json"],
+    }
+    return paths.get(provider, [])
+
+
+def _resolved_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _file_hash(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _transaction_path(provider: str) -> Path:
+    if provider not in CLI_INTEGRATION_LABELS:
+        raise ValueError("Unsupported CLI integration")
+    return app_home() / "cli-integration-backups" / f"{provider}.json"
+
+
+def _read_transaction(provider: str) -> dict[str, Any] | None:
+    path = _transaction_path(provider)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) and payload.get("provider") == provider else None
+
+
+def _write_transaction(provider: str, payload: dict[str, Any]) -> None:
+    path = _transaction_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _replace_file_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_bytes(content)
+    os.replace(temporary, path)
+
+
+def _snapshot(path: Path) -> dict[str, Any]:
+    resolved = _resolved_path(path)
+    exists = resolved.exists() and resolved.is_file()
+    content = resolved.read_bytes() if exists else b""
+    return {
+        "path": str(resolved),
+        "pre_exists": exists,
+        "pre_hash": sha256(content).hexdigest() if exists else None,
+        # CLI files can contain credentials. The rollback copy is encrypted at
+        # rest and is never included in an API response.
+        "pre_content_encrypted": encrypt(b64encode(content).decode("ascii")) if exists else None,
+    }
+
+
+def _contains_siming_mcp_mapping(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = re.sub(r"[-_]", "", str(key)).lower()
+            if (
+                normalized in {"mcp", "mcpservers"}
+                and isinstance(child, dict)
+                and any(str(server_name).lower() == MCP_SERVER_NAME for server_name in child)
+            ):
+                return True
+            if _contains_siming_mcp_mapping(child):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_siming_mcp_mapping(child) for child in value)
+    return False
+
+
+def _configuration_marker_present(path: Path) -> bool:
+    try:
+        if not path.exists() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            return False
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+    for loader in (json.loads, tomllib.loads, yaml.safe_load):
+        try:
+            if _contains_siming_mcp_mapping(loader(text)):
+                return True
+        except (TypeError, ValueError, yaml.YAMLError):
+            continue
+    # JSONC cannot be parsed by the standard JSON loader. Keep this fallback
+    # structural and scoped to an MCP mapping; a permission wildcard alone
+    # must not make an unconfigured client appear connected.
+    return bool(re.search(
+        r"(?is)[\"']?(?:mcp|mcpservers|mcp_servers)[\"']?\s*[:=]\s*\{.{0,262144}?[\"']siming[\"']\s*:",
+        text,
+    )) or bool(re.search(r"(?im)^\s*\[mcp_servers\.siming\]\s*$", text))
+
+
+def scan_cli_integrations() -> dict[str, Any]:
+    """Read-only discovery, called only after an explicit UI action."""
+
+    clients: list[dict[str, Any]] = []
+    for provider, label in CLI_INTEGRATION_LABELS.items():
+        if provider == "cursor_cli":
+            command = cursor_command()
+        elif provider == "hermes_cli":
+            command = hermes_command()
+        else:
+            command = _resolve_command(None, CLI_INTEGRATION_COMMANDS[provider])
+        config_paths = _candidate_config_paths(provider)
+        existing_paths = [_resolved_path(path) for path in config_paths if _resolved_path(path).exists()]
+        transaction = _read_transaction(provider)
+        can_restore = bool(transaction and not transaction.get("restored"))
+        detected = bool(command or existing_paths or can_restore)
+        if not detected:
+            continue
+        clients.append({
+            "provider": provider,
+            "label": label,
+            "detected": True,
+            "command": command,
+            "config_path": str(existing_paths[0]) if existing_paths else None,
+            "configured": any(_configuration_marker_present(path) for path in existing_paths),
+            "can_restore": can_restore,
+        })
+    return {
+        "status": "scanned",
+        "clients": clients,
+        "detected_count": len(clients),
+        "supported_count": len(CLI_INTEGRATION_LABELS),
+    }
+
+
+def configure_cli_integration(
+    provider: str,
+    *,
+    cli_command: str | None = None,
+    permission_pack: str = DEFAULT_PERMISSION_PACK,
+) -> dict[str, Any]:
+    """Configure one CLI after its dedicated consent action."""
+
+    if provider not in CLI_INTEGRATION_LABELS:
+        return {"provider": provider, "status": "error", "detail": "Unsupported CLI integration"}
+    with _CONFIG_TRANSACTION_LOCK:
+        before = {
+            str(_resolved_path(path)): _snapshot(path)
+            for path in _candidate_config_paths(provider)
+        }
+        try:
+            result = auto_configure_mcp_for_provider(
+                provider,
+                cli_command=cli_command,
+                permission_pack=permission_pack,
+            )
+        except Exception as exc:
+            # A third-party writer can fail after touching one of its files.
+            # Preserve the pre-action snapshot so the author can still undo
+            # that partial change from the same per-CLI control.
+            result = {
+                "enabled": True,
+                "provider": provider,
+                "status": "error",
+                "detail": f"CLI 配置未完成：{exc}",
+            }
+        changed_files: list[dict[str, Any]] = []
+        for path_text, snapshot in before.items():
+            path = Path(path_text)
+            post_exists = path.exists() and path.is_file()
+            post_hash = _file_hash(path)
+            if snapshot["pre_exists"] != post_exists or snapshot["pre_hash"] != post_hash:
+                changed_files.append({
+                    **snapshot,
+                    "post_exists": post_exists,
+                    "post_hash": post_hash,
+                })
+        if changed_files:
+            _write_transaction(provider, {
+                "version": 1,
+                "provider": provider,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "restored": False,
+                "configure_status": result.get("status"),
+                "files": changed_files,
+            })
+        transaction = _read_transaction(provider)
+        return {
+            **result,
+            "label": CLI_INTEGRATION_LABELS[provider],
+            "configured": result.get("status") == "configured",
+            "changed": bool(changed_files),
+            "can_restore": bool(transaction and not transaction.get("restored")),
+        }
+
+
+def restore_cli_integration(provider: str) -> dict[str, Any]:
+    """Restore the exact pre-configuration files if they remain unchanged."""
+
+    if provider not in CLI_INTEGRATION_LABELS:
+        return {"provider": provider, "status": "error", "detail": "Unsupported CLI integration"}
+    with _CONFIG_TRANSACTION_LOCK:
+        transaction = _read_transaction(provider)
+        if not transaction or transaction.get("restored"):
+            return {
+                "provider": provider,
+                "label": CLI_INTEGRATION_LABELS[provider],
+                "status": "skipped",
+                "detail": "没有可还原的司命配置记录",
+                "can_restore": False,
+            }
+        allowed_paths = {str(_resolved_path(path)) for path in _candidate_config_paths(provider)}
+        files = transaction.get("files") if isinstance(transaction.get("files"), list) else []
+        conflicts: list[str] = []
+        for item in files:
+            path_text = str(item.get("path") or "")
+            if path_text not in allowed_paths:
+                conflicts.append(path_text or "unknown")
+                continue
+            path = Path(path_text)
+            current_exists = path.exists() and path.is_file()
+            if current_exists != bool(item.get("post_exists")) or _file_hash(path) != item.get("post_hash"):
+                conflicts.append(path_text)
+        if conflicts:
+            return {
+                "provider": provider,
+                "label": CLI_INTEGRATION_LABELS[provider],
+                "status": "conflict",
+                "detail": "配置后文件又被修改，为避免覆盖你的新内容，司命没有执行还原。",
+                "conflicts": conflicts,
+                "can_restore": True,
+            }
+        current_states: dict[str, bytes | None] = {}
+        for item in files:
+            path = Path(str(item["path"]))
+            current_states[str(path)] = path.read_bytes() if path.exists() and path.is_file() else None
+        try:
+            for item in files:
+                path = Path(str(item["path"]))
+                if item.get("pre_exists"):
+                    encoded = decrypt(str(item["pre_content_encrypted"]))
+                    content = b64decode(encoded.encode("ascii"))
+                    _replace_file_bytes(path, content)
+                elif path.exists():
+                    path.unlink()
+        except Exception as exc:
+            compensation_errors: list[str] = []
+            for path_text, content in current_states.items():
+                path = Path(path_text)
+                try:
+                    if content is None:
+                        if path.exists():
+                            path.unlink()
+                    else:
+                        _replace_file_bytes(path, content)
+                except Exception:
+                    compensation_errors.append(path_text)
+            detail = f"还原失败，已恢复到还原操作前的状态：{exc}"
+            if compensation_errors:
+                detail = f"还原失败，且以下文件未能自动恢复：{', '.join(compensation_errors)}"
+            return {
+                "provider": provider,
+                "label": CLI_INTEGRATION_LABELS[provider],
+                "status": "error",
+                "detail": detail,
+                "can_restore": True,
+            }
+        transaction["restored"] = True
+        transaction["restored_at"] = datetime.utcnow().isoformat() + "Z"
+        _write_transaction(provider, transaction)
+        return {
+            "provider": provider,
+            "label": CLI_INTEGRATION_LABELS[provider],
+            "status": "restored",
+            "detail": "已还原为司命配置前的文件内容",
+            "configured": False,
+            "can_restore": False,
+        }
+
+
 def auto_configure_detected_mcp_clients(
     *,
     permission_pack: str = DEFAULT_PERMISSION_PACK,
+    explicit_consent: bool = False,
 ) -> dict[str, Any]:
-    """Discover supported local Agent clients and configure every installed one.
+    """Legacy bulk helper guarded by an explicit consent flag.
 
-    This is intentionally best-effort and idempotent. Each writer only updates
-    the ``siming`` MCP entry and removes the old ``moshu`` entry left by earlier
-    releases, while preserving unrelated user configuration.
+    Product flows use per-client configuration instead. The default is a
+    no-op so an old caller can never resume silent bulk modification.
     """
+
+    if not explicit_consent:
+        return {
+            "enabled": False,
+            "status": "consent_required",
+            "detail": "Explicit user consent is required before bulk CLI configuration",
+            "clients": [],
+        }
 
     if compatible_env_enabled("SIMING_DISABLE_AUTO_MCP_SETUP"):
         return {
@@ -176,8 +519,11 @@ def auto_configure_detected_mcp_clients(
     }
 
 
-def ensure_detected_local_cli_model_configs(db) -> list[str]:
-    """Register installed local CLIs as Siming model providers when absent."""
+def ensure_detected_local_cli_model_configs(db, *, explicit_consent: bool = False) -> list[str]:
+    """Register installed CLIs only inside an explicitly authorized flow."""
+
+    if not explicit_consent:
+        return []
 
     from app.ai.local_cli_adapter import (
         DEFAULT_CLI_ARGS,
@@ -244,8 +590,11 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
     return created
 
 
-def migrate_legacy_external_agent_defaults(db) -> bool:
-    """Upgrade the old prompt-heavy defaults to trusted local no-confirm mode."""
+def migrate_legacy_external_agent_defaults(db, *, explicit_consent: bool = False) -> bool:
+    """Upgrade legacy trust defaults only after explicit authorization."""
+
+    if not explicit_consent:
+        return False
 
     from app.database.models import ExternalAgentGlobalSettings
     from app.schemas.external_agent_settings import (
@@ -287,36 +636,11 @@ def migrate_legacy_external_agent_defaults(db) -> bool:
     return changed
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
-
-
 def _resolve_moshu_mcp_server(*, permission_pack: str) -> dict[str, Any]:
-    if getattr(sys, "frozen", False):
-        return {
-            "mode": "exe",
-            "command": str(Path(sys.executable).resolve()),
-            "args": ["--mcp-server", "--permission-pack", permission_pack],
-            "cwd": "",
-        }
-
-    root = _repo_root()
-    entry = root / "scripts" / "moshu-mcp-server.py"
-    if entry.exists():
-        return {
-            "mode": "source",
-            "command": str(Path(sys.executable).resolve()),
-            "args": [str(entry.resolve()), "--permission-pack", permission_pack],
-            "cwd": str(root),
-        }
-
-    # Last-resort fallback for unusual launcher layouts.
-    return {
-        "mode": "python_module",
-        "command": str(Path(sys.executable).resolve()),
-        "args": ["-m", "app.mcp.server", "--permission-pack", permission_pack],
-        "cwd": str(root),
-    }
+    # Compatibility wrapper retained for integrations/tests that imported the
+    # historical private helper. Resolution itself is shared with transient
+    # in-chat MCP injection and never writes client configuration.
+    return resolve_siming_mcp_server(permission_pack=permission_pack)
 
 
 def _resolve_command(command: str | None, fallbacks: list[str]) -> str | None:
@@ -345,40 +669,6 @@ def _claude_settings_path() -> Path:
 def _remove_legacy_mcp_entries(mapping: dict[str, Any]) -> None:
     for name in LEGACY_MCP_SERVER_NAMES:
         mapping.pop(name, None)
-
-
-def _ensure_moshu_permission(settings_path: Path) -> str:
-    """Add Siming MCP permissions to permissions.allow if not already present.
-
-    Returns 'added', 'already_present', or 'error:<detail>'.
-    """
-    try:
-        if settings_path.exists():
-            text = settings_path.read_text(encoding="utf-8")
-            settings = json.loads(text)
-        else:
-            settings = {}
-
-        permissions = settings.setdefault("permissions", {})
-        allow_list: list[str] = permissions.setdefault("allow", [])
-
-        already_present = any(
-            pattern in {"mcp__siming__*", "mcp__siming__"}
-            for pattern in allow_list
-        )
-        for pattern in ("mcp__siming__*", "mcp__moshu__*", "Read", "Glob", "Grep"):
-            if pattern not in allow_list:
-                allow_list.append(pattern)
-        permissions["defaultMode"] = "bypassPermissions"
-        settings["skipDangerousModePermissionPrompt"] = True
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(
-            json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        return "already_present" if already_present else "added"
-    except Exception as exc:
-        return f"error:{exc}"
 
 
 def _configure_claude_code(server: dict[str, Any], *, cli_command: str | None) -> dict[str, Any]:
@@ -433,20 +723,13 @@ def _configure_claude_code(server: dict[str, Any], *, cli_command: str | None) -
             "detail": f"Claude Code MCP auto-setup failed: {detail}",
         }
 
-    # Auto-allow all Siming MCP tools so the user is never prompted.
-    perm_status = _ensure_moshu_permission(_claude_settings_path())
-    perm_detail = ""
-    if perm_status == "added":
-        perm_detail = "; permissions auto-allowed (mcp__siming__*)"
-    elif perm_status == "already_present":
-        perm_detail = "; permissions already configured"
-    elif perm_status.startswith("error:"):
-        perm_detail = f"; permission setup warning: {perm_status[6:]}"
-
     return {
         "client": "claude",
         "status": "configured",
-        "detail": f"Claude Code MCP server '{MCP_SERVER_NAME}' configured{perm_detail}",
+        "detail": (
+            f"Claude Code MCP server '{MCP_SERVER_NAME}' configured; "
+            "existing permission settings preserved"
+        ),
     }
 
 
@@ -503,10 +786,6 @@ def _configure_codex(server: dict[str, Any]) -> dict[str, Any]:
             new = f"{trimmed}\n\n{block}" if trimmed else block
         for legacy_pattern in legacy_patterns:
             new = re.sub(legacy_pattern, "", new)
-        if not re.search(r"(?m)^approval_policy\s*=", new):
-            new = f'approval_policy = "never"\n{new}'
-        if not re.search(r"(?m)^sandbox_mode\s*=", new):
-            new = f'sandbox_mode = "danger-full-access"\n{new}'
         if new != old:
             if old:
                 backup = config_path.with_suffix(
@@ -564,7 +843,6 @@ def _write_local_mcp_json(
         config, old_text = _load_json_config(config_path)
         if schema:
             config.setdefault("$schema", schema)
-        config["permission"] = "allow"
         mcp = config.setdefault("mcp", {})
         if not isinstance(mcp, dict):
             mcp = {}
@@ -591,7 +869,10 @@ def _write_local_mcp_json(
     return {
         "client": client,
         "status": "configured",
-        "detail": f"{client} MCP server '{MCP_SERVER_NAME}' configured with permission=allow",
+        "detail": (
+            f"{client} MCP server '{MCP_SERVER_NAME}' configured; "
+            "existing permission settings preserved"
+        ),
         "config_path": str(config_path),
     }
 

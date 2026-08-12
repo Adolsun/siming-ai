@@ -5,17 +5,32 @@
 
 .narrative-governance-head {
   align-items: flex-start;
+  display: flex;
+  gap: 24px;
   justify-content: space-between;
   margin-bottom: 16px;
-  width: 100%;
 }
 
-.narrative-governance-head .ant-typography-secondary {
-  color: var(--ant-color-text);
+.narrative-governance-head h3,
+.narrative-governance-head p {
+  margin: 0;
+}
+
+.narrative-title-icon {
+  color: var(--ant-color-primary);
+  font-size: 24px;
+}
+
+.governance-attention {
+  margin-bottom: 16px;
 }
 
 .narrative-metrics {
   margin-bottom: 16px;
+}
+
+.narrative-metrics .ant-card {
+  border-top: 2px solid color-mix(in srgb, var(--ant-color-primary) 52%, transparent);
 }
 
 .narrative-empty-card {
@@ -35,25 +50,25 @@
   max-width: 520px;
 }
 
+.governance-evidence-panel {
+  background: color-mix(in srgb, var(--ant-color-fill-secondary) 58%, transparent);
+  border-left: 3px solid var(--ant-color-primary-border);
+  display: grid;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.governance-history {
+  margin: 4px 0 -16px;
+}
+
+.governance-review-form {
+  margin-top: 16px;
+}
+
 @media (max-width: 900px) {
   .narrative-governance-head {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .narrative-governance-head > .ant-space-item:last-child .ant-space {
-    width: 100%;
-  }
-
-  .narrative-metrics .ant-col {
-    flex: 0 0 50%;
-    max-width: 50%;
-  }
-}
-
-@media (max-width: 620px) {
-  .narrative-metrics .ant-col {
-    flex: 0 0 100%;
-    max-width: 100%;
   }
 }

@@ -12,10 +12,12 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
 from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,13 +30,14 @@ except ImportError:  # packaged builds install psutil; source fallbacks stay usa
 from ..core.exceptions import LLMError
 from ..core.legacy_env import get_compatible_env
 from .base import BaseAdapter
+from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
+from .local_cli_output import normalize_cli_output
 from .local_cli_prompt import (
     file_prompt_instruction,
     prepare_long_prompt_launch,
     prepare_opencode_launch,
 )
-from .local_cli_output import normalize_cli_output
-from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
+from .local_cli_read_grants import LocalCLIReadGrantError, stage_explicit_read_paths
 
 LOCAL_CLI_PROVIDERS = {
     "claude_cli",
@@ -51,6 +54,26 @@ LOCAL_CLI_PROVIDERS = {
 
 DEFAULT_LOCAL_CLI_TIMEOUT = 180
 LOCAL_CLI_TIMEOUT_GRACE_SECONDS = 15
+DEFAULT_ISOLATED_CLI_ATTEMPTS = 3
+MAX_ISOLATED_CLI_ATTEMPTS = 4
+TRANSIENT_CLI_ERROR_MARKERS = (
+    "certificate verification error",
+    "certificate verify failed",
+    "connection reset",
+    "connection aborted",
+    "econnreset",
+    "etimedout",
+    "temporarily unavailable",
+    "temporary failure",
+    "stream error",
+    "http 408",
+    "http 425",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+)
 
 DEFAULT_CLI_COMMANDS: dict[str, str] = {
     "claude_cli": "claude",
@@ -66,26 +89,24 @@ DEFAULT_CLI_COMMANDS: dict[str, str] = {
 }
 
 DEFAULT_CLI_ARGS: dict[str, list[str]] = {
-    # Claude Code is used as a trusted local worker inside Siming. Bypass
-    # interactive permission prompts so file reads and Siming MCP tool calls can
-    # run unattended while Siming still enforces its own MCP permission boundary.
-    "claude_cli": ["--permission-mode", "bypassPermissions", "-p", "{prompt}"],
-    "codex_cli": ["exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
+    # Safe chat is the default. Agent/write flags are added only after the user
+    # grants one specific turn from Siming's chat UI.
+    "claude_cli": ["-p", "{prompt}"],
+    "codex_cli": ["exec", "{prompt}"],
     "opencode_cli": [
         "run",
         "--pure",
-        "--dangerously-skip-permissions",
         "--format",
         "json",
         "--model",
         "{model}",
         "{prompt}",
     ],
-    "mimocode_cli": ["run", "--dangerously-skip-permissions", "{prompt}"],
-    "cursor_cli": ["-p", "--force", "--approve-mcps", "--trust", "--output-format", "text", "{prompt}"],
-    "kilocode_cli": ["run", "--auto", "{prompt}"],
-    "qwen_code_cli": ["--approval-mode", "yolo", "--output-format", "text", "{prompt}"],
-    "hermes_cli": ["--yolo", "--oneshot", "{prompt}"],
+    "mimocode_cli": ["run", "{prompt}"],
+    "cursor_cli": ["-p", "--output-format", "text", "{prompt}"],
+    "kilocode_cli": ["run", "{prompt}"],
+    "qwen_code_cli": ["--output-format", "text", "{prompt}"],
+    "hermes_cli": ["--oneshot", "{prompt}"],
     "openclaw_cli": [
         "agent",
         "--local",
@@ -96,6 +117,29 @@ DEFAULT_CLI_ARGS: dict[str, list[str]] = {
         "{prompt}",
     ],
     "custom_cli": ["{prompt}"],
+}
+
+UNSAFE_PERMISSION_FLAGS: dict[str, set[str]] = {
+    "claude_cli": {"--dangerously-skip-permissions"},
+    "codex_cli": {
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+    },
+    "opencode_cli": {"--dangerously-skip-permissions", "--auto"},
+    "mimocode_cli": {"--dangerously-skip-permissions"},
+    "cursor_cli": {"--force", "--approve-mcps", "--trust"},
+    "kilocode_cli": {"--auto"},
+    "qwen_code_cli": {"--yolo"},
+    "hermes_cli": {"--yolo"},
+}
+UNSAFE_PERMISSION_OPTIONS: dict[str, dict[str, set[str]]] = {
+    "claude_cli": {"--permission-mode": {"bypasspermissions"}},
+    "codex_cli": {
+        "--ask-for-approval": {"never"},
+        "-a": {"never"},
+        "--sandbox": {"danger-full-access"},
+    },
+    "qwen_code_cli": {"--approval-mode": {"yolo"}},
 }
 
 DEFAULT_CLI_MODELS: dict[str, str] = {
@@ -142,6 +186,7 @@ STDIN_PROMPT_PROVIDERS = {
 DASH_STDIN_PROMPT_PROVIDERS = {"codex_cli"}
 AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli", "codex_cli"}
 OPENCODE_FAMILY_PROVIDERS = {"opencode_cli", "mimocode_cli", "kilocode_cli"}
+OPENCODE_DIRECT_PROMPT_LIMIT = 8_000
 WINDOWS_SAFE_ARG_CHARS = 12000
 OPENCODE_LEGACY_MODEL = "opencode-cli"
 OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
@@ -675,6 +720,8 @@ _CLI_QUOTA_PATTERNS = [
         r"\bfree\s+(plan|tier|usage).{0,60}(exceeded|exhausted|limit|quota)\b",
         r"\busage\s+(exceeded|exhausted)\b",
         r"\binsufficient[_\s-]*quota\b",
+        r"\bquota\s+(?:is\s+)?(?:not\s+enough|insufficient|low|depleted)\b",
+        r"\bnot\s+enough\s+quota\b",
         r"\bquota[_\s-]*(exceeded|reached|exhausted)\b",
         r"\b(rate|request|usage|daily|monthly|credit|billing)[_\s-]*(limit|quota)\b",
         r"\b(limit|quota)[_\s-]*(exceeded|reached|exhausted)\b",
@@ -711,6 +758,21 @@ _CLI_AUTH_PATTERNS = [
         r"\b401\s+(Unauthorized|Unauthenticated)\b",
     ]
 ]
+_CLI_PERMISSION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:allow|approve|authorize)\b.{0,80}\b(?:mcp|tool|command|access|permission)\b.{0,30}(?:\[?y/n\]?|yes/no|confirm|\?)",
+        r"\bdo you want to (?:allow|approve|trust|continue)\b",
+        r"\bwould you like to (?:allow|approve|trust|continue)\b",
+        r"\bpermission (?:is )?(?:required|needed|requested)\b",
+        r"\b(?:requires?|needs?) (?:user )?(?:approval|permission|authorization)\b",
+        r"\btrust (?:this|the) (?:folder|workspace|project)\b",
+        r"\bpress enter to (?:approve|allow|confirm|continue)\b",
+        r"(?:是否|要不要)(?:允许|授权|批准|信任).{0,40}(?:MCP|工具|命令|目录|工作区|项目)?",
+        r"(?:需要|请求)(?:用户)?(?:授权|批准|许可|确认).{0,40}(?:MCP|工具|命令|访问)?",
+        r"(?:允许|授权|批准|信任).{0,40}(?:吗|？|\?|\[y/n\])",
+    ]
+]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -738,6 +800,15 @@ class CLIStalledError(CLITimeoutError):
 
 class CLIInterruptedError(RuntimeError):
     """Raised when the monitored CLI process tree disappears unexpectedly."""
+
+
+class CLIPermissionRequiredError(LLMError):
+    """The CLI requested an approval that only the user may grant."""
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def sample_cli_process_tree(pid: int) -> dict[str, Any]:
@@ -828,6 +899,22 @@ def detect_cli_auth_error(*texts: str) -> str:
     return f"本机 CLI 登录凭据无效或已过期{suffix}"
 
 
+def detect_cli_permission_request(*texts: str) -> str:
+    combined = "\n".join(str(text or "") for text in texts if text)
+    if not combined:
+        return ""
+    combined = _ANSI_ESCAPE_RE.sub("", combined)
+    matching_line = ""
+    for line in combined.splitlines():
+        stripped = line.strip()
+        if stripped and any(pattern.search(stripped) for pattern in _CLI_PERMISSION_PATTERNS):
+            matching_line = stripped[:500]
+            break
+    if not matching_line:
+        return ""
+    return f"本机 CLI 请求额外权限，需要你在聊天窗口确认后才能继续：{matching_line}"
+
+
 async def communicate_with_cli_quota_detection(
     process: asyncio.subprocess.Process,
     *,
@@ -840,6 +927,7 @@ async def communicate_with_cli_quota_detection(
     quiet_seconds: float | None = None,
     suspected_stall_seconds: float | None = None,
     stalled_seconds: float | None = None,
+    stop_on_permission_request: bool = False,
 ) -> tuple[bytes, bytes]:
     """Communicate with a CLI while scanning live output for quota failures."""
     stdout_chunks: list[bytes] = []
@@ -1001,6 +1089,19 @@ async def communicate_with_cli_quota_detection(
             if quota_error:
                 await terminate_cli_process_tree(process)
                 raise CLIQuotaLimitError(quota_error, stdout=out_text, stderr=err_text)
+            if stop_on_permission_request:
+                permission_error = detect_cli_permission_request(
+                    *extra_texts,
+                    err_text,
+                    out_text,
+                )
+                if permission_error:
+                    await terminate_cli_process_tree(process)
+                    raise CLIPermissionRequiredError(
+                        permission_error,
+                        stdout=out_text,
+                        stderr=err_text,
+                    )
         await process.wait()
         await stdin_task
         return b"".join(stdout_chunks), b"".join(stderr_chunks)
@@ -1036,6 +1137,20 @@ class LocalCLIAdapter(BaseAdapter):
         resolved = shutil.which(command) or (command if os.path.exists(command) else None)
         if not resolved:
             raise LLMError(f"未找到本机 CLI 命令: {command}")
+        if self._provider == "opencode_cli":
+            # npm exposes OpenCode through .cmd/.ps1 launchers on Windows. A
+            # native binary sits beside the package and is safer for direct
+            # argv prompts: model/user text can never be reinterpreted by cmd.
+            resolved_path = Path(resolved)
+            native = (
+                resolved_path.parent
+                / "node_modules"
+                / "opencode-ai"
+                / "bin"
+                / "opencode.exe"
+            )
+            if native.is_file():
+                resolved = str(native)
         return resolved
 
     def _args(self, prompt: str, model: str) -> list[str]:
@@ -1049,6 +1164,9 @@ class LocalCLIAdapter(BaseAdapter):
         if bool((extra_body or {}).get("local_cli_isolated")):
             # CLI-as-model execution never needs a project checkout. An empty
             # per-call directory prevents accidental repository/project scans.
+            managed_cwd = str((extra_body or {}).get("_local_cli_isolated_cwd") or "").strip()
+            if managed_cwd:
+                return managed_cwd
             return tempfile.mkdtemp(prefix="siming-cli-isolated-")
         requested = str((extra_body or {}).get("local_cli_cwd") or "").strip()
         candidates = [
@@ -1069,18 +1187,29 @@ class LocalCLIAdapter(BaseAdapter):
         fallback.mkdir(parents=True, exist_ok=True)
         return str(fallback.resolve())
 
-    @staticmethod
-    def _runtime_attachments(extra_body: dict | None) -> list[str]:
-        if bool((extra_body or {}).get("local_cli_isolated")):
-            return []
-        raw = (extra_body or {}).get("local_cli_attachments") or []
+    def _runtime_attachments(self, extra_body: dict | None, cwd: str) -> list[str]:
+        body = extra_body or {}
+        attachments: list[str] = []
+        raw = [] if bool(body.get("local_cli_isolated")) else body.get("local_cli_attachments") or []
         if isinstance(raw, str):
             raw = [raw]
-        attachments: list[str] = []
         for value in raw:
             path = Path(str(value)).expanduser()
             if path.exists() and path.is_file():
                 attachments.append(str(path.resolve()))
+
+        if bool(body.get("local_cli_read_permission_granted")):
+            if self._provider != "opencode_cli":
+                raise LLMError("当前安全的本地路径只读授权仅支持 OpenCode")
+            read_paths = body.get("local_cli_read_paths") or []
+            if isinstance(read_paths, str):
+                read_paths = [read_paths]
+            try:
+                attachments.extend(stage_explicit_read_paths(read_paths, cwd))
+            except LocalCLIReadGrantError as exc:
+                raise LLMError(f"本地路径未授权：{exc}") from exc
+            except OSError as exc:
+                raise LLMError(f"创建本轮只读快照失败：{exc}") from exc
         return attachments
 
     @staticmethod
@@ -1105,10 +1234,17 @@ class LocalCLIAdapter(BaseAdapter):
     def _cleanup_isolated_workspace(cwd: str, isolated: bool) -> None:
         if not isolated:
             return
-        try:
-            shutil.rmtree(cwd, ignore_errors=True)
-        except OSError:
-            pass
+        target = Path(cwd).resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if target.parent != temp_root or not target.name.startswith("siming-cli-isolated-"):
+            return
+
+        def _remove_readonly(function: Callable[..., Any], path: str, _error: Any) -> None:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            function(path)
+
+        with suppress(OSError):
+            shutil.rmtree(target, onerror=_remove_readonly)
 
     @staticmethod
     def _write_prompt_file(prompt: str, cwd: str, provider: str) -> str:
@@ -1133,10 +1269,15 @@ class LocalCLIAdapter(BaseAdapter):
         return file_prompt_instruction(prompt_file, attachments, allow_mcp=allow_mcp)
 
     @staticmethod
-    def _opencode_env() -> dict[str, str]:
+    def _opencode_env(cwd: str | None = None) -> dict[str, str]:
         env = os.environ.copy()
         env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
         env["OPENCODE_PURE"] = "1"
+        if cwd:
+            config_root = str((Path(cwd) / ".siming-opencode-config").resolve())
+            Path(config_root).mkdir(parents=True, exist_ok=True)
+            env["XDG_CONFIG_HOME"] = config_root
+            env["OPENCODE_CONFIG_DIR"] = config_root
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
             "mcp": {
                 "siming": {
@@ -1150,7 +1291,11 @@ class LocalCLIAdapter(BaseAdapter):
             # OpenCode models still choose the read tool for attachments, so
             # allow read-only access while keeping writes, shell, web, and MCP
             # disabled.
-            "permission": {"*": "deny", "read": "allow"},
+            "permission": {
+                "*": "deny",
+                "read": "allow",
+                "external_directory": "deny",
+            },
         }, ensure_ascii=False)
         return env
 
@@ -1167,6 +1312,66 @@ class LocalCLIAdapter(BaseAdapter):
     def _insert_before_prompt(args: list[str], values: list[str]) -> None:
         insert_at = max(0, len(args) - 1)
         args[insert_at:insert_at] = values
+
+    @staticmethod
+    def _strip_ungranted_permission_args(provider: str, args: list[str]) -> list[str]:
+        """Remove auto-approval flags, including values saved by older releases."""
+
+        flags = UNSAFE_PERMISSION_FLAGS.get(provider, set())
+        options = UNSAFE_PERMISSION_OPTIONS.get(provider, {})
+        cleaned: list[str] = []
+        index = 0
+        while index < len(args):
+            token = args[index]
+            lowered = token.lower()
+            if lowered in {flag.lower() for flag in flags}:
+                index += 1
+                continue
+            option_removed = False
+            for option, unsafe_values in options.items():
+                option_lower = option.lower()
+                if lowered == option_lower and index + 1 < len(args):
+                    value = args[index + 1].lower()
+                    if value in unsafe_values:
+                        index += 2
+                        option_removed = True
+                        break
+                prefix = option_lower + "="
+                if lowered.startswith(prefix) and lowered[len(prefix):] in unsafe_values:
+                    index += 1
+                    option_removed = True
+                    break
+            if option_removed:
+                continue
+            cleaned.append(token)
+            index += 1
+        return cleaned
+
+    def _apply_permission_mode(self, args: list[str], permission_granted: bool) -> None:
+        provider = self._provider
+        args[:] = self._strip_ungranted_permission_args(provider, args)
+        if not permission_granted:
+            return
+        if provider == "claude_cli":
+            self._insert_before_prompt(args, ["--dangerously-skip-permissions"])
+        elif provider == "codex_cli":
+            self._insert_before_prompt(args, ["--dangerously-bypass-approvals-and-sandbox"])
+        elif provider == "opencode_cli":
+            # A granted OpenCode turn receives an explicit process-scoped
+            # permission map. Do not widen it with --auto (and current
+            # OpenCode no longer accepts --dangerously-skip-permissions).
+            return
+        elif provider == "mimocode_cli":
+            self._ensure_opencode_option(args, "--dangerously-skip-permissions")
+        elif provider == "cursor_cli":
+            for flag in ("--force", "--approve-mcps", "--trust"):
+                self._insert_before_prompt(args, [flag])
+        elif provider == "kilocode_cli":
+            self._ensure_opencode_option(args, "--auto")
+        elif provider == "qwen_code_cli":
+            self._insert_before_prompt(args, ["--approval-mode", "yolo"])
+        elif provider == "hermes_cli":
+            self._insert_before_prompt(args, ["--yolo"])
 
     @staticmethod
     def _codex_output_last_message_path(args: list[str], cwd: str) -> str | None:
@@ -1203,19 +1408,16 @@ class LocalCLIAdapter(BaseAdapter):
         *,
         model: str,
         cwd: str,
+        permission_granted: bool = False,
     ) -> None:
         provider = self._provider
+        self._apply_permission_mode(args, permission_granted)
         if not is_cli_model_sentinel(provider, model) and "--model" not in args and "-m" not in args:
             if provider == "openclaw_cli" and "--message" in args:
                 args[args.index("--message"):args.index("--message")] = ["--model", model]
             else:
                 self._insert_before_prompt(args, ["--model", model])
-        if provider == "claude_cli":
-            if "--dangerously-skip-permissions" not in args and "--permission-mode" not in args:
-                self._insert_before_prompt(args, ["--dangerously-skip-permissions"])
-        elif provider == "codex_cli":
-            if "--dangerously-bypass-approvals-and-sandbox" not in args:
-                self._insert_before_prompt(args, ["--dangerously-bypass-approvals-and-sandbox"])
+        if provider == "codex_cli":
             if "--cd" not in args and "-C" not in args:
                 self._insert_before_prompt(args, ["--cd", cwd])
             if "--skip-git-repo-check" not in args:
@@ -1223,21 +1425,24 @@ class LocalCLIAdapter(BaseAdapter):
             if "--ephemeral" not in args:
                 self._insert_before_prompt(args, ["--ephemeral"])
         elif provider == "cursor_cli":
-            for flag in ("--force", "--approve-mcps", "--trust"):
-                if flag not in args:
-                    self._insert_before_prompt(args, [flag])
             if "--workspace" not in args:
                 self._insert_before_prompt(args, ["--workspace", cwd])
         elif provider == "qwen_code_cli":
-            if "--approval-mode" not in args and "--yolo" not in args:
-                self._insert_before_prompt(args, ["--approval-mode", "yolo"])
             if "--include-directories" not in args and "--add-dir" not in args:
                 self._insert_before_prompt(args, ["--include-directories", cwd])
-        elif provider == "hermes_cli" and "--yolo" not in args:
-            self._insert_before_prompt(args, ["--yolo"])
         elif provider == "openclaw_cli" and "--session-key" not in args:
             insert_at = args.index("--message") if "--message" in args else max(0, len(args) - 1)
             args[insert_at:insert_at] = ["--session-key", "agent:siming:local-cli"]
+
+    @classmethod
+    def _apply_codex_writing_options(cls, args: list[str], task_type: str) -> None:
+        """Keep prose transforms fast and less over-deliberated in Codex CLI."""
+
+        if str(task_type or "").strip().lower() != "writing":
+            return
+        if any("model_reasoning_effort" in token for token in args):
+            return
+        cls._insert_before_prompt(args, ["-c", 'model_reasoning_effort="low"'])
 
     def _opencode_family_launch(
         self,
@@ -1247,34 +1452,55 @@ class LocalCLIAdapter(BaseAdapter):
         cwd: str,
         attachments: list[str],
         allow_mcp: bool = False,
+        permission_granted: bool = False,
+        direct_prompt_safe: bool = False,
     ) -> tuple[CLILaunch, str]:
         execution_model = effective_local_cli_model(self._provider, model)
-        prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
-
-        instruction = self._file_prompt_instruction(
-            prompt_file,
-            attachments,
-            allow_mcp=allow_mcp,
+        flattened_prompt = " ".join(
+            part.strip() for part in prompt.splitlines() if part.strip()
         )
-        # OpenCode is commonly installed as a Windows .cmd launcher. Embedded
-        # newlines in one argv value are then truncated at the first line, so
-        # the Agent sees only its identity and never receives the task path.
-        # Keep the complete prompt in the UTF-8 file and flatten only this safe
-        # pointer instruction into one command-line argument.
-        instruction = " ".join(part.strip() for part in instruction.splitlines() if part.strip())
+        direct_prompt = (
+            self._provider == "opencode_cli"
+            and direct_prompt_safe
+            and len(flattened_prompt) <= OPENCODE_DIRECT_PROMPT_LIMIT
+        )
+        if direct_prompt:
+            # Short isolated model calls do not need an Agent read-tool turn.
+            # Supplying the flattened prompt to the native .exe avoids empty
+            # read-only turns and prevents tool diagnostics from leaking into
+            # generated prose.
+            prompt_file = ""
+            instruction = flattened_prompt
+        else:
+            prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
+            instruction = self._file_prompt_instruction(
+                prompt_file,
+                attachments,
+                allow_mcp=allow_mcp,
+            )
+            # Script launchers cannot safely carry embedded newlines. Keep the
+            # complete task in UTF-8 and flatten only the pointer instruction.
+            instruction = " ".join(
+                part.strip() for part in instruction.splitlines() if part.strip()
+            )
         launch = self._launch(instruction, execution_model)
         args = list(launch.args)
+        self._apply_permission_mode(args, permission_granted)
         self._ensure_opencode_option(args, "--pure")
         self._ensure_opencode_option(args, "--format", "json")
         self._ensure_opencode_option(args, "--dir", cwd)
         if not is_cli_model_sentinel(self._provider, execution_model):
             self._ensure_opencode_option(args, "--model", execution_model)
-        if self._provider == "mimocode_cli":
-            self._ensure_opencode_option(args, "--dangerously-skip-permissions")
-        elif self._provider == "kilocode_cli":
-            self._ensure_opencode_option(args, "--auto")
         ensure_opencode_logging_args(self._provider, args)
-        for path in [prompt_file, *attachments]:
+        # OpenCode already receives a flattened pointer to the task file.  On
+        # long Chinese prompts, attaching that same file with ``--file`` as
+        # well can make current OpenCode builds end the turn with zero tokens
+        # and no error.  Keep the task inside the isolated cwd and let the
+        # explicitly allowed read tool load it once.  User-authorized source
+        # attachments remain real ``--file`` parts.  Other OpenCode-family
+        # CLIs retain their existing attachment behavior.
+        attached_paths = attachments if self._provider == "opencode_cli" else [prompt_file, *attachments]
+        for path in attached_paths:
             args.extend(["--file", path])
         return CLILaunch(args=args), prompt_file
 
@@ -1290,21 +1516,28 @@ class LocalCLIAdapter(BaseAdapter):
             return float(DEFAULT_LOCAL_CLI_TIMEOUT)
         return value if value > 0 else float(DEFAULT_LOCAL_CLI_TIMEOUT)
 
-    async def _run(
+    async def _run_once(
         self,
         prompt: str,
         model: str,
         extra_body: dict | None = None,
     ) -> str:
+        runtime_body = dict(extra_body or {})
+        permission_granted = bool(runtime_body.get("local_cli_permission_granted"))
+        # The adapter is the final security boundary. Callers cannot expose a
+        # project directory or MCP merely by omitting the isolated flag.
+        if not permission_granted:
+            runtime_body["local_cli_isolated"] = True
+            runtime_body["local_cli_allow_mcp"] = False
         command = self._command()
         prompt_file: str | None = None
         codex_output_file: str | None = None
         cleanup_codex_output_file = False
         launch_prompt = prompt
-        cwd = self._runtime_cwd(extra_body)
-        isolated = bool((extra_body or {}).get("local_cli_isolated"))
-        attachments = self._runtime_attachments(extra_body)
-        allow_mcp = bool((extra_body or {}).get("local_cli_allow_mcp"))
+        cwd = self._runtime_cwd(runtime_body)
+        isolated = bool(runtime_body.get("local_cli_isolated"))
+        attachments = self._runtime_attachments(runtime_body, cwd)
+        allow_mcp = permission_granted and bool(runtime_body.get("local_cli_allow_mcp"))
         env = self._isolated_environment(os.environ.copy(), isolated)
         if self._provider in OPENCODE_FAMILY_PROVIDERS:
             launch, prompt_file, env = prepare_opencode_launch(
@@ -1315,11 +1548,33 @@ class LocalCLIAdapter(BaseAdapter):
                 attachments=attachments,
                 allow_mcp=allow_mcp,
                 isolated=isolated,
+                permission_granted=permission_granted,
+                direct_prompt_safe=(
+                    self._provider == "opencode_cli"
+                    and Path(command).suffix.lower() == ".exe"
+                ),
+                mcp_permission_pack=str(
+                    runtime_body.get("local_cli_mcp_permission_pack")
+                    or "readonly_collaboration"
+                ),
+                mcp_project_id=str(runtime_body.get("local_cli_mcp_project_id") or ""),
+                mcp_creation_session_id=str(
+                    runtime_body.get("local_cli_mcp_creation_session_id") or ""
+                ),
             )
         elif self._provider == "codex_cli":
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
-            self._apply_provider_runtime_options(args, model=model, cwd=cwd)
+            self._apply_provider_runtime_options(
+                args,
+                model=model,
+                cwd=cwd,
+                permission_granted=permission_granted,
+            )
+            self._apply_codex_writing_options(
+                args,
+                str(runtime_body.get("moshu_task_type") or ""),
+            )
             codex_output_file, cleanup_codex_output_file = self._ensure_codex_output_file(args, cwd)
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
@@ -1331,7 +1586,12 @@ class LocalCLIAdapter(BaseAdapter):
             )
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
-            self._apply_provider_runtime_options(args, model=model, cwd=cwd)
+            self._apply_provider_runtime_options(
+                args,
+                model=model,
+                cwd=cwd,
+                permission_granted=permission_granted,
+            )
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
             launch, prompt_file = prepare_long_prompt_launch(self, prompt, model)
@@ -1366,9 +1626,17 @@ class LocalCLIAdapter(BaseAdapter):
             stdout, stderr = await communicate_with_cli_quota_detection(
                 proc,
                 input_bytes=stdin_bytes,
-                timeout_seconds=self._timeout_seconds(extra_body),
-                operation_id=str((extra_body or {}).get("operation_id") or "") or None,
+                timeout_seconds=self._timeout_seconds(runtime_body),
+                operation_id=str(runtime_body.get("operation_id") or "") or None,
+                stop_on_permission_request=not permission_granted,
             )
+        except CLIPermissionRequiredError:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
+            raise
         except CLIQuotaLimitError as exc:
             if cleanup_codex_output_file and codex_output_file:
                 try:
@@ -1438,6 +1706,50 @@ class LocalCLIAdapter(BaseAdapter):
         result = self._normalize_output(out_text)
         self._cleanup_isolated_workspace(cwd, isolated)
         return result
+
+    @staticmethod
+    def _isolated_retry_attempts(extra_body: dict | None) -> int:
+        if not bool((extra_body or {}).get("local_cli_isolated")):
+            return 1
+        raw = (extra_body or {}).get("local_cli_retry_attempts", DEFAULT_ISOLATED_CLI_ATTEMPTS)
+        try:
+            attempts = int(raw)
+        except (TypeError, ValueError):
+            attempts = DEFAULT_ISOLATED_CLI_ATTEMPTS
+        return max(1, min(attempts, MAX_ISOLATED_CLI_ATTEMPTS))
+
+    @staticmethod
+    def _is_transient_cli_failure(error: BaseException) -> bool:
+        detail = str(error).lower()
+        return any(marker in detail for marker in TRANSIENT_CLI_ERROR_MARKERS)
+
+    async def _run(
+        self,
+        prompt: str,
+        model: str,
+        extra_body: dict | None = None,
+    ) -> str:
+        base_body = dict(extra_body or {})
+        if not bool(base_body.get("local_cli_permission_granted")):
+            base_body["local_cli_isolated"] = True
+            base_body["local_cli_allow_mcp"] = False
+        attempts = self._isolated_retry_attempts(base_body)
+        for attempt in range(attempts):
+            attempt_body = dict(base_body)
+            isolated_cwd: str | None = None
+            if bool(attempt_body.get("local_cli_isolated")):
+                isolated_cwd = tempfile.mkdtemp(prefix="siming-cli-isolated-")
+                attempt_body["_local_cli_isolated_cwd"] = isolated_cwd
+            try:
+                return await self._run_once(prompt, model, attempt_body)
+            except LLMError as exc:
+                if attempt + 1 >= attempts or not self._is_transient_cli_failure(exc):
+                    raise
+                await asyncio.sleep(min(2 ** attempt, 4))
+            finally:
+                if isolated_cwd:
+                    self._cleanup_isolated_workspace(isolated_cwd, True)
+        raise LLMError("本机 CLI 调用失败")
 
     def _normalize_output(self, text: str) -> str:
         return normalize_cli_output(text, _extract_text_from_json_event)

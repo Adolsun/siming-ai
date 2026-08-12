@@ -212,9 +212,11 @@ def _character_detail(character: Character) -> dict:
         "active_conflict": _clip(character.active_conflict, 320),
         "abilities_state": _clip(character.abilities_state, 320),
         "items_or_assets": _clip(character.items_or_assets, 320),
+        "profile": dict(character.profile_json or {}),
         "ai_style": {
             "tone_style": config.tone_style,
             "emotion_tendency": config.emotion_tendency,
+            "verbosity": config.verbosity,
             "catchphrases": _parse_list(config.catchphrases)[:8],
             "custom_system_prompt": _clip(config.custom_system_prompt, 700),
         } if config else None,

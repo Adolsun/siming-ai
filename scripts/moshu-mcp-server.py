@@ -96,8 +96,14 @@ def main() -> None:
             "internal_llm",
             "trusted_local_maintenance",
             "cataloging_worker",
+            "creation_session",
         ],
         help="MCP permission pack to expose. 'auto' resolves from global/project settings. Fixed packs bypass UI settings.",
+    )
+    parser.add_argument(
+        "--creation-session-id",
+        default="",
+        help="Required one-session boundary when --permission-pack creation_session is used.",
     )
     parser.add_argument(
         "--verbose",
@@ -143,6 +149,7 @@ def main() -> None:
             db=db,
             project_id=args.project_id,
             permission_pack=args.permission_pack,
+            creation_session_id=args.creation_session_id,
         )
     finally:
         db.close()

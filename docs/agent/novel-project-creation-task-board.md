@@ -338,21 +338,19 @@ Every implementation task must preserve the existing Siming architecture:
 - Depends on:
   - NOVEL-0202
 - File scope:
-  - `backend/app/services/workspace/tools/external_story_updates.py`
+  - superseded by `backend/app/services/cataloging/launcher.py`
   - `backend/app/services/workspace/registry.py`
-  - `backend/tests/test_external_story_updates.py`
+  - `backend/tests/test_cataloging_launcher.py`
 - Goal:
-  - Let external agents propose and apply character/worldbuilding/outline updates after writing.
+  - Let external agents enter the same canonical cataloging workflow after writing.
 - Tool:
-  - `apply_external_story_updates`
+  - `create_chapter` / `update_chapter` automatically return a durable `cataloging_job`.
 - Required behavior:
-  - Input contains proposed updates grouped by `characters`, `relationships`, `worldbuilding`, `outline`, `chapter_summary`.
-  - Manual mode returns write candidates without applying.
-  - Auto mode applies safe create/update operations but still obeys MCP permission pack and confirmation-token rules.
-  - Must merge current-state fields by overwrite and long-form fields by rewrite-merge rules.
-  - Must create human-readable version history titles: include chapter title and main change, not generic "AI update".
+  - Internal API and managed CLI jobs run through the canonical worker.
+  - Unmanaged external Agents receive `next_action=continue_external_cataloging` and continue the merged workflow without implicit API spend.
+  - No independent post-write candidate generator or compatibility write tool remains registered.
 - Verification:
-  - `py -m pytest backend/tests/test_external_story_updates.py -q`
+  - `py -m pytest backend/tests/test_cataloging_launcher.py backend/tests/test_no_legacy_post_write_archive.py -q`
 
 ### NOVEL-0205 - External Writing End-To-End No-API Test
 
@@ -374,7 +372,7 @@ Every implementation task must preserve the existing Siming architecture:
   - Call `save_external_chapter_draft`.
   - Call `record_external_quality_review`.
   - Call `create_chapter` with `draft_id/content_ref`.
-  - Call `apply_external_story_updates` in manual mode.
+  - Follow the `cataloging_job.next_action` returned by the formal chapter write.
 - Verification:
   - `py -m pytest backend/tests/test_external_writing_no_api_e2e.py -q`
 
@@ -581,7 +579,7 @@ Every implementation task must preserve the existing Siming architecture:
 - Required behavior:
   - `prepare_external_writing_context` is readonly.
   - `save_external_chapter_draft` is draft_generation or project_writing depending on persistence risk, as defined in permission policy.
-  - `record_external_quality_review` and `apply_external_story_updates` obey write confirmation rules.
+  - `record_external_quality_review` and formal chapter writes obey write confirmation rules.
   - `project_id` override works so external agents can access all projects when permission pack allows it.
 - Verification:
   - `py -m pytest backend/tests/test_mcp_external_writing_tools.py -q`
@@ -832,5 +830,5 @@ Append completed-task evidence here. Use one entry per task:
 - NOVEL-0201: `py -m pytest tests/test_external_writing_context.py -q` — 5 passed. Added prepare_external_writing_context tool (API-free). Returns prompt pack, outline, characters, relationships, worldbuilding, recent summaries, quality rubric, forbidden patterns, warnings, next tool suggestions. Registered in readonly_collaboration pack.
 - NOVEL-0202: `py -m pytest tests/test_external_draft_storage.py -q` — 8 passed. Added save_external_chapter_draft and get_external_chapter_draft tools (API-free). Wraps existing generated_drafts module. Returns draft_id/content_ref for use with create_chapter. Registered in readonly_collaboration pack.
 - NOVEL-0203: `py -m pytest tests/test_external_quality_review.py -q` — 6 passed. Added record_external_quality_review tool (API-free). Accepts scores, issues, suggestions, pass/fail. Calculates total score. Attaches to chapter or draft. Registered in readonly_collaboration pack.
-- NOVEL-0204: `py -m pytest tests/test_external_story_updates.py -q` — 6 passed. Added apply_external_story_updates tool (manual/auto modes). Updates characters, worldbuilding, chapter summary. Manual returns candidates, auto applies. Registered in project_writing pack.
+- NOVEL-0204: the original independent post-write update implementation was later retired. Formal chapter writes now create a canonical single-chapter cataloging job, protected by architecture regression tests.
 - NOVEL-0205: `py -m pytest tests/test_external_writing_no_api_e2e.py -q` — 2 passed. E2E test proves full external writing workflow without LLM API: prepare context → save draft → record review → apply updates. LLMGateway never imported or called.

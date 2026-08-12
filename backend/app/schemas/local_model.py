@@ -34,6 +34,11 @@ class BenchmarkRequest(LocalModelBase):
     max_tokens: int = Field(128, ge=8, le=2048)
 
 
+class QualificationRequest(LocalModelBase):
+    model_key: str = Field(..., min_length=1, max_length=512)
+    context_length: Optional[int] = Field(None, ge=4096)
+
+
 class CustomModelDownloadRequest(LocalModelBase):
     model_key: str = Field(..., min_length=1, max_length=512, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     display_name: str = Field(..., min_length=1, max_length=200)

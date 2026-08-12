@@ -168,6 +168,7 @@ class CatalogingChapterRun(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
+    review_warning = Column(Text, nullable=True)
     raw_output = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -282,6 +283,15 @@ class Foreshadowing(Base):
         String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
     evidence = Column(Text, nullable=True)
+    source_chapter_version = Column(Integer, nullable=True)
+    resolved_chapter_version = Column(Integer, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    resolution_evidence = Column(Text, nullable=True)
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    stale_reason = Column(Text, nullable=True)
+    closed_by = Column(String(50), nullable=True)
     storyline = Column(String(200), nullable=True)
     dedupe_key = Column(String(200), nullable=False)
     source = Column(String(50), nullable=False, default="manual")
@@ -312,6 +322,15 @@ class CausalEdge(Base):
         String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
     evidence = Column(Text, nullable=True)
+    source_chapter_version = Column(Integer, nullable=True)
+    resolved_chapter_version = Column(Integer, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    resolution_evidence = Column(Text, nullable=True)
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    stale_reason = Column(Text, nullable=True)
+    closed_by = Column(String(50), nullable=True)
     dedupe_key = Column(String(200), nullable=False)
     source = Column(String(50), nullable=False, default="manual")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -350,6 +369,15 @@ class NarrativeDebt(Base):
         String(36), ForeignKey("causal_edges.id", ondelete="SET NULL"), nullable=True
     )
     evidence = Column(Text, nullable=True)
+    source_chapter_version = Column(Integer, nullable=True)
+    resolved_chapter_version = Column(Integer, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    resolution_evidence = Column(Text, nullable=True)
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    stale_reason = Column(Text, nullable=True)
+    closed_by = Column(String(50), nullable=True)
     dedupe_key = Column(String(200), nullable=False)
     source = Column(String(50), nullable=False, default="manual")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -402,11 +430,79 @@ class ChapterQualityMetric(Base):
     passed = Column(Boolean, nullable=True)
     warnings = Column(JSON, nullable=False, default=list)
     evidence = Column(Text, nullable=True)
+    total_score = Column(Float, nullable=True)
+    max_score = Column(Float, nullable=True)
+    dimension_scores = Column(JSON, nullable=False, default=list)
+    overall_assessment = Column(Text, nullable=True)
+    model = Column(String(300), nullable=True)
+    chapter_version = Column(Integer, nullable=True)
     source = Column(String(50), nullable=False, default="manual")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
         Index("ix_chapter_quality_metrics_chapter", "project_id", "chapter_id", "created_at"),
+    )
+
+
+class ChapterGovernanceReview(Base):
+    """Durable proof that one concrete chapter version was governance-reviewed."""
+
+    __tablename__ = "chapter_governance_reviews"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
+    chapter_version = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="needs_review")
+    source = Column(String(50), nullable=False, default="fallback")
+    findings_count = Column(Integer, nullable=False, default=0)
+    confidence = Column(Float, nullable=True)
+    evidence = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "chapter_id",
+            "chapter_version",
+            name="uq_chapter_governance_review_version",
+        ),
+        Index(
+            "ix_chapter_governance_review_status",
+            "project_id",
+            "status",
+            "chapter_id",
+        ),
+    )
+
+
+class NarrativeGovernanceEvent(Base):
+    """Append-only audit trail for governance lifecycle transitions."""
+
+    __tablename__ = "narrative_governance_events"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    item_type = Column(String(40), nullable=False)
+    item_id = Column(String(36), nullable=False)
+    from_status = Column(String(30), nullable=True)
+    to_status = Column(String(30), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    chapter_version = Column(Integer, nullable=True)
+    note = Column(Text, nullable=True)
+    actor = Column(String(50), nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "ix_narrative_governance_event_item",
+            "project_id",
+            "item_type",
+            "item_id",
+            "created_at",
+        ),
     )
 
 
@@ -447,5 +543,7 @@ __all__ = [
     "NarrativeDebt",
     "CharacterNarrativeState",
     "ChapterQualityMetric",
+    "ChapterGovernanceReview",
+    "NarrativeGovernanceEvent",
     "NarrativeCheckpoint",
 ]

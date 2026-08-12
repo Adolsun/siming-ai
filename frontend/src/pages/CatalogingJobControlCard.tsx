@@ -45,9 +45,11 @@ function CatalogingJobControlCard({
 
   if (job.status === 'waiting_confirmation') {
     outcome = 'waiting_user'
-    outcomeTitle = '当前章节已生成档案候选，等待你确认'
+    outcomeTitle = job.review_warning
+      ? '候选已生成，有原文线索需要你核对'
+      : '当前章节已生成档案候选，等待你确认'
     result = {
-      summary: '已完成的章节和候选内容都已保存。确认写入后才会继续下一章。',
+      summary: job.review_warning || '已完成的章节和候选内容都已保存。确认写入后才会继续下一章。',
       completed: completed ? [`${completed} 章已完成`] : [],
       incomplete: ['确认或调整当前章节候选项'],
     }

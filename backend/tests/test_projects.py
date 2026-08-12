@@ -236,6 +236,64 @@ class TestProjectCreateAPI(unittest.TestCase):
         self.assertEqual(data["writing_style"], "natural")
         self.assertEqual(data["daily_word_goal"], 6000)
 
+    def test_formal_project_creation_brief_can_be_initialized_and_edited(self):
+        project_id = self.client.post(
+            f"{API_PREFIX}/projects",
+            json={"title": "导入作品", "description": "一部已写到第二卷的长篇"},
+        ).json()["data"]["id"]
+
+        before = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/creation-brief"
+        )
+        self.assertEqual(before.status_code, 200)
+        self.assertIsNone(before.json()["data"]["context"])
+
+        initialized = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/creation-brief/ensure"
+        )
+        self.assertEqual(initialized.status_code, 200)
+        revision = initialized.json()["data"]["context"]["revision"]
+
+        saved = self.client.patch(
+            f"{API_PREFIX}/projects/{project_id}/creation-brief",
+            json={
+                "expected_revision": revision,
+                "constraints": {
+                    "target_words": 2_500_000,
+                    "target_chapters": 1_000,
+                    "writing_style": "克制冷峻，以动作和细节推进",
+                },
+                "creative_direction": {
+                    "selected": {
+                        "title": "经脉迷局",
+                        "core_conflict": "求真与宗族秩序冲突",
+                    },
+                },
+                "world_style": {
+                    "style_rules": ["少解释，多可验证细节"],
+                },
+            },
+        )
+
+        self.assertEqual(saved.status_code, 200)
+        context = saved.json()["data"]["creation"]
+        self.assertEqual(context["constraints"]["target_words"], 2_500_000)
+        self.assertEqual(context["constraints"]["target_chapters"], 1_000)
+        self.assertEqual(
+            context["creative_direction"]["selected"]["title"],
+            "经脉迷局",
+        )
+        self.assertEqual(
+            context["world_style"]["style_rules"],
+            ["少解释，多可验证细节"],
+        )
+
+        project = self.client.get(f"{API_PREFIX}/projects/{project_id}").json()["data"]
+        self.assertEqual(
+            project["custom_style_prompt"],
+            "克制冷峻，以动作和细节推进",
+        )
+
     # ------------------------------------------------------------------
     # TC-08: Create project with all fields
     # ------------------------------------------------------------------

@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Collapse,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -10,17 +11,21 @@ import {
   Modal,
   Popconfirm,
   Select,
-    Space,
-    Tag,
-    Timeline,
+  Space,
+  Tag,
+  Timeline,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
 import {
+  AuditOutlined,
   DeleteOutlined,
   DiffOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  HighlightOutlined,
+  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
@@ -29,7 +34,16 @@ import {
 import { apiClient } from '../api/client'
 import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
+import { useModelOptions } from '../hooks/useModelOptions'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
+import {
+  WriterReviewDialogs,
+  type DeAiPreview,
+  type DeAiTarget,
+  type QualityScorePreview,
+  type QualityScoreTarget,
+} from '../features/writer/WriterReviewDialogs'
+import { useWriterSourceNavigation } from '../features/writer/useWriterSourceNavigation'
 import './WriterPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -105,11 +119,15 @@ interface ChapterFormValues {
   content: string
 }
 
-
-
+interface AppliedDeAiRevision {
+  before: string
+  after: string
+}
 
 interface WriterPageProps {
   projectId: string
+  focusChapterId?: string
+  sourceLocatorKey?: string
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -132,6 +150,7 @@ export function chapterStatusLabel(status?: string | null) {
 const TRIGGER_LABEL: Record<string, string> = {
   manual_save: '手动保存',
   ai_insert: 'AI 插入',
+  de_ai: '去除 AI 味',
   restore: '版本恢复',
 }
 
@@ -150,7 +169,7 @@ function flattenOutline(nodes: OutlineNode[], depth = 0, prefix: string[] = []):
   })
 }
 
-function WriterPage({ projectId }: WriterPageProps) {
+function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageProps) {
   const [form] = Form.useForm<ChapterFormValues>()
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [outlineOptions, setOutlineOptions] = useState<Array<{ value: string; label: string }>>([])
@@ -174,25 +193,41 @@ function WriterPage({ projectId }: WriterPageProps) {
   const [fromSnapshotId, setFromSnapshotId] = useState<string | undefined>()
   const [toSnapshotId, setToSnapshotId] = useState<string | undefined>()
   const [diff, setDiff] = useState<DiffResponse | null>(null)
+  const [deAiOpen, setDeAiOpen] = useState(false)
+  const [deAiLoading, setDeAiLoading] = useState(false)
+  const [deAiModel, setDeAiModel] = useState<string>()
+  const [deAiTarget, setDeAiTarget] = useState<DeAiTarget | null>(null)
+  const [deAiPreview, setDeAiPreview] = useState<DeAiPreview | null>(null)
+  const [appliedDeAiRevision, setAppliedDeAiRevision] = useState<AppliedDeAiRevision | null>(null)
+  const [qualityOpen, setQualityOpen] = useState(false)
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [qualityModel, setQualityModel] = useState<string>()
+  const [qualityTarget, setQualityTarget] = useState<QualityScoreTarget | null>(null)
+  const [qualityPreview, setQualityPreview] = useState<QualityScorePreview | null>(null)
 
   const { setAiContext, refreshKey } = useAiPanelContext()
+  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
 
   const editorSelectionRef = useRef<{ start: number; end: number } | null>(null)
   const [selectedText, setSelectedText] = useState('')
   const [selectedTextChapterId, setSelectedTextChapterId] = useState<string | null>(null)
   const watchedOutlineNodeId = Form.useWatch('outline_node_id', form)
+  const watchedContent = Form.useWatch('content', form)
+  const chapterIds = useMemo(() => chapters.map((chapter) => chapter.id), [chapters])
 
+
+  const getContentTextArea = () => document.querySelector<HTMLTextAreaElement>(
+    'textarea.writer-content-input, .writer-content-input textarea',
+  )
 
   const getSelectedText = (): string => {
-    const el = document.querySelector<HTMLTextAreaElement>('.writer-content-input')
+    const el = getContentTextArea()
     if (!el) return ''
     const start = el.selectionStart ?? 0
     const end = el.selectionEnd ?? 0
     editorSelectionRef.current = { start, end }
     return el.value.substring(start, end)
   }
-
-  const getContentTextArea = () => document.querySelector<HTMLTextAreaElement>('.writer-content-input')
 
   const captureEditorSelection = () => {
     const el = getContentTextArea()
@@ -258,12 +293,39 @@ function WriterPage({ projectId }: WriterPageProps) {
         outline_node_id: res.data.data.outline_node_id || undefined,
         content: res.data.data.content,
       })
+      setAppliedDeAiRevision(null)
       markSaved()
       fetchSnapshots(chapterId)
     } catch (err: any) {
       message.error(err.message || '获取章节详情失败')
     }
   }, [fetchSnapshots, form, markSaved, projectId])
+
+  const focusSourceChapter = useCallback((chapterId: string) => {
+    setCreating(false)
+    setSelectedId(chapterId)
+  }, [])
+
+  const selectSourceEvidence = useCallback((
+    range: { start: number; end: number },
+    text: string,
+    chapterId: string,
+  ) => {
+    editorSelectionRef.current = range
+    setSelectedText(text)
+    setSelectedTextChapterId(chapterId)
+  }, [])
+
+  useWriterSourceNavigation({
+    projectId,
+    focusChapterId,
+    sourceLocatorKey,
+    chapterIds,
+    detail,
+    confirmLeave,
+    onFocusChapter: focusSourceChapter,
+    onEvidenceSelected: selectSourceEvidence,
+  })
 
   useEffect(() => {
     fetchOutline()
@@ -307,6 +369,7 @@ function WriterPage({ projectId }: WriterPageProps) {
       setDetail(null)
       setSnapshots([])
       setDiff(null)
+      setAppliedDeAiRevision(null)
       form.setFieldsValue({ title: '', outline_node_id: undefined, content: '' })
       markSaved()
     })
@@ -337,10 +400,14 @@ function WriterPage({ projectId }: WriterPageProps) {
         setSelectedId(res.data.data.id)
         setCreating(false)
       } else {
-        const res = await apiClient.put<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}`, { ...payload, trigger_type: 'manual_save' })
+        const res = await apiClient.put<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}`, {
+          ...payload,
+          trigger_type: appliedDeAiRevision ? 'de_ai' : 'manual_save',
+        })
         setDetail(res.data.data)
         fetchSnapshots(selectedId)
       }
+      setAppliedDeAiRevision(null)
       markSaved()
       fetchChapters()
     } catch (err: any) {
@@ -357,6 +424,7 @@ function WriterPage({ projectId }: WriterPageProps) {
       message.success('章节已删除')
       setSelectedId(null)
       setDetail(null)
+      setAppliedDeAiRevision(null)
       fetchChapters()
     } catch (err: any) {
       message.error(err.message || '删除章节失败')
@@ -369,6 +437,7 @@ function WriterPage({ projectId }: WriterPageProps) {
       const res = await apiClient.post<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}/restore/${snapshotId}`)
       setDetail(res.data.data)
       form.setFieldsValue({ title: res.data.data.title, outline_node_id: res.data.data.outline_node_id || undefined, content: res.data.data.content })
+      setAppliedDeAiRevision(null)
       message.success('已恢复历史版本')
       markSaved()
       fetchSnapshots(selectedId)
@@ -392,6 +461,175 @@ function WriterPage({ projectId }: WriterPageProps) {
     }
   }
 
+  const resetDeAiDialog = () => {
+    setDeAiOpen(false)
+    setDeAiPreview(null)
+    setDeAiTarget(null)
+    setDeAiLoading(false)
+  }
+
+  const resetQualityDialog = () => {
+    setQualityOpen(false)
+    setQualityPreview(null)
+    setQualityTarget(null)
+    setQualityLoading(false)
+  }
+
+  const openQualityDialog = () => {
+    if (!selectedId || creating) return
+    const content = String(form.getFieldValue('content') || '')
+    if (content.trim().length < 20) {
+      message.warning('正文太短，请至少填写 20 个字符后再评分')
+      return
+    }
+    if (modelOptions.length === 0) {
+      message.warning('请先在模型与训练中启用一个可用模型')
+      return
+    }
+    setQualityTarget({
+      title: String(form.getFieldValue('title') || detail?.title || '未命名章节'),
+      content,
+    })
+    setQualityModel(defaultModel || modelOptions[0]?.value)
+    setQualityPreview(null)
+    setQualityOpen(true)
+  }
+
+  const generateQualityScore = async () => {
+    if (!selectedId || !qualityTarget) return
+    if (!qualityModel) {
+      message.warning('请选择评分模型')
+      return
+    }
+    setQualityLoading(true)
+    try {
+      const res = await apiClient.post<ApiResponse<QualityScorePreview>>(
+        `/projects/${projectId}/chapters/${selectedId}/quality-score-preview`,
+        { ...qualityTarget, model: qualityModel },
+      )
+      setQualityPreview(res.data.data)
+    } catch (err: any) {
+      message.error(err.message || '质量评分失败，正文未发生变化')
+    } finally {
+      setQualityLoading(false)
+    }
+  }
+
+  const openDeAiDialog = () => {
+    if (!selectedId || creating) return
+    const baseContent = String(form.getFieldValue('content') || '')
+    if (!baseContent.trim()) {
+      message.warning('请先填写章节正文')
+      return
+    }
+    if (modelOptions.length === 0) {
+      message.warning('请先在模型与训练中启用一个可用模型')
+      return
+    }
+
+    const editor = getContentTextArea()
+    const start = editor?.selectionStart ?? 0
+    const end = editor?.selectionEnd ?? 0
+    const selected = end > start ? baseContent.slice(start, end) : ''
+    if (selected.trim() && selected.trim().length < 20) {
+      message.warning('选中文字太短，请至少选择 20 个字符，或取消选区后处理整章')
+      return
+    }
+    const useSelection = Boolean(selected.trim())
+    setDeAiTarget({
+      scope: useSelection ? 'selection' : 'chapter',
+      baseContent,
+      source: useSelection ? selected : baseContent,
+      start: useSelection ? start : 0,
+      end: useSelection ? end : baseContent.length,
+    })
+    setDeAiModel(defaultModel || modelOptions[0]?.value)
+    setDeAiPreview(null)
+    setDeAiOpen(true)
+  }
+
+  const generateDeAiPreview = async () => {
+    if (!selectedId || !deAiTarget) return
+    if (!deAiModel) {
+      message.warning('请选择执行模型')
+      return
+    }
+    setDeAiLoading(true)
+    try {
+      const previousRound = deAiPreview?.revision_round || (deAiPreview ? 1 : 0)
+      const nextRound = Math.min(previousRound + 1, 3)
+      const requestPayload = deAiPreview
+        ? {
+            content: deAiPreview.rewritten,
+            original_content: deAiTarget.source,
+            revision_round: nextRound,
+            model: deAiModel,
+          }
+        : { content: deAiTarget.source, model: deAiModel }
+      const res = await apiClient.post<ApiResponse<DeAiPreview>>(
+        `/projects/${projectId}/chapters/${selectedId}/de-ai-preview`,
+        requestPayload,
+      )
+      setDeAiPreview(res.data.data)
+      if (res.data.data.audit_passed === false) {
+        message.warning('候选稿已生成，但有系统审核提醒；原文未变，请对照后自行决定是否替换')
+      }
+    } catch (err: any) {
+      message.error(err.message || '去除 AI 味失败，原文未发生变化')
+    } finally {
+      setDeAiLoading(false)
+    }
+  }
+
+  const commitDeAiPreviewApplication = () => {
+    if (!deAiTarget || !deAiPreview) return
+    const nextContent = `${deAiTarget.baseContent.slice(0, deAiTarget.start)}${deAiPreview.rewritten}${deAiTarget.baseContent.slice(deAiTarget.end)}`
+    form.setFieldValue('content', nextContent)
+    setAppliedDeAiRevision({ before: deAiTarget.baseContent, after: nextContent })
+    markDirty()
+    setSelectedText('')
+    setSelectedTextChapterId(null)
+    editorSelectionRef.current = null
+    resetDeAiDialog()
+    message.success('候选稿已应用到编辑器；确认无误后再保存')
+  }
+
+  const applyDeAiPreview = () => {
+    if (!deAiTarget || !deAiPreview) return
+    if (deAiPreview.audit_passed !== false) {
+      commitDeAiPreviewApplication()
+      return
+    }
+    Modal.confirm({
+      title: '候选稿有审核提醒，仍要替换吗？',
+      content: '系统没有自动采用这份稿件，原文目前仍保持不变。请确认已对照阅读候选稿和审核提醒。',
+      okText: '仍要替换到编辑器',
+      cancelText: '继续对照',
+      onOk: commitDeAiPreviewApplication,
+    })
+  }
+
+  const undoAppliedDeAiRevision = () => {
+    if (!appliedDeAiRevision) return
+    const restore = () => {
+      form.setFieldValue('content', appliedDeAiRevision.before)
+      setAppliedDeAiRevision(null)
+      markDirty()
+      message.success('已撤销本次去除 AI 味')
+    }
+    if (String(form.getFieldValue('content') || '') === appliedDeAiRevision.after) {
+      restore()
+      return
+    }
+    Modal.confirm({
+      title: '撤销去除 AI 味并放弃后续编辑？',
+      content: '应用候选稿后正文又有改动。继续撤销会一并放弃这些改动。',
+      okText: '仍然撤销',
+      cancelText: '保留正文',
+      onOk: restore,
+    })
+  }
+
   const snapshotOptions = useMemo(() => snapshots.map((snapshot) => ({
     value: snapshot.id,
     label: `v${snapshot.version_number} · ${TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type}`,
@@ -408,7 +646,7 @@ function WriterPage({ projectId }: WriterPageProps) {
             <Title level={4} style={{ margin: 0 }}><FileTextOutlined /> 章节</Title>
             <Space size={6}>
               <Button aria-label="刷新章节列表" icon={<ReloadOutlined />} onClick={fetchChapters} loading={loading} />
-              <Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>新建</Button>
+              <Button type="primary" icon={<PlusOutlined />} aria-label="新建章节" onClick={startCreate}>新建</Button>
             </Space>
           </div>
           <List
@@ -418,7 +656,15 @@ function WriterPage({ projectId }: WriterPageProps) {
             renderItem={(chapter) => (
               <List.Item
                 className={`writer-chapter-item${chapter.id === selectedId ? ' writer-chapter-item-active' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-label={`打开章节：${chapter.title}`}
                 onClick={() => confirmLeave(() => setSelectedId(chapter.id))}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  confirmLeave(() => setSelectedId(chapter.id))
+                }}
               >
                 <List.Item.Meta
                   title={<span className="writer-chapter-title" title={chapter.title}>{chapter.title}</span>}
@@ -452,14 +698,44 @@ function WriterPage({ projectId }: WriterPageProps) {
             </div>
             <Space>
               {selectedId && !creating && (
-                <Button
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={confirmDeleteChapter}
-                  aria-label={`删除本章：${detail?.title || editorTitle}`}
+                <Tooltip title={modelOptions.length === 0 ? '请先启用一个可用模型' : '按编辑器中的当前整章评分；只读，不修改正文'}>
+                  <Button
+                    icon={<AuditOutlined />}
+                    disabled={String(watchedContent || '').trim().length < 20 || modelOptions.length === 0}
+                    loading={qualityLoading}
+                    onClick={openQualityDialog}
+                  >
+                    质量评分
+                  </Button>
+                </Tooltip>
+              )}
+              {selectedId && !creating && (
+                <Tooltip title={modelOptions.length === 0 ? '请先启用一个可用模型' : '有选中文本时处理选段，否则处理整章'}>
+                  <Button
+                    icon={<HighlightOutlined />}
+                    disabled={!String(watchedContent || '').trim() || modelOptions.length === 0}
+                    loading={deAiLoading}
+                    onClick={openDeAiDialog}
+                  >
+                    去除 AI 味
+                  </Button>
+                </Tooltip>
+              )}
+              {selectedId && !creating && (
+                <Dropdown
+                  trigger={['click']}
+                  placement="bottomRight"
+                  menu={{
+                    items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除本章' }],
+                    onClick: ({ key }) => {
+                      if (key === 'delete') confirmDeleteChapter()
+                    },
+                  }}
                 >
-                  删除本章
-                </Button>
+                  <Button icon={<MoreOutlined />} aria-label={`章节操作：${detail?.title || editorTitle}`}>
+                    章节操作
+                  </Button>
+                </Dropdown>
               )}
               <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!creating && !isDirty} onClick={() => form.submit()}>
                 {creating ? '创建章节' : '保存改动'}
@@ -470,17 +746,28 @@ function WriterPage({ projectId }: WriterPageProps) {
           {!creating && !detail && chapters.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个章节，正文和版本历史会从这里开始。" />
           ) : (
-            <Form form={form} layout="vertical" onFinish={saveChapter} onValuesChange={markDirty}>
-              <div className="writer-form-grid">
-                <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入章节标题' }]}>
-                  <Input placeholder="例如：第一章 风祭前夜" maxLength={200} />
-                </Form.Item>
-                <Form.Item name="outline_node_id" label="关联大纲">
-                  <Select allowClear showSearch optionFilterProp="label" options={outlineOptions} placeholder="选择大纲节点" />
-                </Form.Item>
-              </div>
-              {detail?.summary_text && !creating && (
-                <Collapse
+            <>
+              {appliedDeAiRevision && (
+                <Alert
+                  className="writer-de-ai-applied"
+                  type="info"
+                  showIcon
+                  message="去除 AI 味候选稿已应用，尚未保存"
+                  description="请通读确认；保存后会生成一个可恢复的版本快照。"
+                  action={<Button size="small" onClick={undoAppliedDeAiRevision}>撤销应用</Button>}
+                />
+              )}
+              <Form form={form} layout="vertical" onFinish={saveChapter} onValuesChange={markDirty}>
+                <div className="writer-form-grid">
+                  <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入章节标题' }]}>
+                    <Input placeholder="例如：第一章 风祭前夜" maxLength={200} />
+                  </Form.Item>
+                  <Form.Item name="outline_node_id" label="关联大纲">
+                    <Select allowClear showSearch optionFilterProp="label" options={outlineOptions} placeholder="选择大纲节点" />
+                  </Form.Item>
+                </div>
+                {detail?.summary_text && !creating && (
+                  <Collapse
                   className="writer-summary"
                   size="small"
                   items={[{
@@ -501,10 +788,10 @@ function WriterPage({ projectId }: WriterPageProps) {
                       </div>
                     ),
                   }]}
-                />
-              )}
-              <Form.Item name="content" label="正文">
-                <TextArea
+                  />
+                )}
+                <Form.Item name="content" label="正文">
+                  <TextArea
                   className="writer-content-input"
                   placeholder="开始写这一章"
                   autoSize={{ minRows: 18, maxRows: 28 }}
@@ -513,9 +800,10 @@ function WriterPage({ projectId }: WriterPageProps) {
                   onMouseUp={captureEditorSelection}
                   onBlur={captureEditorSelection}
                   onKeyUp={captureEditorSelection}
-                />
-              </Form.Item>
-            </Form>
+                  />
+                </Form.Item>
+              </Form>
+            </>
           )}
 
           {/* ── Version History ── */}
@@ -575,6 +863,32 @@ function WriterPage({ projectId }: WriterPageProps) {
         </main>
 
       </div>
+
+      <WriterReviewDialogs
+        modelOptions={modelOptions}
+        modelsLoading={modelsLoading}
+        quality={{
+          open: qualityOpen,
+          loading: qualityLoading,
+          model: qualityModel,
+          target: qualityTarget,
+          preview: qualityPreview,
+          onModelChange: setQualityModel,
+          onClose: resetQualityDialog,
+          onGenerate: generateQualityScore,
+        }}
+        deAi={{
+          open: deAiOpen,
+          loading: deAiLoading,
+          model: deAiModel,
+          target: deAiTarget,
+          preview: deAiPreview,
+          onModelChange: setDeAiModel,
+          onClose: resetDeAiDialog,
+          onGenerate: generateDeAiPreview,
+          onApply: applyDeAiPreview,
+        }}
+      />
     </div>
   )
 }

@@ -29,15 +29,21 @@ from ..database.models import (
     ChapterQualityMetric,
     ChapterSummary,
     Character,
+    CharacterAIConfig,
+    CharacterAlias,
     CharacterNarrativeState,
+    CharacterRelationship,
     CharacterTimeline,
     ContextManifest,
     ContextManifestItem,
     ContextRebuildJob,
     ContextRebuildProject,
     Foreshadowing,
+    LocalModel,
+    LocalModelTaskSetting,
     ModelContextProfile,
     NarrativeDebt,
+    NovelCreationSession,
     OutlineNode,
     OutlineNodeCharacter,
     Project,
@@ -55,6 +61,7 @@ from ..modules.context.application.runtime import (
     active_context_manifest as active_context_manifest,
 )
 from ..modules.model_runtime.application.runtime import resolve_model_identity
+from .character_archive import character_archive_text
 from .rag.context_packer import ContextBudget, estimate_tokens
 from .rag.indexer import _get_source_content_hash, reindex_project
 from .rag.retriever import search_chunks
@@ -297,7 +304,10 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _project_style_text(project: Project) -> str:
+def _project_style_text(
+    project: Project,
+    creation_context: dict[str, Any] | None = None,
+) -> str:
     parts = [
         f"Project: {project.title}",
         f"Perspective: {project.narrative_perspective or 'unspecified'}",
@@ -311,24 +321,36 @@ def _project_style_text(project: Project) -> str:
         parts.append(f"Avoid: {_clean_text(project.forbidden_sentence_patterns, 900)}")
     if project.rhetoric_guidelines:
         parts.append(f"Rhetoric: {_clean_text(project.rhetoric_guidelines, 900)}")
+    if creation_context:
+        creative_direction = creation_context.get("creative_direction")
+        selected_direction = (
+            creative_direction.get("selected")
+            if isinstance(creative_direction, dict)
+            else None
+        )
+        creation_payload = {
+            "revision": creation_context.get("revision"),
+            "constraints": creation_context.get("constraints") or {},
+            "creative_direction": selected_direction or {},
+            "world_style": creation_context.get("world_style") or {},
+            "artifact_statuses": creation_context.get("artifact_statuses") or {},
+        }
+        parts.append(
+            "Authoritative creation brief (current author-maintained intent):\n"
+            + _clean_text(
+                json.dumps(creation_payload, ensure_ascii=False, sort_keys=True),
+                5_000,
+            )
+        )
     return "\n".join(parts)
 
 
-def _character_text(character: Character) -> str:
-    fields = [
-        ("Role", character.role_type),
-        ("Personality", character.personality),
-        ("Background", character.background),
-        ("Goal", character.current_goal),
-        ("Conflict", character.active_conflict),
-        ("Location", character.current_location),
-        ("Physical state", character.physical_state),
-        ("Mental state", character.mental_state),
-        ("Abilities", character.abilities_state or character.abilities),
-    ]
-    values = [f"Character: {character.name}"]
-    values.extend(f"{label}: {_clean_text(value, 420)}" for label, value in fields if value)
-    return "\n".join(values)
+def _character_text(db: Session, character: Character) -> str:
+    """Render the full persisted character card for every model route."""
+    return "Character archive (authoritative):\n" + _clean_text(
+        character_archive_text(character, db=db),
+        12_000,
+    )
 
 
 def _outline_text(node: OutlineNode) -> str:
@@ -370,7 +392,16 @@ def _current_source_hash(db: Session, project_id: str | None, source_type: str, 
         return value or None
     if source_type == "project_style" and project_id:
         project = db.query(Project).filter(Project.id == project_id).first()
-        return _sha256(_project_style_text(project)) if project else None
+        if not project:
+            return None
+        from .project_creation_context import get_project_creation_context
+
+        return _sha256(
+            _project_style_text(
+                project,
+                get_project_creation_context(db, project_id),
+            )
+        )
     if source_type == "narrative_governance" and project_id:
         try:
             from .narrative_governance import governance_context
@@ -452,6 +483,15 @@ def _changed_manifest_sources(session: Session, instance: Any) -> list[tuple[str
     project_id = str(getattr(instance, "project_id", "") or "").strip()
     if isinstance(instance, Project):
         return [(str(instance.id), "project_style", str(instance.id))] if instance.id else []
+    if isinstance(instance, NovelCreationSession):
+        creation_project_id = str(
+            instance.created_project_id or instance.source_project_id or ""
+        ).strip()
+        return (
+            [(creation_project_id, "project_style", creation_project_id)]
+            if creation_project_id
+            else []
+        )
     if isinstance(instance, Chapter):
         if not project_id or not instance.id:
             return []
@@ -467,6 +507,22 @@ def _changed_manifest_sources(session: Session, instance: Any) -> list[tuple[str
         return [(project_id, "character_timeline", str(instance.character_id))] if project_id and instance.character_id else []
     if isinstance(instance, Character):
         return [(project_id, "character", str(instance.id))] if project_id and instance.id else []
+    if isinstance(instance, CharacterAIConfig):
+        character_id = str(instance.character_id or "").strip()
+        project_id = _project_id_for_related_source(session, Character, character_id)
+        return [(project_id, "character", character_id)] if project_id and character_id else []
+    if isinstance(instance, CharacterAlias):
+        character_id = str(instance.character_id or "").strip()
+        project_id = project_id or _project_id_for_related_source(session, Character, character_id)
+        return [(project_id, "character", character_id)] if project_id and character_id else []
+    if isinstance(instance, CharacterRelationship):
+        if not project_id:
+            return []
+        return [
+            (project_id, "character", str(character_id))
+            for character_id in (instance.character_a_id, instance.character_b_id)
+            if character_id
+        ]
     if isinstance(instance, WorldbuildingEntry):
         return [(project_id, "worldbuilding", str(instance.id))] if project_id and instance.id else []
     if isinstance(instance, AssistantMemory):
@@ -526,8 +582,12 @@ def _collect_context_manifest_source_changes(session: Session, flush_context: An
     if session.info.get(_MANIFEST_INVALIDATION_GUARD):
         return
     pending = session.info.setdefault(_MANIFEST_INVALIDATION_KEY, set())
-    for instance in set(session.dirty).union(session.deleted):
-        if instance not in session.deleted and not session.is_modified(instance, include_collections=False):
+    for instance in set(session.new).union(session.dirty).union(session.deleted):
+        if (
+            instance not in session.new
+            and instance not in session.deleted
+            and not session.is_modified(instance, include_collections=False)
+        ):
             continue
         pending.update(_changed_manifest_sources(session, instance))
 
@@ -554,7 +614,62 @@ class ContextOrchestrator:
     # ------------------------------------------------------------------
     # Model profiles and global budgets
     # ------------------------------------------------------------------
-    def resolve_model_profile(self, model: str | None) -> ResolvedModelContextProfile:
+    @staticmethod
+    def _local_task_type(task_type: str | None) -> str:
+        return {
+            "new_project": "planning",
+            "review": "evaluation",
+            "rewrite": "writing",
+        }.get(str(task_type or ""), str(task_type or "chat"))
+
+    def _local_context_window(self, model_name: str, task_type: str | None) -> int | None:
+        """Resolve the context the managed runtime will actually launch with."""
+
+        model = (
+            self.db.query(LocalModel)
+            .filter(LocalModel.model_key == model_name)
+            .first()
+        )
+        capacity = max(0, int(model.context_length or 0)) if model else 0
+        local_task = self._local_task_type(task_type)
+        setting = (
+            self.db.query(LocalModelTaskSetting)
+            .filter(LocalModelTaskSetting.task_type == local_task)
+            .first()
+        )
+        if (
+            setting
+            and setting.model_key == model_name
+            and int(setting.context_length or 0) > 0
+        ):
+            requested = int(setting.context_length)
+            return min(requested, capacity) if capacity else requested
+
+        # An explicitly started runtime is the strongest evidence when no
+        # task-specific setting will cause the adapter to restart it.
+        try:
+            from .local_runtime import get_runtime_manager
+
+            runtime = get_runtime_manager().status()
+        except Exception:
+            runtime = {}
+        if runtime.get("running") and runtime.get("model_key") == model_name:
+            running_context = int(runtime.get("context_length") or 0)
+            if running_context > 0:
+                return min(running_context, capacity) if capacity else running_context
+
+        if not model:
+            return None
+        from .local_runtime.hardware import detect_hardware
+
+        recommended = max(1, int(detect_hardware().recommended_context or 8192))
+        return min(recommended, capacity) if capacity else recommended
+
+    def resolve_model_profile(
+        self,
+        model: str | None,
+        task_type: str | None = None,
+    ) -> ResolvedModelContextProfile:
         raw = str(model or "").strip()
         provider = "unknown"
         model_name = raw or "unknown"
@@ -576,13 +691,35 @@ class ContextOrchestrator:
             )
             .first()
         )
+        local_context = (
+            self._local_context_window(model_name, task_type)
+            if provider == "local_llama_cpp"
+            else None
+        )
         if profile:
+            configured_window = max(
+                1,
+                int(profile.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS),
+            )
             return ResolvedModelContextProfile(
                 provider=provider,
                 model_name=model_name,
-                context_window_tokens=max(1, int(profile.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS)),
+                context_window_tokens=(
+                    min(configured_window, local_context)
+                    if local_context
+                    else configured_window
+                ),
                 max_output_tokens=int(profile.max_output_tokens) if profile.max_output_tokens else None,
                 safety_margin_tokens=max(0, int(profile.safety_margin_tokens or DEFAULT_SAFETY_MARGIN_TOKENS)),
+                known=True,
+            )
+        if local_context:
+            return ResolvedModelContextProfile(
+                provider=provider,
+                model_name=model_name,
+                context_window_tokens=local_context,
+                max_output_tokens=None,
+                safety_margin_tokens=DEFAULT_SAFETY_MARGIN_TOKENS,
                 known=True,
             )
         return ResolvedModelContextProfile(
@@ -624,7 +761,7 @@ class ContextOrchestrator:
         arguments = dict(arguments or {})
         key = _task_key(task_type)
         contract = TASK_CONTEXT_CONTRACTS[key]
-        profile = self.resolve_model_profile(model)
+        profile = self.resolve_model_profile(model, key)
         budget = self.budget_for(contract, profile)
         blocked_reason = self.project_rebuild_block_reason(project_id)
 
@@ -746,12 +883,17 @@ class ContextOrchestrator:
         required = set(contract.required_categories)
         # 1. Structural anchors.
         if "style" in required or "style" in contract.optional_categories:
+            from .project_creation_context import get_project_creation_context
+
             add(ManifestCandidate(
                 category="style",
                 source_type="project_style",
                 source_id=project.id,
                 title="Project style and fixed constraints",
-                content=_project_style_text(project),
+                content=_project_style_text(
+                    project,
+                    get_project_creation_context(self.db, project.id),
+                ),
                 required="style" in required,
                 tier=1,
                 structural_score=1.0,
@@ -1022,7 +1164,7 @@ class ContextOrchestrator:
                 source_type="character",
                 source_id=character.id,
                 title=character.name,
-                content=_character_text(character),
+                content=_character_text(self.db, character),
                 tier=3,
                 structural_score=0.95,
                 final_score=0.95,

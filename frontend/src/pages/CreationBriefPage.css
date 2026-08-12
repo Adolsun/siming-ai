@@ -1,0 +1,230 @@
+.creation-brief-page {
+  --brief-rule: color-mix(in srgb, var(--ant-color-primary) 52%, var(--ant-color-border));
+  background:
+    linear-gradient(90deg, transparent 0, transparent 28px, color-mix(in srgb, var(--ant-color-primary) 7%, transparent) 28px, color-mix(in srgb, var(--ant-color-primary) 7%, transparent) 29px, transparent 29px),
+    var(--ant-color-bg-layout);
+  min-height: 100%;
+  padding: clamp(18px, 2.2vw, 32px);
+}
+
+.creation-brief-loading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  min-height: 360px;
+}
+
+.creation-brief-header {
+  align-items: flex-end;
+  display: flex;
+  gap: 28px;
+  justify-content: space-between;
+  margin: 0 auto 18px;
+  max-width: 1220px;
+}
+
+.creation-brief-header h2.ant-typography {
+  letter-spacing: -0.035em;
+  margin: 4px 0 4px;
+}
+
+.creation-brief-header p.ant-typography {
+  color: var(--ant-color-text-secondary);
+  margin: 0;
+}
+
+.creation-brief-kicker {
+  color: var(--ant-color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.creation-brief-page > .ant-alert,
+.creation-brief-empty-card,
+.creation-brief-impact,
+.creation-brief-form {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 1220px;
+}
+
+.creation-brief-page > .ant-alert {
+  margin-bottom: 14px;
+}
+
+.creation-brief-empty-card {
+  border-color: var(--brief-rule);
+  min-height: 430px;
+}
+
+.creation-brief-empty-card .ant-card-body {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 390px;
+}
+
+.creation-brief-empty-copy {
+  margin: 0 auto;
+  max-width: 560px;
+}
+
+.creation-brief-empty-copy h4.ant-typography {
+  margin-bottom: 6px;
+}
+
+.creation-brief-impact {
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-left: 3px solid var(--ant-color-primary);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.creation-brief-impact > div {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-height: 72px;
+  padding: 12px 18px;
+}
+
+.creation-brief-impact > div + div {
+  border-left: 1px solid var(--ant-color-border-secondary);
+}
+
+.creation-brief-impact .anticon {
+  color: var(--ant-color-primary);
+  font-size: 20px;
+}
+
+.creation-brief-impact span {
+  display: grid;
+  gap: 2px;
+}
+
+.creation-brief-impact small {
+  color: var(--ant-color-text-secondary);
+}
+
+.creation-brief-form {
+  margin-top: 16px;
+}
+
+.creation-brief-form > .ant-tabs > .ant-tabs-nav {
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 0 14px;
+}
+
+.creation-brief-form .ant-tabs-tab {
+  min-height: 54px;
+}
+
+.creation-brief-sheet {
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 31px, color-mix(in srgb, var(--ant-color-border-secondary) 38%, transparent) 32px),
+    var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-top: 3px solid var(--brief-rule);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.035);
+  min-height: 520px;
+  padding: clamp(20px, 3vw, 38px);
+}
+
+.creation-brief-sheet-heading {
+  align-items: flex-start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 52px minmax(0, 1fr);
+  margin-bottom: 24px;
+}
+
+.creation-brief-index {
+  color: var(--ant-color-primary);
+  font-size: 34px;
+  font-weight: 300;
+  letter-spacing: -0.08em;
+  line-height: 1;
+}
+
+.creation-brief-sheet-heading h3.ant-typography {
+  margin: 0 0 4px;
+}
+
+.creation-brief-sheet-heading p.ant-typography {
+  color: var(--ant-color-text-secondary);
+  margin: 0;
+}
+
+.creation-brief-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.creation-brief-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.creation-brief-sheet .ant-form-item {
+  margin-bottom: 20px;
+}
+
+.creation-brief-sheet .ant-form-item-label > label {
+  font-weight: 600;
+}
+
+.creation-brief-sheet textarea,
+.creation-brief-sheet input,
+.creation-brief-sheet .ant-input-number {
+  background: color-mix(in srgb, var(--ant-color-bg-container) 94%, transparent);
+}
+
+@media (max-width: 900px) {
+  .creation-brief-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .creation-brief-impact,
+  .creation-brief-grid,
+  .creation-brief-grid-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .creation-brief-impact > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--ant-color-border-secondary);
+  }
+}
+
+@media (max-width: 600px) {
+  .creation-brief-page {
+    background: var(--ant-color-bg-layout);
+    padding: 14px;
+  }
+
+  .creation-brief-header > .ant-space {
+    width: 100%;
+  }
+
+  .creation-brief-sheet {
+    padding: 18px 14px;
+  }
+
+  .creation-brief-sheet-heading {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .creation-brief-page * {
+    scroll-behavior: auto;
+  }
+}

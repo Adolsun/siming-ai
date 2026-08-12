@@ -75,6 +75,20 @@ class SqlAlchemyOperationService(OperationServicePort):
             uow.commit()
             return len(rows)
 
+    def delete(self, operation_id: str) -> str:
+        """Delete one finished operation record without interrupting live work."""
+        with SqlAlchemyUnitOfWork(SessionLocal) as uow:
+            operation = (
+                uow.session.query(OperationRun).filter(OperationRun.id == operation_id).first()
+            )
+            if not operation:
+                return "not_found"
+            if operation.status not in TERMINAL_STATUSES:
+                return "not_terminal"
+            uow.session.delete(operation)
+            uow.commit()
+            return "ok"
+
     async def stream(
         self,
         operation_id: str,

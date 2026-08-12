@@ -40,7 +40,15 @@ from .worldbuilding import (
     update_worldbuilding_entry,
 )
 from .worldbuilding_writer import worldbuilding_writer
-from .projects import create_project, delete_project, get_project_info, list_projects, update_project_info
+from .projects import (
+    create_project,
+    delete_project,
+    get_project_creation_brief,
+    get_project_info,
+    list_projects,
+    update_project_creation_brief,
+    update_project_info,
+)
 from .project_files import (
     get_project_files_info,
     list_project_files,
@@ -99,7 +107,7 @@ from .stats import get_today_writing_stats, get_writing_stats_history, set_daily
 from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
-from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
+from .story_granularity import get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
 from .novel_creation_v2 import (
     apply_creation_import,
     cancel_creation_operation,
@@ -202,8 +210,10 @@ __all__ = [
     "list_memories",
     "list_projects",
     "get_project_info",
+    "get_project_creation_brief",
     "create_project",
     "update_project_info",
+    "update_project_creation_brief",
     "delete_project",
     "get_project_files_info",
     "list_project_files",
@@ -260,7 +270,6 @@ __all__ = [
     "get_moshu_usage_guide",
     "start_local_cli_agent_run",
     "wait_local_cli_agent_run",
-    "archive_chapter_after_write",
     "get_narrative_ledger",
     "update_narrative_ledger_entry",
     "inspect_story_granularity",

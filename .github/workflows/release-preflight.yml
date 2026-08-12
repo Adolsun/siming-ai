@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "scripts/build-exe.ps1"
+      - "scripts/sign-windows-release.ps1"
       - "scripts/publish-github.ps1"
       - "scripts/smoke-test-release.ps1"
       - "scripts/verify-release-assets.ps1"
@@ -38,6 +39,7 @@ jobs:
             if ($parseErrors) { throw "Syntax error in ${Path}: $parseErrors" }
           }
           Test-PowerShellSyntax scripts\build-exe.ps1
+          Test-PowerShellSyntax scripts\sign-windows-release.ps1
           Test-PowerShellSyntax scripts\publish-github.ps1
           Test-PowerShellSyntax scripts\smoke-test-release.ps1
           Test-PowerShellSyntax scripts\verify-release-assets.ps1

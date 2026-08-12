@@ -8,11 +8,24 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
-from ..story_granularity import CHARACTER_STATE_FIELDS, has_chapter_narrative_state
-from .candidate_io import float_or_none
+from ..story_granularity import (
+    CHARACTER_STABLE_FIELDS,
+    CHARACTER_STATE_FIELDS,
+    NARRATIVE_STATE_FIELDS,
+    has_chapter_narrative_state,
+)
+from .candidate_io import candidate_payload, float_or_none
+from .candidate_validation import inspect_candidate_coverage
 from .constants import VALID_ITEM_TYPES
-from .jsonl import clean_jsonl_text, normalize_candidate, parse_json_line
-
+from .jsonl import (
+    candidate_response_attempts,
+    clean_jsonl_text,
+    expand_candidate_records,
+    normalize_candidate,
+    parse_candidate_response_records,
+    parse_json_line,
+)
+from ..character_role_types import append_character_role_description, normalize_character_role_type
 
 _SIGNATURE_PAYLOAD_KEYS = (
     "dimension",
@@ -44,19 +57,7 @@ _PLACEHOLDER_NAMES = {
 
 _CHARACTER_STATE_KEYS = set(CHARACTER_STATE_FIELDS)
 
-_CHARACTER_DETAIL_KEYS = _CHARACTER_STATE_KEYS | {
-    "role_type",
-    "appearance",
-    "personality",
-    "background",
-    "abilities",
-    "goal",
-    "conflict",
-    "role_in_scene",
-    "aliases",
-    "description",
-    "summary",
-}
+_CHARACTER_DETAIL_KEYS = _CHARACTER_STATE_KEYS | (set(CHARACTER_STABLE_FIELDS) - {"name"})
 
 _WORLDBUILDING_DETAIL_KEYS = {
     "content",
@@ -66,6 +67,82 @@ _WORLDBUILDING_DETAIL_KEYS = {
     "plot_usage",
     "summary",
 }
+
+
+def _normalize_character_role_payload(normalized: dict[str, Any]) -> None:
+    if normalized.get("item_type") not in {"character_create", "character_update"}:
+        return
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return
+    if payload.get("role_type") not in (None, ""):
+        raw_role = payload.get("role_type")
+        payload["background"] = append_character_role_description(payload.get("background"), raw_role)
+        payload["role_type"] = normalize_character_role_type(raw_role)
+
+
+def _ensure_narrative_assessment_contract(
+    normalized: dict[str, Any],
+    *,
+    source_task: str | None,
+) -> None:
+    """Make a missing assessment explicit without pretending the model ran it.
+
+    Older/API-free agents only returned a summary and an outline.  Treating that
+    omission as "no narrative issues" created a silent coverage hole, while
+    rejecting the whole chapter made existing cataloging workflows unusable.
+    Persist an empty state plus a fallback review instead: the archive can be
+    applied, but the exact chapter revision remains visibly ``needs_review``.
+    """
+
+    if normalized.get("item_type") != "chapter_summary":
+        return
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return
+    has_assessment = (
+        isinstance(payload.get("narrative_state"), dict)
+        or isinstance(payload.get("narrative_review"), dict)
+        or isinstance(payload.get("governance_candidates"), list)
+    )
+    if has_assessment:
+        return
+    payload["narrative_state"] = {key: [] for key in NARRATIVE_STATE_FIELDS}
+    payload["narrative_review"] = {
+        "source": "fallback",
+        "outcome": "assessment_missing",
+        "requires_human_review": True,
+        "evidence": (
+            "The cataloging source did not provide a narrative-governance "
+            "assessment; this chapter revision requires review."
+        ),
+        "source_task": source_task or "cataloging",
+    }
+
+
+def _ensure_outline_identity(
+    normalized: dict[str, Any],
+    run: CatalogingChapterRun,
+) -> None:
+    """Recover a missing chapter-outline title from the chapter being filed."""
+
+    if normalized.get("item_type") not in {"outline_create", "outline_update"}:
+        return
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict) or _clean_value(payload.get("title")):
+        return
+    chapter = run.chapter
+    if not chapter:
+        return
+    node_type = str(payload.get("node_type") or "chapter").strip().lower()
+    if node_type == "chapter":
+        payload["title"] = chapter.title
+        normalized["target_name"] = normalized.get("target_name") or chapter.title
+    elif node_type in {"section", "scene"} and payload.get("scene_number") is not None:
+        title = f"{chapter.title} / 场景{payload['scene_number']}"
+        payload["title"] = title
+        payload.setdefault("parent_title", chapter.title)
+        normalized["target_name"] = normalized.get("target_name") or title
 
 
 def _signature_text(value: Any) -> str:
@@ -145,8 +222,8 @@ def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
             return "角色候选缺少可识别姓名或ID，已跳过，避免生成未命名角色"
         if item_type == "character_state_update" and not _has_any_text(payload, _CHARACTER_STATE_KEYS):
             return f"角色状态候选 {identity} 没有状态字段，已跳过"
-        if item_type in {"character_create", "character_update"} and not (
-            _has_any_text(payload, _CHARACTER_DETAIL_KEYS) or evidence
+        if item_type in {"character_create", "character_update"} and not _has_any_text(
+            payload, _CHARACTER_DETAIL_KEYS
         ):
             return f"角色候选 {identity} 只有姓名、没有可写入内容，已跳过"
         if item_type == "character_timeline" and not _clean_value(payload.get("event_description") or payload.get("event")):
@@ -192,12 +269,12 @@ def _payload_from_candidate(candidate: CatalogingCandidate) -> dict[str, Any]:
         return {}
 
 
-def _is_duplicate_candidate(
+def _matching_candidate(
     db: Session,
     job: CatalogingJob,
     run: CatalogingChapterRun,
     normalized: dict[str, Any],
-) -> bool:
+) -> CatalogingCandidate | None:
     item_type = normalized["item_type"]
     signature = _candidate_signature(
         item_type=item_type,
@@ -205,13 +282,16 @@ def _is_duplicate_candidate(
         payload=normalized["payload"],
         evidence=str(normalized.get("evidence") or "") or None,
     )
+    # Candidates are review artifacts owned by one cataloging run.  A card
+    # produced by an older run must not suppress the same card in a retry or a
+    # later re-cataloging job; entity-level upsert/deduplication happens in the
+    # applier.  Keeping this scope run-local also lets completeness validation
+    # see every required card in the current run.
     query = db.query(CatalogingCandidate).filter(
-        CatalogingCandidate.project_id == job.project_id,
-        CatalogingCandidate.chapter_id == run.chapter_id,
+        CatalogingCandidate.chapter_run_id == run.id,
         CatalogingCandidate.item_type == item_type,
+        CatalogingCandidate.status != "rejected",
     )
-    if item_type == "chapter_summary":
-        query = query.filter(CatalogingCandidate.chapter_run_id == run.id)
     for existing in query.all():
         existing_signature = _candidate_signature(
             item_type=existing.item_type,
@@ -220,8 +300,45 @@ def _is_duplicate_candidate(
             evidence=existing.evidence,
         )
         if existing_signature == signature:
-            return True
-    return False
+            return existing
+    # A chapter has exactly one summary card.  A later call often repairs a
+    # partial first attempt by adding the coverage manifest or governance
+    # assessment while keeping the same summary text.  Treat that as an
+    # idempotent upgrade instead of making the incomplete card impossible to
+    # correct.
+    if item_type == "chapter_summary":
+        return query.order_by(CatalogingCandidate.sort_order.asc()).first()
+    # One cataloging run owns exactly one chapter-level outline. A summary-only
+    # response may have caused Siming to project it deterministically, and a
+    # later repair call may then provide the model-authored version. Upgrade
+    # that staged card in place instead of creating duplicate chapter nodes.
+    if item_type in {"outline_create", "outline_update"}:
+        node_type = str(normalized["payload"].get("node_type") or "chapter").lower()
+        if node_type == "chapter":
+            outline_query = db.query(CatalogingCandidate).filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+                CatalogingCandidate.item_type.in_(("outline_create", "outline_update")),
+                CatalogingCandidate.status != "rejected",
+            )
+            for existing in outline_query.order_by(CatalogingCandidate.sort_order.asc()).all():
+                existing_payload = _payload_from_candidate(existing)
+                if str(existing_payload.get("node_type") or "chapter").lower() == "chapter":
+                    return existing
+    return None
+
+
+def _merge_candidate_payload(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_candidate_payload(merged[key], value)
+            continue
+        # Explicit empty arrays/objects still matter when the old payload did
+        # not declare the field.  Do not let a later empty value erase richer
+        # data that was already staged.
+        if key not in merged or value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
 
 
 def try_create_candidate(
@@ -231,16 +348,347 @@ def try_create_candidate(
     line: str,
     sort_order: int,
 ) -> dict[str, Any]:
+    results = try_create_candidates(db, job, run, line, sort_order)
+    if not results:
+        return {}
+    if len(results) == 1:
+        return results[0]
+    candidates = [result["candidate"] for result in results if result.get("candidate")]
+    combined: dict[str, Any] = {"results": results, "candidates": candidates}
+    if candidates:
+        combined["candidate"] = candidates[0]
+    skipped = [result.get("reason") for result in results if result.get("skipped")]
+    if skipped:
+        combined["skipped_reasons"] = skipped
+    errors = [result for result in results if result.get("bad_line")]
+    if errors:
+        combined["errors"] = errors
+    return combined
+
+
+def try_create_candidates(
+    db: Session,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    line: str,
+    sort_order: int,
+) -> list[dict[str, Any]]:
     text = clean_jsonl_text(line)
     if not text:
-        return {}
+        return []
     try:
         parsed = parse_json_line(text)
         if parsed is None:
-            return {}
-        return create_candidate_from_raw(db, job, run, parsed, sort_order)
+            return []
+        return [
+            create_candidate_from_raw(db, job, run, record, sort_order + offset)
+            for offset, record in enumerate(expand_candidate_records(parsed))
+        ]
     except Exception as exc:
-        return {"bad_line": text, "error": str(exc)}
+        return [{"bad_line": text, "error": str(exc)}]
+
+
+def _preview_candidate_from_raw(
+    run: CatalogingChapterRun,
+    raw: dict[str, Any],
+    *,
+    source_task: str,
+) -> dict[str, Any] | None:
+    """Normalize one record for coverage checks without writing it."""
+
+    normalized = normalize_candidate(raw)
+    _normalize_character_role_payload(normalized)
+    _ensure_narrative_assessment_contract(
+        normalized,
+        source_task=source_task or normalized.get("source_task"),
+    )
+    _ensure_outline_identity(normalized, run)
+    if normalized["item_type"] not in VALID_ITEM_TYPES:
+        return None
+    if _skip_reason_for_candidate(normalized):
+        return None
+    return {
+        "item_type": normalized["item_type"],
+        "status": "pending",
+        "payload": normalized["payload"],
+    }
+
+
+def _existing_recovery_candidates(
+    db: Session,
+    run: CatalogingChapterRun,
+) -> list[CatalogingCandidate]:
+    return (
+        db.query(CatalogingCandidate)
+        .filter(
+            CatalogingCandidate.chapter_run_id == run.id,
+            CatalogingCandidate.status != "rejected",
+        )
+        .all()
+    )
+
+
+def _required_outline_preview(
+    run: CatalogingChapterRun,
+    items: list[Any],
+) -> dict[str, Any] | None:
+    """Return the deterministic outline card used by recovery coverage."""
+
+    if inspect_candidate_coverage(items).has_chapter_outline or run.chapter is None:
+        return None
+    for item in items:
+        item_type = (
+            str(item.get("item_type") or item.get("type") or "")
+            if isinstance(item, dict)
+            else str(getattr(item, "item_type", "") or "")
+        )
+        if item_type != "chapter_summary":
+            continue
+        payload = (
+            item.get("payload", item)
+            if isinstance(item, dict)
+            else candidate_payload(item)
+        )
+        if not isinstance(payload, dict):
+            continue
+        summary_text = _clean_value(
+            payload.get("summary_text")
+            or payload.get("summary")
+            or payload.get("content")
+        )
+        if not summary_text:
+            continue
+        return {
+            "item_type": "outline_create",
+            "status": "pending",
+            "payload": {
+                "node_type": "chapter",
+                "title": run.chapter.title,
+                "summary": summary_text,
+                "actual_summary": summary_text,
+                "status": "completed",
+            },
+        }
+    return None
+
+
+def ensure_required_chapter_outline(
+    db: Session,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+) -> CatalogingCandidate | None:
+    """Project a missing chapter outline from the persisted summary.
+
+    The chapter title is authoritative data and the summary is already a
+    staged review artifact. Creating this structural card does not infer any
+    character, relationship, or setting, and avoids an expensive full model
+    retry when the provider stops after a valid summary.
+    """
+
+    existing = _existing_recovery_candidates(db, run)
+    if inspect_candidate_coverage(existing).has_chapter_outline:
+        return None
+    summary = next(
+        (
+            item
+            for item in existing
+            if item.item_type == "chapter_summary"
+            and _clean_value(
+                candidate_payload(item).get("summary_text")
+                or candidate_payload(item).get("summary")
+            )
+        ),
+        None,
+    )
+    chapter = run.chapter
+    if summary is None or chapter is None:
+        return None
+    payload = candidate_payload(summary)
+    summary_text = _clean_value(payload.get("summary_text") or payload.get("summary"))
+    sort_order = db.query(CatalogingCandidate).filter(
+        CatalogingCandidate.chapter_run_id == run.id,
+    ).count()
+    created = create_candidate_from_raw(
+        db,
+        job,
+        run,
+        {
+            "type": "outline_create",
+            "node_type": "chapter",
+            "title": chapter.title,
+            "summary": summary_text,
+            "actual_summary": summary_text,
+            "status": "completed",
+        },
+        sort_order,
+        source_task="deterministic_required_outline",
+    )
+    return created.get("candidate")
+
+
+def _preview_response_records(
+    run: CatalogingChapterRun,
+    records: list[dict[str, Any]],
+    *,
+    source_task: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    valid_records: list[dict[str, Any]] = []
+    preview: list[dict[str, Any]] = []
+    for record in records:
+        normalized = _preview_candidate_from_raw(
+            run,
+            record,
+            source_task=source_task,
+        )
+        if normalized is None:
+            continue
+        valid_records.append(record)
+        preview.append(normalized)
+    return valid_records, preview
+
+
+def recover_candidates_from_response_text(
+    db: Session,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    text: str,
+    *,
+    source_task: str = "response_recovery",
+) -> dict[str, Any]:
+    """Recover a complete candidate set from a provider's whole response.
+
+    Streaming JSONL remains the fast path.  This boundary adapter is invoked
+    before a retry and accepts common provider deviations such as a JSON array,
+    pretty-printed JSON, fenced JSON, a collection wrapper, or a typed summary
+    object containing the other candidate arrays.  Nothing is persisted unless
+    the recovered records plus valid cards already in this run pass the same
+    completeness gate as normal cataloging.
+    """
+
+    records = parse_candidate_response_records(text)
+    valid_records, preview = _preview_response_records(
+        run,
+        records,
+        source_task=source_task,
+    )
+    existing = _existing_recovery_candidates(db, run)
+    proposed = [*existing, *preview]
+    outline_preview = _required_outline_preview(run, proposed)
+    if outline_preview is not None:
+        proposed.append(outline_preview)
+    coverage = inspect_candidate_coverage(
+        proposed,
+        db=db,
+        project_id=job.project_id,
+    )
+    if not valid_records or not coverage.is_complete:
+        return {
+            "results": [],
+            "coverage": coverage,
+            "record_count": len(records),
+        }
+
+    sort_order = db.query(CatalogingCandidate).filter(
+        CatalogingCandidate.chapter_run_id == run.id,
+    ).count()
+    results = [
+        create_candidate_from_raw(
+            db,
+            job,
+            run,
+            record,
+            sort_order + offset,
+            source_task=source_task,
+        )
+        for offset, record in enumerate(valid_records)
+    ]
+    projected_outline = ensure_required_chapter_outline(db, job, run)
+    if projected_outline is not None:
+        results.append({"candidate": projected_outline, "deterministic": True})
+    final_coverage = inspect_candidate_coverage(
+        _existing_recovery_candidates(db, run),
+        db=db,
+        project_id=job.project_id,
+    )
+    return {
+        "results": results,
+        "coverage": final_coverage,
+        "record_count": len(records),
+    }
+
+
+def recover_candidates_from_raw_output(
+    db: Session,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+) -> dict[str, Any]:
+    """Recover the newest complete attempt stored on a failed chapter run."""
+
+    attempts = candidate_response_attempts(run.raw_output or "")
+    existing = _existing_recovery_candidates(db, run)
+    combined_fallback: tuple[int, str] | None = None
+    last_coverage = inspect_candidate_coverage(existing, db=db, project_id=job.project_id)
+
+    # Prefer a self-contained attempt so records from different retries are not
+    # mixed.  If no attempt is independently complete, allow the newest attempt
+    # to complement cards already parsed from that same run.
+    for reverse_index, attempt_text in enumerate(reversed(attempts), start=1):
+        records = parse_candidate_response_records(attempt_text)
+        _, preview = _preview_response_records(
+            run,
+            records,
+            source_task="raw_output_recovery",
+        )
+        attempt_items = list(preview)
+        attempt_outline = _required_outline_preview(run, attempt_items)
+        if attempt_outline is not None:
+            attempt_items.append(attempt_outline)
+        combined_items = [*existing, *preview]
+        combined_outline = _required_outline_preview(run, combined_items)
+        if combined_outline is not None:
+            combined_items.append(combined_outline)
+        attempt_coverage = inspect_candidate_coverage(
+            attempt_items,
+            db=db,
+            project_id=job.project_id,
+        )
+        combined_coverage = inspect_candidate_coverage(
+            combined_items,
+            db=db,
+            project_id=job.project_id,
+        )
+        last_coverage = combined_coverage
+        if attempt_coverage.is_complete:
+            recovered = recover_candidates_from_response_text(
+                db,
+                job,
+                run,
+                attempt_text,
+                source_task="raw_output_recovery",
+            )
+            recovered["attempt_from_end"] = reverse_index
+            return recovered
+        if combined_fallback is None and combined_coverage.is_complete:
+            combined_fallback = (reverse_index, attempt_text)
+
+    if combined_fallback is not None:
+        reverse_index, attempt_text = combined_fallback
+        recovered = recover_candidates_from_response_text(
+            db,
+            job,
+            run,
+            attempt_text,
+            source_task="raw_output_recovery",
+        )
+        recovered["attempt_from_end"] = reverse_index
+        return recovered
+
+    return {
+        "results": [],
+        "coverage": last_coverage,
+        "record_count": 0,
+        "attempt_from_end": None,
+    }
 
 
 def create_candidate_from_raw(
@@ -253,6 +701,12 @@ def create_candidate_from_raw(
     source_task: str | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_candidate(raw)
+    _normalize_character_role_payload(normalized)
+    _ensure_narrative_assessment_contract(
+        normalized,
+        source_task=source_task or normalized.get("source_task"),
+    )
+    _ensure_outline_identity(normalized, run)
     if normalized["item_type"] not in VALID_ITEM_TYPES:
         return {
             "bad_line": json.dumps(raw, ensure_ascii=False),
@@ -261,8 +715,29 @@ def create_candidate_from_raw(
     skip_reason = _skip_reason_for_candidate(normalized)
     if skip_reason:
         return {"skipped": True, "reason": skip_reason}
-    if _is_duplicate_candidate(db, job, run, normalized):
-        return {"duplicate": True}
+    matching = _matching_candidate(db, job, run, normalized)
+    if matching:
+        old_payload = _payload_from_candidate(matching)
+        merged_payload = _merge_candidate_payload(old_payload, normalized["payload"])
+        if merged_payload == old_payload:
+            return {"duplicate": True}
+        matching.raw_payload = json.dumps(merged_payload, ensure_ascii=False)
+        matching.edited_payload = None
+        matching.operation = normalized["operation"] or matching.operation
+        matching.target_type = normalized.get("target_type") or matching.target_type
+        matching.target_id = normalized.get("target_id") or matching.target_id
+        matching.target_name = (
+            str(normalized.get("target_name") or "")[:200]
+            or matching.target_name
+        )
+        matching.confidence = float_or_none(normalized.get("confidence")) or matching.confidence
+        matching.evidence = (
+            str(normalized.get("evidence") or "")[:2000]
+            or matching.evidence
+        )
+        matching.source_task = source_task or normalized.get("source_task") or matching.source_task
+        db.flush()
+        return {"candidate": matching, "updated": True}
     candidate = CatalogingCandidate(
         job_id=job.id,
         chapter_run_id=run.id,

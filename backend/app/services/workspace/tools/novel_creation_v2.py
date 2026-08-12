@@ -19,6 +19,7 @@ from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object_detailed
 from ....database.models import NovelCreationMaterialImport, NovelCreationSession, NovelCreationStageRun, OperationRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
+from ....services.character_role_types import append_character_role_description, normalize_character_role_type
 from ....services.novel_creation_authoring import (
     AuthorLockViolation,
     _WORLD_STYLE_TEXT_FIELDS,
@@ -243,9 +244,11 @@ def _normalize_characters(data: dict[str, Any], baseline: dict[str, Any]) -> dic
         item["name"] = name or _text(base.get("name")) or f"角色{index + 1}"
         profile = {**deepcopy(base.get("profile") if isinstance(base.get("profile"), dict) else {}), **deepcopy(item.get("profile") if isinstance(item.get("profile"), dict) else {})}
         source_profile = source.get("profile") if isinstance(source.get("profile"), dict) else {}
-        role_type = _text(source.get("role_type") or source.get("role") or base.get("role_type"))
-        if not role_type:
-            role_type = "protagonist" if index == 0 else "supporting"
+        raw_role_type = source.get("role_type") or source.get("role") or base.get("role_type")
+        role_type = normalize_character_role_type(
+            raw_role_type,
+            default="protagonist" if index == 0 else "supporting",
+        )
         goal = _text(
             source.get("goal")
             or source.get("current_goal")
@@ -256,7 +259,10 @@ def _normalize_characters(data: dict[str, Any], baseline: dict[str, Any]) -> dic
         item["role_type"] = role_type
         item["goal"] = goal
         item["current_goal"] = goal
-        item["background"] = _text(item.get("background") or item.get("position") or item.get("status"))
+        item["background"] = append_character_role_description(
+            _text(item.get("background") or item.get("position") or item.get("status")),
+            raw_role_type,
+        )
         if not _text(profile.get("core_motivation")):
             profile["core_motivation"] = goal
         item["profile"] = profile

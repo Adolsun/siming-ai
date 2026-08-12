@@ -19,7 +19,10 @@ from ....services.chapter_service import (
     restore_chapter_from_snapshot,
     snapshot_to_item,
 )
-from ....services.narrative_governance import create_narrative_checkpoint
+from ....services.narrative_governance import (
+    create_narrative_checkpoint,
+    mark_governance_items_stale_for_chapter,
+)
 from ....services.narrative_ledger import restore_ledger_checkpoint
 from ....services.outline_service import load_outline_nodes, outline_sort_context
 from ..application.results import StoryMutation
@@ -179,6 +182,15 @@ class SqlAlchemyChapterWorkspace:
         if not data:
             raise ValidationError("未提供任何更新字段")
         ensure_current_snapshot(self._session, chapter, "manual_save")
+        narrative_content_changed = any(
+            (
+                key == "content" and (data.get(key) or "") != (chapter.content or "")
+            )
+            or (key == "title" and data.get(key) != chapter.title)
+            or (key == "outline_node_id" and data.get(key) != chapter.outline_node_id)
+            for key in ("content", "title", "outline_node_id")
+            if key in data
+        )
         if "outline_node_id" in data:
             get_outline_node_or_404(
                 self._session, project_id, data["outline_node_id"]
@@ -194,6 +206,15 @@ class SqlAlchemyChapterWorkspace:
         chapter.word_count = count_words(chapter.content or "")
         chapter.current_version = (chapter.current_version or 1) + 1
         self._session.add(create_snapshot(chapter, trigger_type))
+        stale_count = 0
+        if narrative_content_changed:
+            stale_count = mark_governance_items_stale_for_chapter(
+                self._session,
+                project_id,
+                chapter.id,
+                reason=f"{chapter.title} 已保存为 v{chapter.current_version}，旧治理结论需要复检",
+                actor=trigger_type,
+            )
         create_narrative_checkpoint(
             self._session,
             project_id,
@@ -203,8 +224,11 @@ class SqlAlchemyChapterWorkspace:
         )
         self._session.flush()
         self._session.refresh(chapter)
+        detail = chapter_to_detail(chapter, self._outline_context(project_id))
+        detail["governance_invalidated_count"] = stale_count
+        detail["narrative_content_changed"] = narrative_content_changed
         return StoryMutation(
-            data=chapter_to_detail(chapter, self._outline_context(project_id)),
+            data=detail,
             sync_intents=[
                 ContentSyncIntent(
                     project_id=project_id,
@@ -280,6 +304,13 @@ class SqlAlchemyChapterWorkspace:
         ledger_restore = restore_ledger_checkpoint(
             self._session, project_id, chapter, snapshot.id
         )
+        stale_count = mark_governance_items_stale_for_chapter(
+            self._session,
+            project_id,
+            chapter.id,
+            reason=f"{chapter.title} 已恢复历史版本，原治理结论需要复检",
+            actor="chapter_restore",
+        )
         self._session.flush()
         self._session.refresh(chapter)
         data = chapter_to_detail(chapter, self._outline_context(project_id))
@@ -288,6 +319,7 @@ class SqlAlchemyChapterWorkspace:
                 "ledger_checkpoint_id": ledger_restore["ledger_checkpoint_id"],
                 "ledger_restored_count": ledger_restore["restored_count"],
                 "ledger_conflicts": ledger_restore["conflicts"],
+                "governance_invalidated_count": stale_count,
             }
         )
         return StoryMutation(

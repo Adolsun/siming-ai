@@ -2,10 +2,10 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-SnapshotTrigger = Literal["manual_save", "ai_insert", "restore"]
+SnapshotTrigger = Literal["manual_save", "ai_insert", "de_ai", "restore"]
 
 
 class ChapterCreate(BaseModel):
@@ -25,6 +25,50 @@ class ChapterUpdate(BaseModel):
     content: Optional[str] = None
     trigger_type: SnapshotTrigger = "manual_save"
     context_manifest_id: Optional[str] = None
+
+
+class ChapterDeAiPreviewRequest(BaseModel):
+    """Generate a non-destructive de-AI revision candidate for editor review."""
+
+    content: str = Field(..., min_length=1, max_length=100_000)
+    original_content: str | None = Field(
+        None,
+        min_length=1,
+        max_length=100_000,
+        description=(
+            "Initial source text for a multi-round revision. Required after round 1 "
+            "so every round can be audited against the unchanged original."
+        ),
+    )
+    revision_round: int = Field(
+        1,
+        ge=1,
+        le=3,
+        description="One-based de-AI treatment round; at most three rounds are supported.",
+    )
+    model: str | None = Field(
+        None,
+        max_length=300,
+        description="API or local CLI model identity. Falls back to the global default.",
+    )
+
+    @model_validator(mode="after")
+    def require_original_for_follow_up_round(self):
+        if self.revision_round > 1 and self.original_content is None:
+            raise ValueError("第 2/3 轮必须同时提交最初原文，防止故事在连续处理时漂移")
+        return self
+
+
+class ChapterQualityScoreRequest(BaseModel):
+    """Score the current editor text without modifying the saved chapter."""
+
+    content: str = Field(..., min_length=1, max_length=100_000)
+    title: str | None = Field(None, max_length=200)
+    model: str | None = Field(
+        None,
+        max_length=300,
+        description="API or local CLI model identity. Falls back to the global default.",
+    )
 
 
 class ChapterListItem(BaseModel):

@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.ai.gateway import LLMGateway
+from app.ai.local_runtime_adapter import LocalRuntimeAdapter
 from app.database.models import (
     APIConfig,
     Base,
@@ -19,19 +20,34 @@ from app.database.models import (
     LocalModelTaskSetting,
     Project,
 )
+from app.modules.model_runtime.infrastructure.config_crud import SqlAlchemyModelConfigCrud
+from app.schemas.local_model import RuntimeStartRequest
 from app.services.local_runtime.datasets import build_training_dataset
 from app.services.local_runtime.hardware import detect_hardware
+from app.services.local_runtime.manager import LocalRuntimeManager
 from app.services.local_runtime.manifest import model_catalog
 from app.services.local_runtime.model_jobs import import_custom_model
-from app.schemas.local_model import RuntimeStartRequest
-from app.services.local_runtime.manager import LocalRuntimeManager
 
 
 def test_hardware_profile_has_safe_recommendation():
     profile = detect_hardware()
     assert profile.recommended_model in {"qwen3.5-4b-q4", "qwen3.5-9b-q4", "qwen3.5-27b-q4"}
-    assert profile.recommended_context == 262144
+    assert profile.recommended_context in {8192, 16384, 32768}
     assert profile.cpu_count >= 1
+
+
+def test_hardware_profiles_recommend_memory_safe_starting_contexts():
+    cases = [
+        ((None, 0.0), 8.0, ("light", 8192)),
+        (("RTX", 16.0), 32.0, ("standard", 16384)),
+        (("RTX", 24.0), 32.0, ("quality", 32768)),
+    ]
+    for gpu, ram, expected in cases:
+        with patch("app.services.local_runtime.hardware._nvidia_gpu", return_value=gpu), patch(
+            "app.services.local_runtime.hardware._ram_gb", return_value=ram,
+        ):
+            profile = detect_hardware()
+        assert (profile.profile, profile.recommended_context) == expected
 
 
 def test_embedded_catalog_contains_three_qwen_tiers():
@@ -120,6 +136,41 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
     assert explicit_body["moshu_context_length"] == 262144
 
 
+def test_first_verified_local_model_becomes_default_without_overriding_user_choice():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        local = APIConfig(
+            provider="local_llama_cpp",
+            api_key_encrypted="encrypted",
+            default_model="local-model",
+            readiness_status="ready",
+            is_global_default=False,
+        )
+        db.add(local)
+        db.flush()
+        crud = SqlAlchemyModelConfigCrud(db)
+
+        assert crud.make_global_if_no_ready_default(local)
+        assert local.is_global_default
+
+        existing = APIConfig(
+            provider="openai",
+            api_key_encrypted="encrypted",
+            default_model="remote-model",
+            readiness_status="ready",
+            is_global_default=True,
+        )
+        db.add(existing)
+        local.is_global_default = False
+        db.flush()
+
+        assert not crud.make_global_if_no_ready_default(local)
+        assert existing.is_global_default
+        assert not local.is_global_default
+
+
 def test_local_runtime_server_uses_single_parallel_slot():
     command = LocalRuntimeManager._build_command(
         "llama-server.exe",
@@ -142,6 +193,87 @@ def test_local_runtime_command_preserves_requested_context_length():
     )
     context_index = command.index("--ctx-size")
     assert command[context_index + 1] == "1000000"
+
+
+def test_local_runtime_command_is_loopback_browser_restricted_and_authenticated():
+    command = LocalRuntimeManager._build_command(
+        "llama-server.exe",
+        "model.gguf",
+        "custom",
+        8765,
+        16384,
+        8,
+        99,
+        [],
+        api_key="ephemeral-secret",
+    )
+
+    assert command[command.index("--cors-origins") + 1] == "localhost"
+    assert command[command.index("--api-key") + 1] == "ephemeral-secret"
+    redacted = LocalRuntimeManager._redacted_command(command)
+    assert "ephemeral-secret" not in redacted
+    assert redacted[redacted.index("--api-key") + 1] == "<redacted>"
+
+
+def test_local_runtime_adapter_uses_the_ephemeral_process_key():
+    manager = SimpleNamespace(
+        api_key="runtime-key",
+        ensure_running=lambda *args, **kwargs: "http://127.0.0.1:8765/v1",
+    )
+    adapter = LocalRuntimeAdapter(api_key="placeholder")
+
+    with patch("app.ai.local_runtime_adapter.get_runtime_manager", return_value=manager):
+        base_url, payload = adapter._runtime_context("custom", None)
+
+    assert base_url == "http://127.0.0.1:8765/v1"
+    assert payload == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert adapter.api_key == "runtime-key"
+
+
+def test_healthy_runtime_reconciles_durable_status_before_reuse():
+    manager = LocalRuntimeManager()
+    manager._model_key = "custom"
+    manager._requested_context_length = 16384
+    manager._context_length = 16384
+    manager._adapter_signature = "[]"
+    manager._port = 8765
+    manager._api_key = "runtime-key"
+    model = SimpleNamespace(context_length=262144)
+    profile = SimpleNamespace(recommended_context=16384, nvidia_available=True)
+
+    with patch.object(
+        manager,
+        "_load_assets",
+        return_value=(model, SimpleNamespace(), []),
+    ), patch(
+        "app.services.local_runtime.manager.detect_hardware",
+        return_value=profile,
+    ), patch.object(
+        manager,
+        "_healthy",
+        return_value=True,
+    ), patch.object(
+        manager,
+        "_mark_runtime_running",
+    ) as reconcile:
+        result = manager.ensure_running("custom")
+
+    assert result == "http://127.0.0.1:8765/v1"
+    reconcile.assert_called_once_with()
+
+
+def test_local_runtime_defaults_to_safe_context_but_preserves_model_capacity():
+    assert LocalRuntimeManager._default_context_length(262144, 16384) == 16384
+    assert LocalRuntimeManager._default_context_length(8192, 16384) == 8192
+    assert LocalRuntimeManager._default_context_length(None, 16384) == 16384
+
+
+def test_local_runtime_falls_back_to_cpu_without_shrinking_context():
+    assert LocalRuntimeManager._launch_profiles(True, 16384) == [
+        (99, 16384),
+        (0, 16384),
+    ]
+    assert LocalRuntimeManager._launch_profiles(False, 16384) == [(0, 16384)]
 
 
 def test_imported_custom_gguf_is_registered_without_copying():

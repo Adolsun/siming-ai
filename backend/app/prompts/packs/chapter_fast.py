@@ -37,7 +37,7 @@ PACK = PromptPack(
         "禁止添加章节标题",
         "禁止使用 Markdown 格式",
         "快速模式不得降低角色、设定和时间线一致性要求",
-        "写后必须通过 archive_chapter_after_write 提交归档候选",
+        "写作模型不得绕过或重复章节写入后自动启动的统一建档流程",
     ],
     default_temperature=0.8,
     default_max_tokens=4000,

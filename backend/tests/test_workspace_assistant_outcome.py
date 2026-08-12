@@ -43,9 +43,9 @@ def test_workspace_outcome_marks_partial_success_when_a_write_succeeded_before_f
         "章节已创建，但档案更新失败",
         all_actions=[],
         applied_actions=[{"tool": "create_chapter", "status": "ok"}],
-        tool_logs=[{"tool": "archive_chapter_after_write", "status": "error"}],
+        tool_logs=[{"tool": "start_cataloging_job", "status": "error"}],
         searched_context=[],
-        failed_logs=[{"tool": "archive_chapter_after_write", "status": "error"}],
+        failed_logs=[{"tool": "start_cataloging_job", "status": "error"}],
     )
 
     assert outcome == "partial_success"

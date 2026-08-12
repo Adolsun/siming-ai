@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -36,7 +37,7 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a11_operation_attention_read"
+            assert result.schema_revision == revision == "300a16_character_role_type_enum"
             assert epoch == SCHEMA_EPOCH
             assert {
                 "projects",
@@ -79,7 +80,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a11_operation_attention_read"
+            assert revision == "300a16_character_role_type_enum"
         finally:
             engine.dispose()
 
@@ -122,6 +123,153 @@ def test_current_database_bootstrap_is_idempotent():
             assert second.mode == "ready"
             assert second.backup_path is None
             assert second.schema_revision == first.schema_revision
+        finally:
+            engine.dispose()
+
+
+def test_stamped_300a12_database_repairs_missing_resolution_evidence_columns():
+    """A briefly shipped 300a12 schema was stamped before this column existed."""
+
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "stamped-300a12.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE TABLE alembic_version "
+                    "(version_num VARCHAR(64) NOT NULL PRIMARY KEY)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO alembic_version (version_num) "
+                    "VALUES ('300a12_narrative_governance_loop')"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE siming_schema_metadata "
+                    "(key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME NOT NULL)"
+                ))
+                for table_name in ("foreshadowings", "causal_edges", "narrative_debts"):
+                    connection.execute(text(f"CREATE TABLE {table_name} (id VARCHAR(36) PRIMARY KEY)"))
+
+            result = bootstrap_database(engine, database_url=url)
+
+            inspector = inspect(engine)
+            assert result.mode == "migrated"
+            assert result.schema_revision == "300a16_character_role_type_enum"
+            for table_name in ("foreshadowings", "causal_edges", "narrative_debts"):
+                assert "resolution_evidence" in {
+                    column["name"] for column in inspector.get_columns(table_name)
+                }
+        finally:
+            engine.dispose()
+
+
+def test_stamped_300a13_database_repairs_cataloged_outline_hierarchy_only():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "stamped-300a13-outline.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE TABLE alembic_version "
+                    "(version_num VARCHAR(64) NOT NULL PRIMARY KEY)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO alembic_version (version_num) "
+                    "VALUES ('300a13_narrative_resolution_evidence')"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE siming_schema_metadata "
+                    "(key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME NOT NULL)"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE outline_nodes ("
+                    "id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL, "
+                    "parent_id VARCHAR(36), node_type VARCHAR(20) NOT NULL, title VARCHAR(200) NOT NULL, "
+                    "summary TEXT, status VARCHAR(20), source_chapter_id VARCHAR(36), "
+                    "actual_summary TEXT, planned_summary TEXT, metadata_json TEXT, "
+                    "cataloging_status VARCHAR(30), sort_order INTEGER, "
+                    "created_at DATETIME, updated_at DATETIME)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO outline_nodes VALUES "
+                    "('chapter-3','p1',NULL,'chapter','第三章 打回去','整章','completed','source-3','整章','',NULL,'cataloged',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+                    "('section-3','p1','第三章 打回去','section','空地冲突','场景','completed','source-3','场景','',NULL,'cataloged',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+                    "('manual-root','p1',NULL,'chapter','作者手工幕间','手工节点','pending',NULL,'','','{}',NULL,9,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                ))
+
+            result = bootstrap_database(engine, database_url=url)
+
+            with engine.connect() as connection:
+                rows = {
+                    row.id: row
+                    for row in connection.execute(text(
+                        "SELECT id,parent_id,node_type,title,metadata_json FROM outline_nodes"
+                    )).mappings()
+                }
+            volumes = [row for row in rows.values() if row.node_type == "volume"]
+            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert len(volumes) == 1
+            assert rows["chapter-3"].parent_id == volumes[0].id
+            assert rows["section-3"].parent_id == "chapter-3"
+            assert rows["manual-root"].parent_id is None
+            assert json.loads(volumes[0].metadata_json) == {
+                "source": "cataloging_default_volume",
+                "start_chapter": 1,
+            }
+        finally:
+            engine.dispose()
+
+
+def test_stamped_300a14_database_canonicalizes_free_form_character_roles():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "stamped-300a14-roles.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE TABLE alembic_version "
+                    "(version_num VARCHAR(64) NOT NULL PRIMARY KEY)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO alembic_version (version_num) "
+                    "VALUES ('300a14_cataloging_outline_hierarchy')"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE siming_schema_metadata "
+                    "(key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME NOT NULL)"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE characters ("
+                    "id VARCHAR(36) PRIMARY KEY, role_type VARCHAR(50), background TEXT)"
+                ))
+                connection.execute(text(
+                    "CREATE TABLE cataloging_chapter_runs ("
+                    "id VARCHAR(36) PRIMARY KEY, error TEXT)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO characters (id, role_type) VALUES "
+                    "('hero', '主角，穿越者，陆家三岁孙女'), "
+                    "('elder', '家族长辈·主脉家主')"
+                ))
+
+            result = bootstrap_database(engine, database_url=url)
+
+            with engine.connect() as connection:
+                rows = {
+                    row.id: row
+                    for row in connection.execute(text(
+                        "SELECT id, role_type, background FROM characters ORDER BY id"
+                    )).mappings()
+                }
+            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert {key: row.role_type for key, row in rows.items()} == {
+                "elder": "other",
+                "hero": "protagonist",
+            }
+            assert rows["hero"].background == "身份补充：穿越者、陆家三岁孙女"
         finally:
             engine.dispose()
 
@@ -224,7 +372,7 @@ def test_alpha1_database_upgrades_through_gateway_sync():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a11_operation_attention_read"
+            assert result.schema_revision == "300a16_character_role_type_enum"
             assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
                 inspect(engine).get_table_names()
             )

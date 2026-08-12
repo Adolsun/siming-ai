@@ -27,6 +27,7 @@ from app.modules.creation.infrastructure.models import (
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.modules.operations.infrastructure.models import OperationRun
 from app.services.content_store import content_root
+from app.services.character_role_types import append_character_role_description, normalize_character_role_type
 from app.services.novel_creation_authoring import _validate_stage
 from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
@@ -587,7 +588,15 @@ def _artifact_payload(artifact: str, candidates: dict[str, Any], import_run: Nov
         for index, row in enumerate(rows):
             item = _clean_row(row)
             item["name"] = _text(item.get("name") or item.get("title"))
-            item["role_type"] = _text(item.get("role_type"), "protagonist" if index == 0 else "supporting")
+            raw_role_type = item.get("role_type")
+            item["background"] = append_character_role_description(
+                item.get("background"),
+                raw_role_type,
+            )
+            item["role_type"] = normalize_character_role_type(
+                raw_role_type,
+                default="protagonist" if index == 0 else "supporting",
+            )
             item["goal"] = _text(item.get("goal") or item.get("current_goal"), "待作者补充")
             characters.append(item)
         return {"characters": characters, "relationships": [], "_import_provenance": _source_from(rows, import_run)}

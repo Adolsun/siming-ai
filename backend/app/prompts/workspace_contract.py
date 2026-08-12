@@ -15,11 +15,9 @@ SCOPE_LABELS = {
 WORKSPACE_TOOL_NAMES = frozenset(
     """
     append_draft_chunk
-    apply_external_story_updates
     apply_narrative_governance_candidates
     apply_novel_blueprint
     apply_pending_cataloging
-    archive_chapter_after_write
     cancel_cataloging_job
     chapter_writer
     character_writer
@@ -82,6 +80,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     get_novel_creation_session
     get_project_archive_status
     get_project_files_info
+    get_project_creation_brief
     get_project_info
     get_prompt_pack
     get_quality_rubric
@@ -197,6 +196,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     update_narrative_ledger_entry
     update_outline_node
     update_project_info
+    update_project_creation_brief
     update_relationship
     update_scheduled_task
     update_skill

@@ -1,8 +1,8 @@
 """Tool-driven conversational control plane for a creation session."""
 from __future__ import annotations
 
-import json
 import inspect
+import json
 import re
 from typing import Any
 
@@ -10,27 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import is_local_cli_provider
 from app.core.json_repair import parse_json_object
+from app.database.models import NovelCreationStageRun
+from app.modules.creation.interfaces.agent_scope import CREATION_AGENT_TOOL_NAMES
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.services.workspace.executor import execute_workspace_action
 from app.services.workspace.registry import registry
 
-
-CREATION_AGENT_TOOLS = {
-    "get_creation_session", "get_creation_snapshot", "get_creation_operation",
-    "get_creation_artifact", "list_creation_artifacts", "get_creation_dependencies",
-    "get_creation_dependency_graph", "validate_creation_consistency",
-    "patch_creation_session", "patch_creation_artifact", "lock_creation_fields",
-    "unlock_creation_fields", "undo_creation_artifact", "list_creation_entities",
-    "get_creation_entity", "patch_creation_entity", "delete_creation_entity",
-    "list_creation_artifact_versions", "get_creation_artifact_diff",
-    "restore_creation_artifact_version", "confirm_creation_artifact",
-    "generate_creation_artifact", "refine_creation_artifact",
-    "regenerate_creation_artifact", "cancel_creation_operation",
-    "pause_creation_operation", "resume_creation_operation", "retry_creation_operation",
-    "validate_creation_session", "finalize_creation_session",
-    "preview_creation_import", "apply_creation_import", "list_imported_files",
-    "read_imported_file",
-}
+CREATION_AGENT_TOOLS = set(CREATION_AGENT_TOOL_NAMES)
 
 _SESSION_TOOLS = {
     name for name in CREATION_AGENT_TOOLS
@@ -97,17 +83,72 @@ def _text_only_system_prompt() -> str:
     return """你是司命的创作立项顾问。
 根据用户提供的信息帮助梳理世界观、角色、地点、势力、大纲和创作约束，并提出最有价值的后续问题。
 当前通道仅提供文本建议，不能读取或写入结构化项目数据，也不能启动任务。
-只输出自然语言建议，不要声称任何内容已经保存、修改或开始生成。请用简洁中文回复。"""
+    只输出自然语言建议，不要声称任何内容已经保存、修改或开始生成。请用简洁中文回复。"""
 
 
 def _cli_mcp_system_prompt(session_id: str) -> str:
     return _system_prompt(session_id) + f"""
 
-你当前运行在本机 Agent CLI 中，不接收 OpenAI function-calling schema。司命的数据工具由 CLI 自己通过已连接的 Siming MCP 获取。
-MCP 工具在 CLI 中通常带 siming_ 前缀。当前立项会话是 {session_id}；所有立项工具都必须传入这个 session_id，不要创建另一个会话。
-每轮先调用 siming_get_creation_session 或 siming_get_creation_snapshot 获取当前 revision。用户要求写入时，必须调用合适的 siming_patch_creation_artifact、siming_patch_creation_session 或 entity 工具落库。
-写入返回成功后必须再次调用读取工具，确认 revision 已增加且目标字段能读到，才能向用户说“已写入”。如果 MCP 调用失败、超时或写后读取不一致，明确报告失败，不得用自然语言冒充成功。
-不要直接修改数据库文件或小说镜像文件；结构化数据只能通过 Siming MCP 写入。"""
+你当前是内化在司命聊天窗口中的本机 OpenCode Agent。用户已明确授权这一条消息连接临时 Siming MCP。
+MCP 只暴露当前 creation session_id={session_id} 的立项工具；不要尝试 Shell、编辑文件、扫描项目目录或访问其他会话。
+先调用 siming_turn_get_creation_snapshot 读取当前 revision 和现有事实，再按用户要求调用对应的 siming_turn_* 工具。
+每次写入都使用刚读取到的 revision；写入后必须再次读取并核对新 revision，才能告诉用户已经保存。
+临时 MCP 会在本条消息结束时销毁，不要修改 OpenCode 或其他 CLI 的任何配置文件。"""
+
+
+def _cli_bridge_system_prompt(session_id: str, *, allow_writes: bool) -> str:
+    """Describe the in-chat tool bridge used by local Agent CLIs.
+
+    The CLI never receives filesystem, shell, project-directory, or persistent
+    MCP access.  It proposes allowlisted calls as JSON; Siming validates and
+    executes them in-process.  This keeps local models useful without silently
+    changing another program's configuration or bypassing its own prompts.
+    """
+    schemas = json.dumps(_tool_schemas(), ensure_ascii=False, separators=(",", ":"))
+    permission_rule = (
+        "用户已明确授权本轮修改；你可以提出读取和写入工具调用。授权仅覆盖这一条消息。"
+        if allow_writes
+        else "本轮没有写入授权；你可以提出读取工具调用，但不要提出任何写入、生成、确认、删除或最终建项调用。"
+    )
+    return _system_prompt(session_id) + f"""
+
+你当前是内化在司命聊天窗口中的本机 Agent CLI。你不能直接调用 MCP、Shell 或文件系统；司命也不会扫描或修改该 CLI 的全局配置。
+{permission_rule}
+你通过受控 JSON 桥使用立项工具。每次只输出一个 JSON 对象，不要输出 Markdown：
+{{"tool_calls":[{{"name":"get_creation_snapshot","arguments":{{"session_id":"{session_id}"}}}}],"reply":""}}
+需要继续调用工具时填写 tool_calls（每轮最多 8 个）；完成时输出 {{"tool_calls":[],"reply":"给用户的简洁中文回复"}}。
+所有工具调用都由司命再次校验 session_id、revision、工具白名单和本轮权限。写入后必须再提出读取调用验证结果，才能在 reply 中声称已保存。
+可用工具的 OpenAI Schema JSON：{schemas}"""
+
+
+def _parse_cli_bridge_turn(content: str) -> tuple[str, list[dict[str, Any]]]:
+    parsed = parse_json_object(content)
+    if not isinstance(parsed, dict):
+        return content.strip(), []
+    raw_calls = parsed.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        raw_calls = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
+    calls: list[dict[str, Any]] = []
+    for index, raw_call in enumerate(raw_calls[:8]):
+        if not isinstance(raw_call, dict):
+            continue
+        function = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else raw_call
+        name = str(function.get("name") or function.get("tool") or "").strip()
+        if not name:
+            continue
+        arguments = function.get("arguments")
+        if not isinstance(arguments, (dict, str)):
+            arguments = {}
+        calls.append({
+            "id": str(raw_call.get("id") or f"cli-bridge-{index}"),
+            "type": "function",
+            "function": {
+                "name": name.removeprefix("siming_"),
+                "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+    reply = str(parsed.get("reply") or parsed.get("content") or "").strip()
+    return reply, calls
 
 
 async def _complete_tool_turn(**kwargs: Any) -> dict[str, Any]:
@@ -150,17 +191,29 @@ def _prepare_agent_request(
     message: str,
     model: str | None,
     history: list[dict[str, str]] | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, Any] | None, bool]:
+    *,
+    local_cli_write_granted: bool = False,
+    local_cli_read_paths: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, Any] | None, str]:
     native_tool_calls = LLMGateway.supports_tool_calling(model)
     try:
         provider = LLMGateway.provider_for_model(model)
     except Exception:
         provider = ""
-    local_cli_mcp = is_local_cli_provider(provider)
+    local_cli_selected = is_local_cli_provider(provider)
+    direct_transient_mcp = (
+        local_cli_selected
+        and provider == "opencode_cli"
+        and local_cli_write_granted
+    )
+    local_cli_mode = "direct_mcp" if direct_transient_mcp else "bridge" if local_cli_selected else "none"
     prompt = (
-        _system_prompt(session.id)
+        _cli_mcp_system_prompt(session.id)
+        if direct_transient_mcp
+        else _system_prompt(session.id)
         if native_tool_calls
-        else _cli_mcp_system_prompt(session.id) if local_cli_mcp else _text_only_system_prompt()
+        else _cli_bridge_system_prompt(session.id, allow_writes=local_cli_write_granted)
+        if local_cli_selected else _text_only_system_prompt()
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     for item in (history or [])[-12:]:
@@ -170,20 +223,30 @@ def _prepare_agent_request(
             messages.append({"role": role, "content": content[:80_000]})
     messages.append({"role": "user", "content": message})
     extra_body = None
-    if local_cli_mcp:
-        from app.services.content_store import content_root
-
+    if local_cli_selected:
         extra_body = LLMGateway.local_cli_extra_body(
             model,
-            cwd=str(content_root()),
             base={
                 "moshu_task_type": "planning",
-                "local_cli_allow_mcp": True,
+                # The working directory remains empty in both modes. OpenCode
+                # receives a process-scoped MCP only after the one-turn grant;
+                # other CLIs use the validated JSON bridge as a safe fallback.
+                "local_cli_isolated": True,
+                "local_cli_permission_granted": local_cli_write_granted,
+                "local_cli_allow_mcp": direct_transient_mcp,
+                "local_cli_read_permission_granted": (
+                    provider == "opencode_cli" and bool(local_cli_read_paths)
+                ),
+                "local_cli_read_paths": (
+                    list(local_cli_read_paths or []) if provider == "opencode_cli" else []
+                ),
+                "local_cli_mcp_permission_pack": "creation_session",
+                "local_cli_mcp_creation_session_id": session.id,
                 "local_cli_timeout_seconds": CREATION_AGENT_CLI_TIMEOUT_SECONDS,
             },
         )
     schemas = _tool_schemas() if native_tool_calls else []
-    return messages, schemas, int(session.revision or 0), extra_body, local_cli_mcp
+    return messages, schemas, int(session.revision or 0), extra_body, local_cli_mode
 
 
 def _record_verified_mcp_write(
@@ -219,9 +282,16 @@ async def run_creation_agent(
     message: str,
     model: str | None,
     history: list[dict[str, str]] | None = None,
+    local_cli_write_granted: bool = False,
+    local_cli_read_paths: list[str] | None = None,
 ) -> dict[str, Any]:
-    messages, schemas, baseline_revision, extra_body, local_cli_mcp = _prepare_agent_request(
-        session, message, model, history,
+    messages, schemas, baseline_revision, extra_body, local_cli_mode = _prepare_agent_request(
+        session,
+        message,
+        model,
+        history,
+        local_cli_write_granted=local_cli_write_granted,
+        local_cli_read_paths=local_cli_read_paths,
     )
     tool_results: list[dict[str, Any]] = []
     write_results: list[dict[str, Any]] = []
@@ -241,6 +311,10 @@ async def run_creation_agent(
         )
         content = str(result.get("content") or "")
         calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+        if local_cli_mode == "bridge":
+            bridge_reply, bridge_calls = _parse_cli_bridge_turn(content)
+            content = bridge_reply
+            calls = bridge_calls
         if not calls:
             final_reply = content.strip()
             break
@@ -255,6 +329,12 @@ async def run_creation_agent(
                 arguments = parse_json_object(str(raw_arguments)) or {}
             if name not in CREATION_AGENT_TOOLS:
                 tool_result = {"tool": name, "status": "skipped", "detail": "该工具不属于立项会话"}
+            elif local_cli_mode == "bridge" and name in _WRITE_TOOLS and not local_cli_write_granted:
+                tool_result = {
+                    "tool": name,
+                    "status": "permission_required",
+                    "detail": "本轮未获得立项写入授权，未执行任何修改",
+                }
             else:
                 if name in _SESSION_TOOLS:
                     arguments["session_id"] = session.id
@@ -280,6 +360,15 @@ async def run_creation_agent(
                 "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:120_000],
             })
 
+    if local_cli_mode == "direct_mcp":
+        _record_verified_mcp_write(
+            db,
+            session,
+            baseline_revision,
+            tool_results,
+            write_results,
+        )
+
     if not final_reply and tool_results:
         # Some providers finish a tool round without producing the required
         # user-facing summary. Give the same model one text-only turn grounded
@@ -304,12 +393,6 @@ async def run_creation_agent(
             final_reply = str(summary.get("content") or "").strip()
         except Exception:
             final_reply = ""
-
-    if local_cli_mcp:
-        # MCP runs in a sibling process with its own SQLAlchemy session. Expire
-        # this request's identity map before checking whether the CLI truly
-        # committed a write; model prose alone is never accepted as evidence.
-        _record_verified_mcp_write(db, session, baseline_revision, tool_results, write_results)
 
     if not write_results and final_reply and _WRITE_CLAIM_RE.search(final_reply):
         failures = [
@@ -342,10 +425,27 @@ async def run_creation_agent(
         if candidate:
             active_run = candidate
             break
+    if active_run:
+        run_id = str(active_run.get("id") or active_run.get("run_id") or "").strip()
+        durable_run = db.get(NovelCreationStageRun, run_id) if run_id else None
+        if durable_run and durable_run.status in {
+            "waiting_user", "waiting_author", "completed", "failed",
+            "cancelled", "interrupted", "superseded",
+        }:
+            from app.services.novel_creation_run_presentation import present_serialized_run
+
+            active_run = await present_serialized_run(
+                db,
+                run=durable_run,
+                model=model,
+                assistant_reply=final_reply,
+                tool_results=tool_results,
+            )
     return {
         "reply": final_reply,
         "tool_results": tool_results,
         "write_count": len(write_results),
+        "permission_required": any(item.get("status") == "permission_required" for item in tool_results),
         "run": active_run,
     }
 

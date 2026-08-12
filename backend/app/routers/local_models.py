@@ -17,13 +17,14 @@ from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 
-from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
-from ..core.exceptions import ValidationError
 from ..core.crypto import encrypt
+from ..core.exceptions import ValidationError
 from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
+from ..modules.model_runtime.infrastructure.readiness import mark_model_ready
 from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..modules.model_runtime.interfaces.local_model_dependencies import local_model_store
 from ..schemas.local_model import (
@@ -35,6 +36,7 @@ from ..schemas.local_model import (
     DatasetCreateRequest,
     ModelInstallRequest,
     ModelRootUpdateRequest,
+    QualificationRequest,
     RuntimeStartRequest,
     TrainingJobCreateRequest,
 )
@@ -43,15 +45,15 @@ from ..services.local_runtime.datasets import build_training_dataset
 from ..services.local_runtime.hardware import detect_hardware
 from ..services.local_runtime.manifest import model_catalog
 from ..services.local_runtime.model_jobs import (
-    create_model_download,
     create_custom_model_download,
-    import_custom_model,
+    create_model_download,
     create_runtime_download,
     ensure_catalog_rows,
+    import_custom_model,
     resume_download,
 )
-from ..modules.model_runtime.infrastructure.readiness import mark_model_ready
 from ..services.local_runtime.paths import model_root
+from ..services.local_runtime.qualification import qualify_local_model
 from ..services.local_runtime.training import (
     control_training_job,
     create_training_job,
@@ -148,17 +150,23 @@ def catalog(db: Session = Depends(get_db)):
     runtime = store.runtime_installation("llama_cpp")
     settings = store.task_settings()
     usage_enabled = not local_runtime_disabled("local_llama_cpp")
+    runtime_state = get_runtime_manager().status()
+    observed_runtime_status = runtime.status if runtime else "not_installed"
+    if runtime_state["running"]:
+        observed_runtime_status = "running"
     return ApiResponse.success(data={
         "usage_enabled": usage_enabled,
         "usage_disabled_reason": None if usage_enabled else local_runtime_disabled_message(),
         "items": [_model_payload(row) for row in rows],
         "manifest": model_catalog(),
         "runtime": {
-            "status": runtime.status if runtime else "not_installed",
+            # Live health is authoritative. Persisted startup state can lag if
+            # the initiating browser request is cancelled after launch.
+            "status": observed_runtime_status,
             "version": runtime.version if runtime else None,
             "backend": runtime.backend if runtime else None,
             "executable_path": runtime.executable_path if runtime else None,
-            **get_runtime_manager().status(),
+            **runtime_state,
         },
         "model_root": str(model_root()),
         "task_settings": {
@@ -305,8 +313,13 @@ async def start_runtime(payload: RuntimeStartRequest, db: Session = Depends(get_
         db.add(config)
     config.default_model = payload.model_key
     mark_model_ready(config, source="local_runtime_started", message="本地模型已成功加载")
+    became_global = config_crud.make_global_if_no_ready_default(config)
     commit_session(db)
-    return ApiResponse.success(data={**get_runtime_manager().status(), "base_url": base_url})
+    return ApiResponse.success(data={
+        **get_runtime_manager().status(),
+        "base_url": base_url,
+        "became_global_default": became_global,
+    })
 
 
 @router.post("/runtime/stop")
@@ -373,6 +386,25 @@ async def benchmark(payload: BenchmarkRequest):
         "tokens_estimated": tokens_estimated,
         "tokens_per_second": round(completion_tokens / elapsed, 2) if completion_tokens else None,
     })
+
+
+@router.post("/qualify")
+async def qualify(payload: QualificationRequest, db: Session = Depends(get_db)):
+    """Verify that a local model can execute Siming's critical task contracts."""
+
+    _ensure_local_runtime_usage_enabled()
+    model = local_model_store(db).model(payload.model_key)
+    if not model or model.status != "installed":
+        raise ValidationError("本地模型尚未安装，无法执行任务验证")
+    capacity = max(4096, int(model.context_length or 4096))
+    context_length = int(
+        payload.context_length
+        or min(capacity, detect_hardware().recommended_context)
+    )
+    if context_length > capacity:
+        raise ValidationError(f"验证上下文 {context_length} 超过模型容量 {capacity}")
+    result = await qualify_local_model(payload.model_key, context_length)
+    return ApiResponse.success(data=result)
 
 
 @router.put("/task-settings/{task_type}")

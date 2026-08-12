@@ -6,6 +6,8 @@ param(
   [string]$CommitMessage = "",
   [switch]$SkipBuild,
   [switch]$CommitDirtyChanges,
+  [switch]$IncludeAndroid,
+  [switch]$ManualDownloadOnly,
   [switch]$DryRun
 )
 
@@ -18,7 +20,10 @@ $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
 $ApkPath = Join-Path $Root "release\$AppName.apk"
 $ApkShaPath = Join-Path $Root "release\$AppName-apk-sha256.txt"
-$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath, $ApkPath, $ApkShaPath)
+$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath)
+if ($IncludeAndroid) {
+  $ReleaseAssets += @($ApkPath, $ApkShaPath)
+}
 
 function Require-Command {
   param([string]$Name, [string]$Hint)
@@ -88,7 +93,7 @@ try {
     if ($DryRun) {
       Write-Host "[dry-run] Required release assets missing: $MissingAssetList" -ForegroundColor Yellow
     } else {
-      throw "Required release assets are missing: $MissingAssetList. Build and verify both the Windows and Android distributions before publishing."
+      throw "Required release assets are missing: $MissingAssetList. Build and verify the selected distributions before publishing."
     }
   }
 
@@ -116,8 +121,15 @@ try {
     } else {
       [System.IO.File]::WriteAllText($ManifestPath, $manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
       [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-      & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version
-      & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
+      if ($ManualDownloadOnly) {
+        & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -AllowUnsignedManualRelease
+      } else {
+        & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -RequireTrustedSignature
+      }
+      if ($IncludeAndroid) {
+        & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
+      }
+      & (Join-Path $Root "scripts\smoke-test-release.ps1") -SkipBuild
     }
   }
 

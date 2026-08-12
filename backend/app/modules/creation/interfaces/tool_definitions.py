@@ -65,6 +65,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "name": {"type": "string", "description": "角色名（可选，不传则由AI生成）"},
             "role_type": {
                 "type": "string",
+                "enum": ["protagonist", "supporting", "antagonist", "mentor", "other"],
                 "description": "建议角色类型：protagonist|supporting|antagonist|mentor|other",
             },
             "requirements": {"type": "string", "description": "用户对角色的要求或方向（可选）"},

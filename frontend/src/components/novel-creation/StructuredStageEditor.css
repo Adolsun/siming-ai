@@ -1,0 +1,79 @@
+.creation-structured-stage-editor,
+.creation-structured-collection-wrap {
+  width: 100%;
+}
+
+.creation-structured-collection-toolbar,
+.creation-structured-collection-label,
+.creation-structured-collection-actions {
+  display: flex;
+  align-items: center;
+}
+
+.creation-structured-collection-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.creation-structured-collection-label {
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.creation-structured-collection-label > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creation-structured-collection-actions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.creation-structured-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--ant-color-border);
+  border-radius: 10px;
+  background: var(--ant-color-fill-quaternary);
+}
+
+.creation-structured-empty .ant-empty {
+  margin-block: 8px 0;
+}
+
+.creation-structured-readonly {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--ant-color-text-secondary);
+}
+
+.creation-structured-readonly > .anticon {
+  margin-top: 4px;
+}
+
+.creation-structured-field.is-readonly {
+  background: var(--ant-color-fill-quaternary);
+}
+
+.creation-structured-readonly-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.creation-structured-readonly-list li + li {
+  margin-top: 4px;
+}
+
+@media (max-width: 680px) {
+  .creation-structured-collection-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

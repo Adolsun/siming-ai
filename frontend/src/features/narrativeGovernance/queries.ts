@@ -3,6 +3,8 @@ import {
   getNarrativeDashboard,
   restoreNarrativeCheckpoint,
   updateNarrativeStatus,
+  verifyNarrativeReview,
+  type GovernanceStatusPayload,
 } from './api'
 
 export const narrativeKeys = {
@@ -16,14 +18,30 @@ export function useNarrativeDashboard(projectId: string, view: string) {
   return useQuery({
     queryKey: narrativeKeys.dashboard(projectId, view),
     queryFn: () => getNarrativeDashboard(projectId, view),
+    // Cataloging may be committed by a background local CLI process rather
+    // than by a mutation in this React tree. Always refresh when the page is
+    // entered and poll while it is visible so applied governance data cannot
+    // remain hidden behind a stale query cache.
+    refetchOnMount: 'always',
+    refetchInterval: 3_000,
   })
 }
 
 export function useUpdateNarrativeStatus(projectId: string) {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { type: string; id: string; status: string }) => (
-      updateNarrativeStatus(projectId, input.type, input.id, input.status)
+    mutationFn: (input: { type: string; id: string; payload: GovernanceStatusPayload }) => (
+      updateNarrativeStatus(projectId, input.type, input.id, input.payload)
+    ),
+    onSuccess: () => client.invalidateQueries({ queryKey: narrativeKeys.all(projectId) }),
+  })
+}
+
+export function useVerifyNarrativeReview(projectId: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { reviewId: string; evidence: string }) => (
+      verifyNarrativeReview(projectId, input.reviewId, input.evidence)
     ),
     onSuccess: () => client.invalidateQueries({ queryKey: narrativeKeys.all(projectId) }),
   })

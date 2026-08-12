@@ -29,6 +29,7 @@ from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationE
 from ..core.legacy_env import set_compatible_env
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
+from ..version import APP_VERSION
 from ..database.session import get_db
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..modules.model_runtime.application.verification import (
@@ -53,7 +54,11 @@ from ..services.application_settings import (
 )
 from ..services.content_store import content_root as resolve_content_root
 from ..services.content_store import migrate_projects_to_content_root
-from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+from ..services.external_agent.mcp_auto_config import (
+    configure_cli_integration,
+    restore_cli_integration,
+    scan_cli_integrations,
+)
 from ..services.model_readiness import (
     is_model_config_usable,
     mark_model_failure,
@@ -69,6 +74,12 @@ from .application_updates import (
 )
 
 router = APIRouter(tags=["config"])
+
+
+@router.get("/config/app-info")
+def get_app_info():
+    """Return local build identity without performing a network update check."""
+    return ApiResponse.success(data={"name": "Siming", "version": APP_VERSION})
 
 
 class ChatCompletionRequest(BaseModel):
@@ -411,17 +422,6 @@ def _config_payload(cfg: Any, include_masked_key: bool = False) -> dict:
     return data
 
 
-def _config_payload_with_mcp_setup(cfg: APIConfig, *, is_cli: bool) -> dict:
-    data = _config_payload(cfg)
-    if is_cli:
-        data["mcp_auto_setup"] = auto_configure_mcp_for_provider(
-            cfg.provider,
-            cli_command=getattr(cfg, "cli_command", None),
-            permission_pack="auto",
-        )
-    return data
-
-
 def _validate_cli_command(command: str | None) -> str:
     command = (command or "").strip()
     if not command:
@@ -512,7 +512,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         commit_session(db)
         db.refresh(existing)
         return ApiResponse.success(
-            data=_config_payload_with_mcp_setup(existing, is_cli=is_cli),
+            data=_config_payload(existing),
             message=f"{payload.provider} 配置已更新",
         )
 
@@ -534,9 +534,40 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
     commit_session(db)
     db.refresh(config)
     return ApiResponse.success(
-        data=_config_payload_with_mcp_setup(config, is_cli=is_cli),
+        data=_config_payload(config),
         message=f"{payload.provider} 配置已添加",
     )
+
+
+@router.post("/config/cli-integrations/scan")
+def scan_local_cli_integrations():
+    """Discover supported CLIs only after the author clicks Scan."""
+
+    return ApiResponse.success(
+        data=scan_cli_integrations(),
+        message="本机 CLI 扫描完成；尚未修改任何配置",
+    )
+
+
+@router.post("/config/cli-integrations/{provider}/configure")
+def configure_local_cli_integration(provider: str, db: Session = Depends(get_db)):
+    """Apply one explicitly authorized CLI integration."""
+
+    saved = model_config_crud(db).get_provider(provider)
+    result = configure_cli_integration(
+        provider,
+        cli_command=getattr(saved, "cli_command", None) if saved else None,
+        permission_pack="auto",
+    )
+    return ApiResponse.success(data=result, message=result.get("detail") or "CLI 配置已处理")
+
+
+@router.post("/config/cli-integrations/{provider}/restore")
+def restore_local_cli_integration(provider: str):
+    """Restore one CLI only from an explicit, conflict-checked snapshot."""
+
+    result = restore_cli_integration(provider)
+    return ApiResponse.success(data=result, message=result.get("detail") or "CLI 还原已处理")
 
 
 @router.get("/config/models/{provider}")
@@ -698,11 +729,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
     if detected_protocol:
         ready_message = f"真实对话成功，使用 {_protocol_label(detected_protocol)}"
     mark_model_ready(config, source="manual_verify", message=ready_message)
-    usable_global = crud.get_ready_global()
-    became_global = usable_global is None
-    if became_global:
-        crud.clear_global()
-        config.is_global_default = True
+    became_global = crud.make_global_if_no_ready_default(config)
     commit_session(db)
     db.refresh(config)
     return ApiResponse.success(

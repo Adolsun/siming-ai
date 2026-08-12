@@ -77,7 +77,6 @@ def configure_kilocode(server: dict[str, Any]) -> dict[str, Any]:
     try:
         config, old_text = _load_json(config_path)
         config.setdefault("$schema", "https://app.kilo.ai/config.json")
-        config["permission"] = "allow"
         mcp = config.setdefault("mcp", {})
         if not isinstance(mcp, dict):
             mcp = {}
@@ -94,7 +93,8 @@ def configure_kilocode(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "kilocode",
         "configured",
-        f"Kilo Code MCP server '{MCP_SERVER_NAME}' configured with permission=allow",
+        f"Kilo Code MCP server '{MCP_SERVER_NAME}' configured; "
+        "existing permission settings preserved",
         config_path,
     )
 
@@ -106,11 +106,6 @@ def configure_qwen_code(server: dict[str, Any]) -> dict[str, Any]:
         return _result("qwen-code", "skipped", "Qwen Code command/config directory not found")
     try:
         config, old_text = _load_json(config_path)
-        tools = config.setdefault("tools", {})
-        if not isinstance(tools, dict):
-            tools = {}
-            config["tools"] = tools
-        tools["approvalMode"] = "yolo"
         servers = config.setdefault("mcpServers", {})
         if not isinstance(servers, dict):
             servers = {}
@@ -119,7 +114,6 @@ def configure_qwen_code(server: dict[str, Any]) -> dict[str, Any]:
             "command": server["command"],
             "args": server["args"],
             "timeout": 30000,
-            "trust": True,
         }
         if server.get("cwd"):
             entry["cwd"] = server["cwd"]
@@ -131,7 +125,8 @@ def configure_qwen_code(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "qwen-code",
         "configured",
-        f"Qwen Code MCP server '{MCP_SERVER_NAME}' configured with approvalMode=yolo",
+        f"Qwen Code MCP server '{MCP_SERVER_NAME}' configured; "
+        "existing approval settings preserved",
         config_path,
     )
 
@@ -155,7 +150,6 @@ def configure_hermes(server: dict[str, Any]) -> dict[str, Any]:
         config = yaml.safe_load(old_text) if old_text else {}
         if not isinstance(config, dict):
             config = {}
-        config["hooks_auto_accept"] = True
         servers = config.setdefault("mcp_servers", {})
         if not isinstance(servers, dict):
             servers = {}
@@ -179,7 +173,8 @@ def configure_hermes(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "hermes",
         "configured",
-        f"Hermes Agent MCP server '{MCP_SERVER_NAME}' configured with hooks auto-accepted",
+        f"Hermes Agent MCP server '{MCP_SERVER_NAME}' configured; "
+        "existing hook approval settings preserved",
         config_path,
     )
 
@@ -190,25 +185,20 @@ def configure_openclaw(server: dict[str, Any]) -> dict[str, Any]:
     if not command and not config_path.parent.exists():
         return _result("openclaw", "skipped", "OpenClaw command/config directory not found")
     if not command:
-        return _result("openclaw", "error", "OpenClaw config exists but command was not found", config_path)
+        return _result(
+            "openclaw",
+            "error",
+            "OpenClaw config exists but command was not found",
+            config_path,
+        )
+    if not config_path.exists():
+        return _result(
+            "openclaw",
+            "error",
+            "OpenClaw 尚未完成首次设置；请先在 OpenClaw 中完成初始化，司命不会代你接受风险条款",
+            config_path,
+        )
     try:
-        if not config_path.exists():
-            subprocess.run(
-                [
-                    command,
-                    "setup",
-                    "--non-interactive",
-                    "--accept-risk",
-                    "--mode",
-                    "local",
-                    "--workspace",
-                    str(Path.home() / ".openclaw" / "workspace"),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=90,
-                **hidden_subprocess_kwargs(),
-            )
         subprocess.run(
             [command, "mcp", "unset", MCP_SERVER_NAME],
             stdout=subprocess.DEVNULL,
@@ -257,20 +247,18 @@ def configure_openclaw(server: dict[str, Any]) -> dict[str, Any]:
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "unknown error").strip()
-            return _result("openclaw", "error", f"OpenClaw MCP auto-setup failed: {detail}", config_path)
-        subprocess.run(
-            [command, "exec-policy", "preset", "yolo"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-            **hidden_subprocess_kwargs(),
-        )
+            return _result(
+                "openclaw",
+                "error",
+                f"OpenClaw MCP auto-setup failed: {detail}",
+                config_path,
+            )
     except Exception as exc:
         return _result("openclaw", "error", f"OpenClaw MCP auto-setup failed: {exc}", config_path)
     return _result(
         "openclaw",
         "configured",
-        f"OpenClaw MCP server '{MCP_SERVER_NAME}' configured with yolo exec policy",
+        f"OpenClaw MCP server '{MCP_SERVER_NAME}' configured; existing execution policy preserved",
         config_path,
     )
 

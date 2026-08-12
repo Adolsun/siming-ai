@@ -544,11 +544,16 @@ def _run_mcp_server() -> None:
     parser.add_argument("--mcp-server", action="store_true", help="Run MCP server over stdio")
     parser.add_argument("--project-id", default="", help="Optional default project ID.")
     parser.add_argument(
+        "--creation-session-id",
+        default="",
+        help="Required one-session boundary for the creation_session permission pack.",
+    )
+    parser.add_argument(
         "--permission-pack",
         default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
         choices=["auto", "readonly_collaboration", "draft_generation", "project_writing",
                  "project_management", "internal_llm", "trusted_local_maintenance",
-                 "cataloging_worker"],
+                 "cataloging_worker", "creation_session"],
     )
     args, _ = parser.parse_known_args()
     _prepare_data_environment()
@@ -571,7 +576,12 @@ def _run_mcp_server() -> None:
     configure_application_services()
     db = SessionLocal()
     try:
-        serve_stdio(db=db, project_id=args.project_id, permission_pack=args.permission_pack)
+        serve_stdio(
+            db=db,
+            project_id=args.project_id,
+            permission_pack=args.permission_pack,
+            creation_session_id=args.creation_session_id,
+        )
     finally:
         db.close()
         from app.services.local_runtime import get_runtime_manager

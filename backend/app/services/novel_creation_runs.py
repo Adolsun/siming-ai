@@ -26,6 +26,15 @@ def _text(value: Any, default: str = "") -> str:
     return value or default
 
 
+def invalidate_run_card_presentation(run: NovelCreationStageRun) -> None:
+    """Drop a cached display verdict whenever durable run state changes."""
+    if not isinstance(run.result_json, dict) or "card_presentation" not in run.result_json:
+        return
+    result = deepcopy(run.result_json)
+    result.pop("card_presentation", None)
+    run.result_json = result
+
+
 def create_run(
     db: Session,
     session: NovelCreationSession,
@@ -234,6 +243,8 @@ def confirm_run(db: Session, run: NovelCreationStageRun) -> bool:
     if run.status not in {"waiting_user", "waiting_author"}:
         return False
 
+    invalidate_run_card_presentation(run)
+
     run.status = "completed"
     run.current_message = "阶段内容已由作者确认"
     run.next_action = "继续处理下一阶段"
@@ -391,6 +402,13 @@ def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> di
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
+    card_presentation = (result or {}).get("card_presentation")
+    normalized_status = "waiting_user" if run.status == "waiting_author" else run.status
+    if (
+        isinstance(card_presentation, dict)
+        and _text(card_presentation.get("raw_status")) == normalized_status
+    ):
+        data["card_presentation"] = deepcopy(card_presentation)
     if include_events:
         data["events"] = [
             {

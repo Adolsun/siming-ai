@@ -118,11 +118,11 @@ async def get_moshu_usage_guide(
             "title": "API-free 写作，由外部 Agent 生成正文",
             "steps": [
                 "如果需要 Siming 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='writing')，再通过 AgentRun 事件查看进度。",
-                "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
-                "外部 Agent 必须按质量版 prompt pack 自己写正文并自检；fast 请求也只影响外围流程，不降低正文写作标准。",
+                "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要和基础写作提示词。",
+                "外部 Agent 一次生成基础正文；本任务不执行去除 AI 味改写或质量评审。",
                 "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
-                "调用 record_external_quality_review 记录外部质量检查。",
-                "用户确认后调用 create_chapter，并传 draft_id/content_ref；随后调用 archive_chapter_after_write 提交标准候选，统一写入章节摘要、章级大纲、section 场景状态、角色状态、世界观变化和 narrative_state。",
+                "调用 create_chapter，传入 draft_id/content_ref 和 skip_style_repair=true；正式写入会自动创建统一建档任务。确认返回 cataloging_job.job_id，并按 next_action 继续外部建档或等待后台任务，不要重复生成候选。",
+                "去除 AI 味和质量评审是独立操作，只在用户另行发起时执行。",
             ],
             "forbidden_tools": internal_llm_tools,
         },
@@ -131,8 +131,9 @@ async def get_moshu_usage_guide(
             "steps": [
                 "只有用户明确授权使用司命内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm。",
-                "内部写作统一使用质量版总控和质量版章节提示词：检索上下文、设计剧情、角色对戏、生成正文、评估、写后统一归档角色/世界观/大纲/摘要变化。",
-                "fast 请求只允许减少外围轮次，不能切换到低配正文提示词。",
+                "内部写作只执行检索上下文、一次生成正文、保存和写后连续性归档。",
+                "质量模式使用更完整的正文提示词，快速模式使用更短的直写提示词；两者都不自动执行去除 AI 味或质量评审。",
+                "去除 AI 味和质量评审是独立操作，只在用户另行发起时执行。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],
         },
@@ -153,121 +154,6 @@ async def get_moshu_usage_guide(
             "recommended_next": _recommended_next(scenario, no_api),
         },
     }
-
-    from app.services.prompt_packs.seed import ensure_builtin_packs
-
-    ensure_builtin_packs(db)
-
-    scenario = str(args.get("scenario") or "quickstart").strip() or "quickstart"
-    no_api = bool(args.get("no_api") if "no_api" in args else scenario in {"cataloging_no_api", "writing_no_api"})
-
-    workflows = {
-        "quickstart": {
-            "title": "司命外部 Agent 快速入口",
-            "rules": [
-                "中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具调用失败就改成英文或拼音，除非用户明确要求翻译。",
-                "先调用 list_projects 或 get_project_info 确认作品；所有写入工具都必须传入正确 project_id。",
-                "如果用户说 API 欠费、没有在司命配置 API、或要求由 Claude/Codex 自己分析，禁止调用 start_cataloging_job、chapter_writer、character_writer、outline_writer、worldbuilding_writer 这类内部 LLM 工具。",
-                "创建或导入后不要只凭工具返回口头确认，必须调用 get_project_archive_status 或对应 search/list 工具验证数据真的存在。",
-                "遇到不确定流程，先调用 get_prompt_pack(pack_id='cataloging_external_no_api') 或 get_tool_playbook，而不是手动猜 CRUD。",
-                "长正文、完整章节、完整档案和大量候选 JSON 不要完整输出到聊天里；必须写入 save_external_chapter_draft、save_external_cataloging_candidates 或对应写入工具，聊天只返回摘要、ID、字数、数量和验证结果。",
-            ],
-            "first_tools": [
-                "get_mcp_permission_status",
-                "list_projects",
-                "get_project_archive_status",
-                "list_prompt_packs",
-                "get_prompt_pack",
-            ],
-        },
-        "import_file": {
-            "title": "把本地 txt/docx 等导入为新作品",
-            "steps": [
-                "调用 import_file_as_project，传入 file_path 和 title。",
-                "读取返回的 project.id；之后所有写入都使用这个 project_id。",
-                "调用 get_project_archive_status 验证 chapters_count 是否正确。",
-                "如果用户还要建档，按 cataloging_no_api 或 cataloging_internal 分支继续。",
-            ],
-        },
-        "cataloging_no_api": {
-            "title": "无司命 API 建档，由外部 Agent 自己读章节并写入",
-            "steps": [
-                "语言规则：中文小说全程用中文建档；角色名、别名、章节标题、摘要、大纲、世界观和证据都保留原文语言。",
-                "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
-                "调用 start_external_cataloging_job 创建任务。",
-                "默认使用融合流程：逐章调用 get_next_external_cataloging_chapter(phase='merged')，读取章节正文和档案镜像。",
-                "直接生成候选并调用 save_external_cataloging_candidates(phase='merged') -> apply_pending_cataloging；不要单独保存 facts。",
-                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates、chapters_facts_saved 或 warnings 时先处理，不要跳过关键章节。若存在 chapters_facts_saved，说明是旧两阶段残留，只按工具提示补完候选阶段。",
-                "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后才报告完成。",
-            ],
-            "canonical_candidate_types": [
-                "chapter_summary",
-                "character_create",
-                "character_update",
-                "character_state_update",
-                "character_timeline",
-                "character_relationship",
-                "character_merge_candidate",
-                "outline_create",
-                "outline_update",
-                "worldbuilding_create",
-                "worldbuilding_update",
-                "worldbuilding_timeline",
-                "chapter_link",
-            ],
-            "forbidden_when_no_api": [
-                "start_cataloging_job",
-                "chapter_writer",
-                "character_writer",
-                "outline_writer",
-                "worldbuilding_writer",
-                "design_plot",
-                "evaluate_chapter",
-            ],
-        },
-        "cataloging_internal": {
-            "title": "使用司命内部 API 建档",
-            "steps": [
-                "确认系统设置里 API 可用且用户允许消耗模型额度。",
-                "调用 start_cataloging_job；前端会显示实时进度。",
-                "失败时使用 retry_current_cataloging_chapter 或 rerun_cataloging_resolution_current。",
-                "完成后调用 get_project_archive_status 验证数据。",
-            ],
-        },
-        "writing_no_api": {
-            "title": "无司命 API 写作，由外部 Agent 生成正文",
-            "steps": [
-                "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
-                "外部 Agent 按 prompt pack 自己写正文并自检。",
-                "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
-                "调用 record_external_quality_review 记录外部质量检查。",
-                "用户确认后调用 create_chapter，并传 draft_id/content_ref，不要把整章正文塞进 content；再调用 archive_chapter_after_write 提交标准候选，统一写入角色状态、章节摘要、章级大纲、section 场景状态、世界观变化和 narrative_state。",
-            ],
-        },
-        "writing_internal": {
-            "title": "使用司命内部 API 写作",
-            "steps": [
-                "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估，并通过 archive_chapter_after_write 统一归档角色、世界观、大纲、section 场景状态、摘要和 narrative_state。",
-                "快速模式使用更短的直写提示词和更少外围轮次，仍必须遵守角色、设定、时间线一致性和写后归档契约。",
-                "内部写作会消耗系统设置里的模型 API 额度。",
-            ],
-        },
-    }
-
-    selected = workflows.get(scenario, workflows["quickstart"])
-    return {
-        "tool": "get_moshu_usage_guide",
-        "status": "ok",
-        "detail": f"Usage guide: {scenario}",
-        "data": {
-            "scenario": scenario,
-            "project_id": project_id,
-            "no_api": no_api,
-            "guide": selected,
-            "recommended_next": _recommended_next(scenario, no_api),
-        },
-    }
-
 
 def _recommended_next(scenario: str, no_api: bool) -> list[dict[str, Any]]:
     if scenario == "cataloging_no_api" or no_api:
@@ -400,8 +286,14 @@ async def get_prompt_pack(
         system_prompt = prompt_builder()
         project = db.query(Project).filter(Project.id == project_id).first() if project_id else None
         if project:
-            style_ctx = build_style_context(project, include_anti_ai=True)
+            style_ctx = build_style_context(project, include_anti_ai=False)
             system_prompt = system_prompt.replace("{style_context}", style_ctx)
+
+    quality_rubric = pack.quality_rubric_json
+    forbidden_patterns = pack.forbidden_patterns_json
+    if pack.pack_id in ("chapter_writing_quality", "chapter_writing_fast"):
+        quality_rubric = None
+        forbidden_patterns = []
 
     return {
         "tool": "get_prompt_pack",
@@ -417,9 +309,9 @@ async def get_prompt_pack(
             "summary": pack.summary,
             "system_prompt": system_prompt,
             "workflow": pack.workflow_json,
-            "quality_rubric": pack.quality_rubric_json,
+            "quality_rubric": quality_rubric,
             "tool_playbook": pack.tool_playbook_json,
-            "forbidden_patterns": pack.forbidden_patterns_json,
+            "forbidden_patterns": forbidden_patterns,
             "context_policy": pack.context_policy_json,
             "output_contract": pack.output_contract_json,
             "prompt_spec": pack.tags_json if isinstance(pack.tags_json, dict) else None,

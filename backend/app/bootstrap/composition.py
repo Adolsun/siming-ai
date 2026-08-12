@@ -158,6 +158,9 @@ def configure_application_services() -> None:
     from ..modules.story.application.content_sync import (
         configure_content_sync_runtime,
     )
+    from ..modules.story.infrastructure.chapter_evidence import (
+        SqlAlchemyChapterEvidenceReader,
+    )
     from ..modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
     from ..modules.story.infrastructure.content_sync import (
         SqlAlchemyContentSyncOutbox,
@@ -206,7 +209,9 @@ def configure_application_services() -> None:
     configure_mcp_server_configuration(SqlAlchemyMcpServerConfiguration())
     configure_continuity_prompt_service(ContinuityPromptService(prompt_compiler))
     _configure_cataloging_queries()
-    configure_narrative_governance_commands(SqlAlchemyNarrativeGovernanceCommands())
+    configure_narrative_governance_commands(
+        SqlAlchemyNarrativeGovernanceCommands(SqlAlchemyChapterEvidenceReader())
+    )
     configure_task_runner(run_workspace_scheduled_task)
     configure_tool_catalog(registry.list_for_frontend)
     _configure_model_runtime_services()

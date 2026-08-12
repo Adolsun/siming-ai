@@ -1,6 +1,6 @@
 ---
 id: continuity.cataloging.external
-version: 3.0.0
+version: 3.1.1
 scope: cataloging
 visibility: public
 inputs: []
@@ -22,7 +22,7 @@ golden_cases:
   - name: external-workflow
     required_text: ["project_id", "phase=\"merged\"", "读取章节正文和档案镜像", "旧两阶段残留"]
   - name: shared-granularity
-    required_text: ["内部建档、外部 MCP 建档、本机 CLI 建档", "parent_title", "验证"]
+    required_text: ["内部建档、外部 MCP 建档、本机 CLI 建档", "coverage_manifest", "relationships", "character_profiles", "narrative_review", "resolves_item_id", "验证"]
 ---
 【外部 Agent 工作流】
 1. 先用 list_projects 确认作品。current_project_id 为空时也必须选择真实 project_id；本轮所有读写和验证调用使用同一个 project_id。

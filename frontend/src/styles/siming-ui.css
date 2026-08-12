@@ -79,6 +79,12 @@ select {
   font-size: 18px;
 }
 
+.system-nav-version {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .system-nav-links {
   justify-self: center;
 }

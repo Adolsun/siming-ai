@@ -3,18 +3,25 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import ValidationError
-
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.architecture.uow import SqlAlchemyUnitOfWork
 from app.database.session import Base
 from app.modules.assistant.infrastructure.system_conversations import (
     SqlAlchemySystemConversationStore,
 )
+from app.modules.assistant.interfaces.system_conversation_dependencies import (
+    get_system_conversation_store,
+)
 from app.routers.system_assistant import (
     SystemConversationCreate,
+    SystemConversationScopePatch,
     SystemTurnCreate,
     SystemTurnFinish,
     append_system_turn,
@@ -22,14 +29,20 @@ from app.routers.system_assistant import (
     finish_system_turn,
     get_system_conversation,
     list_system_conversations,
-    start_system_turn,
     set_system_conversation_scope,
-    SystemConversationScopePatch,
+    start_system_turn,
+)
+from app.routers.system_assistant import (
+    router as system_assistant_router,
 )
 
 
 def _db_session():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine)()
 
@@ -39,6 +52,67 @@ def test_system_turn_accepts_large_creation_text_with_an_explicit_safety_limit()
     assert len(payload.user_content) == 100_000
     with pytest.raises(ValidationError):
         SystemTurnCreate(user_content="设" * 1_000_001)
+
+
+@pytest.mark.parametrize(
+    ("payload_type", "payload"),
+    [
+        (SystemConversationCreate, {"scope_type": "creation"}),
+        (SystemConversationScopePatch, {"scope_type": "project"}),
+        (SystemTurnCreate, {"user_content": "继续", "scope_type": "creation"}),
+        (SystemTurnFinish, {"scope_type": "project"}),
+    ],
+)
+def test_non_system_scope_requires_an_identifier(payload_type, payload):
+    with pytest.raises(ValidationError):
+        payload_type(**payload)
+
+
+def test_concurrent_conversation_writes_do_not_deadlock_the_async_server(tmp_path):
+    database = tmp_path / "system-assistant-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{database.as_posix()}",
+        connect_args={"check_same_thread": False},
+        pool_size=20,
+        max_overflow=0,
+    )
+
+    @event.listens_for(engine, "connect")
+    def configure_sqlite(connection, _record):
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=500")
+
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    app = FastAPI()
+    app.include_router(system_assistant_router, prefix="/api/v1")
+
+    def override_store():
+        db = factory()
+        try:
+            with SqlAlchemyUnitOfWork.from_session(db) as uow:
+                yield SqlAlchemySystemConversationStore(db)
+                uow.commit()
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_system_conversation_store] = override_store
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await asyncio.gather(*(
+                client.post(
+                    "/api/v1/ai/system-assistant/conversations",
+                    json={"title": f"并发会话 {index}"},
+                )
+                for index in range(12)
+            ))
+
+    responses = asyncio.run(exercise())
+    assert [response.status_code for response in responses] == [200] * 12
+    with factory() as db:
+        assert SqlAlchemySystemConversationStore(db).list()["total"] == 12
 
 
 def test_system_conversation_persists_messages_and_blueprint_state():
@@ -146,5 +220,7 @@ def test_conversation_scope_can_follow_creation_and_project_contexts():
     ))
     assert changed.data["conversation"]["scope_type"] == "system"
     assert changed.data["conversation"]["scope_id"] is None
+    assert changed.data["conversation"]["creation_session_id"] is None
+    assert changed.data["conversation"]["project_id"] is None
     listing = asyncio.run(list_system_conversations(conversations, scope_type="system"))
     assert [item["id"] for item in listing.data["items"]] == [conversation_id]
