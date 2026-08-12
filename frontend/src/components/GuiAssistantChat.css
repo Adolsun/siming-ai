@@ -682,6 +682,11 @@
   background: var(--ant-color-error);
 }
 
+.gui-chat-creation-run-completed::before,
+.gui-chat-creation-run-partial_success::before {
+  background: var(--ant-color-success);
+}
+
 .gui-chat-creation-run-head {
   display: flex;
   align-items: flex-start;

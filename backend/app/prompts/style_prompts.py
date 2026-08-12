@@ -133,15 +133,16 @@ def build_style_context(
             "人物对白用简短口语，不要写长篇独白。叙事句优先主谓宾结构。"
             "本条优先级高于其他风格偏好。"
         )
-    # Hard style constraints — top priority
-    forbidden_patterns = effective_forbidden_patterns(project)
-    if forbidden_patterns:
-        patterns = [line.strip() for line in forbidden_patterns.splitlines() if line.strip()]
-        if patterns:
-            parts.append("【禁用句式 — 全局硬约束】\n" + "\n".join(f"- {pattern}" for pattern in patterns))
-            parts.append("生成或改写时必须主动避开上述句式，包括同义变体和近似模板。")
-    # Anti-AI-flavor core rules — skipped when include_anti_ai=False (chapter_writer loads full version)
+    # De-AI constraints belong to the explicit revision flow. Base chapter
+    # generation passes include_anti_ai=False so it does not silently perform
+    # the standalone de-AI step inside the writing task.
     if include_anti_ai:
+        forbidden_patterns = effective_forbidden_patterns(project)
+        if forbidden_patterns:
+            patterns = [line.strip() for line in forbidden_patterns.splitlines() if line.strip()]
+            if patterns:
+                parts.append("【禁用句式 — 全局硬约束】\n" + "\n".join(f"- {pattern}" for pattern in patterns))
+                parts.append("生成或改写时必须主动避开上述句式，包括同义变体和近似模板。")
         from .anti_ai_prompts import (
             TIER1_BANNED_WORDS,
             AI_PATTERN_1_HIGH_FREQ_WORDS,
@@ -184,7 +185,11 @@ def build_style_context(
         "（6）禁止分解动作——不要'他伸出手，握住门把，转动，然后推开'。只写'他推开门'。"
         "不推动剧情的细节一律删除。描写必须同时完成三件事之一：推动剧情、揭示角色、制造紧张。三者都不占的句子砍掉。"
     )
-    rhetoric_guidelines = effective_rhetoric_guidelines(project)
+    rhetoric_guidelines = (
+        effective_rhetoric_guidelines(project)
+        if include_anti_ai
+        else (project.rhetoric_guidelines or "").strip()
+    )
     if rhetoric_guidelines:
         parts.append(f"修辞限制：{rhetoric_guidelines}")
     custom = (project.custom_style_prompt or "").strip()

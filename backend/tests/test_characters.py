@@ -104,6 +104,31 @@ class TestCharacterCRUD(CharacterTestCase):
         self.assertTrue(data["is_evolution_tracked"])
         self.assertEqual(data["profile"]["core_motivation"], "查清养父失踪真相")
 
+    def test_create_and_network_normalize_descriptive_protagonist_role(self):
+        project_id = self.create_project()
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/characters",
+            json={
+                "name": "特昂糖",
+                "role_type": "主角，穿越者，陆家三岁孙女",
+                "background": "前世为研究员，穿越后成为陆家幼女。",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["role_type"], "protagonist")
+        self.assertIn("身份补充：穿越者、陆家三岁孙女", response.json()["data"]["background"])
+
+        network = self.client.get(f"{API_PREFIX}/projects/{project_id}/characters/relationships")
+        self.assertEqual(network.status_code, 200)
+        self.assertEqual(network.json()["data"]["nodes"][0]["role_type"], "protagonist")
+
+        db = SessionLocal()
+        try:
+            stored = db.query(Character).filter(Character.project_id == project_id).one()
+            self.assertEqual(stored.role_type, "protagonist")
+        finally:
+            db.close()
+
     def test_list_characters_isolated_by_project(self):
         project_a = self.create_project("作品A")
         project_b = self.create_project("作品B")

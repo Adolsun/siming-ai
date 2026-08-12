@@ -31,6 +31,7 @@ export interface CatalogingJob {
   completed_chapters: number
   failed_chapters: number
   error?: string | null
+  review_warning?: string | null
   created_at?: string | null
   updated_at?: string | null
   completed_at?: string | null
@@ -43,6 +44,7 @@ export interface CatalogingRun {
   status: string
   chapter_order: number
   error?: string | null
+  review_warning?: string | null
 }
 
 export interface CatalogingCandidate {

@@ -42,16 +42,16 @@ class BuildExternalWritingPlanTest(unittest.TestCase):
         step_names = set(plan.steps.keys())
         self.assertIn("prepare_context", step_names)
         self.assertIn("save_draft", step_names)
-        self.assertIn("record_review", step_names)
+        self.assertNotIn("record_review", step_names)
         self.assertIn("create_chapter", step_names)
-        self.assertIn("archive_updates", step_names)
+        self.assertEqual(len(step_names), 3)
 
     def test_plan_steps_have_dependencies(self):
         intent = {"intent_type": "external_writing", "requirements": "写第三章"}
         plan = build_plan_from_intent(intent)
         self.assertEqual(plan.steps["save_draft"].depends_on, ["prepare_context"])
-        self.assertEqual(plan.steps["create_chapter"].depends_on, ["record_review"])
-        self.assertEqual(plan.steps["archive_updates"].depends_on, ["create_chapter"])
+        self.assertEqual(plan.steps["create_chapter"].depends_on, ["save_draft"])
+        self.assertTrue(plan.steps["create_chapter"].args["skip_style_repair"])
 
 
 if __name__ == "__main__":

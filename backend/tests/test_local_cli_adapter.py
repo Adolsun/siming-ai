@@ -89,6 +89,16 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             finally:
                 Path(output_file).unlink(missing_ok=True)
 
+    def test_codex_writing_uses_low_reasoning_without_overriding_explicit_value(self):
+        args = ["exec", "-"]
+        LocalCLIAdapter._apply_codex_writing_options(args, "writing")
+        self.assertEqual(args[-1], "-")
+        self.assertIn('model_reasoning_effort="low"', args)
+
+        explicit = ["exec", "-c", 'model_reasoning_effort="high"', "-"]
+        LocalCLIAdapter._apply_codex_writing_options(explicit, "writing")
+        self.assertNotIn('model_reasoning_effort="low"', explicit)
+
     def test_opencode_default_args_are_safe(self):
         launch = parse_cli_launch(None, "opencode_cli", "hello", OPENCODE_DEFAULT_MODEL)
         self.assertEqual(
@@ -300,6 +310,23 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         text = adapter._normalize_output(
             '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}\n'
             '{"type":"step_finish","sessionID":"session-1","part":{"type":"step-finish"}}\n'
+        )
+        self.assertEqual(text, "")
+
+    def test_normalize_opencode_tool_use_does_not_become_model_text(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        text = adapter._normalize_output(
+            '{"type":"tool_use","part":{"type":"tool","tool":"read",'
+            '"state":{"status":"completed","output":"task file contents"}}}\n'
+            '{"type":"text","part":{"type":"text","text":"最终正文"}}\n'
+        )
+        self.assertEqual(text, "最终正文")
+
+    def test_normalize_opencode_tool_use_only_output_is_empty(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        text = adapter._normalize_output(
+            '{"type":"tool_use","part":{"type":"tool","tool":"read",'
+            '"state":{"status":"completed","output":"task file contents"}}}\n'
         )
         self.assertEqual(text, "")
 
@@ -608,6 +635,51 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             rendered = " ".join(launch.args)
             self.assertIn(prompt_file, rendered)
             self.assertNotIn("\n", rendered)
+            attached = [
+                launch.args[index + 1]
+                for index, item in enumerate(launch.args[:-1])
+                if item == "--file"
+            ]
+            self.assertNotIn(prompt_file, attached)
+
+    def test_opencode_native_launch_passes_short_prompt_without_read_tool(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            launch, prompt_file = adapter._opencode_family_launch(
+                prompt="[SYSTEM]\nroute the request\n[USER]\nwrite chapter one",
+                model="opencode/deepseek-v4-flash-free",
+                cwd=directory,
+                attachments=[],
+                allow_mcp=False,
+                direct_prompt_safe=True,
+            )
+
+            rendered = " ".join(launch.args)
+            self.assertEqual(prompt_file, "")
+            self.assertIn("[SYSTEM] route the request [USER] write chapter one", rendered)
+            self.assertNotIn("请读取 UTF-8 任务文件", rendered)
+            self.assertNotIn("\n", rendered)
+
+    def test_opencode_pointer_keeps_explicit_source_attachments(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            attachment = Path(directory) / "source.txt"
+            attachment.write_text("reference", encoding="utf-8")
+            launch, prompt_file = adapter._opencode_family_launch(
+                prompt="[SYSTEM]\nroute the request\n[USER]\nwrite chapter one",
+                model="opencode/deepseek-v4-flash-free",
+                cwd=directory,
+                attachments=[str(attachment)],
+                allow_mcp=False,
+            )
+            attached = [
+                launch.args[index + 1]
+                for index, item in enumerate(launch.args[:-1])
+                if item == "--file"
+            ]
+
+            self.assertEqual(attached, [str(attachment)])
+            self.assertNotIn(prompt_file, attached)
 
     def test_opencode_isolated_read_hides_global_config_and_external_paths(self):
         adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")

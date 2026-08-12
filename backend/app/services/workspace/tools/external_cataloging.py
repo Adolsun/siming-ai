@@ -1066,8 +1066,12 @@ async def save_external_cataloging_candidates(
 
     API-free: stores candidates in CatalogingCandidate table.
     """
-    from app.services.cataloging.candidate_store import create_candidate_from_raw
+    from app.services.cataloging.candidate_store import (
+        create_candidate_from_raw,
+        ensure_required_chapter_outline,
+    )
     from app.services.cataloging.candidate_validation import inspect_candidate_coverage
+    from app.services.cataloging.jsonl import expand_candidate_records
 
     job_id = str(args.get("job_id") or "").strip()
     chapter_id = str(args.get("chapter_id") or "").strip()
@@ -1186,25 +1190,37 @@ async def save_external_cataloging_candidates(
     for cand_data in candidates:
         if not isinstance(cand_data, dict):
             continue
-        created = create_candidate_from_raw(
-            db,
-            job,
-            chapter_run,
-            cand_data,
-            existing_count + saved,
-            source_task="external_agent",
+        for record in expand_candidate_records(cand_data):
+            created = create_candidate_from_raw(
+                db,
+                job,
+                chapter_run,
+                record,
+                existing_count + saved,
+                source_task="external_agent",
+            )
+            if created.get("bad_line"):
+                warnings.append(str(created.get("error") or "Unsupported candidate"))
+                continue
+            if created.get("skipped"):
+                warnings.append(str(created.get("reason") or "Candidate skipped because it lacks usable content"))
+                continue
+            if created.get("duplicate"):
+                duplicates += 1
+                continue
+            if created.get("candidate"):
+                saved += 1
+
+    # A provider or CLI may stop immediately after a valid summary. The
+    # chapter title and the staged summary are already authoritative, so the
+    # server can safely project the mandatory chapter outline without asking
+    # the model to spend another turn recreating the whole candidate set.
+    projected_outline = ensure_required_chapter_outline(db, job, chapter_run)
+    if projected_outline is not None:
+        saved += 1
+        warnings.append(
+            "The model returned no chapter-level outline; Siming created it deterministically from the chapter title and summary."
         )
-        if created.get("bad_line"):
-            warnings.append(str(created.get("error") or "Unsupported candidate"))
-            continue
-        if created.get("skipped"):
-            warnings.append(str(created.get("reason") or "Candidate skipped because it lacks usable content"))
-            continue
-        if created.get("duplicate"):
-            duplicates += 1
-            continue
-        if created.get("candidate"):
-            saved += 1
 
     db.flush()
     stored_candidates = (
@@ -1212,8 +1228,13 @@ async def save_external_cataloging_candidates(
         .filter(CatalogingCandidate.chapter_run_id == chapter_run.id)
         .all()
     )
-    coverage = inspect_candidate_coverage(stored_candidates)
-    candidate_set_complete = coverage.is_complete
+    coverage = inspect_candidate_coverage(
+        stored_candidates,
+        db=db,
+        project_id=project_id,
+    )
+    missing_required_items = coverage.cli_parity_missing
+    candidate_set_complete = not missing_required_items
     if candidate_set_complete:
         # Saved candidates still need to be applied to project data. Keep the
         # run blocking here so external agents cannot report completion before
@@ -1232,7 +1253,7 @@ async def save_external_cataloging_candidates(
         chapter_run.status = "in_progress" if direct_candidate_mode else "facts_saved"
         job.status = "running"
         job.blocked_chapter_id = chapter_id
-        missing_text = ", ".join(coverage.missing)
+        missing_text = ", ".join(missing_required_items)
         warnings.append(
             f"Candidate set is incomplete; missing required items: {missing_text}"
         )
@@ -1243,11 +1264,42 @@ async def save_external_cataloging_candidates(
         )
     commit_session(db)
 
+    auto_applied = False
+    apply_status = ""
+    if (
+        candidate_set_complete
+        and managed_binding
+        and job.execution_mode == "auto"
+        and job.execution_backend == "local_cli_agent"
+    ):
+        # A Siming-managed CLI turn is already running under a user-started
+        # automatic cataloging job.  Apply at the transactional MCP boundary
+        # instead of waiting for the model to remember a second tool call.  In
+        # manual mode candidates remain staged for explicit user confirmation.
+        from app.services.workspace.tools.cataloging import apply_pending_cataloging
+
+        apply_result = await apply_pending_cataloging(
+            db,
+            effective_project_id,
+            {"job_id": job_id},
+        )
+        apply_status = str(apply_result.get("status") or "")
+        if apply_status == "ok":
+            auto_applied = True
+            next_tool = "verify_external_cataloging_progress"
+            note = (
+                "Automatic mode applied the complete candidate set transactionally. "
+                "Verify once, then end this CLI turn without saving or applying again."
+            )
+        commit_session(db)
+
     result = {
         "tool": "save_external_cataloging_candidates",
         "status": "ok",
         "detail": (
-            f"Saved {saved} candidates"
+            f"Saved {saved} candidates and applied them automatically"
+            if auto_applied
+            else f"Saved {saved} candidates"
             if candidate_set_complete
             else f"Saved {saved} candidates; candidate set is incomplete"
         ),
@@ -1259,8 +1311,11 @@ async def save_external_cataloging_candidates(
             "duplicates_skipped": duplicates,
             "candidates_total": coverage.total,
             "candidate_set_complete": candidate_set_complete,
-            "missing_required_items": coverage.missing,
+            "missing_required_items": missing_required_items,
             "chapter_run_status": chapter_run.status,
+            "auto_applied": auto_applied,
+            "apply_status": apply_status or None,
+            "coverage": coverage.to_dict(),
             "next_tool": next_tool,
             "workflow_reminder": _workflow_reminder(
                 next_tool,

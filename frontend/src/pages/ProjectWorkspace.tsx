@@ -21,6 +21,7 @@ import {
   RobotOutlined,
   BulbOutlined,
   ClockCircleOutlined,
+  CompassOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import AiSidePanel from '../components/AiSidePanel'
@@ -50,11 +51,13 @@ const PromptPacksPage = lazy(() => import('./PromptPacksPage'))
 const ScheduledTasksPage = lazy(() => import('./ScheduledTasksPage').then((module) => ({ default: module.ScheduledTasksPage })))
 const NarrativeGovernancePage = lazy(() => import('./NarrativeGovernancePage'))
 const ContextGovernancePage = lazy(() => import('./ContextGovernancePage'))
+const CreationBriefPage = lazy(() => import('./CreationBriefPage'))
 
-type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'context' | 'import' | 'skills' | 'prompts' | 'scheduler'
+type MenuKey = 'creation' | 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'context' | 'import' | 'skills' | 'prompts' | 'scheduler'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
+  creation: '创作设定',
   context: '上下文治理',
   writer: '写作工作台',
   outline: '大纲规划',
@@ -171,6 +174,7 @@ function ProjectWorkspace() {
       icon: <TeamOutlined />,
       label: '故事资料',
       children: [
+        { key: 'creation', icon: <CompassOutlined />, label: '创作设定' },
         { key: 'characters', icon: <TeamOutlined />, label: '角色' },
         { key: 'world', icon: <GlobalOutlined />, label: '世界观' },
         { key: 'visualization', icon: <ApartmentOutlined />, label: '关系图' },
@@ -203,6 +207,7 @@ function ProjectWorkspace() {
   ]
 
   const menuParentByView: Partial<Record<MenuKey, string>> = {
+    creation: 'story-library',
     characters: 'story-library',
     world: 'story-library',
     visualization: 'story-library',
@@ -221,8 +226,15 @@ function ProjectWorkspace() {
   /** Tab renderers — wrapped in closures for TabCache lazy evaluation */
   const tabRenderers = projectId
     ? {
+        creation: () => <CreationBriefPage projectId={projectId} />,
         context: () => <ContextGovernancePage projectId={projectId} />,
-        writer: () => <WriterPage projectId={projectId} />,
+        writer: () => (
+          <WriterPage
+            projectId={projectId}
+            focusChapterId={searchParams.get('chapter') || undefined}
+            sourceLocatorKey={searchParams.get('locate') || undefined}
+          />
+        ),
         outline: () => <OutlinePage projectId={projectId} />,
         characters: () => <CharactersPage projectId={projectId} />,
         world: () => <WorldbuildingPage projectId={projectId} />,

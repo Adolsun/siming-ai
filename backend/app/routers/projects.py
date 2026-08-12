@@ -1,7 +1,7 @@
 """Project HTTP interface."""
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -26,6 +26,15 @@ router = APIRouter(tags=["projects"])
 
 class ProjectStorageRepairRequest(BaseModel):
     action: Literal["import_orphans", "refresh_mirror"] = Field(...)
+
+
+class ProjectCreationBriefPatchRequest(BaseModel):
+    """Author-controlled updates to a formal project's creation brief."""
+
+    expected_revision: int | None = Field(None, ge=0)
+    constraints: dict[str, Any] | None = None
+    creative_direction: dict[str, Any] | None = None
+    world_style: dict[str, Any] | None = None
 
 
 @router.get("/projects", response_model=ApiResponse[ProjectListData])
@@ -57,7 +66,10 @@ def get_project(
 
 
 @router.get("/projects/{project_id}/creation-brief")
-def get_project_creation_brief(project_id: str, db: Session = Depends(get_db)):
+def get_project_creation_brief(
+    project_id: str,
+    db: Annotated[Session, Depends(get_db)],
+):
     """Read the authoritative, editable brief linked to a formal project."""
     from ..services.novel_creation_workspace import serialize_session
     from ..services.project_creation_context import (
@@ -75,7 +87,10 @@ def get_project_creation_brief(project_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/creation-brief/ensure")
-def ensure_project_creation_brief(project_id: str, db: Session = Depends(get_db)):
+def ensure_project_creation_brief(
+    project_id: str,
+    db: Annotated[Session, Depends(get_db)],
+):
     """Create an editable brief for imported/legacy projects when requested."""
     from ..services.novel_creation_workspace import serialize_session
     from ..services.project_creation_context import (
@@ -93,6 +108,35 @@ def ensure_project_creation_brief(project_id: str, db: Session = Depends(get_db)
         "session": serialize_session(session, include_runs=False),
         "context": project_creation_context(session),
     })
+
+
+@router.patch("/projects/{project_id}/creation-brief")
+async def patch_project_creation_brief(
+    project_id: str,
+    payload: ProjectCreationBriefPatchRequest,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Save visible creation constraints, direction and style for a formal work."""
+    from ..services.workspace.tools.projects import update_project_creation_brief
+
+    result = await update_project_creation_brief(
+        db,
+        project_id,
+        payload.model_dump(exclude_none=True),
+    )
+    status = str(result.get("status") or "error")
+    detail = str(result.get("detail") or "立项资料保存失败")
+    if status == "needs_confirmation":
+        db.rollback()
+        raise HTTPException(status_code=409, detail=detail)
+    if status != "ok":
+        db.rollback()
+        raise HTTPException(
+            status_code=404 if detail == "未找到作品" else 400,
+            detail=detail,
+        )
+    commit_session(db)
+    return ApiResponse.success(data=result["data"], message=detail)
 
 
 @router.put("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])

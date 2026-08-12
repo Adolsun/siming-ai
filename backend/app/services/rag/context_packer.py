@@ -31,6 +31,7 @@ from ...database.models import (
     WorldbuildingEntry,
 )
 from ..context_builders import (
+    _build_character_ai_context,
     _build_character_context,
     _build_character_relationships,
     _build_outline_context,
@@ -403,8 +404,9 @@ def _pack_characters(
                 if not char:
                     continue
                 char_ctx = _build_character_context(char)
+                ai_ctx = _build_character_ai_context(char)
                 rels_ctx = _build_character_relationships(db, project_id, char.id)
-                section = f"{char_ctx}\n{rels_ctx}"
+                section = "\n".join(part for part in (char_ctx, ai_ctx, rels_ctx) if part)
                 if total_used + len(section) > budget.max_character_chars:
                     break
                 parts.append(section)

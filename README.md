@@ -12,7 +12,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 [![Frontend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
-[下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [下载 Android 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.apk) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
+[下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
 > 💬 **用户交流 QQ 群：814283606**  
 > 欢迎交流使用体验、小说创作方法与功能建议。大陆地区访问 GitHub 下载较慢时，可使用 [Gitee 同步镜像 Releases](https://gitee.com/teangtang13/siming-ai/releases) 备用下载；下载后请核对版本号与对应的 SHA-256。
@@ -117,7 +117,7 @@ docker compose -f compose.gateway.yml up -d
 
 ## 下载与信任
 
-当前 `Siming.exe` **尚未完成代码签名**。PyInstaller 打包的单文件 EXE 会在运行时解压内嵌 Python 组件、启动本地 Web 服务，并在用户授权时启动本机 CLI，因此部分杀毒软件可能产生误报。
+部分版本（包括 3.2.0）的 `Siming.exe` **尚未完成代码签名**，只提供用户主动下载、核对 SHA256 后手动安装。安全更新器会拒绝未签名包，不能用自动更新安装；具备可信 Windows 代码签名后才会恢复应用内更新。PyInstaller 打包的单文件 EXE 会在运行时解压内嵌 Python 组件、启动本地 Web 服务，并在用户授权时启动本机 CLI，因此未签名包还可能触发杀毒软件误报。
 
 为减少供应链风险：
 
@@ -125,7 +125,7 @@ docker compose -f compose.gateway.yml up -d
 2. 下载同一版本的 `sha256.txt`，用 `certutil -hashfile Siming.exe SHA256` 计算文件哈希并与其对照。
 3. 不要使用网盘、聊天群或第三方网站二次分发的 EXE。
 
-发行页会同时提供 `Siming.exe`、`update.json`、`sha256.txt`、签名的 `Siming.apk` 和 `Siming-apk-sha256.txt`。桌面三件套会校验版本、下载地址和 SHA256；APK 还会校验签名、对齐、包名和版本号。
+3.2.0 发行页提供 Windows 桌面三件套：`Siming.exe`、`update.json` 和 `sha256.txt`。本版本暂不发布 Android APK。
 
 ## 外部 Agent 与提示词投稿
 

@@ -725,6 +725,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             },
             "role_type": {
                 "type": "string",
+                "enum": ["protagonist", "supporting", "antagonist", "mentor", "other"],
                 "description": "角色类型：protagonist|supporting|antagonist|mentor|other，默认supporting",
             },
             "age": {
@@ -783,6 +784,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             },
             "role_type": {
                 "type": "string",
+                "enum": ["protagonist", "supporting", "antagonist", "mentor", "other"],
                 "description": "更新角色类型：protagonist|supporting|antagonist|mentor|other",
             },
             "ai_config": {

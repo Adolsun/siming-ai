@@ -14,9 +14,12 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.exceptions import ValidationError
 from app.database.models import APIConfig, Base, OpenCodeActivationJob
 from app.routers.getting_started import (
+    OpenCodeActivateRequest,
     OpenCodeConfigureRequest,
+    activate_opencode,
     configure_opencode,
     get_getting_started_status,
 )
@@ -120,6 +123,94 @@ def test_summary_status_does_not_launch_cli_probes():
     assert result.data["has_usable_models"] is False
     assert result.data["recommended_action"] == "activate_opencode"
     assert result.data["free_models"] == []
+
+
+def test_usable_model_is_a_stable_quick_start_completion_without_cli_probe():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+            is_global_default=False,
+        ))
+        db.add(OpenCodeActivationJob(
+            status="running",
+            phase="testing",
+            message="stale activation",
+        ))
+        db.commit()
+        with patch("app.routers.getting_started.inspect_opencode") as inspect_probe:
+            result = get_getting_started_status(summary=False, db=db)
+
+    inspect_probe.assert_not_called()
+    assert result.data["needs_setup"] is False
+    assert result.data["has_usable_models"] is True
+    assert result.data["available_model"] == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+    }
+    assert result.data["activation_job"] is None
+
+
+def test_quick_start_activation_is_rejected_when_a_model_is_already_usable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+        ))
+        db.commit()
+        with pytest.raises(ValidationError, match="已有通过验证的可用模型"):
+            activate_opencode(OpenCodeActivateRequest(), db)
+
+
+def test_startup_does_not_resume_activation_when_a_model_is_already_usable():
+    class UnexpectedWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("a completed onboarding state must not start a worker")
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+        ))
+        job = OpenCodeActivationJob(
+            status="running",
+            phase="testing",
+            message="stale activation",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    with patch("app.database.session.SessionLocal", Session), patch.object(
+        opencode_onboarding.threading, "Thread", UnexpectedWorker
+    ):
+        resumed = opencode_onboarding.resume_incomplete_opencode_activations()
+
+    with Session() as db:
+        saved = db.query(OpenCodeActivationJob).filter(
+            OpenCodeActivationJob.id == job_id
+        ).one()
+        assert saved.status == "ready"
+        assert saved.phase == "ready"
+        assert saved.percent == 100
+        assert saved.completed_at is not None
+        assert "停止重复检测" in saved.message
+    assert resumed == 0
 
 
 def test_onboarding_connection_test_can_request_a_shorter_timeout():

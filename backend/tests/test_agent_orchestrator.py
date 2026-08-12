@@ -182,12 +182,14 @@ class PlannerTestCase(unittest.TestCase):
         self.assertIn("search_outline", graph.steps)
         self.assertIn("chapter_writer", graph.steps)
         self.assertIn("create_chapter", graph.steps)
-        self.assertIn("archive_chapter_after_write", graph.steps)
-        self.assertEqual(len(graph.steps), 4)
+        self.assertEqual(len(graph.steps), 3)
         # Verify dependencies
         self.assertEqual(graph.steps["chapter_writer"].depends_on, ["search_outline"])
         self.assertEqual(graph.steps["create_chapter"].depends_on, ["chapter_writer"])
-        self.assertEqual(graph.steps["archive_chapter_after_write"].depends_on, ["create_chapter"])
+        self.assertEqual(
+            graph.steps["create_chapter"].args["_cataloging_model"],
+            "{chapter_writer.data.model}",
+        )
 
     def test_quality_chapter_plan_generation_single_char(self):
         graph = plan_quality_chapter(
@@ -195,24 +197,31 @@ class PlannerTestCase(unittest.TestCase):
             involved_characters=["Alice"],
         )
         self.assertEqual(graph.name, "quality_chapter")
-        self.assertIn("roleplay", graph.steps)
+        self.assertEqual(graph.steps["chapter_writer"].args["involved_characters"], ["Alice"])
+        self.assertNotIn("roleplay", graph.steps)
         self.assertNotIn("dialogue_battle", graph.steps)
-        self.assertEqual(graph.steps["roleplay"].tool, "roleplay_character")
 
     def test_quality_chapter_plan_generation_multi_char(self):
         graph = plan_quality_chapter(
             outline_node_id="node-1",
             involved_characters=["Alice", "Bob"],
         )
-        self.assertIn("dialogue_battle", graph.steps)
+        self.assertEqual(
+            graph.steps["chapter_writer"].args["involved_characters"],
+            ["Alice", "Bob"],
+        )
+        self.assertNotIn("dialogue_battle", graph.steps)
         self.assertNotIn("roleplay", graph.steps)
-        self.assertEqual(graph.steps["dialogue_battle"].tool, "dialogue_battle")
 
-    def test_quality_chapter_plan_has_all_steps(self):
+    def test_quality_chapter_plan_keeps_only_required_steps(self):
         graph = plan_quality_chapter(outline_node_id="node-1")
-        expected = {"preview_context", "design_plot", "roleplay", "chapter_writer",
-                    "evaluate_chapter", "create_chapter", "archive_chapter_after_write"}
+        expected = {"search_outline", "chapter_writer", "create_chapter"}
         self.assertEqual(set(graph.steps.keys()), expected)
+        self.assertTrue(graph.steps["create_chapter"].args["skip_style_repair"])
+
+    def test_fast_chapter_plan_defers_style_repair(self):
+        graph = plan_fast_chapter(outline_node_id="node-1")
+        self.assertTrue(graph.steps["create_chapter"].args["skip_style_repair"])
 
     def test_cataloging_init_plan_generation(self):
         graph = plan_cataloging_init(chapter_ids=["c1", "c2"])
@@ -421,7 +430,7 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertIsNotNone(plan.graph_json)
 
         steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
-        self.assertEqual(len(steps), 4)
+        self.assertEqual(len(steps), 3)
         for s in steps:
             self.assertEqual(s.status, "pending")
 
@@ -809,22 +818,20 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         orchestrator = PlanOrchestrator(self.db, "proj-2")
         plan = orchestrator.create_plan(graph)
         steps = {step.step_key: step for step in plan.steps}
-        for key in ("preview_context", "design_plot", "roleplay", "chapter_writer"):
+        for key in ("search_outline", "chapter_writer"):
             steps[key].status = "ok"
             steps[key].result_json = json.dumps({"tool": steps[key].tool, "status": "ok", "data": {}})
-        steps["preview_context"].result_json = json.dumps({
-            "tool": "preview_writing_context",
+        steps["search_outline"].result_json = json.dumps({
+            "tool": "search_outline",
             "status": "ok",
-            "data": {"outline_context": {"title": outline.title}},
+            "data": [{"id": outline.id, "title": outline.title}],
         })
         steps["chapter_writer"].result_json = json.dumps({
             "tool": "chapter_writer",
             "status": "ok",
             "data": {"draft_id": "draft-resume", "content_ref": "draft-resume"},
         })
-        steps["evaluate_chapter"].status = "error"
-        steps["create_chapter"].status = "blocked"
-        steps["archive_chapter_after_write"].status = "blocked"
+        steps["create_chapter"].status = "error"
         plan.status = "error"
         target_key = f"project:proj-2:outline:{outline.id}"
         idempotency_key = f"create_chapter:proj-2:{outline.id}"
@@ -860,7 +867,7 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         _run_async(_collect_events(orchestrator.resume_plan(plan.id)))
 
         self.assertNotIn("chapter_writer", called_tools)
-        self.assertIn("evaluate_chapter", called_tools)
+        self.assertNotIn("evaluate_chapter", called_tools)
         self.assertIn("create_chapter", called_tools)
         self.db.refresh(steps["create_chapter"])
         refreshed_args = json.loads(steps["create_chapter"].args_json)
@@ -1037,7 +1044,7 @@ class AgentRouterTestCase(unittest.TestCase):
         data = resp.json()["data"]
         self.assertEqual(data["name"], "fast_chapter")
         self.assertEqual(data["status"], "pending")
-        self.assertEqual(len(data["steps"]), 4)
+        self.assertEqual(len(data["steps"]), 3)
 
     def test_get_plan_endpoint(self):
         pid = self._create_project()

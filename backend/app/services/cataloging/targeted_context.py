@@ -210,6 +210,7 @@ def _character_context(character: Character) -> dict:
         "active_conflict": _clip(character.active_conflict, 260),
         "abilities_state": _clip(character.abilities_state, 260),
         "items_or_assets": _clip(character.items_or_assets, 260),
+        "profile": dict(character.profile_json or {}),
         "recent_timeline": [
             {
                 "event_type": event.event_type,
@@ -221,6 +222,7 @@ def _character_context(character: Character) -> dict:
         "ai_style": {
             "tone_style": config.tone_style,
             "emotion_tendency": config.emotion_tendency,
+            "verbosity": config.verbosity,
             "catchphrases": _parse_list(config.catchphrases)[:6],
             "custom_system_prompt": _clip(config.custom_system_prompt, 420),
         } if config else None,

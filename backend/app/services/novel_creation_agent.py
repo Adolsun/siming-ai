@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import is_local_cli_provider
 from app.core.json_repair import parse_json_object
+from app.database.models import NovelCreationStageRun
 from app.modules.creation.interfaces.agent_scope import CREATION_AGENT_TOOL_NAMES
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.services.workspace.executor import execute_workspace_action
@@ -424,6 +425,22 @@ async def run_creation_agent(
         if candidate:
             active_run = candidate
             break
+    if active_run:
+        run_id = str(active_run.get("id") or active_run.get("run_id") or "").strip()
+        durable_run = db.get(NovelCreationStageRun, run_id) if run_id else None
+        if durable_run and durable_run.status in {
+            "waiting_user", "waiting_author", "completed", "failed",
+            "cancelled", "interrupted", "superseded",
+        }:
+            from app.services.novel_creation_run_presentation import present_serialized_run
+
+            active_run = await present_serialized_run(
+                db,
+                run=durable_run,
+                model=model,
+                assistant_reply=final_reply,
+                tool_results=tool_results,
+            )
     return {
         "reply": final_reply,
         "tool_results": tool_results,

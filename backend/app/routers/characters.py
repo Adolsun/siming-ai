@@ -36,6 +36,7 @@ from ..services.character_merge_service import (
     find_duplicate_character_candidates,
     merge_characters,
 )
+from ..services.character_role_types import append_character_role_description, normalize_character_role_type
 
 router = APIRouter(tags=["characters"])
 
@@ -58,14 +59,15 @@ def create_character(
     """Create a character."""
     db = command.session
     get_project_or_404(db, project_id)
+    background = append_character_role_description(payload.background, payload.role_type)
     character = character_workspace(db).create_character(
         project_id=project_id,
         name=payload.name,
         appearance=payload.appearance,
         personality=payload.personality,
-        background=payload.background,
+        background=background,
         abilities=dumps_list(payload.abilities),
-        role_type=payload.role_type,
+        role_type=normalize_character_role_type(payload.role_type),
         age=payload.age,
         life_status=payload.life_status,
         current_location=payload.current_location,
@@ -103,7 +105,7 @@ def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
         {
             "id": character.id,
             "name": character.name,
-            "role_type": character.role_type,
+            "role_type": normalize_character_role_type(character.role_type),
             "current_version": character.current_version,
         }
         for character in characters
@@ -211,6 +213,16 @@ def update_character(
     character = get_character_or_404(db, project_id, character_id)
     update_data = payload.model_dump(exclude_unset=True)
     change_summary = update_data.pop("change_summary", None)
+    if "role_type" in update_data:
+        raw_role_type = update_data["role_type"]
+        update_data["background"] = append_character_role_description(
+            update_data.get("background", character.background),
+            raw_role_type,
+        )
+        update_data["role_type"] = normalize_character_role_type(
+            raw_role_type,
+            default=character.role_type or "other",
+        )
     if not update_data:
         raise ValidationError("未提供任何更新字段")
 

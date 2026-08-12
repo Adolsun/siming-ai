@@ -786,6 +786,11 @@ async def execute_tool(
     # project state.  It is deliberately internal-only and never part of the
     # public tool schema.
     arguments.setdefault("_context_execution_route", "external_mcp")
+    if run_id and tool_name in {"create_chapter", "update_chapter"}:
+        # Trusted, out-of-band provenance used only to select the matching
+        # canonical cataloging route after the chapter commit.  Public clients
+        # cannot spoof this marker through a tool schema argument.
+        arguments["_source_agent_run_id"] = str(run_id)
 
     # Check confirmation token for legacy write tiers and explicitly sensitive tools.
     # Trusted local mode is intentionally frictionless: it can execute Siming MCP

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Card,
@@ -31,7 +31,6 @@ import {
   FolderOpenOutlined,
   SaveOutlined,
   DesktopOutlined,
-  DownloadOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
   ApiOutlined,
@@ -49,6 +48,12 @@ import {
 } from '../shared/query/modelConfigs'
 import GatewaySettingsPanel from '../features/gateway/GatewaySettingsPanel'
 import type { LauncherGatewaySettings } from '../features/gateway/types'
+import {
+  UpdateSettingsCard,
+  type UpdateChannel,
+  type UpdateStatus,
+} from '../features/settings/UpdateSettingsCard'
+import { useInitialSettingsLoad } from '../features/settings/useInitialSettingsLoad'
 import {
   CUSTOM_PROVIDER_VALUE,
   DEFAULT_CLI_ARGS,
@@ -97,46 +102,12 @@ interface ContentRootSettings {
 }
 
 type LaunchMode = 'desktop' | 'browser'
-type UpdateChannel = 'stable' | 'preview'
 
 interface LauncherSettings extends LauncherGatewaySettings {
   launch_mode: LaunchMode
   update_channel: UpdateChannel
   restart_required: boolean
   browser_mode_description: string
-}
-
-interface UpdateSignature {
-  valid: boolean
-  status: string
-  subject?: string
-  thumbprint?: string
-}
-
-interface UpdateMetadata {
-  version: string
-  channel: UpdateChannel
-  source: string
-  download_url: string
-  sha256_available: boolean
-}
-
-interface StagedUpdate {
-  version: string
-  sha256: string
-  signature?: UpdateSignature | null
-  ready_to_install: boolean
-  error?: string
-}
-
-interface UpdateStatus {
-  current_version: string
-  update_channel: UpdateChannel
-  update_available: boolean
-  update?: UpdateMetadata | null
-  staged_update?: StagedUpdate | null
-  automatic_updates: boolean
-  downloaded?: boolean
 }
 
 interface CliIntegration {
@@ -311,10 +282,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     })
   }
 
-  useEffect(() => {
-    fetchContentRoot()
-    fetchLauncherSettings()
-  }, [fetchContentRoot, fetchLauncherSettings])
+  useInitialSettingsLoad(fetchContentRoot, fetchLauncherSettings)
 
   const saveLaunchMode = async () => {
     setLauncherLoading(true)
@@ -920,96 +888,23 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         </Space>
       </Card>
 
-      <Card className="settings-card" title={<span><SafetyCertificateOutlined /> 安全更新</span>}>
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Paragraph style={{ margin: 0 }}>
-            司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 和 Windows 代码签名校验，才能安装。
-          </Paragraph>
-          <Radio.Group
-            value={updateChannel}
-            onChange={(event) => {
-              setUpdateChannel(event.target.value)
-              setUpdateStatus(null)
-            }}
-          >
-            <Space direction="vertical" size={8}>
-              <Radio value="stable">
-                <Text strong>稳定通道</Text>
-                <Text type="secondary"> 只接收正式版本，适合日常创作。</Text>
-              </Radio>
-              <Radio value="preview">
-                <Text strong>预览通道</Text>
-                <Text type="secondary"> 可接收 alpha、beta 和 RC，用于参与 3.0 测试。</Text>
-              </Radio>
-            </Space>
-          </Radio.Group>
-          <Space wrap>
-            <Button
-              icon={<SaveOutlined />}
-              aria-label="保存更新通道"
-              loading={launcherLoading}
-              disabled={launcherSettings?.update_channel === updateChannel}
-              onClick={saveUpdateChannel}
-            >
-              保存更新通道
-            </Button>
-            <Button aria-label="检查更新" icon={<ReloadOutlined />} loading={checkingUpdate} onClick={checkForUpdates}>
-              检查更新
-            </Button>
-            {updateStatus?.update_available && updateStatus.update && (
-              <Button
-                type="primary"
-                icon={<DownloadOutlined />}
-                aria-label={`下载并校验 ${updateStatus.update.version}`}
-                loading={downloadingUpdate}
-                disabled={!updateStatus.update.sha256_available}
-                onClick={downloadUpdate}
-              >
-                下载并校验 {updateStatus.update.version}
-              </Button>
-            )}
-            {updateStatus?.staged_update?.ready_to_install && (
-              <Button
-                type="primary"
-                icon={<SafetyCertificateOutlined />}
-                aria-label="安装并重启"
-                loading={installingUpdate}
-                onClick={installUpdate}
-              >
-                安装并重启
-              </Button>
-            )}
-          </Space>
-          {!updateStatus && (
-            <Text type="secondary">尚未检查更新。不会有后台下载或静默安装。</Text>
-          )}
-          {updateStatus && !updateStatus.update_available && !updateStatus.staged_update && (
-            <Text type="secondary">已检查：当前版本 {updateStatus.current_version} 暂无可验证更新。</Text>
-          )}
-          {updateStatus?.update_available && updateStatus.update && (
-            <Descriptions size="small" column={1} bordered>
-              <Descriptions.Item label="可用版本">{updateStatus.update.version}</Descriptions.Item>
-              <Descriptions.Item label="更新通道">
-                {updateStatus.update.channel === 'preview' ? '预览通道' : '稳定通道'}
-              </Descriptions.Item>
-              <Descriptions.Item label="SHA256">
-                {updateStatus.update.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
-              </Descriptions.Item>
-              <Descriptions.Item label="代码签名">下载后必须验证为可信签名</Descriptions.Item>
-            </Descriptions>
-          )}
-          {updateStatus?.staged_update && (
-            <Alert
-              showIcon
-              type={updateStatus.staged_update.ready_to_install ? 'success' : 'warning'}
-              message={updateStatus.staged_update.ready_to_install ? '更新已验证，可以由你确认安装' : '已下载的更新需要重新校验'}
-              description={updateStatus.staged_update.ready_to_install
-                ? `版本 ${updateStatus.staged_update.version}，SHA256：${updateStatus.staged_update.sha256}`
-                : updateStatus.staged_update.error || '请重新下载更新。'}
-            />
-          )}
-        </Space>
-      </Card>
+      <UpdateSettingsCard
+        updateChannel={updateChannel}
+        savedUpdateChannel={launcherSettings?.update_channel}
+        updateStatus={updateStatus}
+        launcherLoading={launcherLoading}
+        checkingUpdate={checkingUpdate}
+        downloadingUpdate={downloadingUpdate}
+        installingUpdate={installingUpdate}
+        onChannelChange={(channel) => {
+          setUpdateChannel(channel)
+          setUpdateStatus(null)
+        }}
+        onSaveChannel={saveUpdateChannel}
+        onCheck={checkForUpdates}
+        onDownload={downloadUpdate}
+        onInstall={installUpdate}
+      />
 
       <Card className="settings-card" title={<span><FolderOpenOutlined /> 小说数据目录</span>} loading={contentRootLoading && !contentRoot}>
         <Descriptions size="small" column={1} bordered>

@@ -1,6 +1,6 @@
 ---
 id: assistant.workspace.quality
-version: 3.0.0
+version: 3.1.0
 scope: assistant
 visibility: internal
 inputs: [scope_label, outline_batch_count, auto_apply, tool_names]
@@ -11,7 +11,6 @@ tools:
   - chapter_writer
   - evaluate_chapter
   - create_chapter
-  - archive_chapter_after_write
   - outline_writer
   - create_outline_nodes
   - start_local_cli_agent_run
@@ -20,8 +19,8 @@ budget:
   fixed_chars: 6200
   context_chars: 5000
 golden_cases:
-  - name: chapter-quality-loop
-    required_text: ["函数调用", "质量模式", "evaluate_chapter", "archive_chapter_after_write"]
+  - name: focused-chapter-writing
+    required_text: ["函数调用", "基础写作", "独立操作", "统一建档"]
   - name: no-false-success
     required_text: ["严禁自行编造 ID", "不得回复“已完成”"]
 ---
@@ -40,11 +39,11 @@ golden_cases:
 3. 工具可用时直接调用，不要求作者打开命令行或手工修改项目文件。
 4. 工具列表是唯一能力边界，不假装调用未提供的工具。
 
-【质量模式】
+【基础写作】
 - 写章前使用 preview_writing_context 获取章级节点、有序 section、角色状态、世界观、前文摘要和叙事账本。
-- 有角色互动且工具可用时，可用 roleplay_character 或 dialogue_battle 准备对白；正文由 chapter_writer 生成。
-- evaluate_chapter 可用时，保存前必须评估；低于 60 分时按建议重写，最多三轮，仍不合格则明确报告。
-- 正文通过 create_chapter 或 update_chapter 入库；随后调用 archive_chapter_after_write 更新摘要、section、角色状态和叙事账本。
+- 正文由 chapter_writer 一次生成；不要自动追加剧情设计、角色对戏、质量评分或去除 AI 味改写轮次。
+- 正文通过 create_chapter 或 update_chapter 入库，并传 skip_style_repair=true；保存成功会自动启动与作品建档页相同的单章节统一建档任务。不要在写作轮次另造候选或重复建档。
+- 去除 AI 味和质量评审是独立操作。只有作者明确发起对应操作时，才执行改写或调用 evaluate_chapter。
 - 作者不满意时先 list_chapter_versions 或 diff_chapter_versions，再按明确选择调用 restore_chapter_version。
 
 【其他任务】

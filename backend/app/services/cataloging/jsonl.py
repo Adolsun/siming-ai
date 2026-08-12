@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from .constants import VALID_ITEM_TYPES
 from ..story_granularity import (
+    CHARACTER_STABLE_FIELDS,
     CHARACTER_STATE_FIELDS,
     NARRATIVE_STATE_FIELDS,
     SECTION_SCENE_STATE_FIELDS,
+    derive_chapter_summary_text,
     extract_chapter_number,
     has_chapter_narrative_state,
     normalize_chapter_narrative_state,
     normalize_node_type,
     normalize_outline_payload,
 )
+from .constants import VALID_ITEM_TYPES
 
 
 _LEDGER_WRAPPER_FIELDS = {
@@ -42,6 +45,221 @@ _CHARACTER_RELATION_NAMES = {
     "sister_of",
 }
 
+_AGGREGATE_CANDIDATE_KEYS = {
+    "chapter_summary",
+    "chapter_outline",
+    "character_state_updates",
+    "character_updates",
+    "worldbuilding_entries",
+    "worldbuilding_updates",
+    "outline_creates",
+    "outline_updates",
+    "chapter_links",
+    "narrative_ledger",
+}
+_RESPONSE_COLLECTION_KEYS = ("candidates", "items", "results", "output", "response")
+_CANDIDATE_ATTEMPT_MARKER = re.compile(
+    r"(?m)^=== (?:MERGED CATALOGING|CANDIDATE RESOLUTION)(?: RETRY \d+)? ===\s*$"
+)
+_JSON_FENCE = re.compile(r"```(?:jsonl?)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def expand_candidate_records(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand a provider's one-object chapter archive into standard cards.
+
+    The public contract asks for JSONL, but some API models return one valid
+    JSON object whose values are candidate lists.  Treating that object as a
+    single summary silently discarded every character, worldbuilding, outline
+    and link entry.  This compatibility adapter only recognizes explicit
+    aggregate field names and emits the same standard records that the normal
+    JSONL path validates, deduplicates and applies.
+    """
+
+    if not isinstance(raw, dict) or not (set(raw) & _AGGREGATE_CANDIDATE_KEYS):
+        return [raw]
+
+    records: list[dict[str, Any]] = []
+    explicit_type = next(
+        (
+            raw.get(key)
+            for key in ("type", "item_type", "candidate_type", "kind", "card_type")
+            if raw.get(key)
+        ),
+        None,
+    )
+    explicit_summary = False
+    if explicit_type:
+        # DeepSeek sometimes returns a valid chapter_summary and then appends
+        # aggregate candidate arrays to that same object.  Preserve the typed
+        # candidate itself, but expand the arrays into independent cards.
+        primary = {
+            key: value
+            for key, value in raw.items()
+            if key not in _AGGREGATE_CANDIDATE_KEYS
+        }
+        explicit_summary = _norm(str(explicit_type)) in {
+            "chapter_summary",
+            "summary",
+            "chapter",
+            "chapter_overview",
+            "chapter_state",
+            "chapter_narrative_state",
+            "narrative_state",
+            "章节摘要",
+            "章节概览",
+        }
+        records.append(primary)
+
+    summary = raw.get("chapter_summary")
+    ledger_rows = _aggregate_rows(raw.get("narrative_ledger"))
+    if explicit_summary and records:
+        _merge_aggregate_ledger(records[0], ledger_rows)
+    if isinstance(summary, dict):
+        summary_record = {"type": "chapter_summary", **summary}
+        narrative_overview = summary_record.get("narrative_state")
+        if isinstance(narrative_overview, str):
+            summary_record["narrative_overview"] = narrative_overview
+            summary_record["narrative_state"] = {key: [] for key in NARRATIVE_STATE_FIELDS}
+        narrative_review = summary_record.get("narrative_review")
+        if isinstance(narrative_review, str):
+            summary_record["narrative_review"] = {
+                "source": "provided",
+                "outcome": "assessed",
+                "evidence": narrative_review,
+            }
+        _merge_aggregate_ledger(summary_record, ledger_rows)
+        records.append(summary_record)
+
+    chapter_outline = raw.get("chapter_outline")
+    if isinstance(chapter_outline, dict):
+        records.append({
+            "type": "outline_create",
+            "node_type": "chapter",
+            **chapter_outline,
+        })
+
+    character_rows = _aggregate_rows(
+        raw.get("character_state_updates"),
+        raw.get("character_updates"),
+    )
+    for row in character_rows:
+        item = _flatten_aggregate_data(row)
+        operation = _norm(str(item.pop("operation", "update")))
+        profile_payload = {
+            key: value
+            for key, value in item.items()
+            if key in {*CHARACTER_STABLE_FIELDS, *CHARACTER_STATE_FIELDS}
+            or key in {"character_name", "primary_name", "role_in_scene", "evidence"}
+        }
+        has_profile = any(
+            profile_payload.get(key) not in (None, "", [], {})
+            for key in CHARACTER_STABLE_FIELDS
+        )
+        has_state = any(
+            profile_payload.get(key) not in (None, "", [], {})
+            for key in CHARACTER_STATE_FIELDS
+        )
+        if has_profile or not has_state:
+            records.append({
+                "type": "character_create" if operation in {"create", "new"} else "character_update",
+                "operation": operation,
+                **profile_payload,
+            })
+        if has_state:
+            records.append({
+                "type": "character_state_update",
+                "operation": "update",
+                **profile_payload,
+            })
+
+    for row in _aggregate_rows(raw.get("worldbuilding_entries"), raw.get("worldbuilding_updates")):
+        item = _flatten_aggregate_data(row)
+        operation = _norm(str(item.pop("operation", "update")))
+        records.append({
+            "type": "worldbuilding_create" if operation in {"create", "new"} else "worldbuilding_update",
+            "operation": operation,
+            **item,
+        })
+
+    for row in _aggregate_rows(raw.get("outline_creates")):
+        records.append({"type": "outline_create", **_flatten_aggregate_data(row)})
+    for row in _aggregate_rows(raw.get("outline_updates")):
+        records.append({"type": "outline_update", **_flatten_aggregate_data(row)})
+
+    for row in _aggregate_rows(raw.get("chapter_links")):
+        item = _flatten_aggregate_data(row)
+        source_type = _norm(str(item.get("source_type") or ""))
+        target_type = _norm(str(item.get("target_type") or ""))
+        source_name = str(item.get("source_name") or item.get("source") or "").strip()
+        target_name = str(item.get("target_name") or item.get("target") or "").strip()
+        if source_name:
+            item.setdefault("source", source_name)
+        if target_name:
+            item.setdefault("target", target_name)
+        if source_type in {"character", "role"} and source_name:
+            item.setdefault("character_names", [source_name])
+        elif source_type in {"worldbuilding", "world", "setting"} and source_name:
+            item.setdefault("worldbuilding_titles", [source_name])
+        if target_type in {"outline", "outline_node", "chapter"} and target_name:
+            item.setdefault("outline_title", target_name)
+        item.setdefault("description", item.get("relation") or item.get("evidence") or "关联")
+        if item.get("order") is not None and item.get("appearance_order") is None:
+            item["appearance_order"] = item.get("order")
+        records.append({"type": "chapter_link", **item})
+
+    if not isinstance(summary, dict) and not explicit_summary:
+        for row in ledger_rows:
+            item = _flatten_aggregate_data(row)
+            if item.get("type") or item.get("item_type"):
+                records.append(item)
+
+    return records or [raw]
+
+
+def _aggregate_rows(*values: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for value in values:
+        if isinstance(value, dict):
+            rows.append(value)
+        elif isinstance(value, list):
+            rows.extend(item for item in value if isinstance(item, dict))
+    return rows
+
+
+def _flatten_aggregate_data(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    data = item.pop("data", None)
+    if isinstance(data, dict):
+        return {**data, **item}
+    return item
+
+
+def _merge_aggregate_ledger(summary: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    state = summary.get("narrative_state")
+    if not isinstance(state, dict):
+        state = {}
+    for row in rows:
+        entry = _flatten_aggregate_data(row)
+        semantic_type = _norm(str(entry.pop("type", entry.pop("item_type", ""))))
+        canonical = {
+            "completed_beat": "events",
+            "revealed_clue": "reader_known_facts",
+            "storyline_state": "storyline_progress",
+        }.get(semantic_type)
+        if semantic_type == "narrative_promise":
+            is_resolution = str(entry.get("status") or "").strip().lower() in {
+                "fulfilled",
+                "resolved",
+                "closed",
+            }
+            canonical = "foreshadowing_resolved" if is_resolution else "foreshadowing_planted"
+            if is_resolution and not _has_stable_governance_reference(entry):
+                entry["requested_status"] = entry.get("status")
+                entry["status"] = "pending_review"
+        if canonical:
+            state.setdefault(canonical, []).append(entry)
+    summary["narrative_state"] = state
+
 
 def clean_jsonl_text(text: str) -> str:
     value = (text or "").strip()
@@ -53,6 +271,94 @@ def clean_jsonl_text(text: str) -> str:
             lines = lines[:-1]
         value = "\n".join(lines).strip()
     return value
+
+
+def candidate_response_attempts(raw_output: str) -> list[str]:
+    """Return candidate-generation attempts without fact-stage or marker text."""
+
+    text = str(raw_output or "")
+    matches = list(_CANDIDATE_ATTEMPT_MARKER.finditer(text))
+    if not matches:
+        return [text] if text.strip() else []
+    attempts: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        value = text[match.end():end].strip()
+        if value:
+            attempts.append(value)
+    return attempts
+
+
+def parse_candidate_response_records(text: str) -> list[dict[str, Any]]:
+    """Parse JSONL, aggregate objects, arrays, fences, and pretty JSON alike."""
+
+    value = str(text or "").strip().lstrip("\ufeff")
+    if not value:
+        return []
+
+    fenced_records: list[dict[str, Any]] = []
+    for block in _JSON_FENCE.findall(value):
+        fenced_records.extend(_parse_candidate_response_value(block))
+    if fenced_records:
+        return fenced_records
+    return _parse_candidate_response_value(clean_jsonl_text(value))
+
+
+def _parse_candidate_response_value(text: str) -> list[dict[str, Any]]:
+    try:
+        parsed_records = _expand_response_value(json.loads(text))
+        if parsed_records:
+            return parsed_records
+    except Exception:
+        pass
+
+    # raw_decode handles JSONL, concatenated objects, pretty JSON and mixtures
+    # of prose plus JSON in one pass.  Parsing individual lines first could
+    # return a partial set and silently ignore a later pretty-printed object.
+    decoder = json.JSONDecoder()
+    records: list[dict[str, Any]] = []
+    index = 0
+    while index < len(text):
+        positions = [position for position in (text.find("{", index), text.find("[", index)) if position >= 0]
+        if not positions:
+            break
+        start = min(positions)
+        try:
+            parsed, end = decoder.raw_decode(text, start)
+        except Exception:
+            index = start + 1
+            continue
+        records.extend(_expand_response_value(parsed))
+        index = max(end, start + 1)
+    return records
+
+
+def _expand_response_value(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        nested = value.strip().lstrip("\ufeff")
+        if nested.startswith(("{", "[")):
+            return _parse_candidate_response_value(nested)
+        return []
+    if isinstance(value, list):
+        records: list[dict[str, Any]] = []
+        for item in value:
+            records.extend(_expand_response_value(item))
+        return records
+    if not isinstance(value, dict):
+        return []
+
+    has_explicit_type = any(
+        value.get(key)
+        for key in ("type", "item_type", "candidate_type", "kind", "card_type")
+    )
+    if not has_explicit_type:
+        for key in _RESPONSE_COLLECTION_KEYS:
+            collection = value.get(key)
+            if isinstance(collection, (dict, list, str)):
+                records = _expand_response_value(collection)
+                if records:
+                    return records
+    return expand_candidate_records(value)
 
 
 def parse_json_line(line: str) -> dict[str, Any] | None:
@@ -177,6 +483,8 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "confidence_reason",
         "evidence_points",
         "narrative_state",
+        "narrative_review",
+        "governance_candidates",
         "events",
         "timeline_events",
         "chapter_events",
@@ -203,6 +511,16 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "items",
         "importance",
         "appearance_order",
+        "beat",
+        "clue",
+        "promise",
+        "storyline",
+        "resolves_item_id",
+        "resolves_dedupe_key",
+        "governance_item_id",
+        "dedupe_key",
+        "resolution_evidence",
+        "resolution_note",
     ):
         if key in raw and key not in normalized:
             normalized[key] = raw[key]
@@ -248,6 +566,9 @@ def _normalize_wrapper_payload(wrapper_type: str, value: dict[str, Any]) -> dict
                 if str(entry.get("status") or "").strip().lower() in {"fulfilled", "resolved", "closed"}
                 else "foreshadowing_planted"
             )
+            if canonical == "foreshadowing_resolved" and not _has_stable_governance_reference(entry):
+                entry["requested_status"] = entry.get("status")
+                entry["status"] = "pending_review"
         else:
             canonical = _LEDGER_WRAPPER_FIELDS[wrapper_type]
         normalized: dict[str, Any] = {canonical: [entry]}
@@ -262,6 +583,77 @@ def _normalize_wrapper_payload(wrapper_type: str, value: dict[str, Any]) -> dict
         if not payload.get("event_description"):
             payload["event_description"] = payload.get("description") or payload.get("event") or ""
     return payload
+
+
+def _has_stable_governance_reference(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("resolves_item_id")
+        or payload.get("governance_item_id")
+        or payload.get("resolves_dedupe_key")
+    )
+
+
+def _normalize_typed_ledger_payload(payload: dict[str, Any], raw: dict[str, Any]) -> None:
+    """Convert legacy top-level ledger candidate types into narrative state.
+
+    The wrapper form (``{"completed_beat": {...}}``) was already supported,
+    while API models commonly emit ``{"type":"completed_beat", ...}``.
+    Canonical type mapping alone turned the latter into an empty
+    ``chapter_summary`` and silently dropped it.  Normalize both shapes to the
+    same chapter narrative-state contract before validation.
+    """
+
+    semantic_type = _norm(_raw_type(raw, payload))
+    if semantic_type not in {*_LEDGER_WRAPPER_FIELDS, "narrative_promise"}:
+        return
+    if has_chapter_narrative_state(payload):
+        return
+
+    label_key = {
+        "completed_beat": "beat",
+        "revealed_clue": "clue",
+        "narrative_promise": "promise",
+        "storyline_state": "storyline",
+    }[semantic_type]
+    metadata_keys = {
+        "type",
+        "item_type",
+        "candidate_type",
+        "kind",
+        "card_type",
+        "action",
+        "operation",
+        "narrative_state",
+        "narrative_review",
+        "governance_candidates",
+    }
+    entry = {key: value for key, value in payload.items() if key not in metadata_keys}
+    label = entry.get(label_key)
+    if label and not entry.get("title"):
+        entry["title"] = label
+
+    if semantic_type == "narrative_promise":
+        is_resolution = str(entry.get("status") or "").strip().lower() in {
+            "fulfilled",
+            "resolved",
+            "closed",
+        }
+        canonical = "foreshadowing_resolved" if is_resolution else "foreshadowing_planted"
+        if is_resolution and not _has_stable_governance_reference(entry):
+            entry["requested_status"] = entry.get("status")
+            entry["status"] = "pending_review"
+    else:
+        canonical = _LEDGER_WRAPPER_FIELDS[semantic_type]
+
+    payload["narrative_state"] = {canonical: [entry]}
+    payload.setdefault(
+        "narrative_review",
+        {
+            "source": "provided",
+            "outcome": "assessed",
+            "evidence": f"模型提供了 {semantic_type} 叙事账本候选。",
+        },
+    )
 
 
 def _merge_key_value_lines(payload: dict[str, Any], values: list[Any]) -> None:
@@ -504,6 +896,8 @@ def _normalize_payload_fields(
     item_type: str,
     operation: str,
 ) -> None:
+    if item_type == "chapter_summary":
+        _normalize_typed_ledger_payload(payload, raw)
     target_id = payload.get("id") or payload.get("target_id") or raw.get("target_id")
     if target_id:
         payload["id"] = target_id
@@ -542,6 +936,10 @@ def _normalize_payload_fields(
             )
         _normalize_dimension_alias(payload)
     if item_type.startswith("outline_"):
+        raw_parent_id = str(payload.get("parent_id") or "").strip()
+        if raw_parent_id and not _looks_like_uuid(raw_parent_id):
+            payload.setdefault("parent_title", raw_parent_id)
+            payload.pop("parent_id", None)
         candidate_type_hint = _norm(str(payload.get("node_type") or ""))
         if candidate_type_hint in VALID_ITEM_TYPES:
             # Restore the semantic outline granularity after consuming the
@@ -554,7 +952,14 @@ def _normalize_payload_fields(
                 else "chapter"
             )
         if not payload.get("title"):
-            payload["title"] = raw.get("target_name") or payload.get("outline_title") or ""
+            payload["title"] = (
+                raw.get("target_name")
+                or payload.get("outline_title")
+                or payload.get("name")
+                or payload.get("heading")
+                or payload.get("chapter_title")
+                or ""
+            )
         if not payload.get("node_type") and set(payload.keys()) & set(SECTION_SCENE_STATE_FIELDS):
             payload["node_type"] = "section"
         payload["node_type"] = normalize_node_type(payload.get("node_type"))
@@ -568,7 +973,7 @@ def _normalize_payload_fields(
             ),
         ))
     if item_type == "chapter_summary":
-        summary = payload.get("summary_text") or payload.get("summary") or payload.get("content") or ""
+        summary = derive_chapter_summary_text(payload)
         if summary:
             payload["summary_text"] = summary
             payload["summary"] = payload.get("summary") or summary
@@ -581,6 +986,17 @@ def _normalize_payload_fields(
     payload["operation"] = operation
     payload["type"] = item_type
     payload["action"] = operation
+
+
+def _looks_like_uuid(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(text) != 36:
+        return False
+    parts = text.split("-")
+    return [len(part) for part in parts] == [8, 4, 4, 4, 12] and all(
+        all(char in "0123456789abcdefABCDEF" for char in part)
+        for part in parts
+    )
 
 
 def _normalize_dimension_alias(payload: dict[str, Any]) -> None:

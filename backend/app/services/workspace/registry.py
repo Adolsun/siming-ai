@@ -359,8 +359,6 @@ _TOOL_REGISTRATION_ORDER = (
     "save_external_chapter_draft",
     "get_external_chapter_draft",
     "record_external_quality_review",
-    "apply_external_story_updates",
-    "archive_chapter_after_write",
     "update_narrative_ledger_entry",
     "get_narrative_ledger",
     "get_narrative_governance",

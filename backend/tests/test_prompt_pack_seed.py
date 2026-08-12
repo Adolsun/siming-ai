@@ -48,7 +48,7 @@ class BuiltinPacksDefinitionTest(unittest.TestCase):
                               f"{pack['pack_id']}: invalid scope '{pack['scope']}'")
 
     def test_quality_packs_have_rubric(self):
-        quality_packs = {"chapter_writing_quality", "chapter_review_quality"}
+        quality_packs = {"chapter_review_quality"}
         for pack in BUILTIN_PACKS:
             if pack["pack_id"] in quality_packs:
                 with self.subTest(pack_id=pack["pack_id"]):
@@ -56,14 +56,29 @@ class BuiltinPacksDefinitionTest(unittest.TestCase):
                     self.assertIsNotNone(pack["quality_rubric_json"])
                     self.assertIn("dimensions", pack["quality_rubric_json"])
 
-    def test_writing_packs_have_forbidden_patterns(self):
-        writing_packs = {"chapter_writing_quality", "chapter_writing_fast", "anti_ai_review"}
+    def test_review_packs_have_forbidden_patterns(self):
+        writing_packs = {"anti_ai_review"}
         for pack in BUILTIN_PACKS:
             if pack["pack_id"] in writing_packs:
                 with self.subTest(pack_id=pack["pack_id"]):
                     self.assertIn("forbidden_patterns_json", pack)
                     self.assertIsNotNone(pack["forbidden_patterns_json"])
                     self.assertGreater(len(pack["forbidden_patterns_json"]), 0)
+
+    def test_base_writing_packs_defer_review_and_de_ai_material(self):
+        writing_packs = {"chapter_writing_quality", "chapter_writing_fast"}
+        for pack in BUILTIN_PACKS:
+            if pack["pack_id"] in writing_packs:
+                with self.subTest(pack_id=pack["pack_id"]):
+                    self.assertIsNone(pack["quality_rubric_json"])
+                    self.assertEqual(pack["forbidden_patterns_json"], [])
+                    workflow = " ".join(
+                        f"{step.get('name', '')} {step.get('description', '')}"
+                        for step in pack["workflow_json"]
+                    )
+                    self.assertNotIn("self_review", workflow)
+                    self.assertNotIn("detect_patterns", workflow)
+                    self.assertIn("skip_style_repair=true", workflow)
 
     def test_pack_count(self):
         self.assertEqual(len(BUILTIN_PACKS), 13)

@@ -25,6 +25,7 @@ const baseStatus = {
   configured: false,
   configured_model: null,
   is_global_default: false,
+  has_usable_models: false,
   needs_setup: true,
   global_model: null,
   activation_job: null,
@@ -59,6 +60,7 @@ describe('GettingStartedPanel', () => {
       needs_setup: false,
       configured: true,
       is_global_default: true,
+      has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
     } } })
 
@@ -69,9 +71,29 @@ describe('GettingStartedPanel', () => {
     expect(api.get).toHaveBeenCalledTimes(1)
   })
 
+  it('does not resume or poll a stale activation job after any model is usable', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      needs_setup: false,
+      has_usable_models: true,
+      available_model: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      activation_job: {
+        id: 'stale-job', status: 'running', phase: 'testing', percent: 95,
+        message: '旧任务仍在检查', free_models: [],
+      },
+    } } })
+
+    renderPanel()
+
+    expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
+    await new Promise((resolve) => window.setTimeout(resolve, 1100))
+    expect(api.get).toHaveBeenCalledTimes(1)
+    expect(api.get).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/stale-job')
+  })
+
   it('creates a session and starts one adjustable concept direction from one idea', async () => {
     api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus, needs_setup: false, is_global_default: true,
+      ...baseStatus, needs_setup: false, is_global_default: true, has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
     } } })
     api.post.mockImplementation((url: string) => {

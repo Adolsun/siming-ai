@@ -15,7 +15,6 @@ REQUIRED_TOOLS = {
     "submit_novel_creation_stage",
     "finalize_creation_session",
     "create_chapter",
-    "archive_chapter_after_write",
 }
 PATCH_MARKER = "MCP_STANDARD_JSON_PATCH_SMOKE"
 

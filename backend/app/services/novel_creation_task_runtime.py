@@ -63,6 +63,7 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
                 "",
                 {**request, "session_id": session_id, "_run_id": run_id},
             )
+        _schedule_card_presentation(run_id)
     except asyncio.CancelledError:
         run = db.get(NovelCreationStageRun, run_id)
         if run and run.status in {"queued", "running"}:
@@ -75,6 +76,7 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
             commit_session(db)
             if run.operation_id:
                 finish_operation(run.operation_id, message=run.current_message, status="cancelled")
+            _schedule_card_presentation(run_id)
         raise
     finally:
         if heartbeat_task:
@@ -84,6 +86,12 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
             unregister_operation_actions(run.operation_id)
         _CREATION_TASKS.pop(run_id, None)
         db.close()
+
+
+def _schedule_card_presentation(run_id: str) -> None:
+    from app.services.novel_creation_run_presentation import schedule_run_card_presentation
+
+    schedule_run_card_presentation(run_id)
 
 
 def schedule_creation_stage(
@@ -134,6 +142,7 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
                 add_run_event(db, run, "cancelled", "cancelled", run.current_message)
                 complete_creation_claim(db, run.claim_id, error=run.current_message, status="cancelled")
                 commit_session(db)
+                _schedule_card_presentation(run.id)
                 return True
             task = _task_for(run.id)
             if task:
@@ -144,6 +153,9 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
         if action == "continue":
             if run.status != "paused":
                 return False
+            from app.services.novel_creation_runs import invalidate_run_card_presentation
+
+            invalidate_run_card_presentation(run)
             run.status = "running"
             run.current_message = "正在从最近检查点继续"
             run.next_action = None
@@ -158,6 +170,9 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
         if action == "retry_current_unit":
             if run.status not in {"failed", "cancelled", "interrupted"}:
                 return False
+            from app.services.novel_creation_runs import invalidate_run_card_presentation
+
+            invalidate_run_card_presentation(run)
             claim = db.get(NovelCreationRunClaim, run.claim_id) if run.claim_id else None
             if claim:
                 claim.status = "running"

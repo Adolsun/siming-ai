@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -63,6 +62,42 @@ def test_android_release_verifies_version_code_and_trusted_certificate():
     assert "certificate SHA-256 digest" in script
     assert "versionCode" in script
     assert "expectedVersionCode" in script
+
+
+def test_windows_release_is_signed_before_integrity_manifests_are_published():
+    signer = (ROOT / "scripts" / "sign-windows-release.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts" / "verify-release-assets.ps1").read_text(encoding="utf-8")
+    publisher = (ROOT / "scripts" / "publish-github.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
+
+    assert '"/fd", "SHA256"' in signer
+    assert '"/tr", $TimestampUrl' in signer
+    assert "$Manifest.sha256 = $Sha256" in signer
+    assert "$Signature.Status -ne \"Valid\"" in signer
+    assert "TimeStamperCertificate" in signer
+    assert "RequireTrustedSignature" in verifier
+    assert "AllowUnsignedManualRelease" in verifier
+    assert "Get-AuthenticodeSignature" in verifier
+    assert "-RequireTrustedSignature" in publisher
+    assert "ManualDownloadOnly" in publisher
+    assert '"scripts\\smoke-test-release.ps1"' in publisher
+    assert "SIMING_WINDOWS_CODESIGN_PFX_BASE64" in workflow
+    assert "SIMING_WINDOWS_CODESIGN_PASSWORD" in workflow
+    assert "manual-download-only" in workflow
+    assert "github.event_name == 'push' && github.ref_type == 'tag'" in workflow
+    assert workflow.index("Sign Windows executable") < workflow.index(
+        "Verify package assets and run smoke test"
+    )
+
+
+def test_windows_only_release_does_not_require_android_assets():
+    publisher = (ROOT / "scripts" / "publish-github.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
+
+    assert "IncludeAndroid" in publisher
+    assert '$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath)' in publisher
+    assert 'release/Siming.apk' not in workflow
+    assert 'release/Siming-apk-sha256.txt' not in workflow
 
 
 def test_release_smoke_matches_runtime_to_update_manifest():

@@ -1,17 +1,19 @@
 """External writing tools — API-free tools for external agents (Claude Code, Codex).
 
 These tools work without any Siming model API configured. They provide
-context, prompt packs, draft storage, and quality review recording
-for external agents that do their own generation.
+context, focused writing prompts, and draft storage for external agents that
+do their own generation. Quality review remains available as a separate tool.
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ....core.utils import count_words
+from ...character_archive import character_archive_payload
 
 
 async def prepare_external_writing_context(
@@ -25,9 +27,10 @@ async def prepare_external_writing_context(
     everything an external agent needs to write a chapter:
     - Prompt pack (writing methodology)
     - Context sections (outline, characters, worldbuilding, summaries)
-    - Quality rubric
-    - Forbidden patterns
     - Warnings and next tool suggestions
+
+    De-AI rewriting and quality review are deliberately omitted from this base
+    writing package so one writing task does not silently run multiple phases.
     """
     from app.database.models import (
         Project, Chapter, ChapterSummary, OutlineNode,
@@ -115,20 +118,15 @@ async def prepare_external_writing_context(
             "Supported writing modes are fast and quality."
         )
 
-    # API-free mode rules + all analysis prompts — one call gets everything
-    from app.prompts.prompt_source import (
-        get_api_free_mode_rules,
-        get_character_change_detection_prompt,
-        get_new_worldbuilding_detection_prompt,
-        get_chapter_evaluation_prompt,
-        get_conflict_suggestion_prompt,
-    )
+    # Base-writing guardrails only. Analysis/review prompts are loaded by their
+    # own explicit tasks instead of being bundled into every writing request.
+    from app.prompts.prompt_source import get_api_free_mode_rules
+
     result["api_free_mode_rules"] = get_api_free_mode_rules()
-    result["analysis_prompts"] = {
-        "character_change_detection": get_character_change_detection_prompt(),
-        "worldbuilding_detection": get_new_worldbuilding_detection_prompt(),
-        "chapter_evaluation": get_chapter_evaluation_prompt(),
-        "conflict_suggestion": get_conflict_suggestion_prompt(),
+    result["workflow_boundaries"] = {
+        "current_task": "base_chapter_writing",
+        "de_ai_revision": "separate_user_action",
+        "quality_review": "separate_user_action",
     }
 
     # Prompt pack — build system_prompt from shared source (same modules as internal packs)
@@ -145,7 +143,7 @@ async def prepare_external_writing_context(
             )
             from app.prompts.style_prompts import build_style_context
             # Build style context for this project
-            style_ctx = build_style_context(project, include_anti_ai=True)
+            style_ctx = build_style_context(project, include_anti_ai=False)
             # Get system prompt from shared source and inject style context
             prompt_builder = (
                 get_public_chapter_fast_system_prompt
@@ -162,8 +160,8 @@ async def prepare_external_writing_context(
                 "title": pack.title,
                 "system_prompt": system_prompt,
                 "workflow": pack.workflow_json,
-                "quality_rubric": pack.quality_rubric_json,
-                "forbidden_patterns": pack.forbidden_patterns_json,
+                "quality_rubric": None,
+                "forbidden_patterns": [],
             }
         else:
             result["warnings"].append(f"Prompt pack not found: {pack_id}")
@@ -235,53 +233,21 @@ async def prepare_external_writing_context(
         })
 
     # Characters — full state fields (same as internal assistant sees)
-    from app.database.models import CharacterAlias
     characters = db.query(Character).filter(
         Character.project_id == project_id,
-        Character.role_type != "merged_alias",
+        or_(Character.role_type.is_(None), Character.role_type != "merged_alias"),
     ).limit(16).all()
 
     result["characters"] = []
+    character_cards_by_id: dict[str, dict[str, Any]] = {}
     for c in characters:
-        # Resolve aliases
-        aliases = [a.alias for a in (c.aliases or []) if a.alias]
-        result["characters"].append({
-            "id": c.id,
-            "name": c.name,
-            "aliases": aliases,
-            "role_type": c.role_type,
-            "appearance": c.appearance or "",
-            "personality": c.personality or "",
-            "background": (c.background or "")[:2000],
-            "current_location": c.current_location or "",
-            "current_goal": c.current_goal or "",
-            "life_status": c.life_status or "",
-            "realm_or_level": c.realm_or_level or "",
-            "physical_state": c.physical_state or "",
-            "mental_state": c.mental_state or "",
-            "active_conflict": c.active_conflict or "",
-            "abilities_state": c.abilities_state or "",
-            "items_or_assets": c.items_or_assets or "",
-        })
+        card = character_archive_payload(c)
+        state = card.pop("state")
+        flattened_card = {**card, **state}
+        character_cards_by_id[str(c.id)] = flattened_card
+        result["characters"].append(flattened_card)
 
-    # Relationships
-    try:
-        if characters:
-            char_ids = [c.id for c in characters]
-            rels = db.query(CharacterRelationship).filter(
-                CharacterRelationship.character_a_id.in_(char_ids),
-            ).all()
-            result["relationships"] = [
-                {
-                    "source_id": r.character_a_id,
-                    "target_id": r.character_b_id,
-                    "relationship_type": r.relationship_type,
-                    "description": r.description,
-                }
-                for r in rels
-            ]
-    except Exception:
-        result["relationships"] = []
+    result["relationships"] = []
 
     # Worldbuilding
     wb_entries = db.query(WorldbuildingEntry).filter(
@@ -298,24 +264,15 @@ async def prepare_external_writing_context(
         for e in wb_entries
     ]
 
-    # Merged forbidden patterns (system defaults + project overrides)
-    from app.prompts.style_prompts import effective_forbidden_patterns, effective_rhetoric_guidelines
-    merged_patterns = effective_forbidden_patterns(project)
-    result["forbidden_patterns"] = [p.strip() for p in merged_patterns.splitlines() if p.strip()]
+    # Compatibility keys remain present, but de-AI rules and the review rubric
+    # are not injected into ordinary writing.
+    result["forbidden_patterns"] = []
+    result["quality_rubric"] = None
+    result["rhetoric_guidelines"] = (project.rhetoric_guidelines or "").strip()
 
-    # Rhetoric guidelines (system defaults + project overrides)
-    result["rhetoric_guidelines"] = effective_rhetoric_guidelines(project)
-
-    # Full style context — same as what internal chapter_writer gets
-    # include_anti_ai=False because the prompt pack already includes full anti-AI rules
+    # Full base-writing style context — same as what internal chapter_writer gets.
     from app.prompts.style_prompts import build_style_context
     result["style_context"] = build_style_context(project, include_anti_ai=False)
-
-    # Quality rubric (from prompt pack)
-    if include_prompt_pack and "prompt_pack" in result:
-        rubric = result["prompt_pack"].get("quality_rubric")
-        if rubric:
-            result["quality_rubric"] = rubric
 
     # Warnings
     if not result["recent_summaries"]:
@@ -354,14 +311,12 @@ async def prepare_external_writing_context(
     except Exception:
         pass  # Memory injection is best-effort
 
-    # Next tool suggestions — mirrors internal assistant's post-writing flow
+    # Focused base-writing flow. De-AI and quality review are separate explicit
+    # actions and therefore are not suggested as part of this task.
     result["next_tool_suggestions"] = [
         {"tool": "recall", "description": "查询已有记忆，避免重复或矛盾"},
         {"tool": "save_external_chapter_draft", "description": "保存生成的草稿"},
-        {"tool": "record_external_quality_review", "description": "记录质量自评"},
-        {"tool": "create_chapter", "description": "用 draft_id 保存章节"},
-        {"tool": "archive_chapter_after_write", "description": "提交标准候选并统一归档章节摘要、章级大纲、section 场景状态、角色状态、世界观和 narrative_state"},
-        {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要司命API）"},
+        {"tool": "create_chapter", "description": "用 draft_id 和 skip_style_repair=true 正式保存；检查自动创建的 cataloging_job 与 next_action"},
     ]
 
     # Replace the old fixed "16 characters + 20 worldbuilding" mirror with
@@ -373,8 +328,24 @@ async def prepare_external_writing_context(
     result["requires_author_confirmation"] = context_manifest.status == "needs_confirmation"
     result["context_manifest"] = context_orchestrator.manifest_payload(context_manifest, include_content=True)
     result["selected_context"] = selected_items
+    selected_character_ids = {
+        str(item["source_id"])
+        for item in selected_items
+        if item["source_type"] == "character" and item.get("source_id")
+    }
+    if selected_character_ids:
+        selected_character_rows = db.query(Character).filter(
+            Character.project_id == project_id,
+            Character.id.in_(selected_character_ids),
+        ).all()
+        for character in selected_character_rows:
+            card = character_archive_payload(character)
+            state = card.pop("state")
+            character_cards_by_id[str(character.id)] = {**card, **state}
+
     result["characters"] = [
         {
+            **character_cards_by_id.get(str(item["source_id"]), {}),
             "id": item["source_id"],
             "name": item["title"],
             "context": item["content"],
@@ -383,6 +354,42 @@ async def prepare_external_writing_context(
         for item in selected_items
         if item["source_type"] == "character"
     ]
+    if selected_character_ids:
+        relationships = db.query(CharacterRelationship).filter(
+            CharacterRelationship.project_id == project_id,
+            or_(
+                CharacterRelationship.character_a_id.in_(selected_character_ids),
+                CharacterRelationship.character_b_id.in_(selected_character_ids),
+            ),
+        ).all()
+        relationship_character_ids = {
+            endpoint
+            for relationship in relationships
+            for endpoint in (relationship.character_a_id, relationship.character_b_id)
+            if endpoint
+        }
+        relationship_names = dict(
+            db.query(Character.id, Character.name)
+            .filter(Character.id.in_(relationship_character_ids))
+            .all()
+        )
+        result["relationships"] = [
+            {
+                "source_id": relationship.character_a_id,
+                "source_name": relationship_names.get(
+                    relationship.character_a_id,
+                    relationship.character_a_id,
+                ),
+                "target_id": relationship.character_b_id,
+                "target_name": relationship_names.get(
+                    relationship.character_b_id,
+                    relationship.character_b_id,
+                ),
+                "relationship_type": relationship.relationship_type,
+                "description": relationship.description or "",
+            }
+            for relationship in relationships
+        ]
     result["worldbuilding"] = [
         {
             "id": item["source_id"],

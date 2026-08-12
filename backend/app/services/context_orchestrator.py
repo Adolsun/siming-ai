@@ -29,7 +29,10 @@ from ..database.models import (
     ChapterQualityMetric,
     ChapterSummary,
     Character,
+    CharacterAIConfig,
+    CharacterAlias,
     CharacterNarrativeState,
+    CharacterRelationship,
     CharacterTimeline,
     ContextManifest,
     ContextManifestItem,
@@ -40,6 +43,7 @@ from ..database.models import (
     LocalModelTaskSetting,
     ModelContextProfile,
     NarrativeDebt,
+    NovelCreationSession,
     OutlineNode,
     OutlineNodeCharacter,
     Project,
@@ -57,6 +61,7 @@ from ..modules.context.application.runtime import (
     active_context_manifest as active_context_manifest,
 )
 from ..modules.model_runtime.application.runtime import resolve_model_identity
+from .character_archive import character_archive_text
 from .rag.context_packer import ContextBudget, estimate_tokens
 from .rag.indexer import _get_source_content_hash, reindex_project
 from .rag.retriever import search_chunks
@@ -299,7 +304,10 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _project_style_text(project: Project) -> str:
+def _project_style_text(
+    project: Project,
+    creation_context: dict[str, Any] | None = None,
+) -> str:
     parts = [
         f"Project: {project.title}",
         f"Perspective: {project.narrative_perspective or 'unspecified'}",
@@ -313,24 +321,36 @@ def _project_style_text(project: Project) -> str:
         parts.append(f"Avoid: {_clean_text(project.forbidden_sentence_patterns, 900)}")
     if project.rhetoric_guidelines:
         parts.append(f"Rhetoric: {_clean_text(project.rhetoric_guidelines, 900)}")
+    if creation_context:
+        creative_direction = creation_context.get("creative_direction")
+        selected_direction = (
+            creative_direction.get("selected")
+            if isinstance(creative_direction, dict)
+            else None
+        )
+        creation_payload = {
+            "revision": creation_context.get("revision"),
+            "constraints": creation_context.get("constraints") or {},
+            "creative_direction": selected_direction or {},
+            "world_style": creation_context.get("world_style") or {},
+            "artifact_statuses": creation_context.get("artifact_statuses") or {},
+        }
+        parts.append(
+            "Authoritative creation brief (current author-maintained intent):\n"
+            + _clean_text(
+                json.dumps(creation_payload, ensure_ascii=False, sort_keys=True),
+                5_000,
+            )
+        )
     return "\n".join(parts)
 
 
-def _character_text(character: Character) -> str:
-    fields = [
-        ("Role", character.role_type),
-        ("Personality", character.personality),
-        ("Background", character.background),
-        ("Goal", character.current_goal),
-        ("Conflict", character.active_conflict),
-        ("Location", character.current_location),
-        ("Physical state", character.physical_state),
-        ("Mental state", character.mental_state),
-        ("Abilities", character.abilities_state or character.abilities),
-    ]
-    values = [f"Character: {character.name}"]
-    values.extend(f"{label}: {_clean_text(value, 420)}" for label, value in fields if value)
-    return "\n".join(values)
+def _character_text(db: Session, character: Character) -> str:
+    """Render the full persisted character card for every model route."""
+    return "Character archive (authoritative):\n" + _clean_text(
+        character_archive_text(character, db=db),
+        12_000,
+    )
 
 
 def _outline_text(node: OutlineNode) -> str:
@@ -372,7 +392,16 @@ def _current_source_hash(db: Session, project_id: str | None, source_type: str, 
         return value or None
     if source_type == "project_style" and project_id:
         project = db.query(Project).filter(Project.id == project_id).first()
-        return _sha256(_project_style_text(project)) if project else None
+        if not project:
+            return None
+        from .project_creation_context import get_project_creation_context
+
+        return _sha256(
+            _project_style_text(
+                project,
+                get_project_creation_context(db, project_id),
+            )
+        )
     if source_type == "narrative_governance" and project_id:
         try:
             from .narrative_governance import governance_context
@@ -454,6 +483,15 @@ def _changed_manifest_sources(session: Session, instance: Any) -> list[tuple[str
     project_id = str(getattr(instance, "project_id", "") or "").strip()
     if isinstance(instance, Project):
         return [(str(instance.id), "project_style", str(instance.id))] if instance.id else []
+    if isinstance(instance, NovelCreationSession):
+        creation_project_id = str(
+            instance.created_project_id or instance.source_project_id or ""
+        ).strip()
+        return (
+            [(creation_project_id, "project_style", creation_project_id)]
+            if creation_project_id
+            else []
+        )
     if isinstance(instance, Chapter):
         if not project_id or not instance.id:
             return []
@@ -469,6 +507,22 @@ def _changed_manifest_sources(session: Session, instance: Any) -> list[tuple[str
         return [(project_id, "character_timeline", str(instance.character_id))] if project_id and instance.character_id else []
     if isinstance(instance, Character):
         return [(project_id, "character", str(instance.id))] if project_id and instance.id else []
+    if isinstance(instance, CharacterAIConfig):
+        character_id = str(instance.character_id or "").strip()
+        project_id = _project_id_for_related_source(session, Character, character_id)
+        return [(project_id, "character", character_id)] if project_id and character_id else []
+    if isinstance(instance, CharacterAlias):
+        character_id = str(instance.character_id or "").strip()
+        project_id = project_id or _project_id_for_related_source(session, Character, character_id)
+        return [(project_id, "character", character_id)] if project_id and character_id else []
+    if isinstance(instance, CharacterRelationship):
+        if not project_id:
+            return []
+        return [
+            (project_id, "character", str(character_id))
+            for character_id in (instance.character_a_id, instance.character_b_id)
+            if character_id
+        ]
     if isinstance(instance, WorldbuildingEntry):
         return [(project_id, "worldbuilding", str(instance.id))] if project_id and instance.id else []
     if isinstance(instance, AssistantMemory):
@@ -528,8 +582,12 @@ def _collect_context_manifest_source_changes(session: Session, flush_context: An
     if session.info.get(_MANIFEST_INVALIDATION_GUARD):
         return
     pending = session.info.setdefault(_MANIFEST_INVALIDATION_KEY, set())
-    for instance in set(session.dirty).union(session.deleted):
-        if instance not in session.deleted and not session.is_modified(instance, include_collections=False):
+    for instance in set(session.new).union(session.dirty).union(session.deleted):
+        if (
+            instance not in session.new
+            and instance not in session.deleted
+            and not session.is_modified(instance, include_collections=False)
+        ):
             continue
         pending.update(_changed_manifest_sources(session, instance))
 
@@ -825,12 +883,17 @@ class ContextOrchestrator:
         required = set(contract.required_categories)
         # 1. Structural anchors.
         if "style" in required or "style" in contract.optional_categories:
+            from .project_creation_context import get_project_creation_context
+
             add(ManifestCandidate(
                 category="style",
                 source_type="project_style",
                 source_id=project.id,
                 title="Project style and fixed constraints",
-                content=_project_style_text(project),
+                content=_project_style_text(
+                    project,
+                    get_project_creation_context(self.db, project.id),
+                ),
                 required="style" in required,
                 tier=1,
                 structural_score=1.0,
@@ -1101,7 +1164,7 @@ class ContextOrchestrator:
                 source_type="character",
                 source_id=character.id,
                 title=character.name,
-                content=_character_text(character),
+                content=_character_text(self.db, character),
                 tier=3,
                 structural_score=0.95,
                 final_score=0.95,

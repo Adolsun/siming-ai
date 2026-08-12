@@ -64,6 +64,7 @@ def prepare_opencode_launch(
     allow_mcp: bool,
     isolated: bool,
     permission_granted: bool,
+    direct_prompt_safe: bool = False,
     mcp_permission_pack: str = "readonly_collaboration",
     mcp_project_id: str = "",
     mcp_creation_session_id: str = "",
@@ -75,6 +76,7 @@ def prepare_opencode_launch(
         attachments=attachments,
         allow_mcp=allow_mcp,
         permission_granted=permission_granted,
+        direct_prompt_safe=direct_prompt_safe,
     )
     base_env = os.environ.copy()
     if adapter._provider == "opencode_cli":

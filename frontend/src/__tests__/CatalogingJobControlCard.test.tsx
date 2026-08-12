@@ -60,4 +60,22 @@ describe('CatalogingJobControlCard', () => {
     expect(screen.getAllByText('第13章候选格式不完整')).toHaveLength(1)
     expect(screen.getByText('未完成：8 章尚未完成')).toBeInTheDocument()
   })
+
+  it('presents source-coverage differences as review work instead of a failed rerun', () => {
+    render(
+      <CatalogingJobControlCard
+        job={{
+          ...job('waiting_confirmation'),
+          review_warning: '候选已保留，需要核对模型抽取的原文线索：原文角色未进入章节覆盖清单：爷爷',
+        }}
+        progress={60}
+        streaming={false}
+        {...handlers}
+      />,
+    )
+
+    expect(screen.getByText('候选已生成，有原文线索需要你核对')).toBeInTheDocument()
+    expect(screen.getAllByText(/候选已保留，需要核对模型抽取的原文线索/)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /写入并继续/ })).toBeEnabled()
+  })
 })

@@ -25,6 +25,7 @@ from ..database.models import (
     OutlineNodeCharacter,
     WorldbuildingEntry,
 )
+from .character_archive import character_archive_payload
 
 DIMENSION_LABELS = {
     "geography": "地理", "history": "历史", "factions": "势力",
@@ -535,24 +536,16 @@ def _build_scene_characters_context(db: Session, project_id: str, outline_node_i
 
 
 def _build_character_context(character: Character) -> str:
-    parts = [
-        f"角色名称：{character.name}",
-        f"角色类型：{character.role_type or '未分类'}",
-    ]
-    if character.appearance:
-        parts.append(f"外貌：{character.appearance}")
-    if character.personality:
-        parts.append(f"性格：{character.personality}")
-    if character.background:
-        parts.append(f"背景：{character.background}")
-    if character.abilities:
-        try:
-            abilities = json.loads(character.abilities)
-            if isinstance(abilities, list) and abilities:
-                parts.append(f"能力：{', '.join(abilities)}")
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return "\n".join(parts)
+    payload = character_archive_payload(character)
+    # Voice configuration remains a separately labelled section in role-play
+    # prompts, but the base card must include all identity, state and profile
+    # fields written by cataloging.
+    payload.pop("ai_config", None)
+    return "角色档案（权威数据）：\n" + json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def _build_character_ai_context(character: Character) -> str:

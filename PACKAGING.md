@@ -14,11 +14,9 @@ build-exe.bat
 release\Siming.exe
 release\update.json
 release\sha256.txt
-release\Siming.apk
-release\Siming-apk-sha256.txt
 ```
 
-`Siming.exe` 是 Windows 正式分发文件，`Siming.apk` 是 Android 正式分发文件。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
+`Siming.exe` 是 Windows 正式分发文件。Android 是可选的独立构建；3.2.0 暂不生成或上传 APK。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
 
 ## 给普通用户运行
 
@@ -60,6 +58,14 @@ release\Siming.exe
 
 ## 自动更新
 
+桌面更新只接受同时满足以下条件的 `Siming.exe`：
+
+1. SHA-256 与 `update.json`、`sha256.txt` 完全一致。
+2. Windows Authenticode 签名可信。
+3. 签名包含可信时间戳。
+
+本地开发包可以不签名。正式自动更新包必须签名；没有证书时，只能显式使用 `-ManualDownloadOnly` 发布供用户主动下载并核对 SHA256 的手动安装包。签名必须在计算发布 SHA-256 **之前**完成，因为 Authenticode 会改变 exe 字节。
+
 默认更新仓库：
 
 ```text
@@ -72,8 +78,6 @@ teangtang1122/siming-ai
 Siming.exe
 sha256.txt
 update.json
-Siming.apk
-Siming-apk-sha256.txt
 ```
 
 `sha256.txt` 只包含：
@@ -84,7 +88,45 @@ Siming-apk-sha256.txt
 
 更新器只下载 `Siming.exe`。Release 中不要上传旧 exe 名资产。
 
+### Windows 正式签名
+
+GitHub Actions 需要配置以下加密 Secrets：
+
+```text
+SIMING_WINDOWS_CODESIGN_PFX_BASE64
+SIMING_WINDOWS_CODESIGN_PASSWORD
+```
+
+前者是受信任代码签名证书 PFX 的 Base64 内容，后者是 PFX 口令。证书、私钥和口令不得提交到仓库、构建日志或 Release 资产。
+
+本地发布机可在构建后运行：
+
+```powershell
+.\scripts\sign-windows-release.ps1 `
+  -ReleaseDir release `
+  -CertificatePath C:\secure\siming-codesign.pfx `
+  -CertificatePassword $env:SIMING_CODESIGN_PASSWORD `
+  -ExpectedVersion 3.2.0
+
+.\scripts\verify-release-assets.ps1 `
+  -ReleaseDir release `
+  -ExpectedVersion 3.2.0 `
+  -RequireTrustedSignature
+```
+
+签名脚本会在可信时间戳校验通过后重新生成 `update.json` 与 `sha256.txt`。如果线上版本已经发布为未签名包，旧客户端会显示 `no_signature` 并停止安装；必须用签名后的同版本 exe 及重新计算的两个完整性文件一并替换，或者发布更高的签名版本。
+
+没有 Windows 代码签名证书时，可发布仅供手动安装的 Windows 资产：
+
+```powershell
+.\scripts\publish-github.ps1 -Tag v3.2.0 -SkipBuild -ManualDownloadOnly
+```
+
+该模式不会降低应用内更新器的签名要求，也不会包含 Android APK。
+
 ## Android APK
+
+Android 发布当前暂停，不属于 3.2.0 的发布资产。恢复 Android 发布时，必须继续使用同一把长期保存的发布密钥，并显式使用 `-IncludeAndroid` 运行发布脚本。
 
 Android Release 必须使用同一把长期保存的发布密钥签名；丢失密钥后，已安装用户无法原位升级。密钥和口令不得写入仓库、构建日志或 Release 资产。
 

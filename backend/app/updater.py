@@ -390,7 +390,20 @@ def _require_valid_signature(path: Path) -> dict[str, Any]:
     signature = _verify_authenticode_signature(path)
     if not signature.get("valid"):
         detail = str(signature.get("status") or "invalid")
-        raise RuntimeError(f"The update signature is not trusted ({detail}).")
+        failure_messages = {
+            "no_signature": (
+                "该版本的安装包没有 Windows 代码签名。为保护你的电脑，司命已停止安装；"
+                "请等待发布方重新签名并替换该版本"
+            ),
+            "untrusted_root": (
+                "安装包的代码签名无法连接到受信任的证书颁发机构。司命已停止安装"
+            ),
+            "certificate_revoked": "安装包的代码签名证书已被吊销。司命已停止安装",
+            "bad_digest": "安装包签名与文件内容不一致，文件可能已被修改。司命已停止安装",
+            "unsupported_platform": "当前系统无法验证 Windows 代码签名，因此不能安全安装更新",
+        }
+        message = failure_messages.get(detail, "安装包未通过可信 Windows 代码签名校验，司命已停止安装")
+        raise RuntimeError(f"{message}（错误代码：{detail}）。")
     return signature
 
 

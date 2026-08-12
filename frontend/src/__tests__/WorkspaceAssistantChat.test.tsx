@@ -13,6 +13,10 @@ vi.mock('../api/client', () => ({
   apiClient: { delete: mockDelete, get: mockGet, post: mockPost },
 }))
 
+vi.mock('../shared/operations/queries', () => ({
+  useOperations: () => ({ data: [] }),
+}))
+
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 
 const encoder = new TextEncoder()

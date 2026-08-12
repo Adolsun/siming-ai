@@ -119,7 +119,7 @@ def render_quickstart(
         "get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> 循环 get_next_external_cataloging_chapter(phase='merged') / save_external_cataloging_candidates(phase='merged') / apply_pending_cataloging -> verify_external_cataloging_progress -> get_project_archive_status。",
         "",
         "## 默认外部写作流程",
-        "prepare_external_writing_context -> 外部 Agent 自己写作和自检 -> save_external_chapter_draft -> record_external_quality_review -> create_chapter(draft_id/content_ref) -> archive_chapter_after_write。",
+        "prepare_external_writing_context -> 外部 Agent 一次生成基础正文 -> save_external_chapter_draft -> create_chapter(draft_id/content_ref, skip_style_repair=true)。写入会自动创建统一建档任务；若返回 next_action=continue_external_cataloging，继续标准外部建档循环，否则不要重复建档。去除 AI 味和质量评审由用户另行发起。",
         "",
         "# Siming / 司命外部 Agent 快速入门",
         "",
@@ -146,8 +146,8 @@ def render_quickstart(
         "",
         "## 无 API 写章节",
         "1. prepare_external_writing_context()",
-        "2. 外部 Agent 自己写正文并按质量规则自检",
-        "3. save_external_chapter_draft -> record_external_quality_review -> create_chapter -> archive_chapter_after_write",
+        "2. 外部 Agent 一次生成基础正文；不自动执行去除 AI 味或质量评审",
+        "3. save_external_chapter_draft -> create_chapter(skip_style_repair=true)；确认 cataloging_job.job_id，并按返回的 next_action 决定由当前 Agent 继续外部建档还是等待后台任务",
     ]
     from app.prompts.cataloging_source import get_language_rules, get_project_binding_rules
 
@@ -156,8 +156,8 @@ def render_quickstart(
         "## Context Governance (Required for Agent Tasks)",
         "- Before writing, review, rewriting, or cataloging a concrete chapter, call prepare_task_context to obtain the baseline manifest.",
         "- Use search_task_context for focused follow-up retrieval. Reading a project mirror directly remains allowed but is not auditable evidence.",
-        "- Before a formal chapter write or archive, call submit_context_evidence for every required manifest item using its source hash.",
-        "- Pass context_manifest_id through prepare_external_writing_context, save_external_chapter_draft, create_chapter, and archive_chapter_after_write.",
+        "- Before a formal chapter write, call submit_context_evidence for every required manifest item using its source hash.",
+        "- Pass context_manifest_id through prepare_external_writing_context, save_external_chapter_draft, and create_chapter.",
         "",
         get_project_binding_rules(),
         "",
@@ -224,11 +224,11 @@ def render_external_cataloging(
 
 
 def _quality_writing_prompt_for_project(project: Any) -> str:
-    """Build the same quality writing prompt exposed by external tools."""
+    """Build the same focused base-writing prompt exposed by external tools."""
     from app.prompts.prompt_source import get_public_chapter_quality_system_prompt
     from app.prompts.style_prompts import build_style_context
 
-    style_context = build_style_context(project, include_anti_ai=True)
+    style_context = build_style_context(project, include_anti_ai=False)
     return get_public_chapter_quality_system_prompt().replace("{style_context}", style_context)
 
 
@@ -258,24 +258,22 @@ def _legacy_render_writing_context(
         return [McpPromptMessage(role="user", content=f"Error: Project {project_id} not found.")]
 
     parts: list[str] = []
-    parts.append(f"# Siming Quality Writing Context: {project.title}")
+    parts.append(f"# Siming Base Writing Context: {project.title}")
     parts.append("")
-    parts.append("## Unified Quality Prompt")
+    parts.append("## Unified Base-Writing Prompt")
     parts.append(_quality_writing_prompt_for_project(project))
     parts.append("")
     parts.append("## Required External Writing Workflow")
     parts.append(
-        "prepare_external_writing_context -> write and self-review with this quality prompt -> "
-        "save_external_chapter_draft -> record_external_quality_review -> "
-        "create_chapter(draft_id/content_ref) -> archive_chapter_after_write -> get_project_archive_status"
+        "prepare_external_writing_context -> generate one base draft -> "
+        "save_external_chapter_draft -> create_chapter(draft_id/content_ref, skip_style_repair=true). "
+        "The write result starts canonical cataloging; follow its next_action and never duplicate candidates. "
+        "De-AI revision and quality review are separate user actions."
     )
     if project.description:
         parts.append(f"\n## Project Description\n{project.description}")
     if project.writing_style:
         parts.append(f"\n## Writing Style\n{project.writing_style}")
-    if project.forbidden_sentence_patterns:
-        parts.append(f"\n## Forbidden Patterns\n{project.forbidden_sentence_patterns}")
-
     # Outline
     if outline_node_id:
         node = db.query(OutlineNode).filter(
@@ -483,7 +481,7 @@ def _render_governed_task_prompt(
     workflow = (
         "1. Call prepare_task_context with this manifest_id or your run_id.\n"
         "2. Use search_task_context only for a focused gap.\n"
-        "3. Before create_chapter, update_chapter, or archive_chapter_after_write, "
+        "3. Before create_chapter or update_chapter, "
         "call submit_context_evidence for every required source.\n"
         "4. Direct project-mirror reads may inform exploration, but are not verified evidence."
     )

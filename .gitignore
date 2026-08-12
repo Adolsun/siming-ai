@@ -73,6 +73,7 @@ Thumbs.db
 .playwright-cli/
 output/
 *.rp
+.tmp/
 
 # Local-only Axure reconstruction workspace and analysis evidence
 local-prototype/

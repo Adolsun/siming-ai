@@ -130,33 +130,29 @@ Arguments: {
   "summary": "Brief chapter summary",
   "involved_characters": ["Hero", "Villain"]
 }
-Result: { "id": "CHAPTER_ID", "title": "Chapter Title", ... }
+Result: { "id": "CHAPTER_ID", "title": "Chapter Title", "cataloging_job": { "job_id": "JOB_ID", "next_action": "..." }, ... }
 ```
 
 **API-free**: Yes. Creates database record from stored draft.
 
-### Step 10: Apply Story Updates
+### Step 10: Continue Canonical Cataloging When Requested
 
 ```
-Tool: apply_external_story_updates
-Arguments: {
-  "project_id": "PROJECT_ID",
-  "chapter_id": "CHAPTER_ID",
-  "updates": {
-    "characters": [
-      { "id": "CHAR_ID", "current_location": "New Location", "current_goal": "New Goal" }
-    ],
-    "worldbuilding": [
-      { "title": "New Rule", "content": "Rule description", "dimension": "power_system" }
-    ],
-    "chapter_summary": "Brief summary for future context"
-  },
-  "mode": "auto"
-}
-Result: Applied update counts
+If `cataloging_job.next_action` is `continue_external_cataloging`, use the returned
+`job_id` with the normal merged cataloging loop:
+
+1. `get_next_external_cataloging_chapter(phase="merged")`
+2. Read the chapter and project mirror, then generate the complete candidate set.
+3. `save_external_cataloging_candidates(phase="merged")`
+4. `apply_pending_cataloging`
+5. `verify_external_cataloging_progress`
+
+If `next_action` is `background_cataloging`, do not generate a second set of
+candidates; the same canonical worker is already running.
 ```
 
-**API-free**: Yes. Creates/updates database records.
+**API-free**: Yes. The external Agent continues the already-created durable job;
+no Siming model API is selected implicitly.
 
 ## 3. API-Free Tools
 
@@ -175,7 +171,7 @@ These tools work without any Siming model API configured:
 | `record_external_quality_review` | Store quality review |
 | `create_chapter` | Create chapter from draft |
 | `update_chapter` | Update chapter content |
-| `apply_external_story_updates` | Apply character/worldbuilding updates |
+| `start_external_cataloging_job` / merged cataloging tools | Run the canonical API-free cataloging workflow |
 | `search_chapters` | Search existing chapters |
 | `search_characters` | Search characters |
 | `search_worldbuilding` | Search worldbuilding |
@@ -308,17 +304,12 @@ If the project requires write confirmation:
   })
 < { "id": "ch-345", "title": "Chapter 5: The Battle", "word_count": 2500 }
 
-## 8. Apply story updates
-> apply_external_story_updates({
-    "project_id": "proj-123",
-    "chapter_id": "ch-345",
-    "updates": {
-      "characters": [
-        { "id": "char-hero", "current_location": "Battlefield", "current_goal": "Defeat Villain" }
-      ],
-      "chapter_summary": "Hero confronts Villain in a fierce battle..."
-    },
-    "mode": "auto"
-  })
-< { "characters_updated": 1, "chapter_summary_saved": true }
+## 8. Follow the write result
+< { "id": "ch-345", "cataloging_job": {
+      "job_id": "job-456",
+      "next_action": "continue_external_cataloging"
+    } }
+> get_next_external_cataloging_chapter({"job_id": "job-456", "phase": "merged"})
+> save_external_cataloging_candidates({"job_id": "job-456", "phase": "merged", "candidates": [...]})
+> apply_pending_cataloging({"job_id": "job-456"})
 ```

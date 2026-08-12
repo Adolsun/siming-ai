@@ -30,8 +30,8 @@ from app.modules.model_runtime.domain.policy import (
 )
 
 from .local_cli import (
-    CLIPermissionRequiredError,
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
+    CLIPermissionRequiredError,
     LocalCLIAdapter,
     detect_cli_quota_error,
     effective_local_cli_model,

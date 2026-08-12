@@ -108,7 +108,10 @@ async def get_project_creation_brief(db: Session, project_id: str, args: dict[st
 
 async def update_project_creation_brief(db: Session, project_id: str, args: dict[str, Any]) -> dict:
     """Create or patch the authoritative brief for a formal project."""
-    from app.services.novel_creation_workspace import patch_creation_artifact, serialize_creation_artifact
+    from app.services.novel_creation_workspace import (
+        patch_creation_artifact,
+        serialize_creation_artifact,
+    )
 
     target_id = str(args.get("project_id") or args.get("id") or project_id).strip()
     project = db.get(Project, target_id)
@@ -136,9 +139,9 @@ async def update_project_creation_brief(db: Session, project_id: str, args: dict
             source="project_assistant",
         )
         changed_artifacts.append("constraints")
-        writing_style = str(constraints.get("writing_style") or "").strip()
-        if writing_style:
-            project.custom_style_prompt = writing_style
+        if "writing_style" in constraints:
+            writing_style = str(constraints.get("writing_style") or "").strip()
+            project.custom_style_prompt = writing_style or None
 
     creative = args.get("creative_direction") if isinstance(args.get("creative_direction"), dict) else {}
     if creative:
@@ -185,6 +188,14 @@ async def update_project_creation_brief(db: Session, project_id: str, args: dict
             source="project_assistant",
         )
         changed_artifacts.append("world_style")
+        if "writing_style" in world_style and "writing_style" not in constraints:
+            style_value = world_style.get("writing_style")
+            writing_style = (
+                style_value.strip()
+                if isinstance(style_value, str)
+                else json.dumps(style_value, ensure_ascii=False)
+            )
+            project.custom_style_prompt = writing_style or None
 
     if not changed_artifacts:
         return {

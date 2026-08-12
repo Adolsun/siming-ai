@@ -30,6 +30,7 @@ from ...novel_creation_interview import (
     make_novel_interview_error,
 )
 from ...system_chat_completion import complete_system_chat
+from ...character_role_types import append_character_role_description, normalize_character_role_type
 
 _logger = logging.getLogger(__name__)
 
@@ -5176,9 +5177,15 @@ async def apply_novel_blueprint(
                     project_id=project.id,
                     name=name,
                     personality=_clean_text(char_data.get("personality")) or None,
-                    background=_clean_text(char_data.get("background")) or None,
+                    background=append_character_role_description(
+                        _clean_text(char_data.get("background")) or None,
+                        char_data.get("role_type"),
+                    ),
                     appearance=_clean_text(char_data.get("appearance")) or None,
-                    role_type=_clean_text(char_data.get("role_type"), "supporting")[:50],
+                    role_type=normalize_character_role_type(
+                        char_data.get("role_type"),
+                        default="supporting",
+                    ),
                     age=_clean_text(char_data.get("age")) or None,
                     life_status=_clean_text(char_data.get("life_status"), "active")[:50],
                     current_location=_clean_text(char_data.get("current_location")) or None,

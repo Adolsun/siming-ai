@@ -87,7 +87,6 @@ class OldDataCompatibilityTest(unittest.TestCase):
             get_external_chapter_draft,
             record_external_quality_review,
         )
-        from app.services.workspace.tools.external_story_updates import apply_external_story_updates
         from app.services.workspace.tools.novel_creation import (
             start_novel_creation_session,
             draft_novel_blueprint,
@@ -103,7 +102,6 @@ class OldDataCompatibilityTest(unittest.TestCase):
 
         self.assertTrue(callable(prepare_external_writing_context))
         self.assertTrue(callable(save_external_chapter_draft))
-        self.assertTrue(callable(apply_external_story_updates))
         self.assertTrue(callable(start_novel_creation_session))
         self.assertTrue(callable(apply_novel_blueprint))
         self.assertTrue(callable(list_prompt_packs))
@@ -144,7 +142,7 @@ class OldDataCompatibilityTest(unittest.TestCase):
             pack = db.query(PublicPromptPack).filter(
                 PublicPromptPack.pack_id == "cataloging_external_no_api",
             ).first()
-            self.assertEqual(pack.version, "1.0.1")
+            self.assertEqual(pack.version, "1.1.0")
             self.assertIn("中文小说必须用中文建档", pack.system_prompt)
             self.assertIn("不要改成英文或拼音", pack.system_prompt)
             self.assertTrue(pack.enabled)

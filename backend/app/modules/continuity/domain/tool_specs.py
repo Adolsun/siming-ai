@@ -13,19 +13,6 @@ class CompatibleInput(BaseModel):
     model_config = ConfigDict(extra="allow", protected_namespaces=())
 
 
-class ArchiveChapterAfterWriteInput(CompatibleInput):
-    chapter_id: str | None = None
-    draft_id: str | None = None
-    content_ref: str | None = None
-    outline_node_id: str | None = None
-    candidates: list[dict[str, Any]] = Field(default_factory=list)
-    mode: Literal["auto", "manual"] = "auto"
-    source: Literal["internal_writer", "local_cli", "external_agent", "repair"] = "internal_writer"
-    generate_if_missing: bool = True
-    model: str = ""
-    context_manifest_id: str | None = None
-
-
 class InspectStoryGranularityInput(CompatibleInput):
     chapter_id: str | None = None
     level: Literal["basic", "narrative"] = "narrative"
@@ -49,7 +36,6 @@ class GetNarrativeLedgerInput(CompatibleInput):
 
 
 _INPUTS: dict[str, type[BaseModel]] = {
-    "archive_chapter_after_write": ArchiveChapterAfterWriteInput,
     "inspect_story_granularity": InspectStoryGranularityInput,
     "repair_story_granularity": RepairStoryGranularityInput,
     "get_narrative_ledger": GetNarrativeLedgerInput,

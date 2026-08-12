@@ -165,6 +165,14 @@ class RenderWritingContextTest(unittest.TestCase):
         content = msgs[0].content
         self.assertIn("first person", content)
 
+    def test_writing_context_keeps_revision_and_review_separate(self):
+        db = self._mock_db()
+        content = render_writing_context(db, "p1")[0].content
+        self.assertIn("one base draft", content)
+        self.assertIn("skip_style_repair=true", content)
+        self.assertNotIn("record_external_quality_review", content)
+        self.assertNotIn("## Forbidden Patterns", content)
+
     def test_project_not_found(self):
         db = MagicMock()
         q = MagicMock()

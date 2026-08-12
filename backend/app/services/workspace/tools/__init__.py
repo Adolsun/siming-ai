@@ -107,7 +107,7 @@ from .stats import get_today_writing_stats, get_writing_stats_history, set_daily
 from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
-from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
+from .story_granularity import get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
 from .novel_creation_v2 import (
     apply_creation_import,
     cancel_creation_operation,
@@ -270,7 +270,6 @@ __all__ = [
     "get_moshu_usage_guide",
     "start_local_cli_agent_run",
     "wait_local_cli_agent_run",
-    "archive_chapter_after_write",
     "get_narrative_ledger",
     "update_narrative_ledger_entry",
     "inspect_story_granularity",

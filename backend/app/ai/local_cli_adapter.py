@@ -186,6 +186,7 @@ STDIN_PROMPT_PROVIDERS = {
 DASH_STDIN_PROMPT_PROVIDERS = {"codex_cli"}
 AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli", "codex_cli"}
 OPENCODE_FAMILY_PROVIDERS = {"opencode_cli", "mimocode_cli", "kilocode_cli"}
+OPENCODE_DIRECT_PROMPT_LIMIT = 8_000
 WINDOWS_SAFE_ARG_CHARS = 12000
 OPENCODE_LEGACY_MODEL = "opencode-cli"
 OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
@@ -1136,6 +1137,20 @@ class LocalCLIAdapter(BaseAdapter):
         resolved = shutil.which(command) or (command if os.path.exists(command) else None)
         if not resolved:
             raise LLMError(f"未找到本机 CLI 命令: {command}")
+        if self._provider == "opencode_cli":
+            # npm exposes OpenCode through .cmd/.ps1 launchers on Windows. A
+            # native binary sits beside the package and is safer for direct
+            # argv prompts: model/user text can never be reinterpreted by cmd.
+            resolved_path = Path(resolved)
+            native = (
+                resolved_path.parent
+                / "node_modules"
+                / "opencode-ai"
+                / "bin"
+                / "opencode.exe"
+            )
+            if native.is_file():
+                resolved = str(native)
         return resolved
 
     def _args(self, prompt: str, model: str) -> list[str]:
@@ -1419,6 +1434,16 @@ class LocalCLIAdapter(BaseAdapter):
             insert_at = args.index("--message") if "--message" in args else max(0, len(args) - 1)
             args[insert_at:insert_at] = ["--session-key", "agent:siming:local-cli"]
 
+    @classmethod
+    def _apply_codex_writing_options(cls, args: list[str], task_type: str) -> None:
+        """Keep prose transforms fast and less over-deliberated in Codex CLI."""
+
+        if str(task_type or "").strip().lower() != "writing":
+            return
+        if any("model_reasoning_effort" in token for token in args):
+            return
+        cls._insert_before_prompt(args, ["-c", 'model_reasoning_effort="low"'])
+
     def _opencode_family_launch(
         self,
         *,
@@ -1428,21 +1453,36 @@ class LocalCLIAdapter(BaseAdapter):
         attachments: list[str],
         allow_mcp: bool = False,
         permission_granted: bool = False,
+        direct_prompt_safe: bool = False,
     ) -> tuple[CLILaunch, str]:
         execution_model = effective_local_cli_model(self._provider, model)
-        prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
-
-        instruction = self._file_prompt_instruction(
-            prompt_file,
-            attachments,
-            allow_mcp=allow_mcp,
+        flattened_prompt = " ".join(
+            part.strip() for part in prompt.splitlines() if part.strip()
         )
-        # OpenCode is commonly installed as a Windows .cmd launcher. Embedded
-        # newlines in one argv value are then truncated at the first line, so
-        # the Agent sees only its identity and never receives the task path.
-        # Keep the complete prompt in the UTF-8 file and flatten only this safe
-        # pointer instruction into one command-line argument.
-        instruction = " ".join(part.strip() for part in instruction.splitlines() if part.strip())
+        direct_prompt = (
+            self._provider == "opencode_cli"
+            and direct_prompt_safe
+            and len(flattened_prompt) <= OPENCODE_DIRECT_PROMPT_LIMIT
+        )
+        if direct_prompt:
+            # Short isolated model calls do not need an Agent read-tool turn.
+            # Supplying the flattened prompt to the native .exe avoids empty
+            # read-only turns and prevents tool diagnostics from leaking into
+            # generated prose.
+            prompt_file = ""
+            instruction = flattened_prompt
+        else:
+            prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
+            instruction = self._file_prompt_instruction(
+                prompt_file,
+                attachments,
+                allow_mcp=allow_mcp,
+            )
+            # Script launchers cannot safely carry embedded newlines. Keep the
+            # complete task in UTF-8 and flatten only the pointer instruction.
+            instruction = " ".join(
+                part.strip() for part in instruction.splitlines() if part.strip()
+            )
         launch = self._launch(instruction, execution_model)
         args = list(launch.args)
         self._apply_permission_mode(args, permission_granted)
@@ -1452,7 +1492,15 @@ class LocalCLIAdapter(BaseAdapter):
         if not is_cli_model_sentinel(self._provider, execution_model):
             self._ensure_opencode_option(args, "--model", execution_model)
         ensure_opencode_logging_args(self._provider, args)
-        for path in [prompt_file, *attachments]:
+        # OpenCode already receives a flattened pointer to the task file.  On
+        # long Chinese prompts, attaching that same file with ``--file`` as
+        # well can make current OpenCode builds end the turn with zero tokens
+        # and no error.  Keep the task inside the isolated cwd and let the
+        # explicitly allowed read tool load it once.  User-authorized source
+        # attachments remain real ``--file`` parts.  Other OpenCode-family
+        # CLIs retain their existing attachment behavior.
+        attached_paths = attachments if self._provider == "opencode_cli" else [prompt_file, *attachments]
+        for path in attached_paths:
             args.extend(["--file", path])
         return CLILaunch(args=args), prompt_file
 
@@ -1501,6 +1549,10 @@ class LocalCLIAdapter(BaseAdapter):
                 allow_mcp=allow_mcp,
                 isolated=isolated,
                 permission_granted=permission_granted,
+                direct_prompt_safe=(
+                    self._provider == "opencode_cli"
+                    and Path(command).suffix.lower() == ".exe"
+                ),
                 mcp_permission_pack=str(
                     runtime_body.get("local_cli_mcp_permission_pack")
                     or "readonly_collaboration"
@@ -1518,6 +1570,10 @@ class LocalCLIAdapter(BaseAdapter):
                 model=model,
                 cwd=cwd,
                 permission_granted=permission_granted,
+            )
+            self._apply_codex_writing_options(
+                args,
+                str(runtime_body.get("moshu_task_type") or ""),
             )
             codex_output_file, cleanup_codex_output_file = self._ensure_codex_output_file(args, cwd)
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)

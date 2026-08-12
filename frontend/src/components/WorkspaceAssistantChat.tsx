@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Modal, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
 import {
   DeleteOutlined,
@@ -36,6 +36,8 @@ import {
 } from './assistant'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
+import { useOperations } from '../shared/operations/queries'
+import { projectAutoCatalogingMessages } from './assistant/catalogingNotifications'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
@@ -144,6 +146,7 @@ function WorkspaceAssistantChat({
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<WorkspaceAssistantMessage[]>([])
+  const { data: operations = [] } = useOperations(50)
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
 
@@ -184,6 +187,13 @@ function WorkspaceAssistantChat({
   const selectedProvider = String(defaultModel || '').split(':', 1)[0]
   const isLocalCliModel = selectedProvider.endsWith('_cli')
   const isOpenCodeCliModel = selectedProvider === 'opencode_cli'
+  const displayedMessages = useMemo(
+    () => sortWorkspaceMessages([
+      ...messages,
+      ...projectAutoCatalogingMessages(operations, projectId),
+    ]),
+    [messages, operations, projectId],
+  )
 
   useEffect(() => {
     setNextCliGrant(false)
@@ -1673,7 +1683,7 @@ function WorkspaceAssistantChat({
       )}
 
       <MessageList
-        messages={messages}
+        messages={displayedMessages}
         generating={generating}
         matchedSkills={matchedSkills}
         showScrollBottom={showScrollBottom}
@@ -1695,7 +1705,7 @@ function WorkspaceAssistantChat({
         cancelPending={cancelPending || canceling}
         selectedText={selectedText}
         showSelectionTag={showSelectionTag}
-        messageCount={messages.length}
+        messageCount={displayedMessages.length}
         onInputChange={setInput}
         onSend={sendMessage}
         onStop={stopGeneration}

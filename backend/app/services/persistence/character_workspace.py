@@ -17,6 +17,7 @@ from app.database.models import (
     CharacterRelationship,
     CharacterVersion,
 )
+from app.services.character_role_types import append_character_role_description, normalize_character_role_type
 
 
 class SqlAlchemyCharacterWorkspace:
@@ -50,6 +51,10 @@ class SqlAlchemyCharacterWorkspace:
         return rows.order_by(Character.updated_at.desc()).all()
 
     def create_character(self, **values: Any):
+        if "role_type" in values:
+            raw_role = values.get("role_type")
+            values["background"] = append_character_role_description(values.get("background"), raw_role)
+            values["role_type"] = normalize_character_role_type(raw_role)
         character = Character(**values)
         self.db.add(character)
         return character

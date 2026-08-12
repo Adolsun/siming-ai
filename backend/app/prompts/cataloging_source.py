@@ -32,6 +32,7 @@ def get_outline_granularity_rules() -> str:
 1. 每章必须至少输出 1 条 outline_create，node_type 为 "chapter"，表示本章整体节点。
 2. 本章存在多个重要场景、连续行动段、视角切换、冲突阶段或明显转折时，必须额外输出 2-6 条 node_type="section" 的 outline_create。
 3. section 节点必须使用 parent_title 指向本章 chapter 节点；不要把 section 当成独立章节。
+   不得把章节标题写进 parent_id，也不得自行猜测任何数据库 UUID；新节点只用 parent_title 表达父级，真实 ID 由司命解析。
 4. chapter 节点 summary 写整章目标、冲突、转折、结果和结尾钩子；section 节点 summary 写该场景的地点、参与角色、行动目标、冲突推进、信息揭示和场景结果。
 5. 如果章节非常短且只有单一场景，可以只输出 chapter 节点，但必须在 summary 中说明这是单场景章节。
 6. section 节点尽量补充 scene_number、purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions，供写后归档和上下文打包使用。
@@ -60,21 +61,26 @@ def get_fact_extraction_rules() -> str:
 
 字段要求：
 1. chapter_overview 必须输出 1 条。
-2. character_fact.payload 尽量包含 names、primary_name、aliases、role_hint、age、actions、state_changes、appearance_clues、background_clues、location、realm_or_level、physical_state、mental_state、goals、items_or_assets、keywords。
+2. character_fact.payload 尽量包含 names、primary_name、aliases、role_hint、age、actions、state_changes、appearance_clues、background_clues、location、realm_or_level、physical_state、mental_state、goals、items_or_assets、keywords；正文若揭示稳定人设，还要写 profile_clues，其中可含 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不要为了填字段推测。
 3. worldbuilding_fact.payload 尽量包含 title_hint、dimension_hint、keywords、content_points、rules、limits、affected_characters。
 4. identity_hint.payload 必须包含 names、reason、evidence_points、confidence_reason。疑似同一人但未实锤也要输出，供下一阶段读取相关卡片。
 5. outline_fact.payload 包含 title_hint、node_type、summary、characters、hook。
 6. outline_fact 要覆盖整章节点和重要场景节点；有多个场景时要分别抽取 outline_fact，供候选阶段生成 section 节点。
-7. evidence 写短依据，payload 用短语和数组表达，不要复制大段原文。"""
+7. 正文明示亲属、师徒、盟友、敌对、主从、合作或情感关系，或既有关系发生变化时，必须另输出 relationship_fact，不得只塞进 character_fact。relationship_fact.payload 必须包含 source_name、target_name、relationship_type、description；端点必须是角色，不能是地点、功法、组织或事件。
+8. chapter_overview.payload 除 summary、key_events、scenes 外，尽量列出 characters 和 worldbuilding_titles，作为本章实体盘点；没有时写 []。
+9. evidence 写短依据，payload 用短语和数组表达，不要复制大段原文。"""
 
 
 def get_cataloging_candidate_schema() -> str:
     return """【允许的候选 type 与 payload】
-每一行顶层都必须包含标准字段 type，例如 {"type":"worldbuilding_create", ...}。type 决定候选类别；不要把候选类别写进 node_type。
+首个响应对象必须同时包含两个必填对象：
+{"chapter_summary":{"summary_text":"...","coverage_manifest":{"scene_count":1,"characters":[],"worldbuilding":[],"relationships":[],"character_profiles":[]},"narrative_state":{"events":[],"timeline_events":[],"foreshadowing_planted":[],"foreshadowing_resolved":[],"storyline_progress":[],"new_storylines":[],"reader_known_facts":[],"character_known_facts":[],"unresolved_actions":[]},"narrative_review":{"source":"provided","outcome":"assessed"}},"chapter_outline":{"title":"当前章节原题","summary":"...","node_type":"chapter","status":"completed"}}
+系统会把这两个必填对象拆成 chapter_summary 与章级 outline_create。其他候选继续逐行输出；没有角色、新设定或关系时，coverage_manifest 对应项必须是 []，不得虚构补卡。
+除首个必填骨架对象外，每一行顶层都必须包含标准字段 type，例如 {"type":"worldbuilding_create", ...}。type 决定候选类别；不要把候选类别写进 node_type。
 node_type 只用于 outline_create/outline_update 的层级，而且只能是 chapter、section 或 volume；世界观、角色等候选不得输出 node_type。
-- chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}}
+- chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "coverage_manifest":{"scene_count":1,"characters":["..."],"worldbuilding":["..."],"relationships":[{"source_name":"...","target_name":"...","relationship_type":"..."}],"character_profiles":["本章新建或稳定档案发生变化的角色名"]}, "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}, "narrative_review":{"source":"provided", "outcome":"assessed", "evidence":"本章叙事治理检查依据"}}
 - outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
-- character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"...", "age":"...", "appearance":"...", "personality":"...", "background":"...", "abilities":["..."], "tone_style":"...", "catchphrases":["..."], "emotion_tendency":"...", "custom_system_prompt":"..."}
+- character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"protagonist|supporting|antagonist|mentor|other", "age":"...", "appearance":"...", "personality":"...", "background":"...", "abilities":["..."], "profile":{"core_motivation":"...","inner_lack":"...","core_belief":"...","public_persona":"...","hidden_persona":"...","reveal_chapter":3,"moral_taboo":"...","voice":"...","action_habit":"...","trauma_trigger":"..."}, "tone_style":"...", "catchphrases":["..."], "verbosity":"brief|moderate|verbose", "emotion_tendency":"...", "custom_system_prompt":"..."}
 - character_state_update: {"name":"...", "aliases":["..."], "appearance":"...", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets":"..."}
 - character_timeline: {"name":"...", "event_description":"...", "event_type":"appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change":"..."}
 - character_relationship: {"source_name":"...", "target_name":"...", "relationship_type":"...", "description":"..."}
@@ -87,6 +93,10 @@ node_type 只用于 outline_create/outline_update 的层级，而且只能是 ch
 def get_cataloging_candidate_rules() -> str:
     return """【候选写入规则】
 1. 每章必须至少生成 1 条 chapter_summary 和 1 条 chapter 级 outline_create。
+   第一行必须使用上述 chapter_summary + chapter_outline 必填响应对象；不能只返回其中一个，也不能先只返回摘要再提前结束。
+   chapter_summary 必须包含非空 summary_text，用一段话概括本章已经发生的主要事件；同时显式包含完整 narrative_state，没有发现时也要保留所有数组并填写 []，并提供 narrative_review，不能用“字段缺失”表示“没有问题”。
+   foreshadowing_planted、storyline_progress、unresolved_actions 中每个治理条目的 evidence 必须填写当前章节中可逐字检索的 6-120 字原文摘录，禁止用概述替代；找不到原文摘录时不要生成该条目。foreshadowing_resolved 等解决项必须携带已有治理项的 resolves_item_id 或 resolves_dedupe_key；找不到稳定引用时只报告待复核，不得按标题猜测并关闭旧记录。
+   coverage_manifest 必须显式包含 scene_count、characters、worldbuilding、relationships、character_profiles 五项；空项也写 []。relationships 列出本章明确出现、确认或改变且影响后续连续性的角色关系，character_profiles 列出本章需要新建或更新稳定档案的角色。
    大纲粒度必须遵守【大纲粒度统一规则】：有多个重要场景时，除了 chapter 节点，还要输出 2-6 条 node_type="section" 的 outline_create，并用 parent_title 指向本章 chapter 节点。
 
 2. 每个出场角色，必须输出 character_state_update 和 character_update（除非是全新角色用 character_create）。
@@ -97,7 +107,8 @@ def get_cataloging_candidate_rules() -> str:
    每章出场角色都要输出，即使没有变化也要输出当前值。
 
    character_update — 角色档案（有新信息就输出）：
-   包含：name、aliases、role_type、personality、background、abilities、tone_style、catchphrases、emotion_tendency、custom_system_prompt。
+   包含：name、aliases、role_type、personality、background、abilities、profile、tone_style、catchphrases、verbosity、emotion_tendency、custom_system_prompt。
+   profile 是角色卡“稳定写作锁”，只依据正文和已有档案合并已知信息：core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。新角色必须尽量补齐；已有角色在本章揭示或改变这些信息时必须更新。不得为了填满字段编造正文不存在的事实。
    ⚠️ background 和 custom_system_prompt 必须每次都是重写合并后的完整版本：
    - 读取已有角色档案，把本章新经历整合进已有背景，输出完整的 background。
    - 不要只写”本章新增：xxx”，要写”角色名，身份xxx，曾经历xxx，本章又xxx”。
@@ -107,7 +118,7 @@ def get_cataloging_candidate_rules() -> str:
 
 4. age 是描述性文本，不是精确数字。示例：”3岁”、”约16岁”、”外表约16岁，实际经历约200年”、”年龄不详”。
 
-5. character_create 用于新角色，尽量包含 name、aliases、role_type、appearance、personality、background、abilities、tone_style、catchphrases、emotion_tendency、custom_system_prompt。
+5. character_create 用于新角色，尽量包含 name、aliases、role_type、appearance、personality、background、abilities、profile、tone_style、catchphrases、verbosity、emotion_tendency、custom_system_prompt；role_type 只能填写 protagonist、supporting、antagonist、mentor、other 中的一个，身份、年龄等描述必须放在其他字段，不得拼进 role_type；并把该角色写入 coverage_manifest.character_profiles。
 
 6. 角色有多个称呼时，name 放最稳定主名，aliases 放亲属称呼、尊称、昵称、身份名、化名。发现两个卡片其实是同一人时，输出 character_merge_candidate。
 
@@ -115,7 +126,13 @@ def get_cataloging_candidate_rules() -> str:
 
 8. 新设定或设定变化要写 worldbuilding_create/update；设定被验证、破坏、限制或使用，写 worldbuilding_timeline。
 
-9. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。"""
+9. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。
+
+10. 角色关系不能只在自然语言摘要里一带而过。亲属、师徒、盟友、敌对、主从、利益合作、情感关系等，只要正文明确确认、首次出现或发生变化且会影响后续写作，就必须同时：
+    - 写入 coverage_manifest.relationships（source_name、target_name、relationship_type）；
+    - 输出一张同身份的 character_relationship 候选，description 写清依据和本章表现；
+    - 关系双方都列入 coverage_manifest.characters，并已有角色档案或在本章先输出 character_create/update。
+    不得用地点、功法、组织、事件充当关系端点，也不得靠 character_relationship 顺带创建空白角色卡。"""
 
 
 def get_candidate_resolution_rules() -> str:
@@ -124,8 +141,9 @@ def get_candidate_resolution_rules() -> str:
 1. 你会收到当前章节事实 JSONL，以及系统按事实检索出的相关角色、世界观、大纲、关系和索引。
 2. 任务是把“新事实 + 相关旧资料”合并成可写入数据库的候选项，不要重新写读后感。
 3. 只输出 JSONL；每一行是一个完整 JSON 对象；不要输出 Markdown、解释、代码块或 JSON 数组。
-4. 每条候选单独成行，不要把整章所有信息合成一个大 JSON。
-5. chapter_summary 必须输出 1 条。
+4. 第一行必须按【允许的候选 type 与 payload】一次性输出 chapter_summary + chapter_outline 必填骨架；其余候选单独成行。
+   除首个必填骨架外，禁止输出包含 character_state_updates、worldbuilding_entries、outline_creates、chapter_links 等列表的聚合对象。
+5. chapter_summary 必须输出 1 条，并包含非空 summary_text；不得只返回摘要后结束。
 6. 根据事实和相关卡片判断是创建、更新、关联还是提出角色合并候选。
 7. payload 要足够写库但不冗长；不要重复粘贴旧资料，不要输出无变化字段。""",
         get_outline_granularity_rules(),
