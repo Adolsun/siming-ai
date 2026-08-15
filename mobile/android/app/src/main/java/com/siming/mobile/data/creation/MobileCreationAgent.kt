@@ -5,6 +5,7 @@ import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -137,49 +138,70 @@ internal class MobileCreationAgent(
         }
 
         val (system, user) = contract.interviewMessages(source, historyArray)
-        val raw = directApi.complete(
-            config,
-            system,
-            user,
-            maxOutputTokens = 900,
-            temperature = 0.6,
-            extraBody = if (config.isDeepSeek()) buildJsonObject {
-                put("thinking", buildJsonObject { put("type", "disabled") })
-            } else null,
-        )
-        val payload = parseObject(raw)
-        return when (payload.string("action")) {
+        val interviewExtraBody = if (config.isDeepSeek()) buildJsonObject {
+            put("thinking", buildJsonObject { put("type", "disabled") })
+        } else null
+        var raw = ""
+        val decision = try {
+            raw = directApi.complete(
+                config,
+                system,
+                user,
+                maxOutputTokens = 900,
+                temperature = 0.6,
+                extraBody = interviewExtraBody,
+            )
+            try {
+                MobileCreationInterviewReliability.parseDecision(raw, historyArray)
+            } catch (initialError: MobileInterviewDecisionException) {
+                if (!initialError.repairable) throw initialError
+                val retryUser = MobileCreationInterviewReliability.retryUserPrompt(
+                    user,
+                    raw,
+                    initialError.message.orEmpty(),
+                )
+                raw = directApi.complete(
+                    config,
+                    system,
+                    retryUser,
+                    maxOutputTokens = 900,
+                    temperature = 0.0,
+                    extraBody = interviewExtraBody,
+                )
+                MobileCreationInterviewReliability.parseDecision(raw, historyArray)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val failure = MobileCreationInterviewReliability.failure(error, raw)
+            return withInterview(
+                source,
+                historyArray,
+                status = "failed",
+                reason = failure.message,
+                model = config.model,
+                failure = failure,
+            )
+        }
+
+        return when (decision.string("action")) {
             "generate" -> withInterview(
                 source,
                 historyArray,
                 status = "completed",
-                reason = payload.string("reason").ifBlank { "模型判断信息已足够。" },
+                reason = decision.string("reason").ifBlank { "模型判断信息已足够。" },
                 model = config.model,
             )
-            "ask_more" -> {
-                val question = (payload["question"] as? JsonObject)
-                    ?: ((payload["questions"] as? JsonArray)?.firstOrNull() as? JsonObject)
-                    ?: error("模型决定继续采访，但没有返回问题")
-                require(question.string("question").isNotBlank()) { "模型返回了空问题" }
-                val asked = historyArray.mapNotNull { it as? JsonObject }
-                    .map { questionKey(it.string("question")) }
-                    .toSet()
-                require(questionKey(question.string("question")) !in asked) { "模型重复了已经回答过的问题" }
-                withInterview(
-                    source,
-                    historyArray,
-                    status = "awaiting_answer",
-                    reason = payload.string("reason"),
-                    model = config.model,
-                    pendingQuestion = buildJsonObject {
-                        put("question", question.string("question"))
-                        put("purpose", question.string("purpose"))
-                        put("options", buildJsonArray {})
-                        put("type", "text")
-                    },
-                )
-            }
-            else -> error("模型没有返回 ask_more 或 generate 决策")
+            "ask_more" -> withInterview(
+                source,
+                historyArray,
+                status = "awaiting_answer",
+                reason = decision.string("reason"),
+                model = config.model,
+                pendingQuestion = decision["question"] as? JsonObject
+                    ?: error("动态采访规范化结果缺少问题"),
+            )
+            else -> error("动态采访规范化结果缺少有效决策")
         }
     }
 
@@ -272,6 +294,7 @@ internal class MobileCreationAgent(
         reason: String,
         model: String,
         pendingQuestion: JsonObject? = null,
+        failure: MobileInterviewFailure? = null,
     ): JsonObject = updateDraft(source) { draft ->
         draft["interview"] = buildJsonObject {
             put("mode", "dynamic_model")
@@ -280,6 +303,14 @@ internal class MobileCreationAgent(
             put("pending_question", pendingQuestion ?: JsonNull)
             put("model", model)
             put("reason", reason)
+            if (failure != null) {
+                put("failure_class", failure.failureClass)
+                put("next_action", failure.nextAction)
+                put("error_message", failure.message)
+                if (failure.rawResponsePreview.isNotBlank()) {
+                    put("raw_response_preview", failure.rawResponsePreview)
+                }
+            }
             put("updated_at", Instant.now().toString())
         }
     }
