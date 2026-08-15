@@ -1,0 +1,52 @@
+name: Run Android interview reliability patcher
+
+on:
+  push:
+    branches: ["codex/android-interview-reliability-3.2.1"]
+    paths:
+      - ".github/workflows/android-interview-reliability-patch2.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/android-interview-reliability-3.2.1
+          fetch-depth: 0
+
+      - name: Patch Android interview flow
+        run: python scripts/patch-android-interview-reliability.py
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build APK
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified patch and remove temporary patchers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/android-interview-reliability-patch.yml
+          git rm .github/workflows/android-interview-reliability-patch2.yml
+          git rm scripts/patch-android-interview-reliability.py
+          git add mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationAgent.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/CreationScreen.kt
+          git commit -m "Fix Android novel interview reliability"
+          git push origin HEAD:codex/android-interview-reliability-3.2.1
