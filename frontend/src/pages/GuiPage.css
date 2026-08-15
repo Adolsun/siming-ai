@@ -76,7 +76,7 @@
 .gui-page-brand .gui-page-version {
   display: inline;
   margin-left: 4px;
-  color: var(--ant-color-text-quaternary, var(--ant-color-text-tertiary));
+  color: var(--ant-color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -104,5 +104,15 @@
     max-width: 56px !important;
     min-width: 56px !important;
     width: 56px !important;
+  }
+
+  .gui-page-footer {
+    gap: 4px;
+    padding: 5px;
+  }
+
+  .gui-page-footer .ant-btn {
+    min-height: 44px;
+    min-width: 44px;
   }
 }

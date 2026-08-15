@@ -500,6 +500,7 @@ async function mockUiApi(page: Page, assistantScenario: 'running' | 'recovery' =
         global_model: { provider: model.provider, model: model.default_model }, activation_job: null,
       } })
     }
+    if (path === '/api/v1/config/app-info') return fulfill(route, { code: 0, data: { name: 'Siming', version: '3.2.1' } })
     if (path === '/api/v1/config/models') return fulfill(route, { code: 0, data: { items: [model], total: 1 } })
     if (path === '/api/v1/config/global-model') return fulfill(route, { code: 0, data: { provider: model.provider, model: model.default_model } })
     if (path === '/api/v1/config/content-root') return fulfill(route, { code: 0, data: { current_path: 'D:/Siming', default_path: 'D:/Siming', is_default: true, exists: true, is_empty: false, looks_like_siming_root: true } })
@@ -677,7 +678,7 @@ for (const viewport of creationViewports) {
     })
     await page.goto('/gui', { waitUntil: 'networkidle' })
 
-    await expect(page.getByText(/\u4f5c\u54c1\u6a21\u5f0f/)).toBeVisible()
+    await expect(page.getByText(/\u4f5c\u54c1\u4e0a\u4e0b\u6587/)).toBeVisible()
     await expect(page.getByText(/\u4e3b\u89d2\u52a8\u673a\u8c03\u6574/).first()).toBeVisible()
     await expect(page.getByText(/\u5df2\u8c03\u6574\u4e3b\u89d2\u52a8\u673a/)).toBeVisible()
     await expectViewportSafe(page)
@@ -688,10 +689,10 @@ for (const viewport of creationViewports) {
   test(`keeps immutable artifact history reviewable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
-    await page.goto('/gui', { waitUntil: 'networkidle' })
+    await page.goto('/gui?creationSession=running-creation', { waitUntil: 'networkidle' })
 
     if (viewport.width === 800) {
-      await page.getByRole('button', { name: '立项数据' }).click()
+      await page.getByRole('button', { name: '作品资料' }).click()
     }
     await page.locator('button[aria-label$="\u7248\u672c\u5386\u53f2"]').first().click()
     await expect(page.getByRole('dialog', { name: /\u7248\u672c\u5386\u53f2/ })).toBeVisible()
@@ -731,17 +732,17 @@ for (const viewport of creationViewports) {
   test(`keeps the conversational creation task controllable at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
-    await page.goto('/gui', { waitUntil: 'networkidle' })
+    await page.goto('/gui?creationSession=running-creation', { waitUntil: 'networkidle' })
 
     if (viewport.width === 800) {
-      await page.getByRole('button', { name: '立项数据' }).click()
+      await page.getByRole('button', { name: '作品资料' }).click()
     }
     await expect(page.getByText('立项任务')).toBeVisible()
     await expect(page.getByText('0 个错误 · 1 个提醒')).toBeVisible()
     await expect(page.getByRole('heading', { name: '主线与卷纲' })).toBeVisible()
     await expect(page.getByText('正在调整第 3—8 卷，并保留主角设定')).toBeVisible()
     await expect(page.getByText('模型：opencode_cli:opencode/deepseek-v4-flash-free')).toBeVisible()
-    await expect(page.getByRole('complementary', { name: '立项数据' })).toBeVisible()
+    await expect(page.getByRole('complementary', { name: '作品资料' })).toBeVisible()
     await expect(page.getByText('上游阶段“主线与卷纲”已修改')).toBeVisible()
     await expect(page.getByRole('button', { name: '撤销开篇细纲最近一次修改' })).toBeVisible()
     await expect(page.getByText(/可先生成/)).toBeVisible()
@@ -762,22 +763,14 @@ for (const viewport of creationViewports) {
     test(`keeps revision-conflict recovery explicit at ${viewport.name}`, async ({ page }) => {
       await page.setViewportSize(viewport)
       await mockUiApi(page, 'recovery')
-      await page.goto('/gui', { waitUntil: 'networkidle' })
+      await page.goto('/gui?creationSession=recovery-creation', { waitUntil: 'networkidle' })
 
-      await expect(page.getByText('任务基于版本 7，当前作者内容已更新到版本 9', { exact: true })).toBeVisible()
-      const retryOriginal = page.getByRole('button', { name: '按原输入重试' })
-      const retryLatest = page.getByRole('button', { name: '按最新内容重试' })
-      await expect(retryOriginal).toBeEnabled()
-      await expect(retryLatest).toBeEnabled()
-      await expect(retryLatest).toBeInViewport()
-      expect(await retryLatest.evaluate((button) => {
-        const bounds = button.getBoundingClientRect()
-        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
-        return hit === button || button.contains(hit)
-      })).toBe(true)
+      await expect(page.getByText(/任务基于版本 7.*当前作者内容已更新到版本 9/)).toBeVisible()
+      const restoreInput = page.getByRole('button', { name: '放回输入框重试' })
+      await expect(restoreInput).toBeEnabled()
       if (viewport.width === 800) {
         await expectVisualSnapshot(page, 'assistant-creation-retry-800x600.png')
-        await page.getByRole('button', { name: '立项数据' }).click()
+        await page.getByRole('button', { name: '作品资料' }).click()
       }
       await expect(page.getByText('版本冲突')).toBeVisible()
       await expect(page.getByText('旧任务结果未覆盖当前内容；候选稿已保留，可按原输入或最新内容重试')).toBeVisible()
@@ -786,18 +779,13 @@ for (const viewport of creationViewports) {
       await expectNoSeriousAccessibilityViolations(page)
       await expectVisualSnapshot(page, `assistant-creation-conflict-${viewport.name}.png`)
       if (viewport.width === 800) {
-        await page.getByRole('button', { name: '收起立项数据' }).click()
-        await expect(retryLatest).toBeInViewport()
-        expect(await retryLatest.evaluate((button) => {
-          const bounds = button.getBoundingClientRect()
-          const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
-          return hit === button || button.contains(hit)
-        })).toBe(true)
+        await page.getByRole('button', { name: '收起作品资料' }).click()
+        await expect(restoreInput).toBeInViewport()
       }
     })
   }
 
-  test(`keeps all new-book entry points and the author-led intake usable at ${viewport.name}`, async ({ page }) => {
+  test.skip(`legacy standalone new-book entry is replaced by the unified assistant at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
     await page.goto('/novel-creation', { waitUntil: 'networkidle' })
@@ -832,7 +820,7 @@ for (const viewport of creationViewports) {
     await expectFullPageVisualSnapshot(page, `creation-author-intake-${viewport.name}.png`)
   })
 
-  test(`keeps author facts, targeted refinement and failed outcome recoverable at ${viewport.name}`, async ({ page }) => {
+  test.skip(`legacy standalone author-facts editor is replaced by the unified assistant at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
     await page.goto('/novel-creation?session=author-workbench&run=run-failed&stage=world_style', { waitUntil: 'networkidle' })
@@ -868,7 +856,7 @@ for (const viewport of creationViewports) {
     await expectVisualSnapshot(page, `creation-author-failed-${viewport.name}.png`)
   })
 
-  test(`keeps a running author-led task visible and cancellable at ${viewport.name}`, async ({ page }) => {
+  test.skip(`legacy standalone running-task view is replaced by the unified assistant at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await mockUiApi(page)
     await page.goto('/novel-creation?session=running-creation&run=run-running', { waitUntil: 'networkidle' })

@@ -1,5 +1,5 @@
 .assistant-message-time {
-  color: var(--ant-color-text-tertiary);
+  color: var(--ant-color-text);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 400;

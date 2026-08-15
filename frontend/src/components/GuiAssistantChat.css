@@ -650,6 +650,10 @@
   justify-content: center;
 }
 
+.gui-chat-welcome > .ant-typography-secondary {
+  color: var(--ant-color-text);
+}
+
 .gui-chat-msg {
   margin-bottom: 20px;
   max-width: min(86%, 880px);
@@ -1018,6 +1022,11 @@
   .gui-chat-header-actions {
     flex-wrap: wrap;
     width: 100%;
+  }
+
+  .gui-chat-header-actions .ant-btn,
+  .gui-chat-welcome-actions .ant-btn {
+    min-height: 48px;
   }
 
   .gui-chat-project-select {

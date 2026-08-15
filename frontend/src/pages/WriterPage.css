@@ -448,7 +448,7 @@
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .writer-shell,
   .writer-diff-columns,
   .writer-de-ai-compare,
@@ -462,7 +462,7 @@
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .writer-panel-head,
   .writer-editor-head,
   .writer-history-head,

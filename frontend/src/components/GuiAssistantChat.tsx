@@ -57,11 +57,13 @@ import { AssistantMessageTime } from './assistant/MessageTime'
 import {
   defaultInterviewRuntime,
   startNovelCreationSession,
+  type InterviewRuntime,
   type InterviewQuestion,
   type InterviewQuestionAnswer,
   useNovelCreationInterviewController,
 } from '../hooks/useNovelCreationInterviewController'
 import {
+  extractNovelInterviewErrorDetail,
   formatSystemAssistantError,
   formatNovelInterviewError,
   isNovelInterviewRetryIntent,
@@ -477,6 +479,7 @@ function GuiAssistantChat() {
   const [artifactEditorSaving, setArtifactEditorSaving] = useState(false)
   const [artifactEditorError, setArtifactEditorError] = useState<string | null>(null)
   const [artifactEditorSavedAt, setArtifactEditorSavedAt] = useState<string | null>(null)
+  const [agentRuntimeOverride, setAgentRuntimeOverride] = useState<Partial<InterviewRuntime>>({})
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -750,6 +753,22 @@ function GuiAssistantChat() {
   const interviewRuntime = {
     ...defaultInterviewRuntime(selectedModel, interviewModelSource),
     ...novelInterview.state.runtime,
+    ...agentRuntimeOverride,
+  }
+  const recordAgentRuntimeError = (error: unknown) => {
+    const detail = extractNovelInterviewErrorDetail(error)
+    const runtime = detail.runtime && typeof detail.runtime === 'object'
+      ? detail.runtime as Partial<InterviewRuntime>
+      : {}
+    const failureClass = String(detail.failure_class || runtime.failure_class || '')
+    setAgentRuntimeOverride({
+      ...runtime,
+      quota_status: failureClass === 'quota_or_rate_limit'
+        ? 'exhausted_or_limited'
+        : runtime.quota_status,
+      failure_class: failureClass || undefined,
+      next_action: detail.next_action || runtime.next_action,
+    })
   }
   const runtimeSourceLabel: Record<string, string> = {
     conversation_override: '本次对话覆盖',
@@ -1376,6 +1395,7 @@ function GuiAssistantChat() {
   ) => {
     const sourceText = text
     const displayText = originalText || text
+    setAgentRuntimeOverride({})
     const forceFreshCreation = (
       !skipAutomaticCreation && (
         (Boolean(activeProjectId) && shouldUseNovelCreation(displayText, true))
@@ -1676,9 +1696,11 @@ function GuiAssistantChat() {
         }
         finish(reply)
       } catch (err: unknown) {
+        recordAgentRuntimeError(err)
         finish(formatSystemAssistantError(err), 'error')
       }
     } catch (err: any) {
+      recordAgentRuntimeError(err)
       finish(err.message || '处理失败', 'error')
       message.error(err.message || '处理失败')
     } finally {

@@ -16,6 +16,10 @@
   margin: 0;
 }
 
+.narrative-governance-head .ant-typography-secondary {
+  color: var(--ant-color-text-secondary);
+}
+
 .narrative-title-icon {
   color: var(--ant-color-primary);
   font-size: 24px;
