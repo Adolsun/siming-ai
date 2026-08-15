@@ -1,4 +1,7 @@
 """Packaged desktop launcher for 司命 (Siming)."""
+# The trust backend must run before network-framework imports, so normal import
+# sorting and top-of-file placement are intentionally disabled in this module.
+# ruff: noqa: E402, I001
 from __future__ import annotations
 
 import os
@@ -20,7 +23,11 @@ from app.core.system_trust import configure_system_trust
 
 SYSTEM_TRUST_STATUS = configure_system_trust()
 
-import uvicorn
+import uvicorn  # noqa: E402,F401 - import only after native trust is configured
+
+from app.core.desktop_instance import DesktopInstanceCoordinator
+from app.core.uvicorn_controller import UvicornServerController
+from app.version import APP_VERSION
 
 
 APP_NAME = "Siming"
@@ -603,7 +610,7 @@ def _wait_for_server(host: str, port: int, timeout: float = 30.0) -> bool:
 
 
 def main() -> None:
-    _log(f"{APP_NAME} launcher entered with argv={sys.argv!r}")
+    _log(f"{APP_NAME} {APP_VERSION} launcher entered with argv={sys.argv!r}")
     _log(
         "HTTPS trust backend: "
         f"{SYSTEM_TRUST_STATUS.backend}; enabled={SYSTEM_TRUST_STATUS.enabled}"
@@ -629,112 +636,173 @@ def main() -> None:
     if force_desktop:
         sys.argv.remove("--desktop")
 
-    # ── Absolute minimum before window: just find a port and set env vars ──
-    port = _find_free_port()
-    home = _prepare_environment(port)
-    use_browser = _use_browser_mode(home, force_browser=force_browser, force_desktop=force_desktop)
-    server_host = (
-        "0.0.0.0"
-        if os.environ.get("SIMING_RUNTIME_PROFILE") == "gateway"
-        else "127.0.0.1"
-    )
-
-    gui_url = f"http://127.0.0.1:{port}/gui"
-    _log(
-        f"Port: {port}; Data: {home}; Launch mode: "
-        f"{'browser' if use_browser else 'desktop'}; Gateway: {server_host == '0.0.0.0'}"
-    )
-
-    if use_browser:
-        # Browser mode: need server first
-        from app.main import app
-        threading.Thread(
-            target=lambda: uvicorn.run(
-                app,
-                host=server_host,
-                port=port,
-                log_level="info",
-                access_log=False,
-            ),
-            daemon=True,
-        ).start()
-        if not _wait_for_server("127.0.0.1", port, timeout=30):
-            _show_error(f"{APP_NAME} 启动失败", f"后端超时。\n日志：{_launcher_log_path()}")
-            return
-        import webbrowser
-        webbrowser.open(gui_url)
-        threading.Event().wait()  # block forever
+    # Claim the data directory before selecting a port. A repeated launch must
+    # activate the existing process instead of creating another server on 8766
+    # that writes to the same SQLite database.
+    home = _app_home()
+    instance = DesktopInstanceCoordinator(home, app_name=APP_NAME)
+    if not instance.acquire():
+        activated = instance.activate_existing(timeout=3.0)
+        _log(f"Existing desktop instance detected; activation={activated}")
+        instance.close()
+        if not activated:
+            _show_error(
+                f"{APP_NAME} 已在运行",
+                "司命已在启动或运行，但暂时无法唤醒窗口。请稍候再试；"
+                "若旧进程已无响应，请在任务管理器中结束 Siming.exe。",
+            )
         return
 
-    # ── Native GUI: window opens NOW, everything else in background ──
+    server_controller: UvicornServerController | None = None
+    boot_thread: threading.Thread | None = None
     try:
-        import webview
-    except Exception:
-        _log("pywebview not available:\n" + traceback.format_exc())
-        _show_error(f"{APP_NAME} 启动失败", f"pywebview 不可用。\n日志：{_launcher_log_path()}")
-        return
+        port = _find_free_port()
+        home = _prepare_environment(port)
+        use_browser = _use_browser_mode(
+            home,
+            force_browser=force_browser,
+            force_desktop=force_desktop,
+        )
+        server_host = (
+            "0.0.0.0"
+            if os.environ.get("SIMING_RUNTIME_PROFILE") == "gateway"
+            else "127.0.0.1"
+        )
+        gui_url = f"http://127.0.0.1:{port}/gui"
+        launch_mode = "browser" if use_browser else "desktop"
+        _log(
+            f"Port: {port}; Data: {home}; Launch mode: {launch_mode}; "
+            f"Gateway: {server_host == '0.0.0.0'}"
+        )
 
-    # Create window — this returns immediately, window is visible
-    desktop_api = DesktopApi()
-    window = webview.create_window(
-        title=f"{APP_NAME}",
-        html=SPLASH_HTML,
-        width=1400,
-        height=900,
-        min_size=(800, 600),
-        text_select=True,
-        js_api=desktop_api,
-    )
-    desktop_api.bind(window, webview.FileDialog.FOLDER)
+        server_controller = UvicornServerController(
+            host=server_host,
+            port=port,
+            log_level="info",
+            access_log=False,
+        )
+        instance.start_activation_listener(
+            metadata={
+                "app_version": APP_VERSION,
+                "api_port": port,
+                "launch_mode": launch_mode,
+                "gui_url": gui_url,
+                "status": "starting",
+            }
+        )
 
-    def _boot():
-        """Run application startup in the background after the window is visible."""
-        try:
-            # Automatic updates are intentionally disabled; Settings owns the flow.
-            # Import FastAPI app (DB init and migrations are the heavy part).
-            _log("Importing app.main...")
+        if use_browser:
+            import webbrowser
+
+            instance.set_activation_handler(lambda: webbrowser.open(gui_url))
             from app.main import app
-            _log("app.main imported")
 
-            # Start uvicorn.
-            threading.Thread(
-                target=lambda: uvicorn.run(
-                    app,
-                    host=server_host,
-                    port=port,
-                    log_level="info",
-                    access_log=False,
-                ),
-                daemon=True,
-            ).start()
-
-            # Wait for TCP readiness.
-            if _wait_for_server("127.0.0.1", port, timeout=30):
-                _log(f"Server ready → {gui_url}")
-                time.sleep(0.3)
-                window.load_url(gui_url)
-            else:
-                _log("Server timeout (30s)")
-                window.evaluate_js(
-                    "document.getElementById('status').textContent='启动超时，请检查日志后重试';"
-                    "document.getElementById('status').style.color='#b84233';"
-                    "document.getElementById('dots').style.display='none';"
+            if not server_controller.start(app):
+                return
+            if not _wait_for_server("127.0.0.1", port, timeout=30):
+                _show_error(
+                    f"{APP_NAME} 启动失败",
+                    f"后端启动超时。\n日志：{_launcher_log_path()}",
                 )
-        except Exception:
-            _log("Boot failed:\n" + traceback.format_exc())
+                return
+            instance.update_metadata(status="ready")
+            webbrowser.open(gui_url)
             try:
-                window.evaluate_js(
-                    "document.getElementById('status').textContent='启动失败';"
-                    "document.getElementById('status').style.color='#b84233';"
-                    "document.getElementById('dots').style.display='none';"
-                )
-            except Exception:
-                pass
+                threading.Event().wait()
+            except KeyboardInterrupt:
+                _log("Browser-mode shutdown requested from console")
+            return
 
-    threading.Thread(target=_boot, daemon=True).start()
-    _log("Window visible, boot thread started")
-    webview.start()
-    _log("pywebview closed")
+        # Display the splash immediately; import and migrate in the background
+        # while retaining a controllable Uvicorn server handle.
+        try:
+            import webview
+        except Exception:
+            _log("pywebview not available:\n" + traceback.format_exc())
+            _show_error(
+                f"{APP_NAME} 启动失败",
+                f"pywebview 不可用。\n日志：{_launcher_log_path()}",
+            )
+            return
+
+        desktop_api = DesktopApi()
+        window = webview.create_window(
+            title=f"{APP_NAME}",
+            html=SPLASH_HTML,
+            width=1400,
+            height=900,
+            min_size=(800, 600),
+            text_select=True,
+            js_api=desktop_api,
+        )
+        desktop_api.bind(window, webview.FileDialog.FOLDER)
+
+        def _activate_window() -> None:
+            # Restore handles minimized windows; show handles native backends
+            # that have hidden the window without minimizing it.
+            for method_name in ("restore", "show"):
+                try:
+                    getattr(window, method_name)()
+                except Exception:
+                    continue
+
+        instance.set_activation_handler(_activate_window)
+
+        def _boot() -> None:
+            """Run application startup after the native splash is visible."""
+            try:
+                _log("Importing app.main...")
+                from app.main import app
+
+                _log("app.main imported")
+                if not server_controller.start(app):
+                    _log("Server start skipped because shutdown was requested")
+                    return
+
+                if _wait_for_server("127.0.0.1", port, timeout=30):
+                    _log(f"Server ready -> {gui_url}")
+                    instance.update_metadata(status="ready")
+                    time.sleep(0.3)
+                    window.load_url(gui_url)
+                else:
+                    _log("Server timeout (30s)")
+                    window.evaluate_js(
+                        "document.getElementById('status').textContent="
+                        "'启动超时，请检查日志后重试';"
+                        "document.getElementById('status').style.color='#b84233';"
+                        "document.getElementById('dots').style.display='none';"
+                    )
+            except Exception:
+                _log("Boot failed:\n" + traceback.format_exc())
+                try:
+                    window.evaluate_js(
+                        "document.getElementById('status').textContent='启动失败';"
+                        "document.getElementById('status').style.color='#b84233';"
+                        "document.getElementById('dots').style.display='none';"
+                    )
+                except Exception as exc:
+                    _log(f"Could not render startup failure in WebView: {exc}")
+
+        boot_thread = threading.Thread(
+            target=_boot,
+            name="siming-desktop-boot",
+            daemon=True,
+        )
+        boot_thread.start()
+        _log("Window visible, boot thread started")
+        webview.start()
+        _log("pywebview closed; graceful server shutdown requested")
+    finally:
+        if server_controller is not None:
+            stopped = server_controller.stop(timeout=20.0)
+            _log(f"Embedded server stopped cleanly={stopped}")
+        if (
+            boot_thread is not None
+            and boot_thread.is_alive()
+            and threading.current_thread() is not boot_thread
+        ):
+            boot_thread.join(timeout=2.0)
+        instance.close()
 
 
 if __name__ == "__main__":

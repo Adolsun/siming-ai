@@ -14,7 +14,15 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import APIConfig, Base, CatalogingFact, CatalogingJob, Chapter, Project
+from app.database.models import (
+    APIConfig,
+    Base,
+    CatalogingFact,
+    CatalogingJob,
+    Chapter,
+    OperationRun,
+    Project,
+)
 from app.services.cataloging.local_cli_agent import (
     _MAX_NO_SAVE_ATTEMPTS,
     _build_cataloging_cli_launch,
@@ -276,6 +284,10 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertIsNotNone(job.agent_run_id)
             self.assertEqual(job.chapter_runs[0].status, "completed")
             self.assertIsNotNone(job.chapter_runs[0].chapter.summary)
+            operation = db.query(OperationRun).filter(OperationRun.id == job.operation_id).one()
+            self.assertEqual(operation.status, "completed")
+            self.assertEqual(operation.progress_current, 1)
+            self.assertEqual((operation.result_json or {}).get("outcome"), "completed_with_tools")
             self.assertEqual(
                 db.query(CatalogingFact)
                 .filter(CatalogingFact.fact_type == "chapter_overview")
@@ -300,10 +312,13 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         db = self.Session()
         try:
             job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-            self.assertEqual(job.status, "waiting_confirmation")
+            self.assertEqual(job.status, "waiting_confirmation", job.error)
             self.assertEqual(job.chapter_runs[0].status, "awaiting_confirmation")
             self.assertGreater(len(job.chapter_runs[0].candidates), 0)
             self.assertIsNone(job.chapter_runs[0].chapter.summary)
+            operation = db.query(OperationRun).filter(OperationRun.id == job.operation_id).one()
+            self.assertEqual(operation.status, "waiting_user")
+            self.assertEqual((operation.attention_json or {}).get("kind"), "confirmation")
         finally:
             db.close()
 

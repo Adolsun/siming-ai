@@ -12,7 +12,9 @@ from app.core.exceptions import ValidationError
 from app.database.models import (
     Base,
     CatalogingCandidate,
+    CatalogingChapterRun,
     CatalogingFact,
+    CatalogingJob,
     Chapter,
     ChapterGovernanceReview,
     Character,
@@ -23,6 +25,7 @@ from app.database.models import (
     Foreshadowing,
     NarrativeDebt,
     OutlineNode,
+    OperationRun,
     Project,
     WorldbuildingEntry,
 )
@@ -41,6 +44,7 @@ from app.services.cataloging.job_control import (
     first_blocking_run,
     mark_run_skipped,
     pause_job,
+    reconcile_cataloging_operation_projections,
     refresh_job_progress,
     reset_run_for_retry,
     resume_job,
@@ -111,6 +115,61 @@ class CatalogingServiceTestCase(unittest.TestCase):
             os.environ.pop("SIMING_CATALOGING_PIPELINE", None)
         else:
             os.environ["SIMING_CATALOGING_PIPELINE"] = self.old_cataloging_pipeline
+
+    def test_reconciles_completed_cataloging_job_into_task_center_projection(self):
+        db = self.Session()
+        try:
+            project = Project(title="Projection repair")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第1章", content="正文")
+            db.add(chapter)
+            db.flush()
+            operation = OperationRun(
+                source_kind="cataloging",
+                source_id="cataloging-repair",
+                project_id=project.id,
+                title="作品建档 · 1 章",
+                status="running",
+                health_status="disconnected",
+                progress_mode="determinate",
+                progress_current=0,
+                progress_total=1,
+            )
+            db.add(operation)
+            db.flush()
+            job = CatalogingJob(
+                id="cataloging-repair",
+                project_id=project.id,
+                operation_id=operation.id,
+                status="completed",
+                total_chapters=1,
+                completed_chapters=1,
+                execution_mode="auto",
+            )
+            db.add(job)
+            db.flush()
+            db.add(CatalogingChapterRun(
+                job_id=job.id,
+                project_id=project.id,
+                chapter_id=chapter.id,
+                status="completed",
+                chapter_order=0,
+            ))
+            db.commit()
+
+            self.assertEqual(reconcile_cataloging_operation_projections(db), 1)
+            db.commit()
+            db.refresh(operation)
+
+            self.assertEqual(operation.status, "completed")
+            self.assertEqual(operation.health_status, "active")
+            self.assertEqual(operation.progress_current, 1)
+            self.assertEqual(operation.progress_total, 1)
+            self.assertEqual((operation.result_json or {}).get("outcome"), "completed_with_tools")
+            self.assertIsNotNone(operation.completed_at)
+        finally:
+            db.close()
 
     def test_apply_candidates_updates_project_knowledge(self):
         db = self.Session()

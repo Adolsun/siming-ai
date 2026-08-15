@@ -28,6 +28,9 @@ class PairingSecurityTest {
                 "gateway_url" to JsonPrimitive("http://192.168.1.20:8765"),
                 "gateway_name" to JsonPrimitive("司命 Gateway"),
                 "gateway_public_key" to JsonPrimitive(Base64.getUrlEncoder().withoutPadding().encodeToString(rawPublicKey)),
+                "gateway_encryption_public_key" to JsonPrimitive(
+                    Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 7 }),
+                ),
                 "gateway_fingerprint" to JsonPrimitive(fingerprint),
                 "pairing_id" to JsonPrimitive("00000000-0000-0000-0000-000000000001"),
                 "pairing_secret" to JsonPrimitive("smp_test-secret-with-enough-entropy"),
@@ -50,6 +53,10 @@ class PairingSecurityTest {
 
         assertEquals("http://192.168.1.20:8765", verified.gatewayUrl)
         assertEquals(fingerprint, verified.gatewayFingerprint)
+        assertEquals(
+            Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 7 }),
+            verified.gatewayEncryptionPublicKey,
+        )
     }
 
     @Test

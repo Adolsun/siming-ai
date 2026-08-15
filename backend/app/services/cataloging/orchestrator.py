@@ -416,17 +416,18 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
         while True:
             job = _get_job(db, project_id, job_id)
             if job.status in {"completed", "failed", "cancelled", "paused", "paused_on_failure"}:
+                refresh_job_progress(db, job)
+                commit_session(db)
                 yield sse_event({"type": "job", "job": job_to_dict(job)})
                 yield "data: [DONE]\n\n"
                 return
 
             run = _next_actionable_run(db, job)
             if not run:
-                refresh_job_progress(db, job)
                 job.status = "completed"
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
-                commit_session(db)
+                refresh_job_progress(db, job)
                 completed = int(job.completed_chapters or job.total_chapters or 0)
                 finish_operation(
                     operation_id,
@@ -438,7 +439,9 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                         "incomplete": [],
                     },
                     attention={},
+                    db=db,
                 )
+                commit_session(db)
                 yield sse_event({"type": "completed", "job": job_to_dict(job)})
                 yield "data: [DONE]\n\n"
                 return

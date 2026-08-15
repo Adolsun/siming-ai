@@ -536,17 +536,31 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="generate_novel_creation_stage",
-        description="Generate one V2 creation stage or the complete quick pipeline. Saves only to the session draft; it never writes project files.",
+        description=(
+            "Generate one V2 creation stage or the complete quick pipeline. "
+            "The concepts and all-stage routes require an explicit Siming model; "
+            "the external MCP client's own model is not inherited. External agents "
+            "using their current model should generate the data themselves and call "
+            "submit_novel_creation_stage. Saves only to the session draft; it never "
+            "writes project files."
+        ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "stage": {
                 "type": "string",
                 "description": "constraints|concepts|world_style|characters|locations|macro_outline|opening_outline|final_review|all",
             },
-            "model": {"type": "string", "description": "Optional model override for this stage"},
+            "model": {
+                "type": "string",
+                "description": (
+                    "Required for concepts or all; optional for other stages. Must be "
+                    "a model identity already configured and tested in Siming. The "
+                    "external MCP client's model is not inherited."
+                ),
+            },
             "use_model": {
                 "type": "boolean",
-                "description": "Use the selected model to deepen the contract baseline",
+                "description": "Use the selected model; must be true for concepts or all",
             },
             "auto_confirm": {
                 "type": "boolean",
@@ -605,12 +619,25 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="generate_creation_artifact",
-        description="Generate one artifact or one new entity inside an artifact as a durable revision-protected run.",
+        description=(
+            "Generate one artifact or one new entity inside an artifact as a durable "
+            "revision-protected run. When artifact is concepts or all, model must name "
+            "an available Siming model; the external MCP client's own model is not "
+            "inherited. To use the MCP client's current model, generate the structured "
+            "artifact in the client and save it with patch_creation_artifact instead."
+        ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "artifact": {"type": "string", "description": "Artifact identifier"},
             "expected_revision": {"type": "integer", "description": "Required current session revision"},
-            "model": {"type": "string", "description": "Optional model override"},
+            "model": {
+                "type": "string",
+                "description": "Required for concepts or all; optional for other artifacts",
+            },
+            "use_model": {
+                "type": "boolean",
+                "description": "Use the selected model; must be true for concepts or all",
+            },
             "entity_type": {"type": "string", "description": "Optional entity type for isolated new-entity generation"},
             "instruction": {"type": "string", "description": "Optional generation direction"},
         },
@@ -623,13 +650,26 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="refine_creation_artifact",
-        description="Refine only the requested artifact or entity while preserving locks and unrelated structured data.",
+        description=(
+            "Refine only the requested artifact or entity while preserving locks and "
+            "unrelated structured data. When artifact is concepts or all, model must "
+            "name an available Siming model; the external MCP client's own model is "
+            "not inherited. To use the MCP client's current model, refine the structured "
+            "artifact in the client and save it with patch_creation_artifact instead."
+        ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "artifact": {"type": "string", "description": "Artifact identifier"},
             "expected_revision": {"type": "integer", "description": "Required current session revision"},
             "instruction": {"type": "string", "description": "Required localized refinement instruction"},
-            "model": {"type": "string", "description": "Optional model override"},
+            "model": {
+                "type": "string",
+                "description": "Required for concepts or all; optional for other artifacts",
+            },
+            "use_model": {
+                "type": "boolean",
+                "description": "Use the selected model; must be true for concepts or all",
+            },
             "entity_id": {"type": "string", "description": "Optional existing entity ID for isolated refinement"},
         },
         required=["session_id", "artifact", "expected_revision", "instruction"],
@@ -641,13 +681,27 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="regenerate_creation_artifact",
-        description="Regenerate only the selected artifact or entity using a new durable run and a new idempotency context.",
+        description=(
+            "Regenerate only the selected artifact or entity using a new durable run "
+            "and a new idempotency context. When artifact is concepts or all, model "
+            "must name an available Siming model; the external MCP client's own model "
+            "is not inherited. To use the MCP client's current model, regenerate the "
+            "structured artifact in the client and save it with patch_creation_artifact "
+            "instead."
+        ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "artifact": {"type": "string", "description": "Artifact identifier"},
             "expected_revision": {"type": "integer", "description": "Required current session revision"},
             "instruction": {"type": "string", "description": "Optional replacement direction"},
-            "model": {"type": "string", "description": "Optional model override"},
+            "model": {
+                "type": "string",
+                "description": "Required for concepts or all; optional for other artifacts",
+            },
+            "use_model": {
+                "type": "boolean",
+                "description": "Use the selected model; must be true for concepts or all",
+            },
             "entity_id": {"type": "string", "description": "Optional existing entity ID for isolated regeneration"},
         },
         required=["session_id", "artifact", "expected_revision"],

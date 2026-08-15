@@ -36,6 +36,12 @@ from ....services.novel_creation_authoring import (
     _validate_stage,
 )
 from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
+from ....services.novel_creation_prompting import (
+    CREATION_REPAIR_SYSTEM_PROMPT,
+    CREATION_REPAIR_USER_TEMPLATE,
+    build_compact_concept_messages,
+    build_creation_stage_messages,
+)
 from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from ....services.novel_creation_imports import (
     apply_material_import,
@@ -558,15 +564,11 @@ async def _repair_json_with_model(
     extra_body: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, int, str | None]:
     _raise_if_task_cancelled()
-    system = (
-        "你是司命的阶段结构修复器。只修复 JSON 语法和结构契约，不改写作者事实、专名、"
-        "已确认内容或创作方向。只输出一个 JSON 对象，不要解释。"
-    )
-    user = (
-        f"结构契约：{contract}\n"
-        f"校验错误：{str(error)[:1000]}\n"
-        "请把下面的模型原始输出修复为合法结构；无法确定的内容保持原样，不要另写故事。\n"
-        f"原始输出：{raw[:120_000]}"
+    system = CREATION_REPAIR_SYSTEM_PROMPT
+    user = CREATION_REPAIR_USER_TEMPLATE.format(
+        contract=contract,
+        error=str(error)[:1000],
+        raw=raw[:120_000],
     )
     repaired, attempt = await _stream_model_text(
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -604,43 +606,13 @@ async def _generate_compact_concepts(
         "refinement_instruction": instruction,
         "entity_target": draft.get("_entity_target"),
     }
-    from ....modules.creation.interfaces.dependencies import render_creation_prompt
-
-    system = render_creation_prompt(
-        task_kind="整理作者方案" if author_led else "生成一套可持续调整的创意方向",
-        task_rules=(
-            ("只生成恰好一张作者方案卡，不生成替代故事。作者原文、专名、因果、结局方向和锁定要求都是不可改写的事实；只补全空白。"
-             if author_led else
-             "只生成恰好一张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。方案必须遵守作者约束，并适合作者随后通过对话持续局部调整。")
-            + "如果提供了调整要求，只调整当前创意阶段，不影响其他阶段。"
-        ),
-    )
-    shape = {
-        "concepts": [{
-            "title": "不超过20字的标题",
-            "subtitle": "一句定位",
-            "logline": "不超过120字的一句话梗概",
-            "protagonist_seed": {"name": "主角名", "identity": "身份", "goal": "即时目标", "lack": "内在缺口"},
-            "world_hook": "不超过100字的世界钩子",
-            "core_conflict": "不超过100字的核心冲突",
-            "story_engine": "持续推进故事的机制",
-            "opening_hook": "不超过100字的开篇钩子",
-            "differentiators": ["差异点一", "差异点二"],
-            "risks": ["一个创作风险"]
-        }]
-    }
-    user = (
-        f"请严格返回恰好{expected_count}张{'作者方案卡' if author_led else '创意卡'}，字段必须与下列 JSON 结构一致。"
-        + ("方案必须忠实整理作者已经想好的内容，不得随机替换故事。\n" if author_led else "创意卡应在数百字内可读完，并保留通过后续对话调整的空间。\n")
-        + f"输出结构：{json.dumps(shape, ensure_ascii=False)}\n"
-        f"作者上下文：{json.dumps(context, ensure_ascii=False)}"
-    )
+    messages = build_compact_concept_messages(author_led=author_led, context=context)
     from ....services.content_store import content_root
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
         _raise_if_task_cancelled()
         raw, attempt = await _stream_model_text(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=messages,
             model=model,
             temperature=0.8,
             max_tokens=3200,
@@ -747,24 +719,12 @@ async def _enhance_with_model(
         stage,
         opening_chapter_count=opening_chapter_count or OPENING_OUTLINE_CHAPTER_COUNT,
     )
-    from ....modules.creation.interfaces.dependencies import render_creation_prompt
-
-    system = render_creation_prompt(
-        task_kind=f"深化阶段：{STAGE_LABELS.get(stage, stage)}",
-        task_rules=(
-            "只深化当前阶段的 baseline，顶层只返回 data 字段；"
-            "保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。"
-            "调整要求只作用于当前阶段；没有明确授权时不得改动其他内容。"
-            "如果 entity_target 存在，只生成或修改其中指定类型的对象，其他对象必须保持原样；"
-            "新增数量必须根据作者本次调整要求判断，作者未给固定数字时按语义生成最合适的少量对象。"
-        ),
-    )
-    user = (
-        f"当前阶段：{STAGE_LABELS.get(stage, stage)}\n"
-        f"结构契约：{stage_contract}\n"
-        "请在保留作者约束和已确认事实的前提下，深化 baseline；不要改变已经确认的专名。\n"
-        + (f"作者本次调整要求：{instruction}\n" if instruction else "")
-        + f"上下文：{json.dumps(context, ensure_ascii=False)}"
+    messages = build_creation_stage_messages(
+        stage=stage,
+        stage_label=STAGE_LABELS.get(stage, stage),
+        stage_contract=stage_contract,
+        context=context,
+        instruction=instruction,
     )
     from ....services.content_store import content_root
 
@@ -781,7 +741,7 @@ async def _enhance_with_model(
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
         _raise_if_task_cancelled()
         raw, attempt = await _stream_model_text(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=messages,
             model=model,
             temperature=0.65,
             max_tokens=max_output_tokens,

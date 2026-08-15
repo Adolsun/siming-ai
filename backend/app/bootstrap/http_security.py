@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse
+from starlette.routing import compile_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -100,6 +101,83 @@ def is_loopback_client(scope: Scope) -> bool:
         return False
 
 
+# Paired Android clients use the same authoring endpoints as the desktop UI.
+# Keep this list in FastAPI/OpenAPI template form so contract tests can compare
+# it directly with the published PC API instead of maintaining a second dialect.
+REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
+    # Novel creation is a canonical PC workspace. These routes let a paired
+    # phone resume that same session instead of maintaining an Android-only
+    # wizard or a second persistence shape.
+    "/api/v1/novel-creation/presets": frozenset({"GET"}),
+    "/api/v1/novel-creation/sessions": frozenset({"GET"}),
+    "/api/v1/novel-creation/start": frozenset({"POST"}),
+    "/api/v1/novel-creation/apply": frozenset({"POST"}),
+    "/api/v1/novel-creation/sessions/{session_id}": frozenset({"GET", "PATCH", "DELETE"}),
+    "/api/v1/novel-creation/sessions/{session_id}/interview/next": frozenset({"POST"}),
+    "/api/v1/novel-creation/sessions/{session_id}/runs": frozenset({"POST"}),
+    "/api/v1/novel-creation/runs/{run_id}": frozenset({"GET"}),
+    "/api/v1/novel-creation/runs/{run_id}/stream": frozenset({"GET"}),
+    "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}/confirm": frozenset({"POST"}),
+    "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}": frozenset({"PATCH"}),
+    "/api/v1/projects": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}": frozenset({"GET", "PUT"}),
+    "/api/v1/projects/{project_id}/chapters": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}": frozenset(
+        {"GET", "PUT", "DELETE"}
+    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/de-ai-preview": frozenset(
+        {"POST"}
+    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/quality-score-preview": frozenset(
+        {"POST"}
+    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots/diff": frozenset(
+        {"GET"}
+    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots/{snapshot_id}": frozenset(
+        {"GET"}
+    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/restore/{snapshot_id}": frozenset(
+        {"POST"}
+    ),
+    "/api/v1/projects/{project_id}/outline": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}/outline/reorder": frozenset({"PUT"}),
+    "/api/v1/projects/{project_id}/outline/{node_id}": frozenset({"PUT", "DELETE"}),
+    "/api/v1/projects/{project_id}/characters": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}/characters/relationships": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/characters/{character_id}": frozenset(
+        {"GET", "PUT", "DELETE"}
+    ),
+    "/api/v1/projects/{project_id}/characters/{character_id}/relationships": frozenset(
+        {"PUT"}
+    ),
+    "/api/v1/projects/{project_id}/characters/{character_id}/versions": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/characters/{character_id}/versions/{version_id}": frozenset(
+        {"GET"}
+    ),
+    "/api/v1/projects/{project_id}/worldbuilding": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}/worldbuilding/{entry_id}": frozenset(
+        {"PUT", "DELETE"}
+    ),
+    "/api/v1/projects/{project_id}/worldbuilding/{entry_id}/versions": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/worldbuilding/{entry_id}/timeline": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/creation-brief": frozenset({"GET", "PATCH"}),
+    "/api/v1/projects/{project_id}/creation-brief/ensure": frozenset({"POST"}),
+    "/api/v1/projects/{project_id}/stats/today": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/stats/history": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/stats/goal": frozenset({"PUT"}),
+    "/api/v1/projects/{project_id}/narrative-governance/items": frozenset({"POST"}),
+    "/api/v1/projects/{project_id}/ai/workspace-assistant/stream": frozenset(
+        {"POST", "HEAD"}
+    ),
+}
+REMOTE_ANDROID_AUTHORING_ROUTES = tuple(
+    (template, compile_path(template)[0], methods)
+    for template, methods in REMOTE_ANDROID_AUTHORING_PATHS.items()
+)
+
+
 class LocalOriginGuardMiddleware:
     """Reject browser writes originating outside the local desktop boundary."""
 
@@ -146,6 +224,8 @@ class GatewayAuthenticationMiddleware:
         r"^/api/v1/projects/(?P<project_id>[A-Za-z0-9._:-]{1,64})/"
         r"ai/workspace-assistant/stream$"
     )
+    REMOTE_ANDROID_AUTHORING_PATHS = REMOTE_ANDROID_AUTHORING_PATHS
+    REMOTE_ANDROID_AUTHORING_ROUTES = REMOTE_ANDROID_AUTHORING_ROUTES
 
     PUBLIC_API_PATHS = frozenset(
         {
@@ -166,6 +246,13 @@ class GatewayAuthenticationMiddleware:
     def __init__(self, app: ASGIApp, *, enabled: bool) -> None:
         self.app = app
         self.enabled = enabled
+
+    @classmethod
+    def is_remote_android_authoring_path(cls, path: str) -> bool:
+        return any(
+            pattern.fullmatch(path) is not None
+            for _template, pattern, _methods in cls.REMOTE_ANDROID_AUTHORING_ROUTES
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = str(scope.get("path") or "")
@@ -220,13 +307,17 @@ class GatewayAuthenticationMiddleware:
 
     @classmethod
     def _authorize_remote_path(cls, scope: Scope, context: Any) -> bool:
-        """Expose only the versioned Gateway surface to paired remote devices.
+        """Expose Gateway plus canonical PC authoring APIs to paired phones.
 
-        The desktop application still has its complete loopback API. A bearer
-        token must not turn every legacy desktop endpoint into a remote API.
+        Android authoring routes are deliberately matched against explicit
+        FastAPI path templates. Project-scoped calls additionally require that
+        the owner has enabled that project for synchronization. Local-only
+        configuration, filesystem, updater, CLI, MCP, and training endpoints
+        remain hidden from bearer-token clients.
         """
 
         path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "GET").upper()
         if context.role == "owner" and context.platform == "web":
             return not path.startswith("/api/v1/config/update/")
         if (
@@ -239,8 +330,30 @@ class GatewayAuthenticationMiddleware:
         ):
             return True
 
-        match = cls.REMOTE_PROJECT_ASSISTANT.fullmatch(path)
-        if match is None:
+        if context.platform != "android":
+            return False
+
+        route_values: dict[str, str] | None = None
+        matched_template = ""
+        for template, pattern, allowed_methods in cls.REMOTE_ANDROID_AUTHORING_ROUTES:
+            match = pattern.fullmatch(path)
+            if match is None:
+                continue
+            effective_method = "GET" if method == "HEAD" and "GET" in allowed_methods else method
+            if effective_method not in allowed_methods:
+                return False
+            route_values = match.groupdict()
+            matched_template = template
+            break
+        if route_values is None:
+            return False
+
+        project_id = route_values.get("project_id")
+        if project_id is None:
+            return matched_template == "/api/v1/projects" or matched_template.startswith(
+                "/api/v1/novel-creation/"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", project_id):
             return False
 
         from ..database.session import SessionLocal
@@ -251,7 +364,7 @@ class GatewayAuthenticationMiddleware:
             enabled = (
                 db.query(SyncProject.project_id)
                 .filter(
-                    SyncProject.project_id == match.group("project_id"),
+                    SyncProject.project_id == project_id,
                     SyncProject.status == "enabled",
                 )
                 .first()
@@ -326,6 +439,8 @@ class GatewayRequestLimitMiddleware:
             return exact
         if GatewayAuthenticationMiddleware.REMOTE_PROJECT_ASSISTANT.fullmatch(path):
             return 256 * 1024
+        if GatewayAuthenticationMiddleware.is_remote_android_authoring_path(path):
+            return 2 * 1024 * 1024
         return None
 
     @classmethod
@@ -334,6 +449,10 @@ class GatewayRequestLimitMiddleware:
         if exact is not None:
             return exact
         if GatewayAuthenticationMiddleware.REMOTE_PROJECT_ASSISTANT.fullmatch(path):
+            return (12, 60.0)
+        if path.startswith("/api/v1/novel-creation/") and (
+            path.endswith("/interview/next") or path.endswith("/runs")
+        ):
             return (12, 60.0)
         return None
 

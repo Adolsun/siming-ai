@@ -1,16 +1,44 @@
 /* Message list rendering for the assistant chat. */
-import { Empty, Space, Tag, Tooltip, Typography } from 'antd'
-import { DownOutlined } from '@ant-design/icons'
+import { Button, Empty, Space, Tag, Tooltip, Typography } from 'antd'
+import { DatabaseOutlined, DownOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import { ChapterVersionPanel } from '../ChapterVersionPanel'
 import { NarrativeLedgerPanel } from '../NarrativeLedgerPanel'
 import { ContextPreviewPanel } from '../ContextPreviewPanel'
 import { findStorageHealth, StorageRepairActions } from '../StorageRepairActions'
 import { PersistentOutcome } from '../interaction'
 import type { OperationOutcome } from '../interaction'
-import type { WorkspaceAssistantMessage, SkillMatch, WorkspaceToolLog } from './types'
+import { AssistantMessageTime } from './MessageTime'
+import type {
+  WorkspaceAssistantMessage,
+  WorkspaceMessageNavigationAction,
+  SkillMatch,
+  WorkspaceToolLog,
+} from './types'
 import { SCOPE_LABEL } from './constants'
+import './MessageTime.css'
 
 const { Paragraph, Text } = Typography
+
+function MessageNavigationButton({
+  action,
+  urgent,
+}: {
+  action: WorkspaceMessageNavigationAction
+  urgent: boolean
+}) {
+  const navigate = useNavigate()
+  return (
+    <Button
+      type={urgent ? 'primary' : 'default'}
+      size="small"
+      icon={<DatabaseOutlined />}
+      onClick={() => navigate(action.to)}
+    >
+      {action.label}
+    </Button>
+  )
+}
 
 function chapterVersionActions(item: WorkspaceAssistantMessage): WorkspaceToolLog[] {
   return [
@@ -101,15 +129,19 @@ export function MessageList({
                 >
                   {item.role === 'user' ? '你' : SCOPE_LABEL}
                 </Tag>
-                {item.created_at && (
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    {new Date(item.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                )}
+                <AssistantMessageTime value={item.created_at} />
               </div>
               <Paragraph style={{ marginTop: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
                 {item.content}
               </Paragraph>
+              {item.role === 'assistant' && item.navigation_action && (
+                <div className="workspace-assistant-message-action">
+                  <MessageNavigationButton
+                    action={item.navigation_action}
+                    urgent={item.status === 'blocked' || item.status === 'error'}
+                  />
+                </div>
+              )}
               {item.role === 'assistant' && item.data?.outcome && PERSISTENT_OUTCOMES.has(item.data.outcome) && (
                 <PersistentOutcome
                   outcome={item.data.outcome as OperationOutcome}

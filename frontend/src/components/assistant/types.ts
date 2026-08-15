@@ -58,6 +58,11 @@ export interface WorkspaceAssistantResponse {
   conversation?: WorkspaceAssistantConversation
 }
 
+export interface WorkspaceMessageNavigationAction {
+  label: string
+  to: string
+}
+
 export interface WorkspaceAssistantMessage {
   id?: string
   conversation_id?: string
@@ -67,6 +72,7 @@ export interface WorkspaceAssistantMessage {
   created_at?: string
   updated_at?: string
   data?: WorkspaceAssistantResponse
+  navigation_action?: WorkspaceMessageNavigationAction
 }
 
 export interface WorkspacePersistedMessage {

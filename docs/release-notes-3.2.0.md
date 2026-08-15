@@ -16,7 +16,7 @@
 
 ## 发布资产
 
-- `Siming.exe`：Windows 桌面版。
+- `Siming.exe`：Windows 10 x64 或更高版本的桌面版；不支持 Windows 7、Windows 8/8.1 和 32 位 Windows。
 - `update.json`、`sha256.txt`：版本信息与完整性校验文件。
 
 本版本暂不发布 Android APK。Windows 包尚无可信代码签名，仅供从官方 Release 主动下载并核对 SHA256 后手动安装；应用内安全更新器会继续拒绝未签名包。

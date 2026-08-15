@@ -1,14 +1,74 @@
 """Job control helpers for cataloging tasks."""
+
 from __future__ import annotations
 
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingApplyLog, CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
-
+from ...database.models import (
+    CatalogingApplyLog,
+    CatalogingCandidate,
+    CatalogingChapterRun,
+    CatalogingFact,
+    CatalogingJob,
+    OperationRun,
+)
 
 TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "skipped_by_user"}
+OPERATION_STATUS_BY_JOB_STATUS = {
+    "queued": "queued",
+    "running": "running",
+    "waiting_confirmation": "waiting_user",
+    "paused": "paused",
+    "paused_on_failure": "paused",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
+def _operation_projection_needs_refresh(job: CatalogingJob, operation: OperationRun) -> bool:
+    expected_status = OPERATION_STATUS_BY_JOB_STATUS.get(job.status)
+    if not expected_status:
+        return False
+    completed = int(job.completed_chapters or 0)
+    total = int(job.total_chapters or 0)
+    if operation.status != expected_status:
+        return True
+    if operation.progress_current != completed or operation.progress_total != total:
+        return True
+    if expected_status in {"completed", "failed", "cancelled"} and operation.completed_at is None:
+        return True
+    if expected_status in {"waiting_user", "paused"} and not operation.attention_json:
+        return True
+    return (
+        expected_status == "completed"
+        and (operation.result_json or {}).get("outcome") != "completed_with_tools"
+    )
+
+
+def reconcile_cataloging_operation_projections(db: Session) -> int:
+    """Repair task-centre rows that drifted from their authoritative jobs.
+
+    Older local-CLI completion paths could commit ``CatalogingJob`` before the
+    corresponding ``OperationRun`` update.  Run this before generic startup
+    interruption recovery so an already-completed job is never mislabeled as
+    interrupted merely because its projection was stale.
+    """
+
+    pairs = (
+        db.query(CatalogingJob, OperationRun)
+        .join(OperationRun, OperationRun.id == CatalogingJob.operation_id)
+        .all()
+    )
+    repaired = 0
+    for job, operation in pairs:
+        if not _operation_projection_needs_refresh(job, operation):
+            continue
+        refresh_job_progress(db, job)
+        repaired += 1
+    return repaired
 
 
 def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
@@ -16,7 +76,10 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
     db.flush()
     job.completed_chapters = (
         db.query(CatalogingChapterRun)
-        .filter(CatalogingChapterRun.job_id == job.id, CatalogingChapterRun.status.in_(["completed", "completed_with_warnings"]))
+        .filter(
+            CatalogingChapterRun.job_id == job.id,
+            CatalogingChapterRun.status.in_(["completed", "completed_with_warnings"]),
+        )
         .count()
     )
     job.failed_chapters = (
@@ -26,23 +89,13 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
     )
     job.updated_at = datetime.utcnow()
     if job.operation_id:
-        from ...database.models import OperationRun
         from ..operation_runtime import update_operation
 
         operation = db.query(OperationRun).filter(OperationRun.id == job.operation_id).first()
         if operation:
             completed = int(job.completed_chapters or 0)
-            status_map = {
-                "queued": "queued",
-                "running": "running",
-                "waiting_confirmation": "waiting_user",
-                "paused": "paused",
-                "paused_on_failure": "paused",
-                "completed": "completed",
-                "failed": "failed",
-                "cancelled": "cancelled",
-            }
-            lifecycle = status_map.get(job.status, operation.status)
+            lifecycle = OPERATION_STATUS_BY_JOB_STATUS.get(job.status, operation.status)
+            previous_lifecycle = operation.status
             attention: dict = {}
             result = None
             outcome = None
@@ -61,6 +114,22 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "incomplete": ["当前章节候选尚未确认"],
                 }
                 outcome = "waiting_user"
+            elif lifecycle == "paused":
+                attention = {
+                    "kind": "cataloging_recovery",
+                    "title": "作品建档已暂停",
+                    "message": job.error or "请打开作品建档页处理当前章节后继续。",
+                    "action_label": "前往处理建档",
+                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "blocking": True,
+                }
+                result = {
+                    "summary": job.error
+                    or f"作品建档暂停在 {completed}/{job.total_chapters or 0} 章",
+                    "completed": [f"{completed} 章已完成"] if completed else [],
+                    "incomplete": [job.error or "当前章节尚未完成"],
+                }
+                outcome = "blocked"
             elif lifecycle == "completed":
                 result = {
                     "summary": f"作品建档完成，共处理 {completed} 章",
@@ -75,22 +144,41 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "incomplete": [job.error or "剩余章节未完成"],
                 }
                 outcome = "partial_success" if completed else "failed"
+            elif lifecycle == "cancelled":
+                result = {
+                    "summary": "作品建档已取消",
+                    "completed": [f"{completed} 章已完成"] if completed else [],
+                    "incomplete": ["任务已取消，剩余章节未处理"],
+                }
+                outcome = "cancelled"
+            status_changed = lifecycle != previous_lifecycle
             update_operation(
                 db,
                 operation,
                 status=lifecycle,
+                health_status="active",
                 phase="cataloging",
                 message=f"作品建档：已完成 {completed}/{job.total_chapters or 0} 章",
                 progress_mode="determinate",
                 progress_current=completed,
                 progress_total=int(job.total_chapters or 0),
                 checkpoint=completed > previous_completed,
-                event_type="checkpoint" if completed > previous_completed else None,
-                payload={"completed_chapters": completed, "total_chapters": int(job.total_chapters or 0)},
-                next_action=job.error,
+                event_type=(
+                    lifecycle
+                    if status_changed
+                    else "checkpoint"
+                    if completed > previous_completed
+                    else None
+                ),
+                payload={
+                    "completed_chapters": completed,
+                    "total_chapters": int(job.total_chapters or 0),
+                },
+                next_action=job.error or "",
                 attention=attention,
                 result=result,
                 outcome=outcome,
+                activity=status_changed,
             )
 
 
@@ -107,12 +195,20 @@ def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun 
 def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
     candidate_ids = [
         row.id
-        for row in db.query(CatalogingCandidate.id).filter(CatalogingCandidate.chapter_run_id == run.id).all()
+        for row in db.query(CatalogingCandidate.id)
+        .filter(CatalogingCandidate.chapter_run_id == run.id)
+        .all()
     ]
     if candidate_ids:
-        db.query(CatalogingApplyLog).filter(CatalogingApplyLog.candidate_id.in_(candidate_ids)).delete(synchronize_session=False)
-        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(synchronize_session=False)
-    db.query(CatalogingFact).filter(CatalogingFact.chapter_run_id == run.id).delete(synchronize_session=False)
+        db.query(CatalogingApplyLog).filter(
+            CatalogingApplyLog.candidate_id.in_(candidate_ids)
+        ).delete(synchronize_session=False)
+        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(CatalogingFact).filter(CatalogingFact.chapter_run_id == run.id).delete(
+        synchronize_session=False
+    )
     run.status = "pending"
     run.started_at = None
     run.completed_at = None
@@ -126,14 +222,22 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     refresh_job_progress(db, job)
 
 
-def reset_run_for_resolution_retry(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
+def reset_run_for_resolution_retry(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun
+) -> None:
     candidate_ids = [
         row.id
-        for row in db.query(CatalogingCandidate.id).filter(CatalogingCandidate.chapter_run_id == run.id).all()
+        for row in db.query(CatalogingCandidate.id)
+        .filter(CatalogingCandidate.chapter_run_id == run.id)
+        .all()
     ]
     if candidate_ids:
-        db.query(CatalogingApplyLog).filter(CatalogingApplyLog.candidate_id.in_(candidate_ids)).delete(synchronize_session=False)
-        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(synchronize_session=False)
+        db.query(CatalogingApplyLog).filter(
+            CatalogingApplyLog.candidate_id.in_(candidate_ids)
+        ).delete(synchronize_session=False)
+        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(
+            synchronize_session=False
+        )
     run.status = "facts_saved"
     run.completed_at = None
     run.error = None

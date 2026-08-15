@@ -80,6 +80,7 @@ def _run_legacy_startup_recovery() -> None:
     from ..modules.story.infrastructure.content_sync import (
         recover_content_sync_queue,
     )
+    from ..services.cataloging.job_control import reconcile_cataloging_operation_projections
     from ..services.novel_creation_imports import mark_interrupted_material_imports
     from ..services.novel_creation_runs import mark_interrupted_novel_creation_runs
     from ..services.operation_runtime import mark_interrupted_operations
@@ -98,6 +99,10 @@ def _run_legacy_startup_recovery() -> None:
         # projecting generic operations so saved output remains reviewable.
         mark_interrupted_novel_creation_runs(uow.session)
         mark_interrupted_material_imports(uow.session)
+        # CatalogingJob is authoritative.  Repair legacy/local-CLI projection
+        # drift before generic recovery can mistake finished work for an
+        # interrupted process.
+        reconcile_cataloging_operation_projections(uow.session)
         mark_interrupted_operations(uow.session)
         SqlAlchemySystemConversationStore(uow.session).interrupt_running_messages()
         uow.commit()

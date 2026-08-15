@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.json_repair import parse_json_object
 from app.database.models import NovelCreationStageRun
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
+from app.modules.model_runtime.domain.configuration import ModelProviderConfig
 from app.services.novel_creation_contract import STAGE_LABELS
 from app.services.novel_creation_runs import serialize_run
 
@@ -362,7 +363,11 @@ async def present_serialized_run(
     return data
 
 
-def schedule_run_card_presentation(run_id: str) -> asyncio.Task[Any] | None:
+def schedule_run_card_presentation(
+    run_id: str,
+    *,
+    request_provider: ModelProviderConfig | None = None,
+) -> asyncio.Task[Any] | None:
     """Precompute the model view after a terminal background run is committed."""
     existing = _PRESENTATION_TASKS.get(run_id)
     if existing and not existing.done():
@@ -377,11 +382,21 @@ def schedule_run_card_presentation(run_id: str) -> asyncio.Task[Any] | None:
             run = db.get(NovelCreationStageRun, run_id)
             if not run or run.status not in TERMINAL_RUN_STATUSES:
                 return
-            presentation = await judge_run_card_presentation(
-                db,
-                run=run,
-                model=run.model_source,
-            )
+            if request_provider is None:
+                presentation = await judge_run_card_presentation(
+                    db,
+                    run=run,
+                    model=run.model_source,
+                )
+            else:
+                from app.modules.model_runtime.application.request_override import use_request_provider
+
+                with use_request_provider(request_provider):
+                    presentation = await judge_run_card_presentation(
+                        db,
+                        run=run,
+                        model=run.model_source,
+                    )
             result = deepcopy(run.result_json) if isinstance(run.result_json, dict) else {}
             result["card_presentation"] = presentation
             run.result_json = result

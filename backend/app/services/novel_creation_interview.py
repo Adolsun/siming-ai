@@ -10,6 +10,7 @@ from app.ai.local_cli_adapter import is_local_cli_provider
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.core.json_repair import parse_json_object
 from app.services.observability.run_events import classify_failure
+from app.services.novel_creation_prompting import build_novel_interview_messages
 
 
 INTERVIEW_MAX_TURNS = 8
@@ -139,42 +140,13 @@ async def decide_next_interview_step(
     if len(history) >= INTERVIEW_MAX_TURNS:
         return {"action": "generate", "reason": "动态采访已达到安全轮次上限，使用现有回答进入方案生成。"}
 
-    context = {
-        "original_brief": _text(user_brief),
-        "known_genre_label": _text(genre_label),
-        "known_target_audience": _text(target_audience),
-        "known_platform": _text(platform),
-        "conversation": history,
-    }
-    latest_answer = history[-1]["answer"] if history else "（尚无回答）"
-    system = (
-        "你是与小说作者共同立项的资深策划编辑。你正在进行自然对话式采访。\n"
-        "禁止调用固定问题清单，禁止按预设维度或固定顺序盘问，也不要重复作者已经说过的内容。\n"
-        "请阅读完整上下文，尤其关注作者最新回答，自行判断此刻最值得追问的创作分岔。\n\n"
-        "决策规则：\n"
-        "1. 只有当一个额外答案会实质改变当前创意方向时，才继续提问。\n"
-        "2. 每次最多提出一个问题，措辞要像编辑与作者交谈，并明确承接最新回答。\n"
-        "3. 不要为了填满类型、主角、世界观、篇幅等表格而提问；作者没提到的内容可以由后续方案合理创造。\n"
-        "4. 这个对话入口只接受自由文本回答：question.type 必须为 text，question.options 必须为 []。不要输出选择题、题材预设或预先写好的答案。\n"
-        "5. 信息已经足以产生一套可继续对话调整的方案时，立即选择 generate。\n\n"
-        "只返回以下两种 JSON 之一：\n"
-        '{"action":"ask_more","reason":"为什么此刻要问",'
-        '"question":{"question":"一个动态问题","purpose":"答案会怎样改变方案",'
-        '"options":[],"type":"text"}}\n'
-        '{"action":"generate","reason":"为什么信息已经足够"}\n'
-        "不要输出 Markdown，不要解释 JSON 之外的内容。"
+    messages = build_novel_interview_messages(
+        user_brief=user_brief,
+        history=history,
+        genre_label=genre_label,
+        target_audience=target_audience,
+        platform=platform,
     )
-    messages = [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": (
-                "请根据以下实时立项对话决定下一步。\n"
-                f"最新回答：{latest_answer}\n"
-                f"完整上下文：{json.dumps(context, ensure_ascii=False)}"
-            ),
-        },
-    ]
     provider = _planning_provider(model)
     is_local_cli = is_local_cli_provider(provider)
     timeout = INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli else INTERVIEW_API_TIMEOUT_SECONDS

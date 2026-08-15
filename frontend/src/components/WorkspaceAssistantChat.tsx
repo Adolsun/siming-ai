@@ -146,7 +146,12 @@ function WorkspaceAssistantChat({
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<WorkspaceAssistantMessage[]>([])
-  const { data: operations = [] } = useOperations(50)
+  // Query this project's cataloging operations directly.  A global "latest
+  // 50" query could evict the relevant post-write task on busy installations.
+  const { data: operations = [] } = useOperations(100, {
+    projectId,
+    sourceKind: 'cataloging',
+  })
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
 
@@ -187,12 +192,19 @@ function WorkspaceAssistantChat({
   const selectedProvider = String(defaultModel || '').split(':', 1)[0]
   const isLocalCliModel = selectedProvider.endsWith('_cli')
   const isOpenCodeCliModel = selectedProvider === 'opencode_cli'
+  const catalogingMessages = useMemo(
+    () => projectAutoCatalogingMessages(operations, projectId),
+    [operations, projectId],
+  )
   const displayedMessages = useMemo(
-    () => sortWorkspaceMessages([
-      ...messages,
-      ...projectAutoCatalogingMessages(operations, projectId),
-    ]),
-    [messages, operations, projectId],
+    // Task notices are a live status lane rather than persisted dialogue.
+    // Keep them after the conversation so a notice created during tool
+    // execution cannot disappear above the writer's final response.
+    () => [
+      ...sortWorkspaceMessages(messages),
+      ...sortWorkspaceMessages(catalogingMessages),
+    ],
+    [messages, catalogingMessages],
   )
 
   useEffect(() => {
@@ -242,6 +254,21 @@ function WorkspaceAssistantChat({
       behavior: motionAwareScrollBehavior(),
     })
   }
+
+  const latestCatalogingNotice = catalogingMessages[catalogingMessages.length - 1]
+  const latestCatalogingNoticeKey = latestCatalogingNotice
+    ? `${latestCatalogingNotice.id}:${latestCatalogingNotice.status}:${latestCatalogingNotice.created_at}`
+    : ''
+  useEffect(() => {
+    if (!latestCatalogingNoticeKey || showScrollBottom) return
+    const frame = window.requestAnimationFrame(() => {
+      messagesRef.current?.scrollTo({
+        top: messagesRef.current.scrollHeight,
+        behavior: motionAwareScrollBehavior(),
+      })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [latestCatalogingNoticeKey, showScrollBottom])
 
   const conversationScope = 'project'
   const scopeLabel = SCOPE_LABEL

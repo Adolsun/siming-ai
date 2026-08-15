@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { useDownloadRate } from '../hooks/useDownloadRate'
 import {
   Alert,
   Button,
@@ -52,7 +53,7 @@ interface FreeModelOption {
 }
 
 type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
-type ActivationPhase = 'checking' | 'checking_release' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
+type ActivationPhase = 'checking' | 'checking_release' | 'selecting_source' | 'switching_source' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
 
 interface ActivationJob {
   id: string
@@ -66,6 +67,7 @@ interface ActivationJob {
   selected_model?: string | null
   preferred_model?: string | null
   free_models: FreeModelOption[]
+  download_source?: string | null
   bytes_downloaded?: number
   bytes_total?: number
   estimated_seconds_remaining?: number | null
@@ -101,6 +103,12 @@ interface ApiEnvelope<T> {
 const formatBytes = (bytes?: number) => {
   if (!bytes) return '0 MB'
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const formatRate = (bytesPerSecond?: number | null) => {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return null
+  if (bytesPerSecond >= 1024 * 1024) return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
+  return `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`
 }
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作没有完成，请重试'
@@ -166,6 +174,11 @@ export function GettingStartedPanel() {
   const [selectedModel, setSelectedModel] = useState<string>()
   const [setupError, setSetupError] = useState('')
   const [authCredential, setAuthCredential] = useState('')
+  const downloadRate = useDownloadRate({
+    active: job?.phase === 'downloading',
+    bytes: job?.bytes_downloaded,
+    source: job?.download_source,
+  })
 
   const fetchStatus = useCallback(async (refresh = false) => {
     try {
@@ -285,6 +298,7 @@ export function GettingStartedPanel() {
   const remainingMinutes = job?.estimated_seconds_remaining
     ? Math.max(1, Math.ceil(job.estimated_seconds_remaining / 60))
     : null
+  const downloadRateText = formatRate(downloadRate)
   const retryLabel = job?.failure_kind === 'network'
     ? '继续下载'
     : job?.failure_kind === 'download_rate_limit'
@@ -339,7 +353,9 @@ export function GettingStartedPanel() {
                 : <div className="getting-started-indeterminate"><Spin /><Text>正在执行当前步骤，不估算虚假百分比</Text></div>}
               <div className="getting-started-progress-meta">
                 <Text>{job?.message || '正在准备...'}</Text>
+                {job?.download_source && <Tag color="processing">当前线路：{job.download_source}</Tag>}
                 {Boolean(job?.bytes_total) && <Text type="secondary">{downloaded} / {total}</Text>}
+                {downloadRateText && <Text type="secondary">实时速度 {downloadRateText}</Text>}
                 {remainingMinutes && <Text type="secondary">预计还需约 {remainingMinutes} 分钟</Text>}
               </div>
             </div>

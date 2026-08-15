@@ -128,14 +128,20 @@ async function mockApi(page: Page, options: {
   session?: Record<string, unknown>
   gettingStarted?: Record<string, unknown>
   onInterview?: (route: Route, call: number) => Promise<void>
+  onAgentTurn?: (route: Route, call: number) => Promise<void>
   onApply?: (route: Route) => Promise<void>
   onStageConfirm?: (route: Route, stage: string) => Promise<void>
   onConfirmAndGenerate?: (route: Route, stage: string) => Promise<void>
   onStageRun?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
+  let agentTurnCalls = 0
   let turnCalls = 0
   let startedSession: Record<string, unknown> | undefined
+  const configuredModels = options.models ?? [model]
+  const hasUsableModel = configuredModels.some((candidate) => (
+    Boolean((candidate as { is_usable?: boolean }).is_usable)
+  ))
   const unexpected: string[] = []
   unexpectedApiRequests.set(page, unexpected)
   await page.addInitScript(() => {
@@ -190,7 +196,10 @@ async function mockApi(page: Page, options: {
     }
 
     if (path === '/api/v1/config/models') {
-      return fulfill(route, { code: 0, data: { items: options.models ?? [model], total: (options.models ?? [model]).length } })
+      return fulfill(route, { code: 0, data: { items: configuredModels, total: configuredModels.length } })
+    }
+    if (path === '/api/v1/config/app-info') {
+      return fulfill(route, { code: 0, data: { name: 'Siming', version: '3.2.1' } })
     }
     if (path === '/api/v1/config/launcher') {
       return fulfill(route, { code: 0, data: { launch_mode: 'desktop', update_channel: 'stable', restart_required: false } })
@@ -199,9 +208,12 @@ async function mockApi(page: Page, options: {
       return fulfill(route, {
         code: 0,
         data: options.gettingStarted ?? {
-          needs_setup: false,
-          has_any_model: true,
-          global_model: { provider: 'opencode_cli', model: 'free-model' },
+          needs_setup: !hasUsableModel,
+          has_any_model: hasUsableModel,
+          has_detected_models: configuredModels.length > 0,
+          has_usable_models: hasUsableModel,
+          configured: hasUsableModel,
+          global_model: hasUsableModel ? { provider: 'opencode_cli', model: 'free-model' } : null,
         },
       })
     }
@@ -228,6 +240,15 @@ async function mockApi(page: Page, options: {
       const session = options.session ?? { id: 'draft-1', status: 'drafting', revision: 1, current_stage: 'constraints', draft: { form: baseForm, concepts: [], stages: {} } }
       startedSession = session
       return fulfill(route, { code: 0, data: { session_id: session.id, session } })
+    }
+    if (path === '/api/v1/novel-creation/agent-turn' && method === 'POST') {
+      agentTurnCalls += 1
+      if (options.onAgentTurn) return options.onAgentTurn(route, agentTurnCalls)
+      if (options.onInterview) return options.onInterview(route, agentTurnCalls)
+      return fulfill(route, {
+        code: 0,
+        data: { reply: '已记录你的创作要求。', run: null, tool_results: [] },
+      })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && path.endsWith('/interview/next')) {
       interviewCalls += 1
@@ -302,17 +323,13 @@ async function mockApi(page: Page, options: {
   })
 }
 
-test('allows a no-model author to save and restore a creation draft', async ({ page }) => {
+test('redirects a legacy creation link into the unified assistant with its draft context', async ({ page }) => {
   await mockApi(page, { models: [] })
-  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
+  await page.goto('/novel-creation?session=draft-1&stage=concepts', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
-  await expect(page.getByText(zh.noModel)).toBeVisible()
-  await page.getByRole('button', { name: /按我的设定立项/ }).click()
-  await page.locator('textarea').first().fill(baseForm.brief)
-  await expect(page.getByRole('button', { name: zh.saveDraft })).toBeEnabled()
-  await page.getByRole('button', { name: zh.saveDraft }).click()
-  await expect(page).toHaveURL(/session=draft-1/)
+  await expect(page).toHaveURL(/\/gui\?creationSession=draft-1&artifact=concepts$/)
+  await expect(page.getByRole('heading', { name: '司命系统助手' })).toBeVisible()
+  await expect(page.getByText(/还差一步：先连接一个模型/)).toBeVisible()
 })
 
 test('does not treat a detected Claude CLI as a usable writing model', async ({ page }) => {
@@ -326,31 +343,26 @@ test('does not treat a detected Claude CLI as a usable writing model', async ({ 
       is_usable: false,
     }],
   })
-  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
+  await page.goto('/gui', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByText(zh.noModel)).toBeVisible()
-  await page.getByRole('button', { name: /帮我探索创意/ }).click()
-  await expect(page.getByRole('combobox', { name: '\u9009\u62e9\u672c\u9636\u6bb5\u6a21\u578b' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: /\u751f\u6210\u521b\u610f\u65b9\u5411/ })).toBeDisabled()
+  await expect(page.getByText(/还差一步：先连接一个模型/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '免费设置' })).toBeVisible()
+  await expect(page.getByRole('button', { name: zh.runtimeToggle })).toContainText('配置模型')
 })
 
 test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockApi(page)
-  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
+  await page.goto('/gui', { waitUntil: 'domcontentloaded' })
 
-  for (const name of ['\u4f5c\u54c1\u5e93', '\u65b0\u4e66\u7acb\u9879', 'AI \u52a9\u624b', '\u7cfb\u7edf\u8bbe\u7f6e']) {
-    const button = page.getByRole('button', { name, exact: true })
+  await expect(page.getByRole('menuitem', { name: /AI 助手/ })).toBeVisible()
+  for (const name of [/进入作品库/, /全局任务中心/, /开始新书立项/]) {
+    const button = page.getByRole('button', { name })
     await expect(button).toBeVisible()
     const box = await button.boundingBox()
     expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
   }
-  const taskCenter = page.getByRole('button', { name: /\u5168\u5c40\u4efb\u52a1\u4e2d\u5fc3/ })
-  const taskCenterBox = await taskCenter.boundingBox()
-  expect(taskCenterBox?.width ?? 0).toBeGreaterThanOrEqual(44)
-  expect(taskCenterBox?.height ?? 0).toBeGreaterThanOrEqual(44)
-  await expect(page.getByRole('button', { name: '\u65b0\u4e66\u7acb\u9879' })).toHaveAttribute('aria-current', 'page')
   await expectNoSeriousAccessibilityViolations(page)
 })
 
@@ -405,19 +417,10 @@ test('shows a timeout as an error rather than a completed assistant turn', async
   await expect(page.getByLabel(zh.runtime)).toContainText('\u4e0d\u8bbe\u603b\u65f6\u9650\uff0c\u6309\u6d3b\u52a8\u68c0\u6d4b')
 })
 
-test('keeps a failed interview skip in the error state', async ({ page }) => {
+test('lets the author restore a failed creation request to the input box', async ({ page }) => {
+  const requestText = '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4'
   await mockApi(page, {
-    onInterview: async (route, call) => {
-      if (call === 1) {
-        return fulfill(route, {
-          code: 0,
-          data: {
-            session_id: 'session-1', state: 'question', history: [],
-            question: { question: '\u4e3b\u89d2\u6700\u6015\u5931\u53bb\u4ec0\u4e48\uff1f', type: 'text' },
-          },
-        })
-      }
-      return fulfill(route, {
+    onAgentTurn: async (route) => fulfill(route, {
         detail: {
           message: 'Free usage exceeded, retrying in 9h',
           failure_class: 'quota_or_rate_limit',
@@ -427,17 +430,17 @@ test('keeps a failed interview skip in the error state', async ({ page }) => {
             tool_mode: 'local_cli_text_json', timeout_seconds: 45, quota_status: 'exhausted_or_limited',
           },
         },
-      }, 422)
-    },
+      }, 422),
   })
   await page.goto('/gui', { waitUntil: 'domcontentloaded' })
-  await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+  await page.getByLabel(zh.message).fill(requestText)
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
-  await page.getByRole('button', { name: zh.skip }).click()
 
   const failure = page.locator('[data-message-status="error"]')
   await expect(failure).toContainText('Free usage exceeded')
   await expect(failure).toContainText('\u6267\u884c\u5931\u8d25')
+  await page.getByRole('button', { name: '放回输入框重试' }).click()
+  await expect(page.getByLabel(zh.message)).toHaveValue(requestText)
   await expect(page).toHaveURL(/\/gui$/)
 })
 
@@ -445,8 +448,8 @@ test('enters the one shared creation workbench from the dashboard', async ({ pag
   await mockApi(page)
   await page.goto('/dashboard', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: zh.createWork }).click()
-  await expect(page).toHaveURL(/\/novel-creation$/)
-  await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
+  await expect(page).toHaveURL(/\/gui$/)
+  await expect(page.getByRole('heading', { name: '司命系统助手' })).toBeVisible()
 })
 
 test('automatically guides a first-time user to one-click OpenCode setup', async ({ page }) => {
@@ -490,16 +493,18 @@ test('turns one story sentence into the first adjustable concept run after setup
       is_global_default: true,
       platform_supported: true,
       free_models: [],
+      has_detected_models: true,
+      has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
     },
   })
   await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })
   await page.getByLabel('\u4f60\u60f3\u5199\u4ec0\u4e48\u6545\u4e8b\uff1f').fill('\u4e00\u5bb6\u53ea\u5728\u5348\u591c\u8425\u4e1a\u7684\u4fee\u4ed9\u5ba2\u6808')
   await page.getByRole('button', { name: /\u751f\u6210\u5c0f\u8bf4\u521b\u610f/ }).click()
-  await expect(page).toHaveURL(/\/novel-creation\?session=draft-1&run=run-1/)
+  await expect(page).toHaveURL(/\/gui\?creationSession=draft-1$/)
 })
 
-test('restores a draft and creates the final project only after final review', async ({ page }) => {
+test('restores a legacy final-review deep link in the unified assistant', async ({ page }) => {
   const session = {
     ...conceptSession(),
     current_stage: 'final_review',
@@ -521,13 +526,11 @@ test('restores a draft and creates the final project only after final review', a
   })
   await page.goto('/novel-creation?session=session-1', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByRole('heading', { name: '\u6700\u7ec8\u5ba1\u9605' })).toBeVisible()
-  await expect(page.getByRole('button', { name: zh.create })).toBeEnabled()
-  await page.getByRole('button', { name: zh.create }).click()
-  await expect(page).toHaveURL(/\/project\/project-1/)
+  await expect(page).toHaveURL(/\/gui\?creationSession=session-1$/)
+  await expect(page.getByLabel(zh.message)).toBeVisible()
 })
 
-test('keeps a generated world stage visible until confirmation and only then starts characters', async ({ page }) => {
+test('keeps a generated-stage deep link adjustable through the unified assistant', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const worldData = {
     writing_style: {
@@ -599,6 +602,13 @@ test('keeps a generated world stage visible until confirmation and only then sta
   await mockApi(page, {
     session,
     sessions: [session],
+    onAgentTurn: async (route) => {
+      actionBody = route.request().postDataJSON()
+      return fulfill(route, {
+        code: 0,
+        data: { reply: '已按要求保留世界观事实并调整文风。', run: null, tool_results: [] },
+      })
+    },
     onConfirmAndGenerate: async (route, stage) => {
       expect(stage).toBe('world_style')
       actionBody = route.request().postDataJSON()
@@ -612,44 +622,14 @@ test('keeps a generated world stage visible until confirmation and only then sta
   })
   await page.goto('/novel-creation?session=session-1&stage=characters', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByRole('heading', { name: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2' })).toBeVisible()
-  await expect(page.getByText('\u751f\u6210\u5b8c\u6210\uff0c\u7b49\u5f85\u4f60\u786e\u8ba4')).toBeVisible()
-  await expect(page.getByText('\u51b7\u5cfb\u4f46\u4fdd\u7559\u5e0c\u671b')).toBeVisible()
-  await expect(page.getByText('\u7b2c\u4e09\u4eba\u79f0\u9650\u77e5')).toBeVisible()
-  await expect(page.getByText('\u9003\u4ea1\u4e0e\u63ed\u5bc6\u5e76\u8fdb')).toBeVisible()
-  await expect(page.getByText('\u5feb\u901f\u5165\u5c40')).toBeVisible()
-  await expect(page.locator('body')).not.toContainText('[object Object]')
+  await expect(page).toHaveURL(/\/gui\?creationSession=session-1&artifact=characters$/)
+  const requestText = '保留世界观事实，只把文风调整得更冷峻。'
+  await page.getByLabel(zh.message).fill(requestText)
+  await page.getByRole('button', { name: new RegExp(zh.send) }).click()
+  const writePermission = page.getByRole('dialog', { name: '允许本机 CLI 仅修改本轮立项数据？' })
+  await writePermission.getByRole('button', { name: '允许本轮修改' }).click()
+  await expect(writePermission).toBeHidden()
+  await expect(page.getByText('已按要求保留世界观事实并调整文风。')).toBeVisible()
+  expect(actionBody).toMatchObject({ session_id: 'session-1', message: requestText })
   await expectNoSeriousAccessibilityViolations(page)
-  if (!process.env.CI) {
-    await expect(page).toHaveScreenshot('novel-creation-world-style-desktop.png', {
-      animations: 'disabled',
-      caret: 'hide',
-    })
-  }
-  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u7ee7\u7eed' })
-  await expect(confirmAndContinue).toBeEnabled()
-  expect(actionBody).toBeUndefined()
-
-  await page.setViewportSize({ width: 390, height: 844 })
-  await expect(confirmAndContinue).toBeVisible()
-  for (const name of ['\u4f5c\u54c1\u5e93', '\u65b0\u4e66\u7acb\u9879', 'AI \u52a9\u624b']) {
-    const navigationButton = page.getByRole('button', { name, exact: true })
-    await expect(navigationButton).toBeVisible()
-    const navigationBox = await navigationButton.boundingBox()
-    expect(navigationBox?.height ?? 0).toBeGreaterThanOrEqual(44)
-    expect(navigationBox?.y ?? 999).toBeLessThan(140)
-  }
-  const actionBox = await confirmAndContinue.boundingBox()
-  expect(actionBox?.height ?? 0).toBeGreaterThanOrEqual(44)
-  expect((actionBox?.y ?? 844) + (actionBox?.height ?? 0)).toBeLessThanOrEqual(844)
-  if (!process.env.CI) {
-    await expect(page).toHaveScreenshot('novel-creation-world-style-mobile.png', {
-      animations: 'disabled',
-      caret: 'hide',
-    })
-  }
-
-  await confirmAndContinue.click()
-  await expect.poll(() => actionBody).toBeTruthy()
-  expect(actionBody).toMatchObject({ confirm: true, expected_revision: 5, use_model: true })
 })

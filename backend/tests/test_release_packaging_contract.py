@@ -90,14 +90,17 @@ def test_windows_release_is_signed_before_integrity_manifests_are_published():
     )
 
 
-def test_windows_only_release_does_not_require_android_assets():
+def test_release_workflow_publishes_signed_android_assets():
     publisher = (ROOT / "scripts" / "publish-github.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
 
     assert "IncludeAndroid" in publisher
     assert '$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath)' in publisher
-    assert 'release/Siming.apk' not in workflow
-    assert 'release/Siming-apk-sha256.txt' not in workflow
+    assert "SIMING_ANDROID_KEYSTORE_BASE64" in workflow
+    assert "Build signed Android APK" in workflow
+    assert "verify-android-release.ps1" in workflow
+    assert "release/Siming.apk" in workflow
+    assert "release/Siming-apk-sha256.txt" in workflow
 
 
 def test_release_smoke_matches_runtime_to_update_manifest():

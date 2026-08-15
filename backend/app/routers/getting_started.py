@@ -77,6 +77,7 @@ class OpenCodeActivationStatus(BaseModel):
     preferred_model: str | None = None
     free_models: list[FreeModelOption] = Field(default_factory=list)
     download_url: str | None = None
+    download_source: str | None = None
     sha256: str | None = None
     bytes_downloaded: int = 0
     bytes_total: int = 0

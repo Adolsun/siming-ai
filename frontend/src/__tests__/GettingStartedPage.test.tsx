@@ -214,4 +214,23 @@ describe('GettingStartedPanel', () => {
     expect(screen.queryByText('OpenCode 免费服务已限流（不是网络故障）')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '登录后验证个人免费额度' })).not.toBeInTheDocument()
   })
+
+  it('shows the source selected by smart download routing', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      activation_job: {
+        id: 'job-download', status: 'running', phase: 'downloading', percent: 35,
+        message: '已选择国内加速源，正在下载 v1.18.4',
+        download_source: '国内加速源',
+        bytes_downloaded: 20 * 1024 * 1024,
+        bytes_total: 60 * 1024 * 1024,
+        free_models: [],
+      },
+    } } })
+
+    renderPanel()
+
+    expect(await screen.findByText('当前线路：国内加速源')).toBeInTheDocument()
+    expect(screen.getByText('20.0 MB / 60.0 MB')).toBeInTheDocument()
+  })
 })

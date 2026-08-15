@@ -52,20 +52,25 @@ import { StructuredStageEditor } from './novel-creation/StructuredStageEditor'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
+import { apiDateTimeMs } from '../utils/dateTime'
+import { AssistantMessageTime } from './assistant/MessageTime'
 import {
   defaultInterviewRuntime,
   startNovelCreationSession,
+  type InterviewRuntime,
   type InterviewQuestion,
   type InterviewQuestionAnswer,
   useNovelCreationInterviewController,
 } from '../hooks/useNovelCreationInterviewController'
 import {
+  extractNovelInterviewErrorDetail,
   formatSystemAssistantError,
   formatNovelInterviewError,
   isNovelInterviewRetryIntent,
   NOVEL_INTERVIEW_THINKING,
 } from '../utils/novelInterview'
 import './GuiAssistantChat.css'
+import './assistant/MessageTime.css'
 
 const { Title, Paragraph, Text } = Typography
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
@@ -474,6 +479,7 @@ function GuiAssistantChat() {
   const [artifactEditorSaving, setArtifactEditorSaving] = useState(false)
   const [artifactEditorError, setArtifactEditorError] = useState<string | null>(null)
   const [artifactEditorSavedAt, setArtifactEditorSavedAt] = useState<string | null>(null)
+  const [agentRuntimeOverride, setAgentRuntimeOverride] = useState<Partial<InterviewRuntime>>({})
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -747,6 +753,22 @@ function GuiAssistantChat() {
   const interviewRuntime = {
     ...defaultInterviewRuntime(selectedModel, interviewModelSource),
     ...novelInterview.state.runtime,
+    ...agentRuntimeOverride,
+  }
+  const recordAgentRuntimeError = (error: unknown) => {
+    const detail = extractNovelInterviewErrorDetail(error)
+    const runtime = detail.runtime && typeof detail.runtime === 'object'
+      ? detail.runtime as Partial<InterviewRuntime>
+      : {}
+    const failureClass = String(detail.failure_class || runtime.failure_class || '')
+    setAgentRuntimeOverride({
+      ...runtime,
+      quota_status: failureClass === 'quota_or_rate_limit'
+        ? 'exhausted_or_limited'
+        : runtime.quota_status,
+      failure_class: failureClass || undefined,
+      next_action: detail.next_action || runtime.next_action,
+    })
   }
   const runtimeSourceLabel: Record<string, string> = {
     conversation_override: '本次对话覆盖',
@@ -994,7 +1016,11 @@ function GuiAssistantChat() {
           ])
       const items = responses
         .flatMap((res) => res.data?.data?.items || [])
-        .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')))
+        .sort((left, right) => {
+          const rightTime = apiDateTimeMs(right.updated_at || right.created_at)
+          const leftTime = apiDateTimeMs(left.updated_at || left.created_at)
+          return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0)
+        })
       setConversations(items)
       return items
     } catch {
@@ -1369,6 +1395,7 @@ function GuiAssistantChat() {
   ) => {
     const sourceText = text
     const displayText = originalText || text
+    setAgentRuntimeOverride({})
     const forceFreshCreation = (
       !skipAutomaticCreation && (
         (Boolean(activeProjectId) && shouldUseNovelCreation(displayText, true))
@@ -1669,9 +1696,11 @@ function GuiAssistantChat() {
         }
         finish(reply)
       } catch (err: unknown) {
+        recordAgentRuntimeError(err)
         finish(formatSystemAssistantError(err), 'error')
       }
     } catch (err: any) {
+      recordAgentRuntimeError(err)
       finish(err.message || '处理失败', 'error')
       message.error(err.message || '处理失败')
     } finally {
@@ -4054,7 +4083,10 @@ function GuiAssistantChat() {
                   role={msg.status === 'error' ? 'alert' : undefined}
                   aria-live={msg.status === 'error' ? 'assertive' : undefined}
                 >
-                  <div className="gui-chat-msg-role">{msg.role === 'user' ? '你' : '司命'}</div>
+                  <div className="gui-chat-msg-role">
+                    <span>{msg.role === 'user' ? '你' : '司命'}</span>
+                    <AssistantMessageTime value={msg.created_at} />
+                  </div>
                   <div className="gui-chat-msg-content">
                     {msg.status === 'error' && <Tag color="error" className="gui-chat-msg-status">执行失败</Tag>}
                     {msg.status === 'aborted' && <Tag color="default" className="gui-chat-msg-status">已停止</Tag>}

@@ -2,6 +2,7 @@ package com.siming.mobile.data.network
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -10,6 +11,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -53,6 +55,23 @@ data class DirectApiSummary(
     val protocol: String,
 )
 
+data class DirectApiProbe(
+    val response: String,
+    val protocol: String,
+)
+
+data class DirectAgentToolCall(
+    val id: String,
+    val name: String,
+    val arguments: JsonObject,
+)
+
+data class DirectAgentTurn(
+    val content: String,
+    val toolCalls: List<DirectAgentToolCall>,
+    val assistantMessage: JsonObject,
+)
+
 class DirectApiHttpException(
     val statusCode: Int,
     message: String,
@@ -90,11 +109,14 @@ class DirectApiClient(
         throw lastError ?: IOException("接口没有返回可用模型，请手动填写模型名")
     }
 
-    suspend fun test(config: DirectApiConfig): String = complete(
+    suspend fun test(config: DirectApiConfig): String = testAndResolve(config).response
+
+    suspend fun testAndResolve(config: DirectApiConfig): DirectApiProbe = completeResolved(
         config,
         systemPrompt = "你正在执行连接测试。请严格按要求简短回复。",
         userPrompt = "只回复：连接成功",
         maxOutputTokens = 64,
+        temperature = 0.0,
     )
 
     suspend fun complete(
@@ -102,7 +124,71 @@ class DirectApiClient(
         systemPrompt: String,
         userPrompt: String,
         maxOutputTokens: Int = 4_000,
-    ): String {
+        temperature: Double = 0.7,
+        extraBody: JsonObject? = null,
+    ): String = completeResolved(
+        config,
+        systemPrompt,
+        userPrompt,
+        maxOutputTokens,
+        temperature,
+        extraBody,
+    ).response
+
+    /** One native function-calling turn used by the embedded PC prompt contract. */
+    suspend fun agentTurn(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String? = null,
+        maxOutputTokens: Int = 4_000,
+        temperature: Double = 0.3,
+    ): DirectAgentTurn {
+        validateConfig(config)
+        val protocol = if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+            DirectApiConfig.PROTOCOL_RESPONSES
+        } else {
+            DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS
+        }
+        val path = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+            "responses"
+        } else {
+            "chat/completions"
+        }
+        var lastError: Throwable? = null
+        for (endpoint in endpointCandidates(config.baseUrl, path)) {
+            try {
+                val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+                    responsesAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature)
+                } else {
+                    chatAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature)
+                }
+                val response = executeWithRetry(endpoint, config.apiKey, json.encodeToString(payload))
+                if (response.statusCode in PATH_FALLBACK_STATUS_CODES) continue
+                ensureSuccess(response)
+                val root = json.parseToJsonElement(response.body).jsonObject
+                return if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+                    parseResponsesAgentTurn(root)
+                } else {
+                    parseChatAgentTurn(root)
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                lastError = error
+                if (error !is DirectApiHttpException || error.statusCode !in PATH_FALLBACK_STATUS_CODES) break
+            }
+        }
+        throw lastError ?: IOException("API 地址没有提供 $path 接口")
+    }
+
+    private suspend fun completeResolved(
+        config: DirectApiConfig,
+        systemPrompt: String,
+        userPrompt: String,
+        maxOutputTokens: Int,
+        temperature: Double,
+        extraBody: JsonObject? = null,
+    ): DirectApiProbe {
         validateConfig(config)
         val protocols = when (config.protocol) {
             DirectApiConfig.PROTOCOL_AUTO -> listOf(
@@ -120,9 +206,11 @@ class DirectApiClient(
                     systemPrompt,
                     userPrompt,
                     maxOutputTokens,
+                    temperature,
+                    extraBody,
                 )
                 require(text.isNotBlank()) { "模型返回了空内容，请检查模型名或切换 API 协议" }
-                return text
+                return DirectApiProbe(text, protocol)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 lastError = error
@@ -133,12 +221,179 @@ class DirectApiClient(
         throw lastError ?: IOException("模型调用没有完成")
     }
 
+    private fun chatAgentPayload(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String?,
+        maxOutputTokens: Int,
+        temperature: Double,
+    ): JsonObject = buildJsonObject {
+        put("model", config.model.trim())
+        put("messages", JsonArray(messages))
+        put("tools", tools)
+        toolChoice?.let { put("tool_choice", it) }
+        put("temperature", temperature)
+        put("max_tokens", maxOutputTokens)
+        put("stream", false)
+    }
+
+    private fun responsesAgentPayload(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String?,
+        maxOutputTokens: Int,
+        temperature: Double,
+    ): JsonObject {
+        val system = messages.firstOrNull { it.string("role") == "system" }?.string("content").orEmpty()
+        val input = buildJsonArray {
+            messages.filterNot { it.string("role") == "system" }.forEach { message ->
+                when (message.string("role")) {
+                    "tool" -> add(buildJsonObject {
+                        put("type", "function_call_output")
+                        put("call_id", message.string("tool_call_id"))
+                        put("output", message.string("content"))
+                    })
+                    "assistant" -> {
+                        val content = message.string("content")
+                        if (content.isNotBlank()) add(buildJsonObject {
+                            put("role", "assistant")
+                            put("content", content)
+                        })
+                        (message["tool_calls"] as? JsonArray).orEmpty().forEach toolCalls@{ rawCall ->
+                            val call = rawCall as? JsonObject ?: return@toolCalls
+                            val function = call["function"] as? JsonObject ?: return@toolCalls
+                            add(buildJsonObject {
+                                put("type", "function_call")
+                                put("call_id", call.string("id"))
+                                put("name", function.string("name"))
+                                put("arguments", function.string("arguments"))
+                            })
+                        }
+                    }
+                    else -> add(buildJsonObject {
+                        put("role", message.string("role"))
+                        put("content", message.string("content"))
+                    })
+                }
+            }
+        }
+        val responseTools = buildJsonArray {
+            tools.forEach { rawTool ->
+                val function = (rawTool as? JsonObject)?.get("function") as? JsonObject
+                    ?: return@forEach
+                add(buildJsonObject {
+                    put("type", "function")
+                    put("name", function.string("name"))
+                    put("description", function.string("description"))
+                    put("parameters", function["parameters"] ?: JsonObject(emptyMap()))
+                })
+            }
+        }
+        return buildJsonObject {
+            put("model", config.model.trim())
+            if (system.isNotBlank()) put("instructions", system)
+            put("input", input)
+            put("tools", responseTools)
+            toolChoice?.let { put("tool_choice", it) }
+            put("temperature", temperature)
+            put("max_output_tokens", maxOutputTokens)
+            put("stream", false)
+        }
+    }
+
+    private fun parseChatAgentTurn(root: JsonObject): DirectAgentTurn {
+        val message = ((root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject)
+            ?.get("message") as? JsonObject
+            ?: error("模型没有返回 assistant message")
+        val content = when (val value = message["content"]) {
+            is JsonPrimitive -> value.contentOrNull.orEmpty()
+            is JsonArray -> value.mapNotNull { part ->
+                ((part as? JsonObject)?.get("text") as? JsonPrimitive)?.contentOrNull
+            }.joinToString("")
+            else -> ""
+        }
+        val calls = (message["tool_calls"] as? JsonArray).orEmpty().mapNotNull(::parseToolCall)
+        val canonical = buildJsonObject {
+            put("role", "assistant")
+            put("content", content)
+            if (calls.isNotEmpty()) {
+                put("tool_calls", message["tool_calls"] ?: JsonArray(emptyList()))
+            }
+        }
+        return DirectAgentTurn(content.trim(), calls, canonical)
+    }
+
+    private fun parseResponsesAgentTurn(root: JsonObject): DirectAgentTurn {
+        val output = (root["output"] as? JsonArray).orEmpty()
+        val calls = output.mapNotNull { item ->
+            val value = item as? JsonObject ?: return@mapNotNull null
+            if (value.string("type") != "function_call") return@mapNotNull null
+            parseFunctionCall(
+                id = value.string("call_id").ifBlank { value.string("id") },
+                name = value.string("name"),
+                rawArguments = value.string("arguments"),
+            )
+        }
+        val content = parseResponsesText(root)
+        val toolCalls = buildJsonArray {
+            calls.forEach { call ->
+                add(buildJsonObject {
+                    put("id", call.id)
+                    put("type", "function")
+                    put("function", buildJsonObject {
+                        put("name", call.name)
+                        put("arguments", json.encodeToString(call.arguments))
+                    })
+                })
+            }
+        }
+        val canonical = buildJsonObject {
+            put("role", "assistant")
+            put("content", content)
+            if (calls.isNotEmpty()) put("tool_calls", toolCalls)
+        }
+        return DirectAgentTurn(content.trim(), calls, canonical)
+    }
+
+    private fun parseToolCall(element: JsonElement): DirectAgentToolCall? {
+        val value = element as? JsonObject ?: return null
+        val function = value["function"] as? JsonObject ?: return null
+        return parseFunctionCall(
+            id = value.string("id"),
+            name = function.string("name"),
+            rawArguments = function.string("arguments"),
+        )
+    }
+
+    private fun parseFunctionCall(
+        id: String,
+        name: String,
+        rawArguments: String,
+    ): DirectAgentToolCall? {
+        if (name.isBlank()) return null
+        val arguments = runCatching {
+            json.parseToJsonElement(rawArguments.ifBlank { "{}" }) as? JsonObject
+        }.getOrNull() ?: JsonObject(emptyMap())
+        return DirectAgentToolCall(
+            id = id.ifBlank { "call_${UUID.randomUUID()}" },
+            name = name,
+            arguments = arguments,
+        )
+    }
+
+    private fun JsonObject.string(name: String): String =
+        (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+
     private suspend fun completeWithProtocol(
         config: DirectApiConfig,
         protocol: String,
         systemPrompt: String,
         userPrompt: String,
         maxOutputTokens: Int,
+        temperature: Double,
+        extraBody: JsonObject?,
     ): String {
         val path = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
             "responses"
@@ -150,8 +405,10 @@ class DirectApiClient(
                 put("model", config.model.trim())
                 put("instructions", systemPrompt)
                 put("input", userPrompt)
+                put("temperature", temperature)
                 put("max_output_tokens", maxOutputTokens)
                 put("stream", false)
+                extraBody?.forEach { (key, value) -> put(key, value) }
             }
         } else {
             buildJsonObject {
@@ -166,8 +423,10 @@ class DirectApiClient(
                         put("content", userPrompt)
                     })
                 })
+                put("temperature", temperature)
                 put("max_tokens", maxOutputTokens)
                 put("stream", false)
+                extraBody?.forEach { (key, value) -> put(key, value) }
             }
         }
         var lastError: Throwable? = null

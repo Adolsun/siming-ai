@@ -231,8 +231,11 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         response = self.client.get(f"{API_PREFIX}/projects/{project_id}/ai/assistant/conversations/{conversation_id}")
         self.assertEqual(response.status_code, 200)
-        roles = [item["role"] for item in response.json()["data"]["messages"]]
+        data = response.json()["data"]
+        roles = [item["role"] for item in data["messages"]]
         self.assertEqual(roles, ["user", "assistant"])
+        self.assertTrue(data["conversation"]["created_at"].endswith("+00:00"))
+        self.assertTrue(all(item["created_at"].endswith("+00:00") for item in data["messages"]))
 
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
     def test_workspace_stream_selected_outline_with_links_does_not_detach(self, mock_stream):

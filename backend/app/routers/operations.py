@@ -22,8 +22,15 @@ class OperationAttentionReadRequest(BaseModel):
 def list_operations(
     active_only: bool = False,
     limit: int = Query(30, ge=1, le=100),
+    project_id: str | None = None,
+    source_kind: str | None = None,
 ):
-    items = get_operation_service().list(active_only=active_only, limit=limit)
+    items = get_operation_service().list(
+        active_only=active_only,
+        limit=limit,
+        project_id=project_id,
+        source_kind=source_kind,
+    )
     return ApiResponse.success(data={"items": items})
 
 

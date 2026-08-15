@@ -16,6 +16,7 @@ import {
 } from '..'
 import type { OperationRun } from '..'
 import { RuntimeStatusTags } from '../../../shared/ui/runtime'
+import { apiDateTimeMs, parseApiDateTime } from '../../../utils/dateTime'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -30,7 +31,7 @@ export interface OperationAttemptGroup {
 
 function operationTime(operation: OperationRun) {
   const value = operation.updated_at || operation.created_at
-  const timestamp = value ? new Date(value).getTime() : 0
+  const timestamp = apiDateTimeMs(value)
   return Number.isFinite(timestamp) ? timestamp : 0
 }
 
@@ -70,8 +71,8 @@ function elapsedLabel(seconds = 0) {
 
 export function activityTimestamp(value?: string) {
   if (!value) return '尚无活动记录'
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return '时间未知'
+  const date = parseApiDateTime(value)
+  if (!date) return '时间未知'
   const pad = (part: number) => String(part).padStart(2, '0')
   return [
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
@@ -81,7 +82,9 @@ export function activityTimestamp(value?: string) {
 
 function hoursSince(value?: string | null) {
   if (!value) return 0
-  return Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 3_600_000))
+  const timestamp = apiDateTimeMs(value)
+  if (!Number.isFinite(timestamp)) return 0
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 3_600_000))
 }
 
 function OperationItem({ operation, history, onAction, onDelete, onOpen, deletePending }: {

@@ -86,6 +86,7 @@ class PairingStartResponse(StrictContract):
     gateway_url: str
     gateway_name: str
     gateway_public_key: str
+    gateway_encryption_public_key: str
     gateway_fingerprint: str
     expires_at: datetime
     qr_payload: dict[str, Any]
