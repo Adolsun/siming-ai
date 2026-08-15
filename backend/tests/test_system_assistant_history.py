@@ -144,6 +144,8 @@ def test_system_conversation_persists_messages_and_blueprint_state():
     assert detail.data["conversation"]["creation_session_id"] == "session-1"
     assert detail.data["conversation"]["blueprints"] == blueprints
     assert [item["role"] for item in detail.data["messages"]] == ["user", "assistant"]
+    assert detail.data["conversation"]["created_at"].endswith("+00:00")
+    assert all(item["created_at"].endswith("+00:00") for item in detail.data["messages"])
     listing = asyncio.run(list_system_conversations(conversations))
     assert listing.data["total"] == 1
     assert listing.data["items"][0]["message_count"] == 2

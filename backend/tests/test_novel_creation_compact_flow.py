@@ -14,10 +14,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
 from app.database.session import Base
+from app.modules.model_runtime.domain.configuration import ModelProviderConfig
+from app.schemas.ai_writer import MobileProviderEnvelope
 from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from app.routers.novel_creation import (
+    NovelCreationApplyRequest,
     NovelCreationSessionPatchRequest,
     NovelCreationStageRunRequest,
+    apply_blueprint,
     start_creation_stage_run,
     update_creation_session,
 )
@@ -690,8 +694,8 @@ def test_duplicate_running_concept_request_reuses_existing_run():
         return MagicMock()
 
     with patch("app.routers.novel_creation.asyncio.create_task", side_effect=capture_task) as create_task:
-        first = asyncio.run(start_creation_stage_run(session.id, payload, db))
-        second = asyncio.run(start_creation_stage_run(session.id, payload, db))
+        first = asyncio.run(start_creation_stage_run(session.id, payload, MagicMock(), db))
+        second = asyncio.run(start_creation_stage_run(session.id, payload, MagicMock(), db))
 
     assert first.data["run"]["id"] == second.data["run"]["id"]
     assert create_task.call_count == 1
@@ -702,3 +706,83 @@ def test_refine_run_request_requires_a_bounded_instruction():
         NovelCreationStageRunRequest(stage="concepts", operation="refine")
     payload = NovelCreationStageRunRequest(stage="concepts", operation="refine", instruction="  保留角色姓名  ")
     assert payload.instruction == "保留角色姓名"
+
+
+def test_mobile_key_creation_run_never_persists_the_credential_envelope():
+    db = _db()
+    session = _session(db)
+    envelope = MobileProviderEnvelope(
+        ephemeral_public_key="e" * 43,
+        nonce="n" * 16,
+        ciphertext="ciphertext-must-stay-request-only-123456",
+    )
+    payload = NovelCreationStageRunRequest(
+        stage="concepts",
+        model_route="mobile",
+        mobile_provider=envelope,
+    )
+    provider = ModelProviderConfig(
+        provider="mobile_openai",
+        default_model="phone-model",
+        api_key="phone-secret-key",
+        base_url="https://8.8.8.8/v1",
+    )
+
+    def resolve_provider(_db, resolved_payload, _request, *, binding_id):
+        assert binding_id == session.id
+        resolved_payload.mobile_provider = None
+        resolved_payload.model = "mobile_openai:phone-model"
+        return provider
+
+    with (
+        patch(
+            "app.routers.novel_creation._resolve_mobile_creation_provider",
+            side_effect=resolve_provider,
+        ),
+        patch("app.routers.novel_creation.schedule_creation_stage") as schedule,
+    ):
+        response = asyncio.run(
+            start_creation_stage_run(session.id, payload, MagicMock(), db)
+        )
+
+    run = db.get(NovelCreationStageRun, response.data["run"]["id"])
+    serialized_request = json.dumps(run.request_json)
+    assert "phone-secret-key" not in serialized_request
+    assert envelope.ciphertext not in serialized_request
+    assert run.request_json["model"] == "mobile_openai:phone-model"
+    assert schedule.call_args.kwargs["request_provider"] is provider
+
+
+def test_android_creation_apply_immediately_enables_the_formal_project_for_sync():
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            gateway_device_id="android-device",
+            gateway_device_platform="android",
+        )
+    )
+    tool_result = {
+        "status": "ok",
+        "detail": "created",
+        "data": {"project_id": "project-from-creation"},
+    }
+    with (
+        patch(
+            "app.routers.novel_creation.apply_novel_blueprint",
+            new=AsyncMock(return_value=tool_result),
+        ),
+        patch(
+            "app.modules.gateway.infrastructure.service.GatewayService"
+        ) as gateway_service,
+    ):
+        response = asyncio.run(
+            apply_blueprint(
+                NovelCreationApplyRequest(session_id="creation-session"),
+                request,
+                MagicMock(),
+            )
+        )
+
+    assert response.data["project_id"] == "project-from-creation"
+    gateway_service.return_value.enable_project.assert_called_once_with(
+        "project-from-creation"
+    )

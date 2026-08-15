@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ....core.exceptions import NotFoundError
+from ....core.utils import utc_isoformat
 from .models import SystemAssistantConversation, SystemAssistantMessage
 
 
@@ -33,8 +34,8 @@ def _conversation_data(
         "creation_session_id": conversation.creation_session_id,
         "user_brief": conversation.user_brief,
         "blueprints": conversation.blueprint_json or [],
-        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "created_at": utc_isoformat(conversation.created_at),
+        "updated_at": utc_isoformat(conversation.updated_at),
     }
 
 
@@ -49,8 +50,8 @@ def _message_data(message: SystemAssistantMessage) -> dict[str, Any]:
         "message_type": message.message_type,
         "payload": message.payload_json,
         "status": message.status,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+        "created_at": utc_isoformat(message.created_at),
+        "updated_at": utc_isoformat(message.updated_at),
     }
 
 

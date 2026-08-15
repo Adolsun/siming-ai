@@ -259,6 +259,18 @@
   border-left-color: var(--ant-color-text-tertiary);
 }
 
+.workspace-assistant-message-action {
+  border-top: 1px solid var(--ant-color-border-secondary);
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.workspace-assistant-message-action .ant-btn {
+  font-weight: 500;
+}
+
 /* ── Composer ── */
 .workspace-assistant-composer {
   background: var(--ant-color-bg-container);

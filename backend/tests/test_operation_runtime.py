@@ -76,6 +76,50 @@ def test_operation_service_deletes_only_terminal_records():
         assert verify.get(OperationRun, completed_id) is None
 
 
+def test_operation_service_filters_project_and_source_for_embedded_status_messages():
+    _engine, Session, db = _db()
+    project_a = Project(title="Project A", description="test")
+    project_b = Project(title="Project B", description="test")
+    db.add_all([project_a, project_b])
+    db.flush()
+    matching = ensure_operation(
+        db,
+        source_kind="cataloging",
+        source_id="project-a-cataloging",
+        project_id=project_a.id,
+        title="Project A cataloging",
+    )
+    ensure_operation(
+        db,
+        source_kind="cataloging",
+        source_id="project-b-cataloging",
+        project_id=project_b.id,
+        title="Project B cataloging",
+    )
+    ensure_operation(
+        db,
+        source_kind="assistant",
+        source_id="project-a-assistant",
+        project_id=project_a.id,
+        title="Project A assistant",
+    )
+    db.commit()
+    matching_id = matching.id
+    project_a_id = project_a.id
+    db.close()
+
+    service = SqlAlchemyOperationService()
+    with patch("app.modules.operations.infrastructure.service.SessionLocal", Session):
+        items = service.list(
+            active_only=False,
+            limit=100,
+            project_id=project_a_id,
+            source_kind="cataloging",
+        )
+
+    assert [item["id"] for item in items] == [matching_id]
+
+
 def test_health_is_derived_from_heartbeat_activity_and_output_independently():
     _engine, _Session, db = _db()
     operation = ensure_operation(

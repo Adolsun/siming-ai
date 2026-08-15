@@ -543,13 +543,64 @@ _LEDGER_EVENT_RE = re.compile(
     re.MULTILINE,
 )
 _LEDGER_HEADING_RE = re.compile(r"^\s*【[^】]+】\s*$")
-_CHUNK_CADENCE_NOTES = (
-    "开头可用一段偏长的动作链压进期限和地点，中间突然留一行短句；不用天气、气味或全景领起。",
-    "本段让核对、追问和短答承担信息，对白可连着来；动作已经说明的意思，旁白不再翻译。",
-    "紧张处先连写几个明确动词，再突然收句。指代清楚后省略主语，少用‘他又、他随即、他随后’推进。",
-    "用人物对已有物件的实际操作串起拍点，大部分内容合在两个不等长的段里；环境最多留一项。",
-    "事件直接推到本段最后一个拍点。容许一处来自视角人物的直截了当判断，但只能依据账本事实。",
-    "保留普通句和一条有真实承载量的长句；少用代词和程度副词，优先让具体名词、动词接续场面。",
+_MACRO_SCENE_NOTES = (
+    "从正在改变局面的动作或一句已经发生的对白落笔。期限、地点和人物关系只在它们影响下一步时穿插，"
+    "不要先集中报时间、坐标和背景。",
+    "让相邻事实依附于同一场正在进行的行动、核对或交锋；跳过不改变状态的过门。"
+    "换段只因为说话人、压力来源或现场状态真的改变，不为制造长短反差而单独留一句。",
+    "让对白、动作和已有物件承担发现，写到最后一个实际结果就停。"
+    "不要在结尾回顾过程、重排线索或替读者说明意义。",
+)
+
+# A compressed ledger is allowed to omit non-consequential micro-actions, but
+# it must not *interpret* the remaining actions.  These terms have repeatedly
+# turned an observation into an instruction/plan (for example, "看向北门"
+# becoming "戒备北门") or an unexplained gesture into a prior agreement.  If
+# the detailed ledger did not use the term, falling back to the detailed ledger
+# is safer than giving the prose model a newly invented causal frame.
+_MACRO_LEDGER_HIGH_RISK_INFERENCES = (
+    "暗号",
+    "约定",
+    "戒备",
+    "留守",
+    "监视",
+    "盯梢",
+    "伏击",
+    "埋伏",
+    "圈套",
+    "预谋",
+    "事先安排",
+    "早有准备",
+)
+
+# A macro ledger that keeps too many of these operations still acts as a shot
+# list even when it has only two or three numbered lines.  The prose model may
+# mention a few indispensable mechanics, but the compressed steering layer
+# must primarily describe changed state, choice, threat, and discovery.
+_MACRO_LEDGER_PROCEDURE_MARKERS = (
+    "锁车",
+    "敲门",
+    "扫视",
+    "看向",
+    "调整角度",
+    "调角度",
+    "反光",
+    "摸索",
+    "取钥匙",
+    "启动叉车",
+    "踩油门",
+    "开南门",
+    "绕过",
+    "穿过",
+    "停车",
+    "上楼",
+    "下楼",
+    "开门",
+    "关门",
+    "换鞋",
+    "倒水",
+    "检查门窗",
+    "低声报告",
 )
 
 
@@ -646,11 +697,11 @@ def build_de_ai_chunked_rewrite_prompts(
 ) -> list[str]:
     """Build compact, ordered scene prompts for a long-form reconstruction.
 
-    Generating several roughly 320-520 character spans independently prevents one
-    whole-chapter cadence from being repeated for thousands of characters. It
-    also keeps Agent-style CLIs from spending their context window echoing one
-    large task file. The returned spans are joined verbatim in the same order;
-    no prose-level post-processing is required.
+    Generating two or three event-driven macro scenes keeps a 2,000-3,000
+    character chapter manageable without imposing the same short-span opening,
+    turn, and closing cadence every few hundred characters.  The returned scenes
+    are joined verbatim in the same order; no prose-level post-processing is
+    required.
     """
 
     report = analyze_de_ai_fingerprints(original_text)
@@ -658,9 +709,18 @@ def build_de_ai_chunked_rewrite_prompts(
         original_text if fidelity_source is None else fidelity_source
     )
     narrative_context, records = _ledger_preamble_and_records(story_ledger)
-    desired_count = chunk_count or max(
-        1,
-        min(6, (max(1, report["character_count"]) + 399) // 400),
+    # Keep the event scale stable across all three user-visible rounds.  A
+    # slightly expanded prior candidate must not make round two suddenly gain
+    # another artificial scene boundary; the immutable first-round source owns
+    # both fidelity and default partitioning.
+    authority_character_count = _visible_length(authority_text)
+    desired_count = (
+        chunk_count
+        if chunk_count is not None
+        else max(
+            1,
+            min(3, (max(1, authority_character_count) + 999) // 1000),
+        )
     )
     groups = _balanced_ledger_groups(records, desired_count)
     if not groups:
@@ -673,7 +733,6 @@ def build_de_ai_chunked_rewrite_prompts(
     # Chinese visible-character target.  The bounded headroom keeps the joined
     # chapter near its input length instead of shrinking on every user pass;
     # the deterministic 1.35 expansion ceiling remains the final guardrail.
-    authority_character_count = _visible_length(authority_text)
     target_total = max(20, round(authority_character_count * 1.30))
     targets = [
         max(60, round(target_total * weight / total_weight))
@@ -695,7 +754,12 @@ def build_de_ai_chunked_rewrite_prompts(
         literal_line = "、".join(required_tokens) or "无"
         target_min = max(50, round(target * 0.92))
         target_max = max(target_min + 20, round(target * 1.08))
-        cadence = _CHUNK_CADENCE_NOTES[index % len(_CHUNK_CADENCE_NOTES)]
+        if len(group_texts) == 1 or index == 0:
+            scene_note = _MACRO_SCENE_NOTES[0]
+        elif index == len(group_texts) - 1:
+            scene_note = _MACRO_SCENE_NOTES[2]
+        else:
+            scene_note = _MACRO_SCENE_NOTES[1]
         position_rule = (
             "这是开篇片段，直接进入第一个拍点，不写全章导语。"
             if index == 0
@@ -714,13 +778,16 @@ def build_de_ai_chunked_rewrite_prompts(
             "- [可选]气氛只取会影响人物当下行动的少数项目，不连续盘点灯光、气味、陈设和外貌。\n"
             "- 只写本段拍点，不挪用后续事件；账本编号、[硬]/[可选]标签、字段名和清单句法不得进入正文。\n"
             "- 对白可重新组织口气，但说话人、信息和意图不变；不要用旁白再复述对白已经说清的内容。\n"
+            "- 若原文/账本明确写出同一物件前后持有人或位置不同，却没有交代中间转移，"
+            "原样保留前后两个状态，不得自行补写归还、递交、放回、取走等连接动作。\n"
             "- 账本若仍误把‘回顾已知线索’列成拍点，不重列前文事实；只写回顾当下真正新增的动作、"
             "选择或发现。事实已在首次发生处保留，不等于还要保留复盘形式。\n"
             f"- {position_rule}",
             "【本段落笔】\n"
-            f"{cadence}\n"
+            f"{scene_note}\n"
             "按拍点自然换段：有时一拍独立，有时三四拍连在一个段里，不固定每片段的段数。"
-            "长短句由动作自然形成；不要机械轮换句式，不故意写错字，不靠随机口语词制造所谓人味。",
+            "长短句由动作自然形成，不为制造长短反差而单独留一句；不要机械轮换句式，"
+            "不故意写错字，不靠随机口语词制造所谓人味。",
             "【避免流水账与镜头链】\n"
             "- 进门、上楼、检查、转身、看向某处等常规步骤若不改变局面，可并入一句或直接越过；"
             "不能把账本每个箭头扩成一条完整句。\n"
@@ -739,6 +806,364 @@ def build_de_ai_chunked_rewrite_prompts(
             f"【本段账本拍点】\n{ledger_chunk}",
         ]))
     return prompts
+
+
+def build_de_ai_macro_ledger_compression_prompt(chunk_prompt: str) -> str:
+    """Collapse a detailed scene ledger before it reaches the prose model."""
+
+    prompt = str(chunk_prompt or "")
+    ledger_marker = next(
+        (
+            marker
+            for marker in ("【本段账本拍点】", "【本段事实账本】")
+            if marker in prompt
+        ),
+        "",
+    )
+    detailed_ledger = prompt.partition(ledger_marker)[2].strip() if ledger_marker else prompt
+    required_match = re.search(
+        r"【本段必须原字出现的源文标记】\n([^\n]*)",
+        prompt,
+    )
+    required_tokens = required_match.group(1).strip() if required_match else "无"
+    target_units = max(2, min(3, round(max(1, _visible_length(detailed_ledger)) / 300)))
+    return "\n\n".join([
+        "把下面的详细事实账本压成宏观叙事单元。你只整理事实，不写小说正文。",
+        "【目的】\n"
+        "详细账本是校对材料，不是分镜脚本。正文模型只能看到你输出的少量宏观单元，"
+        "因此要保留故事，却不能继续沿用一条事实对应一句或一段的粒度。",
+        "【硬性规则】\n"
+        f"- 输出{target_units}个宏观单元，不得多于3个；每个单元只写同一压力下的核心转折或结果。\n"
+        "- 全部宏观单元合计不超过260个可见字符。宏观账本不是详尽摘要，只保留会改变人物决定、"
+        "威胁、物件归属、后续条件、关键信息揭示或结尾悬念的事实。\n"
+        "- 不得用长分号句把详细账本换一种格式重新列完；单个单元不得连续罗列三个以上"
+        "声响、观察、走位、检查、开关门或物件操作。把过程压成它造成的局面变化。\n"
+        "- 对被保留的事实，人物、物件归属、数字、条件、因果、对白信息、人物已知信息、"
+        "关键状态变化和事件先后必须准确。\n"
+        "- 每个动作、观察、发现、问话、回答、命令和判断的主体必须原样归属；不能把甲观察乙的动作压成乙要求甲行动，"
+        "也不能把甲看到或听到某事写成乙已经知道该事。\n"
+        "- 严格保留认识状态和语气强度：可能、像、猜测、未说明、没有回答、只见过等不能升级为确定、知情、同意或既定计划。\n"
+        "- 只写详细账本明示的关系和用途。机械敲门顺序不能命名为‘暗号’或‘约定’；反复看门窗不能命名为‘戒备’、"
+        "‘监视’或‘伏击’，除非这些词本来就在详细账本中。\n"
+        "- 同一事件内部也要保留先后：先取出或交付物件、后解释用途，不得压成先解释后取物；先发现异常、后检查门窗，"
+        "不得因合并而倒置。\n"
+        "- 不得省略唯一促成关键结果的因果方法或出口，例如制造声响掩护撤离、从指定出入口脱身；"
+        "把方法与结果压成同一因果短句，不展开机械步骤或沿途路线。不得省略承载后续条件的纸条、信件等"
+        "物件交接，也不得模糊结尾线索出现的准确位置、门窗状态或人物只是‘见过’而非确认不存在的认识边界。\n"
+        "- 人名和人称代词必须沿用详细账本；不得把他、她、它互换，也不得为姓名推断性别。\n"
+        "- 若详细账本明确记录同一物件前后持有人或位置不同，却没有交代转移过程，"
+        "两个端点都保留，但不得自行补出归还、递交、放回或取走。\n"
+        "- 锁车、走路、上下楼、开关门、逐次声响、视线转移、反光角度调整、摸索、停顿和重复核对"
+        "若不改变局面，直接省略；不要把它们压进同一长句继续列完。\n"
+        "- 同一发现只出现一次。结尾编号或物件异常直接落在发现上，不列取物、排除、检查门窗、"
+        "回忆和二次确认组成的验明链。\n"
+        "- 不新增详细账本没有的动作、感官、解释、动机或背景；不输出人物表、总结、评价或写作建议。",
+        f"【必须原字保留的标记】\n{required_tokens}",
+        f"【待压缩详细账本】\n{detailed_ledger}",
+        "输出格式：每行一个“01 [硬] 局面/转折/结果：……”宏观单元。"
+        "每行只写一次核心变化，不用分号堆步骤；除此之外不要输出任何内容。",
+    ])
+
+
+def normalize_de_ai_macro_ledger(compact_ledger: str) -> str:
+    """Normalize punctuation-only format drift without rewriting facts."""
+
+    return re.sub(r"[；;]+", "，", str(compact_ledger or "")).strip()
+
+
+def build_de_ai_macro_ledger_retry_feedback(
+    chunk_prompt: str,
+    compact_ledger: str,
+    missing_tokens: list[str] | tuple[str, ...] = (),
+) -> str:
+    """Explain deterministic macro-ledger failures for one bounded retry."""
+
+    prompt = str(chunk_prompt or "")
+    compact = str(compact_ledger or "").strip()
+    ledger_marker = next(
+        (
+            marker
+            for marker in ("【本段账本拍点】", "【本段事实账本】")
+            if marker in prompt
+        ),
+        "",
+    )
+    detailed_ledger = prompt.partition(ledger_marker)[2] if ledger_marker else prompt
+    introduced_pronouns = [
+        pronoun
+        for pronoun in ("他", "她", "它")
+        if pronoun in compact and pronoun not in detailed_ledger
+    ]
+    failures: list[str] = []
+    missing = [str(token).strip() for token in missing_tokens if str(token).strip()]
+    if missing:
+        failures.append("补回必须原字保留的标记：" + "、".join(missing))
+    if introduced_pronouns:
+        failures.append(
+            "删除详细账本没有的人称代词：" + "、".join(introduced_pronouns)
+            + "；重复人物姓名，不推断性别"
+        )
+    visible = _visible_length(compact)
+    if visible < 40 or visible > 260:
+        failures.append(f"总可见字符当前为{visible}，必须控制在40至260之间")
+    event_count = len(_LEDGER_EVENT_RE.findall(compact))
+    if not 1 <= event_count <= 4:
+        failures.append(f"当前有{event_count}个编号单元，必须为1至4个")
+    procedure_count = sum(
+        compact.count(marker)
+        for marker in _MACRO_LEDGER_PROCEDURE_MARKERS
+    )
+    if procedure_count > 4:
+        failures.append("机械步骤仍过多，只保留导致局面变化的因果方法和结果")
+    introduced_inferences = [
+        marker
+        for marker in _MACRO_LEDGER_HIGH_RISK_INFERENCES
+        if marker in compact and marker not in detailed_ledger
+    ]
+    if introduced_inferences:
+        failures.append("删除原账本没有的推断：" + "、".join(introduced_inferences))
+    detail = "；".join(failures) or "未满足宏观账本的确定性格式与颗粒度校验"
+    return (
+        "上一版未通过确定性硬校验："
+        + detail
+        + "。只修正这些问题，不改变其余人物、事实、物件归属、数字、条件、因果、"
+        "认识状态和先后。仍按原格式输出1至3行，不使用中文或英文分号，不输出说明。"
+    )
+
+
+def build_de_ai_macro_ledger_fidelity_audit_prompt(
+    chunk_prompt: str,
+    compact_ledger: str,
+) -> str:
+    """Audit semantic compression before the ledger can steer prose."""
+
+    prompt = str(chunk_prompt or "")
+    ledger_marker = next(
+        (
+            marker
+            for marker in ("【本段账本拍点】", "【本段事实账本】")
+            if marker in prompt
+        ),
+        "",
+    )
+    detailed_ledger = (
+        prompt.partition(ledger_marker)[2].strip() if ledger_marker else prompt
+    )
+    return "\n\n".join([
+        "核对宏观账本是否忠实于详细事实账本。这里只审计事实压缩，不写小说正文。",
+        "【允许】\n"
+        "- 合并相邻拍点；省略不改变局面的走位、停顿、重复检查、逐次声响、观察办法、"
+        "角度调整、开关门和可选气氛；改写句式。\n"
+        "- 省略某个动作的重复机械操作、沿途路线或反复确认，只保留它造成的威胁、选择、发现或结果；"
+        "但若该方法是结果成立的唯一因果、指定出入口、物件交接或后续条件的载体，就必须和结果合成一条保留。\n"
+        "【必须判失败】\n"
+        "- 改变动作、观察、发问、回答、命令、判断或持有关系的主体；改变物件位置或归属。\n"
+        "- 把人物自行采取的动作压成他人的命令、指示或既定计划；把疑问、猜测、可能、"
+        "未回答或只见过升级成确定事实。\n"
+        "- 颠倒仍被保留的关键动作与信息揭示顺序；新增动机、因果、安排、交接或结论。\n"
+        "- 漏掉会改变人物决定、威胁、物件归属、后续条件、关键信息揭示或结尾悬念的必要事实。\n"
+        "- 漏掉促成关键结果的唯一方法或指定出口；漏掉纸条、信件、账页等承载条件的交接；"
+        "漏掉结尾线索出现的准确位置、门窗状态，或把‘只见过’升级成‘确定不存在’。\n"
+        "不要因为文字更短、具体方法或路线被省略、微动作被省略或多条事实被合并而判失败。"
+        "这里的‘具体方法可省略’不包括结果成立所必需的唯一因果方法、指定出口、物件交接或结尾线索位置。"
+        "被允许省略的微动作无需审计其内部先后；宏观账本仍明确写出的事实须核对主体、方式和顺序。",
+        "【输出 JSON】\n"
+        '{"passed":true,"issues":[]}\n'
+        "或\n"
+        '{"passed":false,"issues":[{"chunk":1,'
+        '"kind":"role|order|contradiction|added|missing",'
+        '"detail":"具体差异"}]}\n'
+        "只能输出一个 JSON 对象。",
+        f"【详细事实账本】\n{detailed_ledger}",
+        f"【待审宏观账本】\n{str(compact_ledger or '').strip()}",
+    ])
+
+
+def build_de_ai_macro_ledger_structure_audit_prompt(
+    compact_ledger: str,
+) -> str:
+    """Reject a compact ledger that still behaves like a shot list."""
+
+    return "\n\n".join([
+        "审计下面的宏观账本是否真正达到宏观颗粒度。这里只审结构，不核对事实真假，不写正文。",
+        "【通过标准】\n"
+        "- 每个编号只表达一个会改变局面的威胁、选择、关系、条件、揭示或结果。\n"
+        "- 同一紧张场面可以直接从起因落到结果，省略声响、转身、寻找工具、调整角度、"
+        "反复确认、报告等中间方法。\n"
+        "- 唯一促成关键结果的因果方法、指定出口、物件交接或结尾线索位置若与结果合成一个短句，"
+        "属于核心事实，不按微步骤计数；但不得再展开它的机械操作和沿途路线。\n"
+        "【必须判失败】\n"
+        "- staged：即使拆成两三行，仍按时间顺序保留一条完整分镜链，例如等待→灯灭→异响→"
+        "抬门→找反光物→调角度→看见人→报告→解释；五个及以上相邻小拍即判失败。\n"
+        "- checklist：仍连续列出取钥匙、启动、开门、绕行、穿过、骑车、停车、上楼、换鞋、"
+        "检查等路线或操作步骤；四项及以上即判失败。\n"
+        "- 不要因为账本只有三行、总字数短或没有分号就判通过；要看跨行累计的微步骤。\n"
+        "人物名、数字、条件和核心对白信息本身不算微步骤。",
+        "【输出 JSON】\n"
+        '{"passed":true,"issues":[]}\n'
+        "或\n"
+        '{"passed":false,"issues":[{"chunk":1,'
+        '"kind":"staged|checklist","detail":"具体仍被逐项保留的链条"}]}\n'
+        "只能输出一个 JSON 对象。",
+        f"【待审宏观账本】\n{str(compact_ledger or '').strip()}",
+    ])
+
+
+def validate_de_ai_macro_ledger(
+    chunk_prompt: str,
+    compact_ledger: str,
+) -> tuple[bool, list[str]]:
+    """Reject a compressed ledger that drops deterministic source markers."""
+
+    prompt = str(chunk_prompt or "")
+    compact = str(compact_ledger or "").strip()
+    required_match = re.search(
+        r"【本段必须原字出现的源文标记】\n([^\n]*)",
+        prompt,
+    )
+    required_tokens = [
+        token.strip()
+        for token in (required_match.group(1).split("、") if required_match else [])
+        if token.strip() and token.strip() != "无"
+    ]
+    missing = [token for token in required_tokens if token not in compact]
+    ledger_marker = next(
+        (
+            marker
+            for marker in ("【本段账本拍点】", "【本段事实账本】")
+            if marker in prompt
+        ),
+        "",
+    )
+    detailed_ledger = prompt.partition(ledger_marker)[2] if ledger_marker else prompt
+    introduced_pronouns = {
+        pronoun
+        for pronoun in ("他", "她", "它")
+        if pronoun in compact and pronoun not in detailed_ledger
+    }
+    introduced_inferences = {
+        marker
+        for marker in _MACRO_LEDGER_HIGH_RISK_INFERENCES
+        if marker in compact and marker not in detailed_ledger
+    }
+    procedure_marker_count = sum(
+        compact.count(marker)
+        for marker in _MACRO_LEDGER_PROCEDURE_MARKERS
+    )
+    event_count = len(_LEDGER_EVENT_RE.findall(compact))
+    valid = bool(
+        len(compact) >= 40
+        and _visible_length(compact) <= 260
+        and "[硬]" in compact
+        and 1 <= event_count <= 4
+        and "；" not in compact
+        and ";" not in compact
+        and procedure_marker_count <= 4
+        and not missing
+        and not introduced_pronouns
+        and not introduced_inferences
+    )
+    return valid, missing
+
+
+def apply_de_ai_macro_ledger(
+    chunk_prompt: str,
+    compact_ledger: str,
+    *,
+    include_fact_appendix: bool = False,
+) -> str:
+    """Steer prose with macro turns, keeping detailed facts out of its outline.
+
+    A full numbered fact appendix is useful to an auditor, but giving it to the
+    prose model recreates the shot list that macro compression removed.  The
+    normal generation path therefore sees only the semantically audited macro
+    ledger.  Callers may still request the appendix for a factual repair turn;
+    the immutable-source fidelity audit remains the authority either way.
+    """
+
+    prompt = str(chunk_prompt or "")
+    marker = next(
+        (
+            value
+            for value in (
+                "【本段宏观叙事单元（只定事实边界，不是逐句大纲）】",
+                "【本段账本拍点】",
+                "【本段事实账本】",
+            )
+            if value in prompt
+        ),
+        "",
+    )
+    compact = str(compact_ledger or "").strip()
+    if not marker or not compact:
+        return prompt
+    head, _, detailed_ledger = prompt.partition(marker)
+    fact_rule = (
+        "- 宏观叙事单元中的[硬]核心事实、人物、物件归属、对白意图、因果和先后全部写入；"
+        "后置事实附录只用于校对主体、位置、方式和顺序，不要求逐条落笔。"
+        "不新增账本没有的动作、感官、解释或背景。"
+        if include_fact_appendix
+        else
+        "- 宏观叙事单元中的[硬]核心事实、人物、物件归属、对白意图、因果和先后全部写入。"
+        "压缩时省略的常规步骤不是隐藏的必写拍点，生成后会另行依据不可变原文做事实审计；"
+        "不得猜回逐拍过程，也不新增动作、感官、解释或背景。"
+    )
+    head = head.rstrip().replace(
+        "- [硬]事实、人物、物件归属、对白意图、因果和先后全部写入，"
+        "不新增账本没有的动作、感官、解释或背景。",
+        fact_rule,
+    ).replace(
+        "按拍点自然换段：有时一拍独立，有时三四拍连在一个段里，不固定每片段的段数。",
+        "宏观单元只定事实边界，不对应句子或段落；可在一个自然段中交叉承载多个单元，"
+        "不得按编号顺序逐项展开。",
+    )
+    recap_markers = (
+        "回顾已知",
+        "回顾线索",
+        "复盘",
+        "梳理已知",
+        "逐一回想",
+        "现有线索无法解释",
+        "已有线索无法解释",
+        "已知信息",
+        "已有线索",
+        "当前状态：已有",
+    )
+    appendix = ""
+    if include_fact_appendix:
+        appendix_lines = [
+            line
+            for line in detailed_ledger.splitlines()
+            if "[硬]" in line
+            and not line.strip().startswith("结尾锁定")
+            and not any(value in line for value in recap_markers)
+        ]
+    else:
+        appendix_lines = []
+    if appendix_lines:
+        appendix = (
+            "\n\n【后置事实校对附录（不决定正文取舍）】\n"
+            "附录中的常规走位、声响、开关门、观察与检查不是必写拍点；只有宏观单元决定正文"
+            "要落下的核心变化。若正文提及对应事实，主体、物件位置与归属、动作方式、认识状态"
+            "和先后必须与附录一致。不得按附录编号逐句或逐段展开。\n"
+            + "\n".join(appendix_lines)
+        )
+    priority = (
+        "先服从宏观单元的取舍与颗粒度，再用附录校对已经写到的事实。"
+        "不得为了覆盖附录而补回过门、完整分镜链或执行清单；只输出小说正文。"
+        if appendix
+        else
+        "只服从宏观单元的取舍与颗粒度；省略项由生成后的原文事实审计处理。"
+        "不得自行补回压缩掉的过门、完整分镜链或执行清单；只输出小说正文。"
+    )
+    return (
+        head
+        + "\n\n【本段宏观叙事单元（只定事实边界，不是逐句大纲）】\n"
+        + compact
+        + appendix
+        + "\n\n【落笔优先级】\n"
+        + priority
+    )
 
 
 def build_de_ai_fidelity_audit_prompt(
@@ -764,11 +1189,18 @@ def build_de_ai_fidelity_audit_prompt(
         "尤其核对揭示性对白与紧邻的取出、递交、打开、藏入等动作；原文 A 后 B，候选写成"
         "B 后 A，即使 A、B 都保留，也必须以 order 判失败。\n"
         "省去不影响情节的灯光、气味、外貌、视线、神态、走位微动作或同义复述不算遗漏；"
-        "对白压缩或改口只要说话人、条件和信息不变也应通过。\n"
+        "对白压缩或改口只要说话人、条件和信息不变也应通过。疑问句只是在询问同一件事时，"
+        "‘今晚不急着走吧’与‘今晚急着离开吗’这类正反问法不自动构成条件写反；只有回答分支、"
+        "人物选择或已知信息随之改变才算冲突。这个宽容不适用于陈述事实中的‘没有联系’与"
+        "‘主动联系’等真正正反变化。\n"
+        "原文引号内或作为固定称谓出现的第一人称必须按字面核对，例如‘给我信的人’是一个完整称谓。"
+        "候选保留该称谓不等于切换叙事人称，也不等于改变收信人；只有称谓所指、说话人或事件参与者"
+        "确实改变时才能报 role。\n"
         "原文若在事件已经展示后集中回顾人物、期限、线索、物件流转，或旁白总结‘这些线索仍无法解释某事’，"
         "候选只要在全章前文已呈现对应事件与悬念，就可以删掉这段复盘；不得把省略重复复盘判为 missing。"
         "物件最后一次出现及其交接已写清、且正文没有擅自给出确定去向时，也不要求再用旁白声明‘去向不明’。\n"
-        "下列任一情况必须判失败：遗漏承载情节的事实；把条件正反、真假、主动被动、人物归属或"
+        "下列任一情况必须判失败：遗漏承载情节的事实；把条件正反（这里指陈述条件而非逻辑等价问法）、"
+        "真假、主动被动、人物归属或"
         "事件顺序写反；新增会改变读者对故事理解的动作、解释、动机、结论或设定。",
         "【输出 JSON】\n"
         '{"passed":true,"issues":[]}\n'
@@ -870,6 +1302,8 @@ def build_de_ai_chunk_repair_prompt(
         "这类账本备注只表示不要擅自补答案。按事件发生位置直接写动作与状态即可。"
         "原文未说明人物是否查看、展开、询问、知情或做过某事时，不得补写‘没有、未、从未、"
         "不可能’等否定状态；省略不等于事实上的否定。"
+        "原文若明确出现物件持有人或位置的未解释跳变，只保留前后两个状态，"
+        "不得为消除表面矛盾擅自补写交接、归还或取回过程。"
         "不得为了修正问题加入账本没有的解释。若问题清单同时提到复盘、流水账或镜头链，"
         "修正事实时也不得把这些结构重新带回正文。只输出修正后的本段小说正文。",
     ])
@@ -922,6 +1356,9 @@ def build_de_ai_style_repair_prompt(
     *,
     repair_attempt: int = 1,
     allow_target_shrink: bool = True,
+    minimum_target_characters: int | None = None,
+    previous_candidate: str = "",
+    fidelity_chunk_prompt: str = "",
 ) -> str:
     """Regenerate a structurally rejected scene while keeping ledger facts."""
 
@@ -939,7 +1376,11 @@ def build_de_ai_style_repair_prompt(
     ledger_marker = next(
         (
             value
-            for value in ("【本段账本拍点】", "【本段事实账本】")
+            for value in (
+                "【本段宏观叙事单元（只定事实边界，不是逐句大纲）】",
+                "【本段账本拍点】",
+                "【本段事实账本】",
+            )
             if value in chunk_prompt
         ),
         "",
@@ -988,6 +1429,62 @@ def build_de_ai_style_repair_prompt(
         )
         repair_chunk_prompt = prompt_head + marker + filtered_ledger
 
+    fidelity_appendix = ""
+    fidelity_prompt = str(fidelity_chunk_prompt or "").strip()
+    factual_issue_kinds = {"missing", "contradiction", "added", "role", "order"}
+    if (
+        fidelity_prompt
+        and issue_kinds.intersection(factual_issue_kinds)
+        and fidelity_prompt != str(chunk_prompt or "").strip()
+        and "【后置事实校对附录（不决定正文取舍）】" not in chunk_prompt
+    ):
+        fidelity_marker = next(
+            (
+                value
+                for value in ("【本段账本拍点】", "【本段事实账本】")
+                if value in fidelity_prompt
+            ),
+            "",
+        )
+        detailed_ledger = (
+            fidelity_prompt.partition(fidelity_marker)[2].strip()
+            if fidelity_marker
+            else ""
+        )
+        recap_markers = (
+            "回顾已知",
+            "回顾线索",
+            "复盘",
+            "梳理已知",
+            "逐一回想",
+            "现有线索无法解释",
+            "已有线索无法解释",
+            "已知信息",
+            "已有线索",
+            "当前状态：已有",
+        )
+        appendix_lines: list[str] = []
+        for line in detailed_ledger.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if "[可选]" in stripped:
+                continue
+            if "recap" in issue_kinds and any(
+                marker in stripped for marker in recap_markers
+            ):
+                continue
+            if "[硬]" in stripped or stripped.startswith("结尾锁定"):
+                appendix_lines.append(line)
+        if appendix_lines:
+            fidelity_appendix = (
+                "【后置事实校对附录（不得逐条展开）】\n"
+                "宏观叙事单元决定正文的取舍和颗粒度；本附录只校对人物主体、物件位置与归属、"
+                "动作方式、认识状态和先后。宏观单元省略的常规走位、开关门、检查和停顿不必补写；"
+                "但正文一旦写到对应事实，不得与附录冲突。严禁按附录编号逐句、逐段展开。\n"
+                + "\n".join(appendix_lines)
+            )
+
     target_note = ""
     target_match = re.search(
         r"本段目标为\s*(\d+)\s*至\s*(\d+)\s*个可见字符",
@@ -1018,7 +1515,7 @@ def build_de_ai_style_repair_prompt(
     elif (
         not allow_target_shrink
         and target_match
-        and "staged" in issue_kinds
+        and issue_kinds.intersection({"staged", "checklist"})
     ):
         # Detector-guided structural rewrites must still satisfy the inherited
         # whole-chapter floor.  Long-form CLI writers commonly return about
@@ -1029,16 +1526,36 @@ def build_de_ai_style_repair_prompt(
         # the actual acceptance boundaries.
         old_min = int(target_match.group(1))
         old_max = int(target_match.group(2))
-        target_min = max(old_min, round(old_min * 1.18))
-        target_max = max(target_min + 40, round(old_max * 1.18))
+        required_minimum = (
+            None
+            if minimum_target_characters is None
+            else max(0, int(minimum_target_characters))
+        )
+        if required_minimum is not None:
+            target_min = max(old_min, required_minimum)
+            target_max = max(
+                target_min + 40,
+                old_max,
+                round(target_min * 1.08),
+            )
+            target_note = (
+                f"本次生成目标按整章实际缺口校准为{target_min}至{target_max}字，"
+                "不是统一放大每个片段；不能靠复盘、重复步骤、解释或新增事实凑字。"
+            )
+        else:
+            # Detector-guided local spans do not have the whole chapter's
+            # allocation context.  Keep their measured provider-undershoot
+            # allowance; their caller enforces the deterministic story floor.
+            target_min = max(old_min, round(old_min * 1.18))
+            target_max = max(target_min + 40, round(old_max * 1.18))
+            target_note = (
+                f"本次生成目标从{old_min}至{old_max}字增加到{target_min}至{target_max}字，"
+                "仅用于抵消模型常见的篇幅不足；不能靠复盘、重复步骤、解释或新增事实凑字。"
+            )
         repair_chunk_prompt = (
             repair_chunk_prompt[:target_match.start()]
             + f"本段目标为{target_min}至{target_max}个可见字符"
             + repair_chunk_prompt[target_match.end():]
-        )
-        target_note = (
-            f"本次生成目标从{old_min}至{old_max}字增加到{target_min}至{target_max}字，"
-            "仅用于抵消模型常见的篇幅不足；不能靠复盘、重复步骤、解释或新增事实凑字。"
         )
     targeted_rules: list[str] = []
     if "recap" in issue_kinds:
@@ -1053,8 +1570,9 @@ def build_de_ai_style_repair_prompt(
             )
     if "checklist" in issue_kinds:
         targeted_rules.append(
-            "本次命中 checklist：普通赶路、上下楼、开关门和逐项检查合并处理，只展开会改变局面或"
-            "暴露新信息的动作。"
+            "本次命中 checklist：审计指出的普通赶路、上下楼、开关门、换鞋、倒水和逐项检查中，"
+            "只允许保留直接造成新局面的至多一个因果动作，其余步骤不得在正文出现，也不能换成"
+            "逗号清单塞进一句。路线直接落成‘离开现场’‘回到住处’等结果；账本记录过步骤不等于正文必写。"
         )
     if "preamble" in issue_kinds:
         targeted_rules.append(
@@ -1064,21 +1582,47 @@ def build_de_ai_style_repair_prompt(
         )
     if "staged" in issue_kinds:
         targeted_rules.append(
-            "本次命中 staged：不要把等待、灯灭、每一种声响、观察办法、发现和解释逐拍写成完整"
-            "分镜。合并不改变局面的中间步骤，让动作或对白互相打断；保留账本硬事实，但不要用"
+            "本次命中 staged：审计指出的整条悬念链只允许保留触发、结果和至多一个不可替代的因果方法，"
+            "从触发到结果合计最多两句。等待、每一种声响、寻找工具、调整角度、反复确认和口头报告"
+            "不得逐项出现，也不能换成逗号长句。保留账本硬事实，但不要用"
             "‘先、接着、数秒后、渐渐、一点点、停了一下、这才’把因果缝得过分平整。账本只是"
             "核对表，不是句子或段落大纲：不得一条[硬]对应一句或一段；让同一个正在发生的动作、"
             "同一轮被打断的对白同时承载多个相邻硬事实。能随说话动作并入的短对白不要单独成段。"
             "事件先后仍须准确，但只在真正发生转折处显式过渡，不能逐拍替读者报时和验账。"
+            "不得让一句短对白单独占段；触发前后的其他事实另随人物正在进行的交锋落下，不能为"
+            "覆盖附录而重建完整镜头链。"
+        )
+    prior = str(previous_candidate or "").strip()
+    isolate_rejected_structure = bool(
+        prior
+        and issue_kinds.intersection({"staged", "checklist", "recap", "preamble"})
+    )
+    if isolate_rejected_structure:
+        prior_block = (
+            "【结构重生输入隔离】\n"
+            "系统已移除上一稿正文，避免被拒绝的逐拍顺序、执行日志、复盘段落或开场模板"
+            "再次成为续写锚点。只依据上方事实账本和审计问题重新落笔；不得猜回被移除的"
+            "常规步骤。故事事实由不可变原文的后置审计复核。"
+        )
+    else:
+        prior_block = (
+            "【上一稿，仅用于定位被拒结构】\n"
+            f"{prior}\n\n"
+            "不得沿用上一稿被审计指出的段落切分、逐拍顺序或总结句；"
+            "只保留其与账本一致的故事事实。"
+            if prior
+            else ""
         )
     if target_note:
         targeted_rules.append(target_note)
     targeted_text = "\n".join(f"- {rule}" for rule in targeted_rules)
     return "\n\n".join([
         repair_chunk_prompt,
+        fidelity_appendix,
         f"【第{max(1, repair_attempt)}次表达结构重生】\n{issue_lines}",
         "重新依据账本写出完整片段，不对上一稿修修补补。所有[硬]事实、人物归属、条件、因果、"
         "数字与先后必须保留；若审计意见涉及事实错误，事实修正优先级最高。",
+        prior_block,
         "用人物正在操作的物件、遭遇的阻碍、选择和对白推进；常规移动与检查可压进一句。"
         "删去成组线索复盘、意义解释、执行日志和顺滑镜头标签。末尾停在账本最后一个现场动作、"
         "对白或发现，不替读者总结。只输出修正后的小说正文。",

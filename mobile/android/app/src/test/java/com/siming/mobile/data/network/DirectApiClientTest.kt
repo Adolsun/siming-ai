@@ -6,6 +6,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -113,6 +124,81 @@ class DirectApiClientTest {
     }
 
     @Test
+    fun `chat agent turn sends PC tools and parses native function calls`() = withServer(
+        object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("/chat/completions", request.path)
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                assertEquals(0.3, body.getValue("temperature").jsonPrimitive.double)
+                assertEquals("get_project_info", body.getValue("tools").jsonArray[0]
+                    .jsonObject.getValue("function").jsonObject.getValue("name").jsonPrimitive.content)
+                return jsonResponse(
+                    """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"get_project_info","arguments":"{\"id\":\"project-1\"}"}}]}}]}""",
+                )
+            }
+        },
+    ) { server ->
+        val turn = runBlocking {
+            testClient().agentTurn(
+                config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS),
+                messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取作品") }),
+                tools = singleTool("get_project_info"),
+            )
+        }
+        assertEquals("get_project_info", turn.toolCalls.single().name)
+        assertEquals("project-1", turn.toolCalls.single().arguments["id"]?.jsonPrimitive?.content)
+        assertEquals("call-1", turn.toolCalls.single().id)
+    }
+
+    @Test
+    fun `responses agent turn preserves function call history and parses next call`() = withServer(
+        object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("/responses", request.path)
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val input = body.getValue("input").jsonArray.map { it.jsonObject }
+                assertTrue(input.any { it["type"]?.jsonPrimitive?.content == "function_call" })
+                assertTrue(input.any { it["type"]?.jsonPrimitive?.content == "function_call_output" })
+                return jsonResponse(
+                    """{"output":[{"type":"function_call","call_id":"call-2","name":"list_chapters","arguments":"{}"}]}""",
+                )
+            }
+        },
+    ) { server ->
+        val turn = runBlocking {
+            testClient().agentTurn(
+                config(server, DirectApiConfig.PROTOCOL_RESPONSES),
+                messages = listOf(
+                    buildJsonObject { put("role", "system"); put("content", "system") },
+                    buildJsonObject { put("role", "user"); put("content", "继续") },
+                    buildJsonObject {
+                        put("role", "assistant")
+                        put("content", "")
+                        put("tool_calls", buildJsonArray {
+                            add(buildJsonObject {
+                                put("id", "call-1")
+                                put("type", "function")
+                                put("function", buildJsonObject {
+                                    put("name", "get_project_info")
+                                    put("arguments", "{}")
+                                })
+                            })
+                        })
+                    },
+                    buildJsonObject {
+                        put("role", "tool")
+                        put("tool_call_id", "call-1")
+                        put("content", "{\"status\":\"ok\"}")
+                    },
+                ),
+                tools = singleTool("list_chapters"),
+            )
+        }
+        assertEquals("list_chapters", turn.toolCalls.single().name)
+        assertEquals("call-2", turn.toolCalls.single().id)
+    }
+
+    @Test
     fun `production client rejects cleartext credential transport`() {
         val error = assertFailsWith<IllegalArgumentException> {
             runBlocking {
@@ -143,6 +229,19 @@ class DirectApiClientTest {
         override fun dispatch(request: RecordedRequest): MockResponse =
             responses[request.path] ?: MockResponse().setResponseCode(404)
     }
+
+    private fun singleTool(name: String) = JsonArray(
+        listOf(
+            buildJsonObject {
+                put("type", "function")
+                put("function", buildJsonObject {
+                    put("name", name)
+                    put("description", "test")
+                    put("parameters", JsonObject(mapOf("type" to JsonPrimitive("object"))))
+                })
+            },
+        ),
+    )
 
     private fun jsonResponse(body: String, status: Int = 200) = MockResponse()
         .setResponseCode(status)

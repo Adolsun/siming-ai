@@ -7,7 +7,14 @@ from typing import Protocol
 
 
 class OperationServicePort(Protocol):
-    def list(self, *, active_only: bool, limit: int) -> list[dict]: ...
+    def list(
+        self,
+        *,
+        active_only: bool,
+        limit: int,
+        project_id: str | None = None,
+        source_kind: str | None = None,
+    ) -> list[dict]: ...
 
     def get(self, operation_id: str, *, include_events: bool = True) -> dict | None: ...
 

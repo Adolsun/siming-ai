@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..architecture.uow import commit_session
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.gateway.infrastructure.service import GatewayService
 from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.application.projects import ProjectWorkspace
 from ..modules.story.interfaces.dependencies import get_story_command
@@ -22,6 +23,19 @@ from ..schemas.project import (
 )
 
 router = APIRouter(tags=["projects"])
+
+
+def _is_paired_android(request: Request) -> bool:
+    return bool(
+        getattr(request.state, "gateway_device_id", None)
+        and getattr(request.state, "gateway_device_platform", None) == "android"
+    )
+
+
+def _remote_project_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep the canonical response shape without leaking server-local paths."""
+
+    return {**data, "folder_path": None}
 
 
 class ProjectStorageRepairRequest(BaseModel):
@@ -39,30 +53,51 @@ class ProjectCreationBriefPatchRequest(BaseModel):
 
 @router.get("/projects", response_model=ApiResponse[ProjectListData])
 def list_projects(
+    request: Request,
     workspace: Annotated[ProjectWorkspace, Depends(get_project_workspace)],
+    db: Annotated[Session, Depends(get_db)],
     q: str | None = Query(None, description="Search keyword for title or description"),
 ):
-    return ApiResponse.success(data=workspace.list(q))
+    data = workspace.list(q)
+    if _is_paired_android(request):
+        enabled_ids = GatewayService(db).enabled_project_ids()
+        items = [
+            _remote_project_data(item)
+            for item in data["items"]
+            if str(item.get("id") or "") in enabled_ids
+        ]
+        data = {"items": items, "total": len(items)}
+    return ApiResponse.success(data=data)
 
 
 @router.post("/projects", response_model=ApiResponse[ProjectResponse])
 def create_project(
+    request: Request,
     payload: ProjectCreate,
     workspace: Annotated[ProjectWorkspace, Depends(get_project_workspace)],
     command: Annotated[StoryCommandContext, Depends(get_story_command)],
+    db: Annotated[Session, Depends(get_db)],
 ):
     result = workspace.create(payload.model_dump())
     command.queue_all(result.sync_intents)
     command.finish()
-    return ApiResponse.success(data=result.data, message="作品创建成功")
+    data = result.data
+    if _is_paired_android(request):
+        GatewayService(db).enable_project(str(data["id"]))
+        data = _remote_project_data(data)
+    return ApiResponse.success(data=data, message="作品创建成功")
 
 
 @router.get("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])
 def get_project(
     project_id: str,
+    request: Request,
     workspace: Annotated[ProjectWorkspace, Depends(get_project_workspace)],
 ):
-    return ApiResponse.success(data=workspace.get(project_id))
+    data = workspace.get(project_id)
+    if _is_paired_android(request):
+        data = _remote_project_data(data)
+    return ApiResponse.success(data=data)
 
 
 @router.get("/projects/{project_id}/creation-brief")
@@ -142,6 +177,7 @@ async def patch_project_creation_brief(
 @router.put("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])
 def update_project(
     project_id: str,
+    request: Request,
     payload: ProjectUpdate,
     workspace: Annotated[ProjectWorkspace, Depends(get_project_workspace)],
     command: Annotated[StoryCommandContext, Depends(get_story_command)],
@@ -149,7 +185,8 @@ def update_project(
     result = workspace.update(project_id, payload.model_dump(exclude_unset=True))
     command.queue_all(result.sync_intents)
     command.finish()
-    return ApiResponse.success(data=result.data, message="作品更新成功")
+    data = _remote_project_data(result.data) if _is_paired_android(request) else result.data
+    return ApiResponse.success(data=data, message="作品更新成功")
 
 
 @router.get("/projects/{project_id}/storage/health")

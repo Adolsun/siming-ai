@@ -1,6 +1,7 @@
 """Regression tests for input-aware de-AI revision prompts."""
 
 from app.prompts.anti_ai_prompts import (
+    apply_de_ai_macro_ledger,
     build_de_ai_candidate_preserving_expansion_prompt,
     analyze_de_ai_fingerprints,
     build_de_ai_chunk_repair_prompt,
@@ -8,16 +9,24 @@ from app.prompts.anti_ai_prompts import (
     build_de_ai_detector_feedback_repair_prompt,
     build_de_ai_detector_ledger_compression_prompt,
     build_de_ai_fidelity_audit_prompt,
+    build_de_ai_macro_ledger_compression_prompt,
+    build_de_ai_macro_ledger_fidelity_audit_prompt,
+    build_de_ai_macro_ledger_retry_feedback,
+    build_de_ai_macro_ledger_structure_audit_prompt,
     build_de_ai_rewrite_from_ledger_prompt,
     build_de_ai_rewrite_prompt,
     build_de_ai_story_ledger_prompt,
     build_de_ai_style_audit_prompt,
     build_de_ai_style_repair_prompt,
+    normalize_de_ai_macro_ledger,
+    validate_de_ai_macro_ledger,
 )
 from app.services.de_ai_validation import (
     assess_de_ai_revision,
     count_de_ai_visible_characters,
     de_ai_chunk_length_rank,
+    de_ai_style_issue_rank,
+    de_ai_style_issue_novelty,
     parse_de_ai_chunk_target,
     parse_de_ai_fidelity_audit,
     parse_de_ai_style_audit,
@@ -30,6 +39,40 @@ def test_chunk_length_rank_keeps_best_attempt_instead_of_last_attempt():
     assert de_ai_chunk_length_rank(430, target) < de_ai_chunk_length_rank(250, target)
     assert de_ai_chunk_length_rank(390, target) < de_ai_chunk_length_rank(360, target)
     assert de_ai_chunk_length_rank(510, target) < de_ai_chunk_length_rank(540, target)
+
+
+def test_style_issue_novelty_penalizes_problem_migration():
+    history = [
+        {"chunk": 2, "kind": "staged"},
+        {"chunk": 4, "kind": "checklist"},
+    ]
+
+    assert de_ai_style_issue_novelty(
+        [{"chunk": 2, "kind": "staged"}],
+        history,
+    ) == (0, 0)
+    assert de_ai_style_issue_novelty(
+        [{"chunk": 5, "kind": "recap"}],
+        history,
+    ) == (1, 1)
+
+
+def test_style_issue_rank_prefers_fewer_defects_before_problem_novelty():
+    history = [
+        {"chunk": 1, "kind": "staged"},
+        {"chunk": 2, "kind": "staged"},
+        {"chunk": 2, "kind": "checklist"},
+    ]
+
+    retained = de_ai_style_issue_rank(history, history)
+    migrated = de_ai_style_issue_rank(
+        [{"chunk": 1, "kind": "recap"}],
+        history,
+    )
+
+    assert migrated < retained
+    assert retained == (3, 7, 0, 0)
+    assert migrated == (1, 3, 1, 1)
 
 
 def test_fingerprint_report_targets_phrases_that_are_actually_present():
@@ -153,6 +196,179 @@ def test_chunked_redraft_prompts_cover_ordered_ledger_without_source_prose():
     assert "03" not in third_required
 
 
+def test_default_chunking_uses_macro_scenes_without_contrived_cadence():
+    source = "周砚把仓库记录逐页核完，陈禾在门边等他。" * 105
+    ledger = "\n".join(
+        ["叙事约束：周砚视角；过去时。"]
+        + [f"{index:02d} [硬] 第{index}项事实推动下一步行动。" for index in range(1, 13)]
+    )
+
+    prompts = build_de_ai_chunked_rewrite_prompts(source, ledger)
+
+    assert len(prompts) in {2, 3}
+    assert all("突然留一行短句" not in prompt for prompt in prompts)
+    assert all("两个不等长的段" not in prompt for prompt in prompts)
+    assert "不为制造长短反差而单独留一句" in "\n".join(prompts)
+    assert "不要先集中报时间、坐标和背景" in prompts[0]
+    assert "不要在结尾回顾过程" in prompts[-1]
+
+
+def test_long_scene_ledger_is_compressed_before_prose_generation():
+    detailed = (
+        "本段目标为1000至1100个可见字符；只输出正文。\n\n"
+        "【不可变】\n"
+        "- [硬]事实、人物、物件归属、对白意图、因果和先后全部写入，"
+        "不新增账本没有的动作、感官、解释或背景。\n"
+        "按拍点自然换段：有时一拍独立，有时三四拍连在一个段里，不固定每片段的段数。\n\n"
+        "【本段必须原字出现的源文标记】\nA17、三天、A17-07\n\n"
+        "【本段账本拍点】\n"
+        "01 [硬] 周砚进入A17。\n"
+        "02 [硬] 陈禾检查信封。\n"
+        "03 [硬] 陈禾要求周砚若三天内未收到联系就投递账页。\n"
+        "04 [硬] 灯灭后门外出现两人。\n"
+        "05 [硬] 两人撤离，周砚回家发现A17-07钥匙。"
+    )
+
+    compression = build_de_ai_macro_ledger_compression_prompt(detailed)
+    compact_ledger = (
+        "01 [硬] 局面：周砚进入A17，陈禾发现信封异常并设下三天投递条件。\n"
+        "02 [硬] 转折：灯灭后门外出现两人。\n"
+        "03 [硬] 结果：两人撤离，周砚回家发现A17-07钥匙。"
+    )
+    compacted = apply_de_ai_macro_ledger(detailed, compact_ledger)
+    compacted_with_appendix = apply_de_ai_macro_ledger(
+        detailed,
+        compact_ledger,
+        include_fact_appendix=True,
+    )
+
+    assert "不得多于3个" in compression
+    assert "不超过260个可见字符" in compression
+    assert "一条事实对应一句或一段" in compression
+    assert "单个单元不得连续罗列三个以上" in compression
+    assert "每行只写一次核心变化，不用分号堆步骤" in compression
+    assert "不得省略唯一促成关键结果的因果方法或出口" in compression
+    assert "不得省略承载后续条件的纸条、信件等物件交接" in compression
+    assert "A17、三天、A17-07" in compression
+    assert "【本段宏观叙事单元（只定事实边界，不是逐句大纲）】" in compacted
+    assert "【后置事实校对附录（不决定正文取舍）】" not in compacted
+    assert "02 [硬] 陈禾检查信封。" not in compacted
+    assert "宏观单元只定事实边界，不对应句子或段落" in compacted
+    assert "生成后会另行依据不可变原文做事实审计" in compacted
+    assert "[硬]事实、人物、物件归属、对白意图、因果和先后全部写入" not in compacted
+    assert "不得自行补回压缩掉的过门、完整分镜链或执行清单" in compacted
+    assert "【后置事实校对附录（不决定正文取舍）】" in compacted_with_appendix
+    assert "02 [硬] 陈禾检查信封。" in compacted_with_appendix
+    assert "后置事实附录只用于校对主体" in compacted_with_appendix
+    assert (
+        "不得为了覆盖附录而补回过门、完整分镜链或执行清单"
+        in compacted_with_appendix
+    )
+    assert "本段目标为1000至1100个可见字符" in compacted
+    assert validate_de_ai_macro_ledger(detailed, compact_ledger)[0] is True
+    assert validate_de_ai_macro_ledger(
+        detailed,
+        "01 [硬] 周砚进入A17，陈禾检查信封。",
+    ) == (False, ["三天", "A17-07"])
+    assert validate_de_ai_macro_ledger(
+        detailed,
+        "01 [硬] 局面：周砚进入A17，陈禾检查信封；约定期限为三天。\n"
+        "02 [硬] 结果：她回家发现A17-07钥匙。",
+    )[0] is False
+    assert validate_de_ai_macro_ledger(
+        detailed,
+        "01 [硬] 周砚按暗号进入A17，陈禾检查信封并安排他戒备；三天内投递。\n"
+        "02 [硬] 门外伏击者撤离，周砚回家发现A17-07钥匙。",
+    )[0] is False
+    assert validate_de_ai_macro_ledger(
+        detailed,
+        "01 [硬] 周砚进入A17；陈禾检查信封；三天内投递。\n"
+        "02 [硬] 门外出现两人；两人撤离；周砚发现A17-07钥匙。",
+    )[0] is False
+    assert validate_de_ai_macro_ledger(
+        detailed,
+        "01 [硬] 周砚锁车、敲门、扫视、看向A17后检查门窗。\n"
+        "02 [硬] 陈禾调角度反光后上楼开门，三天后发现A17-07钥匙。",
+    )[0] is False
+    overlong = (
+        "01 [硬] A17、三天、A17-07；" + "周砚核对账页。" * 70
+    )
+    assert validate_de_ai_macro_ledger(detailed, overlong)[0] is False
+
+
+def test_macro_ledger_normalizes_punctuation_and_retries_bad_gender_pronouns():
+    prompt = (
+        "【本段必须原字出现的源文标记】\nA17\n"
+        "【本段账本拍点】\n"
+        "01 [硬] 陈禾把纸卷交给周砚。\n"
+        "02 [硬] 周砚与陈禾从南门离开A17。"
+    )
+    raw = (
+        "01 [硬] 陈禾把纸卷交给周砚；两人决定离开A17。\n"
+        "02 [硬] 她与周砚从南门撤离。"
+    )
+
+    normalized = normalize_de_ai_macro_ledger(raw)
+    _, missing = validate_de_ai_macro_ledger(prompt, normalized)
+    feedback = build_de_ai_macro_ledger_retry_feedback(
+        prompt,
+        normalized,
+        missing,
+    )
+
+    assert "；" not in normalized
+    assert ";" not in normalized
+    assert "删除详细账本没有的人称代词：她" in feedback
+    assert "重复人物姓名，不推断性别" in feedback
+    assert "只修正这些问题" in feedback
+
+
+def test_macro_ledger_fidelity_audit_targets_role_order_and_epistemic_drift():
+    detailed = (
+        "本段目标为1000至1100个可见字符；只输出正文。\n\n"
+        "【本段账本拍点】\n"
+        "01 [硬] 陈禾只让周砚发动叉车。\n"
+        "02 [硬] 周砚自行踩油门盖过北门动静。\n"
+        "03 [硬] 陈禾问门外是否还有人，周砚没有回答。"
+    )
+    compact = (
+        "01 [硬] 陈禾命令周砚发动叉车并踩油门掩护撤离；"
+        "两人确认门外还有人。"
+    )
+
+    prompt = build_de_ai_macro_ledger_fidelity_audit_prompt(detailed, compact)
+
+    assert "把人物自行采取的动作压成他人的命令" in prompt
+    assert "疑问、猜测、可能" in prompt
+    assert "具体方法或路线被省略" in prompt
+    assert "促成关键结果的唯一方法或指定出口" in prompt
+    assert "纸条、信件、账页等承载条件的交接" in prompt
+    assert "把‘只见过’升级成‘确定不存在’" in prompt
+    assert "宏观账本仍明确写出的事实须核对主体" in prompt
+    assert "陈禾只让周砚发动叉车" in prompt
+    assert "周砚自行踩油门" in prompt
+    assert compact in prompt
+    assert '"kind":"role|order|contradiction|added|missing"' in prompt
+
+
+def test_macro_ledger_structure_audit_detects_cross_line_shot_lists():
+    compact = (
+        "01 [硬] 灯灭后传来异响，卷帘门被抬起。\n"
+        "02 [硬] 周砚寻找反光物并调整角度，看见两个人。\n"
+        "03 [硬] 周砚报告人数，陈禾解释假信。"
+    )
+
+    prompt = build_de_ai_macro_ledger_structure_audit_prompt(compact)
+
+    assert "五个及以上相邻小拍即判失败" in prompt
+    assert "四项及以上即判失败" in prompt
+    assert "要看跨行累计的微步骤" in prompt
+    assert "唯一促成关键结果的因果方法" in prompt
+    assert "属于核心事实，不按微步骤计数" in prompt
+    assert compact in prompt
+    assert '"kind":"staged|checklist"' in prompt
+
+
 def test_follow_up_chunk_prompts_take_diagnostics_from_candidate_but_literals_from_original():
     original = "7月12日，周砚把A17钥匙交给陈禾。" * 30
     previous_candidate = original.replace("把", "将") + "模型误加B99。"
@@ -179,6 +395,25 @@ def test_follow_up_chunk_prompts_take_diagnostics_from_candidate_but_literals_fr
     assert "B99" not in required
 
 
+def test_follow_up_chunking_keeps_original_macro_scene_count():
+    original = "周砚把仓库记录逐页核完，陈禾在门边等他。" * 90
+    expanded_candidate = original + ("两人继续核对已有记录。" * 80)
+    ledger = "\n".join(
+        ["叙事约束：周砚视角；过去时。"]
+        + [f"{index:02d} [硬] 第{index}项事实推动下一步行动。" for index in range(1, 13)]
+    )
+
+    first_round = build_de_ai_chunked_rewrite_prompts(original, ledger)
+    follow_up = build_de_ai_chunked_rewrite_prompts(
+        expanded_candidate,
+        ledger,
+        fidelity_source=original,
+    )
+
+    assert len(first_round) == 2
+    assert len(follow_up) == len(first_round)
+
+
 def test_fidelity_audit_prompt_maps_semantic_errors_to_candidate_chunks():
     source = "三天内若陈禾没有联系，周砚就把账页投进城南邮局三号信箱。"
     chunks = [
@@ -200,6 +435,11 @@ def test_fidelity_audit_prompt_maps_semantic_errors_to_candidate_chunks():
     assert "事件先后不能只核对‘两件事都出现了’" in prompt
     assert "原文 A 后 B" in prompt
     assert "必须以 order 判失败" in prompt
+    assert "今晚不急着走吧" in prompt
+    assert "今晚急着离开吗" in prompt
+    assert "只有回答分支" in prompt
+    assert "给我信的人" in prompt
+    assert "保留该称谓不等于切换叙事人称" in prompt
 
 
 def test_chunk_repair_prompt_regenerates_whole_scene_from_ledger():
@@ -217,6 +457,8 @@ def test_chunk_repair_prompt_regenerates_whole_scene_from_ledger():
     assert "重新依据本段账本写出完整片段" in prompt
     assert "不要对上一稿打补丁" in prompt
     assert "省略不等于事实上的否定" in prompt
+    assert "未解释跳变" in prompt
+    assert "不得为消除表面矛盾擅自补写交接" in prompt
 
 
 def test_chunk_repair_prompt_preserves_valid_prose_when_candidate_is_available():
@@ -377,6 +619,29 @@ def test_style_repair_filters_recap_only_ledger_beats_but_keeps_final_discovery(
     assert "系统已从本段输入中过滤2条纯复盘账本行" in repair
 
 
+def test_style_repair_uses_actual_chapter_shortfall_instead_of_blanket_growth():
+    prompt = build_de_ai_style_repair_prompt(
+        "本段目标为900至1050个可见字符。\n【本段事实账本】\n01 [硬] 灯灭。",
+        [{"chunk": 1, "kind": "staged", "detail": "逐拍分镜"}],
+        allow_target_shrink=False,
+        minimum_target_characters=960,
+    )
+
+    assert "本段目标为960至1050个可见字符" in prompt
+    assert "按整章实际缺口校准" in prompt
+    assert "增加到1062" not in prompt
+
+    no_shortfall = build_de_ai_style_repair_prompt(
+        "本段目标为900至1050个可见字符。\n【本段事实账本】\n01 [硬] 灯灭。",
+        [{"chunk": 1, "kind": "staged", "detail": "逐拍分镜"}],
+        allow_target_shrink=False,
+        minimum_target_characters=0,
+    )
+
+    assert "本段目标为900至1050个可见字符" in no_shortfall
+    assert "按整章实际缺口校准" in no_shortfall
+
+
 def test_detector_staged_repair_compensates_writer_undershoot_without_shrinking():
     repair = build_de_ai_style_repair_prompt(
         "本段目标为1000至1100个可见字符；只输出正文。\n"
@@ -390,6 +655,99 @@ def test_detector_staged_repair_compensates_writer_undershoot_without_shrinking(
     assert "不能靠复盘、重复步骤、解释或新增事实凑字" in repair
     assert "账本只是核对表，不是句子或段落大纲" in repair
     assert "短对白不要单独成段" in repair
+    assert "从触发到结果合计最多两句" in repair
+    assert "至多一个不可替代的因果方法" in repair
+
+
+def test_detector_checklist_repair_compensates_writer_undershoot_without_shrinking():
+    repair = build_de_ai_style_repair_prompt(
+        "本段目标为1000至1100个可见字符；只输出正文。\n"
+        "【本段事实账本】\n01 [硬] 周砚关灯后听见门响。",
+        [{"chunk": 1, "kind": "checklist", "detail": "动作被写成逐项执行清单。"}],
+        allow_target_shrink=False,
+    )
+
+    assert "本段目标为1180至1298个可见字符" in repair
+    assert "不能靠复盘、重复步骤、解释或新增事实凑字" in repair
+    assert "只允许保留直接造成新局面的至多一个因果动作" in repair
+    assert "其余步骤不得在正文出现" in repair
+
+
+def test_style_repair_withholds_rejected_candidate_to_break_structure_anchoring():
+    repair = build_de_ai_style_repair_prompt(
+        "本段目标为400至480个可见字符。\n【本段事实账本】\n01 [硬] 灯灭。",
+        [{"chunk": 1, "kind": "staged", "detail": "逐拍铺开。"}],
+        previous_candidate="灯先闪了两下。接着彻底熄灭。",
+    )
+
+    assert "【结构重生输入隔离】" in repair
+    assert "灯先闪了两下。接着彻底熄灭。" not in repair
+    assert "只依据上方事实账本和审计问题重新落笔" in repair
+    assert "不得猜回被移除的常规步骤" in repair
+    assert "从触发到结果合计最多两句" in repair
+
+
+def test_style_repair_hides_detailed_ledger_until_a_fact_issue_requires_it():
+    macro_prompt = (
+        "本段目标为900至1050个可见字符。\n"
+        "【本段宏观叙事单元（只定事实边界，不是逐句大纲）】\n"
+        "01 [硬] 周砚制造声响，两人从南门撤离。"
+    )
+    detailed_prompt = (
+        "本段目标为900至1050个可见字符。\n"
+        "【本段账本拍点】\n"
+        "01 [硬] 叉车钥匙藏在配电箱后，由周砚取出。\n"
+        "02 [硬] 南门由液压杆支撑，陈禾压手柄使门升起。\n"
+        "03 [可选] 仓库里有一股旧机油味。"
+    )
+
+    style_repair = build_de_ai_style_repair_prompt(
+        macro_prompt,
+        [{"chunk": 1, "kind": "staged", "detail": "撤离过程逐拍铺陈。"}],
+        previous_candidate="周砚一步一步走向配电箱。",
+        fidelity_chunk_prompt=detailed_prompt,
+    )
+
+    assert "【后置事实校对附录（不得逐条展开）】" not in style_repair
+    assert "叉车钥匙藏在配电箱后，由周砚取出" not in style_repair
+    assert "南门由液压杆支撑" not in style_repair
+    assert "周砚一步一步走向配电箱" not in style_repair
+
+    fact_repair = build_de_ai_style_repair_prompt(
+        macro_prompt,
+        [{"chunk": 1, "kind": "missing", "detail": "遗漏叉车钥匙的归属。"}],
+        fidelity_chunk_prompt=detailed_prompt,
+    )
+
+    assert "【后置事实校对附录（不得逐条展开）】" in fact_repair
+    assert "宏观叙事单元决定正文的取舍和颗粒度" in fact_repair
+    assert "叉车钥匙藏在配电箱后，由周砚取出" in fact_repair
+    assert "南门由液压杆支撑" in fact_repair
+    assert "旧机油味" not in fact_repair
+    assert "严禁按附录编号逐句、逐段展开" in fact_repair
+
+
+def test_style_repair_does_not_duplicate_existing_fact_appendix():
+    macro_prompt = (
+        "本段目标为900至1050个可见字符。\n"
+        "【本段宏观叙事单元（只定事实边界，不是逐句大纲）】\n"
+        "01 [硬] 两人离开A17。\n\n"
+        "【后置事实校对附录（不决定正文取舍）】\n"
+        "02 [硬] 周砚用叉车声掩护，陈禾开南门。"
+    )
+    detailed_prompt = (
+        "【本段账本拍点】\n"
+        "02 [硬] 周砚用叉车声掩护，陈禾开南门。"
+    )
+
+    repair = build_de_ai_style_repair_prompt(
+        macro_prompt,
+        [{"chunk": 1, "kind": "checklist", "detail": "撤离步骤逐项写完。"}],
+        fidelity_chunk_prompt=detailed_prompt,
+    )
+
+    assert repair.count("【后置事实校对附录（不决定正文取舍）】") == 1
+    assert "【后置事实校对附录（不得逐条展开）】" not in repair
 
 
 def test_detector_feedback_repair_treats_ledger_as_audit_not_storyboard():

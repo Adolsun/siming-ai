@@ -31,23 +31,32 @@ from app.ai.local_cli_adapter import (  # noqa: E402
     LocalCLIAdapter,
 )
 from app.prompts.anti_ai_prompts import (  # noqa: E402
+    apply_de_ai_macro_ledger,
     build_de_ai_candidate_preserving_expansion_prompt,
     build_de_ai_chunk_repair_prompt,
     build_de_ai_chunked_rewrite_prompts,
     build_de_ai_detector_feedback_repair_prompt,
     build_de_ai_detector_ledger_compression_prompt,
     build_de_ai_fidelity_audit_prompt,
+    build_de_ai_macro_ledger_compression_prompt,
+    build_de_ai_macro_ledger_retry_feedback,
     build_de_ai_rewrite_from_ledger_prompt,
     build_de_ai_story_ledger_prompt,
     build_de_ai_style_audit_prompt,
     build_de_ai_style_repair_prompt,
+    normalize_de_ai_macro_ledger,
+    validate_de_ai_macro_ledger,
 )
 from app.prompts.packs.chapter_quality import PACK as CHAPTER_PACK  # noqa: E402
 from app.prompts.style_prompts import build_style_context  # noqa: E402
 from app.services.de_ai_validation import (  # noqa: E402
+    DE_AI_STRUCTURAL_OUTPUT_ATTEMPTS,
+    DE_AI_STRUCTURAL_REPAIR_ATTEMPTS,
     assess_de_ai_revision,
     count_de_ai_visible_characters,
     de_ai_chunk_length_rank,
+    de_ai_style_issue_rank,
+    is_de_ai_structural_branch_repairable,
     parse_de_ai_chunk_target,
     parse_de_ai_fidelity_audit,
     parse_de_ai_style_audit,
@@ -451,6 +460,7 @@ def _revise(
     )
     if not chunk_prompts:
         raise RuntimeError("Revision model returned an unusable story ledger split")
+    detailed_chunk_prompts = list(chunk_prompts)
     scope = "完整章节" if holistic_revision else "整章事实账本中的一个连续片段"
     system = (
         f"你是中文小说的重写编辑。给定内容是{scope}。"
@@ -458,9 +468,136 @@ def _revise(
         "直接输出小说正文，不要标题、说明、清单、Markdown 或修改报告。\n\n"
         f"【作品文风】\n{_style_context()}"
     )
-    def generate_chunk(item: tuple[int, str]) -> tuple[str, dict]:
-        chunk_index, chunk_prompt = item
-        max_attempts = 3
+    if model.startswith("opencode_cli:"):
+        worker_limit = 1
+    elif model.startswith("codex_cli:"):
+        worker_limit = 2
+    else:
+        worker_limit = 3
+
+    if count_de_ai_visible_characters(authority) >= 1_500 and not holistic_revision:
+        def compact_chunk_prompt(item: tuple[int, str]) -> str:
+            chunk_index, chunk_prompt = item
+            compact_prompt = build_de_ai_macro_ledger_compression_prompt(chunk_prompt)
+            compact_key = _content_hash(f"macro-ledger-v8-bounded-retry\n{compact_prompt}")
+            cached = checkpoint_get("macro_ledgers", compact_key)
+            cached_ledger = str((cached or {}).get("content") or "").strip()
+            cached_valid, _ = validate_de_ai_macro_ledger(
+                chunk_prompt,
+                cached_ledger,
+            )
+            validation_mode = str((cached or {}).get("validation_mode") or "")
+            if (
+                validation_mode == "deterministic-final-source-audit-v1"
+                and (cached or {}).get("fallback_to_detailed")
+            ):
+                print(
+                    f"de-ai: restoring detailed-ledger fallback "
+                    f"{chunk_index}/{len(chunk_prompts)}",
+                    flush=True,
+                )
+                return chunk_prompt
+            if (
+                len(cached_ledger) >= 40
+                and cached_valid
+                and validation_mode == "deterministic-final-source-audit-v1"
+            ):
+                print(
+                    f"de-ai: restoring macro ledger {chunk_index}/{len(chunk_prompts)}",
+                    flush=True,
+                )
+                compact_ledger = cached_ledger
+            else:
+                print(
+                    f"de-ai: compressing macro ledger {chunk_index}/{len(chunk_prompts)}",
+                    flush=True,
+                )
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是小说事实账本压缩员。把详细事件合并成少量宏观叙事单元，"
+                            "保留人物、物件归属、数字、条件、因果、对白信息和先后。"
+                            "只输出用户要求的短账本，不写小说正文。"
+                        ),
+                    },
+                    {"role": "user", "content": compact_prompt},
+                ]
+                compact_ledger = ""
+                compact_result: dict = {}
+                valid_compact = False
+                missing: list[str] = []
+                for compact_attempt in range(2):
+                    if direct_local_cli:
+                        compact_result = _direct_local_cli_chat(
+                            base_url,
+                            messages=messages,
+                            model=model,
+                            timeout_seconds=local_cli_timeout_seconds,
+                        )
+                    else:
+                        compact_result = _chat(
+                            base_url,
+                            messages=messages,
+                            model=model,
+                            temperature=0,
+                        )
+                    compact_ledger = str(compact_result.get("content") or "").strip()
+                    if compact_ledger.startswith("```"):
+                        compact_ledger = _clean_generated_text(compact_ledger)
+                    compact_ledger = normalize_de_ai_macro_ledger(compact_ledger)
+                    valid_compact, missing = validate_de_ai_macro_ledger(
+                        chunk_prompt,
+                        compact_ledger,
+                    )
+                    if valid_compact:
+                        break
+                    if compact_attempt == 0:
+                        messages = [
+                            *messages,
+                            {"role": "assistant", "content": compact_ledger},
+                            {
+                                "role": "user",
+                                "content": build_de_ai_macro_ledger_retry_feedback(
+                                    chunk_prompt,
+                                    compact_ledger,
+                                    missing,
+                                ),
+                            },
+                        ]
+                if not valid_compact:
+                    checkpoint_put("macro_ledgers", compact_key, {
+                        "content": compact_ledger,
+                        "fallback_to_detailed": True,
+                        "validation_mode": "deterministic-final-source-audit-v1",
+                        "model": compact_result.get("model") or "",
+                        "request_meta": compact_result.get("request_meta") or {},
+                    })
+                    return chunk_prompt
+                checkpoint_put("macro_ledgers", compact_key, {
+                    "content": compact_ledger,
+                    "validation_mode": "deterministic-final-source-audit-v1",
+                    "model": compact_result.get("model") or "",
+                    "request_meta": compact_result.get("request_meta") or {},
+                })
+            # Final assembled-candidate auditing against the immutable source
+            # remains the story-safety authority for both API and CLI paths.
+            return apply_de_ai_macro_ledger(chunk_prompt, compact_ledger)
+
+        indexed_compaction_prompts = list(enumerate(chunk_prompts, start=1))
+        with ThreadPoolExecutor(
+            max_workers=min(worker_limit, len(indexed_compaction_prompts)),
+        ) as executor:
+            chunk_prompts = list(executor.map(
+                compact_chunk_prompt,
+                indexed_compaction_prompts,
+            ))
+
+    def generate_chunk(
+        item: tuple[int, str] | tuple[int, str, int],
+    ) -> tuple[str, dict]:
+        chunk_index, chunk_prompt = item[:2]
+        max_attempts = int(item[2]) if len(item) > 2 else 3
         checkpoint_key = _content_hash(f"{system}\n\n{chunk_prompt}")
         cached = checkpoint_get("outputs", checkpoint_key)
         if cached and len(str(cached.get("content") or "").strip()) >= 40:
@@ -539,18 +676,23 @@ def _revise(
         return best_chunk_text, best_chunk_result
 
     indexed_prompts = list(enumerate(chunk_prompts, start=1))
-    if model.startswith("opencode_cli:"):
-        worker_limit = 1
-    elif model.startswith("codex_cli:"):
-        worker_limit = 2
-    else:
-        worker_limit = 3
     with ThreadPoolExecutor(
         max_workers=min(worker_limit, len(indexed_prompts)),
     ) as executor:
         chunk_outputs = list(executor.map(generate_chunk, indexed_prompts))
     chunk_texts = [item[0] for item in chunk_outputs]
     result = chunk_outputs[-1][1]
+
+    def finalize_revision(
+        fidelity_review: dict,
+        style_review: dict,
+    ) -> dict:
+        result["content"] = "\n\n".join(chunk_texts)
+        result["_chunk_lengths"] = [len(value) for value in chunk_texts]
+        result["_story_ledger"] = story_ledger
+        result["_fidelity_audit"] = fidelity_review
+        result["_style_audit"] = style_review
+        return result
 
     def audit_chunks(values: list[str]) -> dict:
         audit_system = (
@@ -695,7 +837,7 @@ def _revise(
             matching_chunk = next(
                 (
                     index
-                    for index, prompt in enumerate(chunk_prompts, start=1)
+                    for index, prompt in enumerate(detailed_chunk_prompts, start=1)
                     if str(token) in prompt
                 ),
                 None,
@@ -721,20 +863,11 @@ def _revise(
             pending_issues = collect_repair_issues(audit)
             if not pending_issues:
                 break
-            for chunk_index, issues in pending_issues.items():
-                history = issue_history.setdefault(chunk_index, [])
-                known = {
-                    (str(item.get("kind") or ""), str(item.get("detail") or ""))
-                    for item in history
-                }
-                for issue in issues:
-                    identity = (
-                        str(issue.get("kind") or ""),
-                        str(issue.get("detail") or ""),
-                    )
-                    if identity not in known:
-                        history.append(issue)
-                        known.add(identity)
+            current_issue_history = {
+                chunk_index: [dict(issue) for issue in issues]
+                for chunk_index, issues in pending_issues.items()
+            }
+            issue_history.update(current_issue_history)
             print(
                 f"de-ai: semantic repair {repair_attempt}/5 for scene(s) "
                 + ", ".join(str(value) for value in sorted(pending_issues)),
@@ -742,7 +875,7 @@ def _revise(
             )
             repair_items = []
             for chunk_index in sorted(pending_issues):
-                history = issue_history[chunk_index]
+                history = current_issue_history[chunk_index]
                 if any(
                     str(item.get("kind") or "").startswith("style:")
                     for item in history
@@ -751,13 +884,17 @@ def _revise(
                         chunk_prompts[chunk_index - 1],
                         history,
                         repair_attempt=repair_attempt,
-                        allow_target_shrink=False,
+                        previous_candidate=chunk_texts[chunk_index - 1],
+                        fidelity_chunk_prompt=(
+                            detailed_chunk_prompts[chunk_index - 1]
+                        ),
                     )
                 else:
                     repair_prompt = build_de_ai_chunk_repair_prompt(
-                        chunk_prompts[chunk_index - 1],
+                        detailed_chunk_prompts[chunk_index - 1],
                         history,
                         repair_attempt=repair_attempt,
+                        previous_candidate=chunk_texts[chunk_index - 1],
                     )
                 repair_items.append((chunk_index, repair_prompt))
             with ThreadPoolExecutor(
@@ -789,42 +926,61 @@ def _revise(
             )
         return audit
 
-    fidelity_audit = repair_fidelity(audit_chunks(chunk_texts))
+    try:
+        fidelity_audit = repair_fidelity(audit_chunks(chunk_texts))
+    except Exception as exc:
+        fidelity_audit = _runtime_audit_failure("故事保真审计", exc)
+        style_audit = _runtime_audit_failure(
+            "表达结构审计",
+            "故事保真审计不可用，未继续消耗审计调用",
+        )
+        return finalize_revision(fidelity_audit, style_audit)
 
-    style_audit = audit_style_chunks(chunk_texts)
+    try:
+        style_audit = audit_style_chunks(chunk_texts)
+    except Exception as exc:
+        style_audit = _runtime_audit_failure("表达结构审计", exc)
+        return finalize_revision(fidelity_audit, style_audit)
     if not style_audit["valid"]:
         raise RuntimeError("Revision model returned an unusable expression audit")
+    style_issue_history: dict[int, list[dict]] = {}
 
-    def style_candidate_score(values: list[str], audit: dict) -> tuple[int, int, int, int]:
+    def style_candidate_score(
+        values: list[str],
+        audit: dict,
+    ) -> tuple[int, int, int, int, int, int, int]:
         assessment = assess_de_ai_revision(
             authority,
             "\n\n".join(values),
             require_substantial_revision=False,
         )
-        weights = {
-            "recap": 3,
-            "exposition": 3,
-            "preamble": 3,
-            "staged": 3,
-            "uniform": 3,
-            "camera": 2,
-            "stock": 2,
-            "checklist": 1,
-        }
         issues = audit.get("issues", [])
+        history = [
+            item
+            for values in style_issue_history.values()
+            for item in values
+        ]
+        issue_count, issue_severity, novel_kinds, novel_pairs = (
+            de_ai_style_issue_rank(issues, history)
+        )
         return (
             0 if assessment["accepted"] else 1,
-            len(issues),
-            sum(weights.get(str(item.get("kind") or ""), 2) for item in issues),
-            -count_de_ai_visible_characters("\n\n".join(values)),
+            0 if audit.get("valid") and audit.get("passed") and not issues else 1,
+            issue_count,
+            issue_severity,
+            novel_kinds,
+            novel_pairs,
+            # Match the production path: once the revision and fidelity floors
+            # pass, a tighter branch is less likely to retain the staged or
+            # checklist padding this repair pass is meant to remove.
+            count_de_ai_visible_characters("\n\n".join(values)),
         )
 
     best_chunk_texts = list(chunk_texts)
     best_fidelity_audit = fidelity_audit
     best_style_audit = style_audit
     best_style_score = style_candidate_score(chunk_texts, style_audit)
-    style_issue_history: dict[int, list[dict]] = {}
-    for style_attempt in range(1, 4):
+    for style_attempt in range(1, DE_AI_STRUCTURAL_REPAIR_ATTEMPTS + 1):
         pending_style_issues: dict[int, list[dict]] = {}
         for issue in style_audit.get("issues", []):
             chunk_index = int(issue["chunk"])
@@ -845,28 +1001,34 @@ def _revise(
                 if identity not in known:
                     history.append(issue)
                     known.add(identity)
-            fidelity_history = issue_history.setdefault(chunk_index, [])
-            fidelity_known = {
-                (str(item.get("kind") or ""), str(item.get("detail") or ""))
-                for item in fidelity_history
-            }
-            for issue in history:
-                persistent_issue = {
-                    **issue,
-                    "kind": f"style:{str(issue.get('kind') or '')}",
-                }
-                identity = (
-                    str(persistent_issue["kind"]),
-                    str(persistent_issue.get("detail") or ""),
-                )
-                if identity not in fidelity_known:
-                    fidelity_history.append(persistent_issue)
-                    fidelity_known.add(identity)
+        # Keep the baseline and repaired branch on the same novelty basis.
+        # Otherwise the baseline retains the score assigned before history was
+        # populated and a repair with identical defects wins artificially.
+        best_style_score = style_candidate_score(
+            best_chunk_texts,
+            best_style_audit,
+        )
         print(
-            f"de-ai: structural repair {style_attempt}/3 for scene(s) "
+            "de-ai: structural repair "
+            f"{style_attempt}/{DE_AI_STRUCTURAL_REPAIR_ATTEMPTS} for scene(s) "
             + ", ".join(str(value) for value in sorted(pending_style_issues)),
             flush=True,
         )
+        chapter_floor = (
+            max(2_000, round(count_de_ai_visible_characters(authority) * 0.95))
+            if count_de_ai_visible_characters(authority) >= 2_000
+            else round(count_de_ai_visible_characters(authority) * 0.9)
+        )
+        preserved_visible = sum(
+            count_de_ai_visible_characters(value)
+            for index, value in enumerate(chunk_texts, start=1)
+            if index not in pending_style_issues
+        )
+        repair_visible = sum(
+            count_de_ai_visible_characters(chunk_texts[index - 1])
+            for index in pending_style_issues
+        )
+        remaining_floor = max(0, chapter_floor - preserved_visible)
         repair_items = [
             (
                 chunk_index,
@@ -875,7 +1037,19 @@ def _revise(
                     style_issue_history[chunk_index],
                     repair_attempt=style_attempt,
                     allow_target_shrink=False,
+                    minimum_target_characters=round(
+                        remaining_floor
+                        * count_de_ai_visible_characters(
+                            chunk_texts[chunk_index - 1]
+                        )
+                        / max(1, repair_visible)
+                    ),
+                    previous_candidate=chunk_texts[chunk_index - 1],
+                    fidelity_chunk_prompt=(
+                        detailed_chunk_prompts[chunk_index - 1]
+                    ),
                 ),
+                DE_AI_STRUCTURAL_OUTPUT_ATTEMPTS,
             )
             for chunk_index in sorted(pending_style_issues)
         ]
@@ -890,7 +1064,24 @@ def _revise(
         ):
             chunk_texts[chunk_index - 1] = repair_output[0]
         result = repair_outputs[-1][1]
-        fidelity_audit = repair_fidelity(audit_chunks(chunk_texts))
+        branch_fidelity_audit = audit_chunks(chunk_texts)
+        branch_assessment = assess_de_ai_revision(
+            authority,
+            "\n\n".join(chunk_texts),
+            require_substantial_revision=False,
+        )
+        if not is_de_ai_structural_branch_repairable(
+            branch_fidelity_audit,
+            missing_protected_tokens=branch_assessment.get(
+                "missing_protected_tokens",
+                [],
+            ),
+        ):
+            chunk_texts = list(best_chunk_texts)
+            fidelity_audit = best_fidelity_audit
+            style_audit = best_style_audit
+            continue
+        fidelity_audit = repair_fidelity(branch_fidelity_audit)
         style_audit = audit_style_chunks(chunk_texts)
         if not style_audit["valid"]:
             raise RuntimeError("Revision model returned an unusable repaired expression audit")
@@ -908,15 +1099,10 @@ def _revise(
             **best_style_audit,
             "exhausted": True,
             "selected_best": True,
-            "repair_attempts": 3,
+            "repair_attempts": DE_AI_STRUCTURAL_REPAIR_ATTEMPTS,
         }
 
-    result["content"] = "\n\n".join(chunk_texts)
-    result["_chunk_lengths"] = [len(value) for value in chunk_texts]
-    result["_story_ledger"] = story_ledger
-    result["_fidelity_audit"] = fidelity_audit
-    result["_style_audit"] = style_audit
-    return result
+    return finalize_revision(fidelity_audit, style_audit)
 
 
 def _visible_length(value: str) -> int:
@@ -1083,6 +1269,22 @@ def _clean_generated_text(value: object) -> str:
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _runtime_audit_failure(label: str, exc: Exception | str) -> dict:
+    """Preserve a generated candidate when a review model is unavailable."""
+
+    detail = str(exc).strip() or "unknown review failure"
+    return {
+        "valid": False,
+        "passed": False,
+        "issues": [{
+            "chunk": 0,
+            "kind": "audit_unavailable",
+            "detail": f"{label}未能完成：{detail}",
+        }],
+        "exhausted": True,
+    }
 
 
 def _feedback_revise(
@@ -2330,6 +2532,30 @@ def main() -> int:
             assessment["minimum_visible_characters"] = (
                 minimum_output_visible_characters
             )
+        fidelity_review = revised.get("_fidelity_audit") or {}
+        style_review = revised.get("_style_audit") or {}
+        for review_label, review in (
+            ("故事保真审计", fidelity_review),
+            ("表达结构审计", style_review),
+        ):
+            if review and not review.get("valid"):
+                details = "；".join(
+                    str(issue.get("detail") or "").strip()
+                    for issue in review.get("issues", [])
+                    if isinstance(issue, dict)
+                    and str(issue.get("detail") or "").strip()
+                )
+                assessment["issues"].append({
+                    "code": "review_unavailable",
+                    "detail": f"{review_label}不可用：{details or '未返回有效结果'}",
+                })
+                assessment["accepted"] = False
+        if fidelity_review.get("valid") and not fidelity_review.get("passed"):
+            assessment["issues"].append({
+                "code": "story_fidelity_rejected",
+                "detail": "候选稿未通过故事保真审计，已保留正文与审计问题供检查。",
+            })
+            assessment["accepted"] = False
         result["rounds"].append({
             "round": round_number,
             "text": candidate,

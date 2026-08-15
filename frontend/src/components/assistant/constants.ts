@@ -7,6 +7,7 @@ import type {
   WorkspaceRunLog,
   WorkspaceToolLog,
 } from './types'
+import { apiDateTimeMs } from '../../utils/dateTime'
 
 export const DEFAULT_FORBIDDEN_SENTENCE_PATTERNS = [
   '不是……是……', '不是……而是……', '不是……却是……', '与其说……不如说……',
@@ -98,7 +99,7 @@ export function assistantOutcomeToRunLog(
 
 const messageTime = (message: WorkspaceAssistantMessage) => {
   const value = message.created_at || message.updated_at || ''
-  const parsed = value ? new Date(value).getTime() : Number.NaN
+  const parsed = apiDateTimeMs(value)
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
 }
 

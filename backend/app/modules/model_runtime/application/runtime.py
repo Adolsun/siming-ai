@@ -8,6 +8,7 @@ from ....core.exceptions import NotFoundError
 from ..domain.configuration import ModelProviderConfig, TaskModelSelection
 from ..domain.policy import local_runtime_disabled, local_runtime_disabled_message
 from .ports import ModelConfigurationPort
+from .request_override import active_request_provider
 
 
 class ModelRuntime:
@@ -46,6 +47,9 @@ class ModelRuntime:
 
     def provider_config(self, provider: str) -> ModelProviderConfig:
         self._ensure_provider_enabled(provider)
+        request_provider = active_request_provider()
+        if request_provider is not None and request_provider.provider == provider:
+            return request_provider
         config = self._configurations.provider(provider)
         if not config:
             raise NotFoundError(
@@ -95,6 +99,9 @@ class ModelRuntime:
         return selection
 
     def record_failure(self, provider: str, error: BaseException | object) -> None:
+        request_provider = active_request_provider()
+        if request_provider is not None and request_provider.provider == provider:
+            return
         self._configurations.record_failure(provider, error)
 
     def _selection_from_value(self, value: str, source: str) -> TaskModelSelection:

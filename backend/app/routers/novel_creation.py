@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_cli_adapter import is_local_cli_provider
+from ..core.exceptions import ValidationError
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..database.session import SessionLocal
@@ -26,6 +27,7 @@ from ..schemas.novel_creation import (
     NovelCreationStageRunResponse,
     NovelCreationStageRunStartData,
 )
+from ..schemas.ai_writer import MobileProviderEnvelope
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_claims import (
@@ -210,6 +212,40 @@ def _inline_operation_http_error(exc: Exception) -> HTTPException:
     )
 
 
+def _resolve_mobile_creation_provider(
+    db: Session,
+    payload: Any,
+    request: Request,
+    *,
+    binding_id: str,
+):
+    """Resolve an Android-owned key for one canonical creation operation.
+
+    The encrypted envelope is deliberately excluded from every Pydantic dump.
+    Only the decrypted in-memory provider object crosses into model execution.
+    """
+
+    if getattr(payload, "model_route", "pc") != "mobile":
+        return None
+    if (
+        getattr(request.state, "gateway_device_platform", None) != "android"
+        or not getattr(request.state, "gateway_device_id", None)
+    ):
+        raise ValidationError("手机模型线路只允许已配对的 Android 设备使用")
+
+    from ..services.mobile_provider_envelope import decrypt_mobile_provider
+
+    request_provider = decrypt_mobile_provider(
+        db,
+        payload.mobile_provider,
+        device_id=request.state.gateway_device_id,
+        project_id=binding_id,
+    )
+    payload.mobile_provider = None
+    payload.model = f"{request_provider.provider}:{request_provider.default_model}"
+    return request_provider
+
+
 class NovelCreationStartRequest(BaseModel):
     mode: str = "template"
     user_brief: str = ""
@@ -252,6 +288,16 @@ class NovelCreationInterviewNextRequest(BaseModel):
     model: str | None = None
     qa_history: list[dict[str, str]] = Field(default_factory=list)
     skip_questions: bool = False
+    model_route: Literal["pc", "mobile"] = "pc"
+    mobile_provider: MobileProviderEnvelope | None = Field(default=None, repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def require_mobile_provider_envelope(self) -> "NovelCreationInterviewNextRequest":
+        if self.model_route == "mobile" and self.mobile_provider is None:
+            raise ValueError("选择手机模型线路时必须提供加密凭据")
+        if self.model_route == "pc" and self.mobile_provider is not None:
+            raise ValueError("PC 模型线路不能携带手机模型凭据")
+        return self
 
 
 class NovelCreationReviewRequest(BaseModel):
@@ -291,9 +337,18 @@ async def draft_blueprints(payload: NovelCreationDraftRequest, db: Session = Dep
 async def advance_creation_interview(
     session_id: str,
     payload: NovelCreationInterviewNextRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     session = novel_creation_session_store(db).session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    request_provider = _resolve_mobile_creation_provider(
+        db,
+        payload,
+        request,
+        binding_id=session_id,
+    )
     operation_id = _start_inline_operation(
         db,
         source_kind="novel_interview",
@@ -325,11 +380,24 @@ async def advance_creation_interview(
             )
         return result
 
-    result = await _run_inline_operation(
-        operation_id,
-        run_interview,
-        success_message="本轮动态采访已完成",
-    )
+    if request_provider is None:
+        result = await _run_inline_operation(
+            operation_id,
+            run_interview,
+            success_message="本轮动态采访已完成",
+        )
+    else:
+        # The decrypted key exists only inside this request's execution
+        # context. It is excluded from operation input and never reaches the
+        # database, logs, or the response payload.
+        from ..modules.model_runtime.application.request_override import use_request_provider
+
+        with use_request_provider(request_provider):
+            result = await _run_inline_operation(
+                operation_id,
+                run_interview,
+                success_message="本轮动态采访已完成",
+            )
     return ApiResponse.success(data=result.get("data"), message=result.get("detail") or "采访状态已更新")
 
 
@@ -340,8 +408,25 @@ async def review_blueprint(payload: NovelCreationReviewRequest, db: Session = De
 
 
 @router.post("/novel-creation/apply")
-async def apply_blueprint(payload: NovelCreationApplyRequest, db: Session = Depends(get_db)):
+async def apply_blueprint(
+    payload: NovelCreationApplyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     result = await apply_novel_blueprint(db, "", payload.model_dump())
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    project_id = str(data.get("project_id") or "")
+    if (
+        result.get("status") == "ok"
+        and project_id
+        and getattr(request.state, "gateway_device_id", None)
+        and getattr(request.state, "gateway_device_platform", None) == "android"
+    ):
+        # Match /projects: a work created by a paired phone is immediately part
+        # of that phone's explicit sync set, including every archived artifact.
+        from ..modules.gateway.infrastructure.service import GatewayService
+
+        GatewayService(db).enable_project(project_id)
     return _tool_response(result)
 
 
@@ -359,6 +444,8 @@ class NovelCreationSessionPatchRequest(BaseModel):
 class NovelCreationStageRunRequest(BaseModel):
     stage: str
     model: str | None = None
+    model_route: Literal["pc", "mobile"] = "pc"
+    mobile_provider: MobileProviderEnvelope | None = Field(default=None, repr=False, exclude=True)
     use_model: bool = True
     auto_confirm: bool = False
     operation: Literal["generate", "regenerate", "refine"] = "generate"
@@ -396,6 +483,10 @@ class NovelCreationStageRunRequest(BaseModel):
             raise ValueError("entity_id and entity_type are mutually exclusive")
         if (self.entity_id or self.entity_type) and self.stage == "all":
             raise ValueError("entity-level generation requires one artifact stage")
+        if self.model_route == "mobile" and self.mobile_provider is None:
+            raise ValueError("选择手机模型线路时必须提供加密凭据")
+        if self.model_route == "pc" and self.mobile_provider is not None:
+            raise ValueError("PC 模型线路不能携带手机模型凭据")
         return self
 
 
@@ -747,6 +838,7 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
 async def start_creation_stage_run(
     session_id: str,
     payload: NovelCreationStageRunRequest,
+    request: Request,
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
@@ -773,6 +865,12 @@ async def start_creation_stage_run(
                 "session": serialize_session(session),
             },
         )
+    request_provider = _resolve_mobile_creation_provider(
+        db,
+        payload,
+        request,
+        binding_id=session_id,
+    )
     blocked_by = generation_blockers(session, payload.stage)
     if blocked_by:
         raise HTTPException(
@@ -791,17 +889,17 @@ async def start_creation_stage_run(
             data={"run": serialize_run(existing), "stream_url": f"/api/novel-creation/runs/{existing.id}/stream"},
             message="该阶段任务仍在运行，已恢复订阅",
         )
-    request = payload.model_dump()
+    run_request = payload.model_dump()
     if payload.session_patch:
         patch_session(session, payload.session_patch)
-        request["session_patch"] = None
+        run_request["session_patch"] = None
     input_revision = int(session.revision or 0)
     snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
     request_key = creation_idempotency_key(
         session_id=session_id,
         stage=payload.stage,
         operation=payload.operation,
-        request=request,
+        request=run_request,
         input_revision=input_revision,
         input_snapshot_hash=snapshot_hash,
         explicit_key=idempotency_key,
@@ -834,13 +932,19 @@ async def start_creation_stage_run(
         db,
         session,
         payload.stage,
-        request,
+        run_request,
         claim_id=claim.id,
         idempotency_key=request_key,
     )
     commit_session(db)
     run_id = run.id
-    schedule_creation_stage(run_id, session_id, request, operation_id=run.operation_id)
+    schedule_creation_stage(
+        run_id,
+        session_id,
+        run_request,
+        operation_id=run.operation_id,
+        request_provider=request_provider,
+    )
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
@@ -1086,6 +1190,7 @@ async def confirm_and_generate_recommended(
     payload: NovelCreationConfirmAndGenerateRequest,
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    request: Request = None,
 ):
     if idempotency_key:
         existing_claim = get_creation_claim_by_idempotency_key(
@@ -1144,6 +1249,7 @@ async def confirm_and_generate_recommended(
     started = await start_creation_stage_run(
         session_id,
         start_payload,
+        request,
         db,
         idempotency_key=stable_key,
     )

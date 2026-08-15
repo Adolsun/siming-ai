@@ -489,6 +489,11 @@ def test_gateway_http_boundary_pairs_locally_and_denies_unauthorized_remote_clie
             started = local_client.post("/api/v1/pairing/start")
             assert started.status_code == 200
             pairing = started.json()["data"]
+            assert len(pairing["gateway_encryption_public_key"]) >= 43
+            assert (
+                pairing["qr_payload"]["gateway_encryption_public_key"]
+                == pairing["gateway_encryption_public_key"]
+            )
             application = {
                 "pairing_id": pairing["pairing_id"],
                 "pairing_secret": pairing["pairing_secret"],
@@ -531,11 +536,42 @@ def test_gateway_http_boundary_pairs_locally_and_denies_unauthorized_remote_clie
             assert accepted.status_code == 200
             assert accepted.json()["data"]["protocol_version"] == 1
 
-            hidden_desktop_api = remote_client.get(
+            visible_authoring_api = remote_client.get(
                 "/api/v1/projects",
                 headers={"authorization": f"Bearer {access_token}"},
             )
-            assert hidden_desktop_api.status_code == 404
+            assert visible_authoring_api.status_code == 200
+            visible_items = visible_authoring_api.json()["data"]["items"]
+            assert [item["id"] for item in visible_items] == [enabled_project_id]
+            assert visible_items[0]["folder_path"] is None
+
+            private_project_api = remote_client.get(
+                f"/api/v1/projects/{private_project_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+            )
+            assert private_project_api.status_code == 404
+            enabled_project_api = remote_client.get(
+                f"/api/v1/projects/{enabled_project_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+            )
+            assert enabled_project_api.status_code == 200
+            assert enabled_project_api.json()["data"]["folder_path"] is None
+
+            created_chapter = remote_client.post(
+                f"/api/v1/projects/{enabled_project_id}/chapters",
+                headers={"authorization": f"Bearer {access_token}"},
+                json={"title": "手机规范写入", "content": "第一版正文"},
+            )
+            assert created_chapter.status_code == 200
+            chapter_id = created_chapter.json()["data"]["id"]
+            updated_chapter = remote_client.put(
+                f"/api/v1/projects/{enabled_project_id}/chapters/{chapter_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+                json={"content": "第二版正文", "trigger_type": "manual_save"},
+            )
+            assert updated_chapter.status_code == 200
+            assert updated_chapter.json()["data"]["content"] == "第二版正文"
+            assert updated_chapter.json()["data"]["snapshot_count"] >= 1
 
             private_assistant = remote_client.head(
                 f"/api/v1/projects/{private_project_id}/ai/workspace-assistant/stream",

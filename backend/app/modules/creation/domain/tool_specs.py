@@ -4,13 +4,61 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
 
 
 class CompatibleInput(BaseModel):
     model_config = ConfigDict(extra="allow", protected_namespaces=())
+
+
+_MODEL_REQUIRED_CREATION_TARGETS = frozenset({"concepts", "all"})
+_CREATION_MODEL_DESCRIPTION = (
+    "Required when stage or artifact is concepts or all; optional for other deterministic "
+    "targets. Pass a model identity already configured and tested in Siming. The model "
+    "used by the external MCP client is not inherited."
+)
+
+
+def _model_requirement_schema(target_field: str) -> dict[str, Any]:
+    """Describe the same conditional model rule enforced by the stage runtime."""
+
+    return {
+        "allOf": [
+            {
+                "if": {
+                    "properties": {
+                        target_field: {
+                            "enum": sorted(_MODEL_REQUIRED_CREATION_TARGETS),
+                        },
+                    },
+                    "required": [target_field],
+                },
+                "then": {
+                    "properties": {
+                        "model": {"minLength": 1},
+                        "use_model": {"const": True},
+                    },
+                    "required": ["model"],
+                },
+            },
+        ],
+    }
+
+
+def _validate_creation_model(target: str, model: str, use_model: bool) -> None:
+    if target not in _MODEL_REQUIRED_CREATION_TARGETS:
+        return
+    if not use_model:
+        raise ValueError(
+            "use_model must be true when stage or artifact is concepts or all"
+        )
+    if not model.strip():
+        raise ValueError(
+            "model is required when stage or artifact is concepts or all; "
+            "the external MCP client's model is not inherited"
+        )
 
 
 class StartNovelCreationSessionInput(CompatibleInput):
@@ -144,10 +192,19 @@ class RestoreArtifactVersionInput(CompatibleInput):
 
 
 class GenerateNovelCreationStageInput(CompatibleInput):
+    model_config = ConfigDict(
+        extra="allow",
+        protected_namespaces=(),
+        json_schema_extra=_model_requirement_schema("stage"),
+    )
+
     session_id: str
     stage: str
-    model: str = ""
-    use_model: bool = True
+    model: str = Field(default="", description=_CREATION_MODEL_DESCRIPTION)
+    use_model: bool = Field(
+        default=True,
+        description="Must be true when stage is concepts or all.",
+    )
     auto_confirm: bool = False
     session_patch: dict[str, Any] = Field(default_factory=dict)
     operation: str = "generate"
@@ -155,6 +212,11 @@ class GenerateNovelCreationStageInput(CompatibleInput):
     expected_revision: int | None = None
     entity_id: str = ""
     entity_type: str = ""
+
+    @model_validator(mode="after")
+    def require_model_for_model_backed_target(self) -> GenerateNovelCreationStageInput:
+        _validate_creation_model(self.stage, self.model, self.use_model)
+        return self
 
 
 class SubmitNovelCreationStageInput(CompatibleInput):
@@ -171,24 +233,40 @@ class ConfirmCreationArtifactInput(CreationArtifactInput):
     source: Literal["author", "assistant", "external_agent"] = "assistant"
 
 
-class GenerateCreationArtifactInput(CreationArtifactInput):
+class ModelBackedCreationArtifactInput(CreationArtifactInput):
+    model_config = ConfigDict(
+        extra="allow",
+        protected_namespaces=(),
+        json_schema_extra=_model_requirement_schema("artifact"),
+    )
+
+    model: str = Field(default="", description=_CREATION_MODEL_DESCRIPTION)
+    use_model: bool = Field(
+        default=True,
+        description="Must be true when artifact is concepts or all.",
+    )
+
+    @model_validator(mode="after")
+    def require_model_for_model_backed_target(self) -> ModelBackedCreationArtifactInput:
+        _validate_creation_model(self.artifact, self.model, self.use_model)
+        return self
+
+
+class GenerateCreationArtifactInput(ModelBackedCreationArtifactInput):
     expected_revision: int
-    model: str = ""
     entity_type: str = ""
     instruction: str = ""
 
 
-class RefineCreationArtifactInput(CreationArtifactInput):
+class RefineCreationArtifactInput(ModelBackedCreationArtifactInput):
     expected_revision: int
     instruction: str
-    model: str = ""
     entity_id: str = ""
 
 
-class RegenerateCreationArtifactInput(CreationArtifactInput):
+class RegenerateCreationArtifactInput(ModelBackedCreationArtifactInput):
     expected_revision: int
     instruction: str = ""
-    model: str = ""
     entity_id: str = ""
 
 

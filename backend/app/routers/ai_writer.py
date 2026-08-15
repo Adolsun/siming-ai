@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from ..modules.model_runtime.application.execution import model_executor as LLMG
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
+from ..core.utils import utc_isoformat
 from ..database.session import get_db
 from ..modules.assistant.application.system_conversations import SystemConversationStore
 from ..modules.assistant.interfaces.system_conversation_dependencies import (
@@ -623,8 +624,8 @@ def _assistant_conversation_to_dict(conversation: Any, message_count: Optional[i
         "current_outline_node_id": conversation.current_outline_node_id,
         "model": conversation.model,
         "message_count": message_count,
-        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "created_at": utc_isoformat(conversation.created_at),
+        "updated_at": utc_isoformat(conversation.updated_at),
     }
 
 
@@ -642,8 +643,8 @@ def _assistant_message_to_dict(message: Any) -> dict:
         "content": message.content,
         "payload": payload,
         "status": message.status,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+        "created_at": utc_isoformat(message.created_at),
+        "updated_at": utc_isoformat(message.updated_at),
     }
 
 
@@ -1131,11 +1132,29 @@ def _trim_context_if_needed(messages: list[dict], max_chars: int = 800_000) -> l
 async def workspace_assistant_stream(
     project_id: str,
     payload: WorkspaceAssistantRequest,
+    request: Request,
     db: Session = Depends(get_db),
     system_conversations: SystemConversationStore = Depends(get_system_conversation_store),
 ):
     """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     get_project_or_404(db, project_id)
+    request_provider = None
+    if payload.model_route == "mobile":
+        if (
+            getattr(request.state, "gateway_device_platform", None) != "android"
+            or not getattr(request.state, "gateway_device_id", None)
+        ):
+            raise ValidationError("手机模型线路只允许已配对的 Android 设备使用")
+        from ..services.mobile_provider_envelope import decrypt_mobile_provider
+
+        request_provider = decrypt_mobile_provider(
+            db,
+            payload.mobile_provider,
+            device_id=request.state.gateway_device_id,
+            project_id=project_id,
+        )
+        payload.mobile_provider = None
+        payload.model = f"{request_provider.provider}:{request_provider.default_model}"
     if payload.canonical_conversation_id:
         try:
             canonical = system_conversations.get(payload.canonical_conversation_id)["conversation"]
@@ -2134,11 +2153,11 @@ async def workspace_assistant_stream(
                         _resp = await LLMGateway.chat_completion(
                             messages=[{"role": "system", "content": _MP.build_system_prompt()},
                                       {"role": "user", "content": _conv}],
-                            model=None,
+                            model=payload.model if request_provider is not None else None,
                             temperature=0.2,
                             max_tokens=2000,
                             extra_body=LLMGateway.local_cli_extra_body(
-                                None,
+                                payload.model if request_provider is not None else None,
                                 cwd=project_folder,
                             ),
                         )
@@ -2176,7 +2195,14 @@ async def workspace_assistant_stream(
                     finally:
                         _db.close()
 
-                asyncio.create_task(_extract_and_save_memories())
+                if request_provider is not None:
+                    # A phone-owned credential may not escape the request task
+                    # through a copied ContextVar in a fire-and-forget task.
+                    # Run the same memory extraction before completing the
+                    # stream, then release the ephemeral provider context.
+                    await _extract_and_save_memories()
+                else:
+                    asyncio.create_task(_extract_and_save_memories())
 
             if assistant_run:
                 db.refresh(assistant_run)
@@ -2352,6 +2378,18 @@ async def workspace_assistant_stream(
                 yield event
 
         stream_factory = cli_routed_event_generator
+
+    if request_provider is not None:
+        provider_stream_factory = stream_factory
+
+        async def mobile_provider_event_generator(source_db: Session):
+            from ..modules.model_runtime.application.request_override import use_request_provider
+
+            with use_request_provider(request_provider):
+                async for event in provider_stream_factory(source_db):
+                    yield event
+
+        stream_factory = mobile_provider_event_generator
 
     return StreamingResponse(
         detached_assistant_stream(stream_factory),

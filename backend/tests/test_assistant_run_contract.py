@@ -38,6 +38,8 @@ def test_run_payload_exposes_stable_names_and_compatibility_aliases() -> None:
     assert payload["operation_id"] == "operation-1"
     assert payload["actual_model"] == payload["model"] == "openai:gpt-test"
     assert payload["status"] == "running"
+    assert payload["created_at"].endswith("+00:00")
+    assert payload["updated_at"].endswith("+00:00")
     validated = WorkspaceAssistantRunResponse.model_validate(payload)
     assert validated.run_id == "run-1"
 

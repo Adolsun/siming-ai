@@ -15,11 +15,22 @@ from .runtime import invoke_operation_action, serialize_operation, update_operat
 
 
 class SqlAlchemyOperationService(OperationServicePort):
-    def list(self, *, active_only: bool, limit: int) -> list[dict]:
+    def list(
+        self,
+        *,
+        active_only: bool,
+        limit: int,
+        project_id: str | None = None,
+        source_kind: str | None = None,
+    ) -> list[dict]:
         with SessionLocal() as db:
             query = db.query(OperationRun)
             if active_only:
                 query = query.filter(OperationRun.status.in_(list(ACTIVE_STATUSES)))
+            if project_id:
+                query = query.filter(OperationRun.project_id == project_id)
+            if source_kind:
+                query = query.filter(OperationRun.source_kind == source_kind)
             rows = (
                 query.order_by(
                     OperationRun.updated_at.desc(),

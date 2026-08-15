@@ -52,6 +52,8 @@ import { StructuredStageEditor } from './novel-creation/StructuredStageEditor'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
+import { apiDateTimeMs } from '../utils/dateTime'
+import { AssistantMessageTime } from './assistant/MessageTime'
 import {
   defaultInterviewRuntime,
   startNovelCreationSession,
@@ -66,6 +68,7 @@ import {
   NOVEL_INTERVIEW_THINKING,
 } from '../utils/novelInterview'
 import './GuiAssistantChat.css'
+import './assistant/MessageTime.css'
 
 const { Title, Paragraph, Text } = Typography
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
@@ -994,7 +997,11 @@ function GuiAssistantChat() {
           ])
       const items = responses
         .flatMap((res) => res.data?.data?.items || [])
-        .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')))
+        .sort((left, right) => {
+          const rightTime = apiDateTimeMs(right.updated_at || right.created_at)
+          const leftTime = apiDateTimeMs(left.updated_at || left.created_at)
+          return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0)
+        })
       setConversations(items)
       return items
     } catch {
@@ -4054,7 +4061,10 @@ function GuiAssistantChat() {
                   role={msg.status === 'error' ? 'alert' : undefined}
                   aria-live={msg.status === 'error' ? 'assertive' : undefined}
                 >
-                  <div className="gui-chat-msg-role">{msg.role === 'user' ? '你' : '司命'}</div>
+                  <div className="gui-chat-msg-role">
+                    <span>{msg.role === 'user' ? '你' : '司命'}</span>
+                    <AssistantMessageTime value={msg.created_at} />
+                  </div>
                   <div className="gui-chat-msg-content">
                     {msg.status === 'error' && <Tag color="error" className="gui-chat-msg-status">执行失败</Tag>}
                     {msg.status === 'aborted' && <Tag color="default" className="gui-chat-msg-status">已停止</Tag>}

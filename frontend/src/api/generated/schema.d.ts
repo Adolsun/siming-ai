@@ -7063,6 +7063,24 @@ export interface components {
             /** Url */
             url?: string | null;
         };
+        /**
+         * MobileProviderEnvelope
+         * @description End-to-end encrypted Android-owned provider configuration.
+         */
+        MobileProviderEnvelope: {
+            /** Ciphertext */
+            ciphertext: string;
+            /** Ephemeral Public Key */
+            ephemeral_public_key: string;
+            /** Nonce */
+            nonce: string;
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+        };
         /** ModelContextProfilePayload */
         ModelContextProfilePayload: {
             /** Context Window Tokens */
@@ -7289,8 +7307,15 @@ export interface components {
         };
         /** NovelCreationInterviewNextRequest */
         NovelCreationInterviewNextRequest: {
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /** Qa History */
             qa_history?: {
                 [key: string]: string;
@@ -7469,8 +7494,15 @@ export interface components {
             expected_revision?: number | null;
             /** Instruction */
             instruction?: string | null;
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /**
              * Operation
              * @default generate
@@ -7693,6 +7725,8 @@ export interface components {
             command?: string | null;
             /** Created At */
             created_at?: string | null;
+            /** Download Source */
+            download_source?: string | null;
             /** Download Url */
             download_url?: string | null;
             /** Error */
@@ -8063,6 +8097,8 @@ export interface components {
         PairingStartResponse: {
             /** Expires At */
             expires_at: unknown;
+            /** Gateway Encryption Public Key */
+            gateway_encryption_public_key: unknown;
             /** Gateway Fingerprint */
             gateway_fingerprint: unknown;
             /** Gateway Name */
@@ -9028,8 +9064,16 @@ export interface components {
             max_tokens?: number | null;
             /** Message */
             message: string;
+            /** @description Encrypted, request-only provider credentials from a paired Android device */
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /**
              * Outline Batch Count
              * @description Preferred number of consecutive outline chapters to plan
@@ -13266,6 +13310,8 @@ export interface operations {
             query?: {
                 active_only?: boolean;
                 limit?: number;
+                project_id?: string | null;
+                source_kind?: string | null;
             };
             header?: never;
             path?: never;

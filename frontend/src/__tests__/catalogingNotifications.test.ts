@@ -30,6 +30,10 @@ describe('projectAutoCatalogingMessages', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0].content).toContain('正在自动建档')
     expect(messages[0].content).toContain('立即生成下一章可能影响上下文质量')
+    expect(messages[0].navigation_action).toEqual({
+      label: '查看建档进度',
+      to: '/project/project-1?view=cataloging',
+    })
   })
 
   it('adds a durable completion notification', () => {
@@ -41,10 +45,11 @@ describe('projectAutoCatalogingMessages', () => {
       }),
     ], 'project-1')
 
-    expect(messages).toHaveLength(2)
-    expect(messages[1].content).toContain('自动建档已完成')
-    expect(messages[1].content).toContain('现在可以继续生成下一章')
-    expect(messages[1].data?.outcome).toBe('completed_with_tools')
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toContain('自动建档已完成')
+    expect(messages[0].content).toContain('现在可以继续生成下一章')
+    expect(messages[0].data?.outcome).toBe('completed_with_tools')
+    expect(messages[0].navigation_action?.label).toBe('查看建档结果')
   })
 
   it('does not leak another project or manual cataloging task into chat', () => {
@@ -61,8 +66,45 @@ describe('projectAutoCatalogingMessages', () => {
       operation({ status: 'paused', next_action: '缺少角色关系候选' }),
     ], 'project-1')
 
-    expect(messages[1].status).toBe('error')
-    expect(messages[1].content).toContain('缺少角色关系候选')
-    expect(messages[1].data?.outcome).toBe('blocked')
+    expect(messages[0].status).toBe('error')
+    expect(messages[0].content).toContain('缺少角色关系候选')
+    expect(messages[0].data?.outcome).toBe('blocked')
+    expect(messages[0].navigation_action?.label).toBe('前往处理建档')
+  })
+
+  it('uses the operation action URL when the backend provides one', () => {
+    const messages = projectAutoCatalogingMessages([
+      operation({
+        status: 'waiting_user',
+        attention: {
+          action_label: '处理候选',
+          action_url: '/project/project-1?view=cataloging&job=job-1',
+        },
+      }),
+    ], 'project-1')
+
+    expect(messages[0].navigation_action).toEqual({
+      label: '前往处理建档',
+      to: '/project/project-1?view=cataloging&job=job-1',
+    })
+  })
+
+  it('orders the live reminder by latest task activity so it follows the writer reply', () => {
+    const messages = projectAutoCatalogingMessages([
+      operation({
+        created_at: '2026-08-12T10:00:00Z',
+        updated_at: '2026-08-12T10:00:30Z',
+      }),
+    ], 'project-1')
+
+    expect(messages[0].created_at).toBe('2026-08-12T10:00:30Z')
+  })
+
+  it('does not repeat the backend running notice inside the synthesized message', () => {
+    const messages = projectAutoCatalogingMessages([
+      operation({ current_message: '《第二章 吐纳》已保存，正在自动建档。' }),
+    ], 'project-1')
+
+    expect(messages[0].content.match(/正在自动建档/g)).toHaveLength(1)
   })
 })

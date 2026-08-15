@@ -163,6 +163,68 @@ def test_main_keeps_one_authority_across_all_three_rounds(tmp_path, monkeypatch)
     assert calls[2]["story_ledger_override"].startswith("01 [硬]")
 
 
+def test_main_writes_candidate_and_warning_when_review_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    original = "周砚把三封信送到A17，陈禾接过信。" * 120
+    candidate = "三封信被周砚送进A17，最后到了陈禾手里。" * 120
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "result.json"
+    source_path.write_text(
+        json.dumps({"source": original}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    unavailable = HARNESS._runtime_audit_failure(
+        "故事保真审计",
+        "CLI rate limit",
+    )
+
+    def fake_revise(*_args, **_kwargs):
+        return {
+            "content": candidate,
+            "_story_ledger": "01 [硬] 周砚把三封信送到A17。",
+            "_fidelity_audit": unavailable,
+            "_style_audit": HARNESS._runtime_audit_failure(
+                "表达结构审计",
+                "故事保真审计不可用",
+            ),
+        }
+
+    monkeypatch.setattr(HARNESS, "_revise", fake_revise)
+    monkeypatch.setattr(
+        HARNESS,
+        "_assess_lineage_round",
+        lambda *_args, **_kwargs: {"accepted": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--revision-model",
+            "codex_cli:gpt-5.6-sol",
+            "--source-json",
+            str(source_path),
+            "--rounds",
+            "3",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert HARNESS.main() == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(payload["rounds"]) == 1
+    assert payload["rounds"][0]["text"] == candidate
+    assert payload["rounds"][0]["assessment"]["accepted"] is False
+    assert any(
+        issue["code"] == "review_unavailable"
+        for issue in payload["rounds"][0]["assessment"]["issues"]
+    )
+
+
 def test_post_json_retries_only_transient_connection_failure(monkeypatch):
     attempts = []
 
@@ -269,6 +331,40 @@ def test_style_score_prefers_deterministically_valid_candidate_shape():
 
     assert accepted["accepted"] is True
     assert missing["accepted"] is False
+
+
+def test_structural_branch_fact_drift_is_bounded_before_repair():
+    assert HARNESS.DE_AI_STRUCTURAL_REPAIR_ATTEMPTS == 2
+    assert HARNESS.DE_AI_STRUCTURAL_OUTPUT_ATTEMPTS == 2
+
+    three_issues = {
+        "valid": True,
+        "passed": False,
+        "issues": [
+            {"chunk": 1, "kind": "added", "detail": f"偏差{index}"}
+            for index in range(3)
+        ],
+    }
+    four_issues = {
+        **three_issues,
+        "issues": [
+            *three_issues["issues"],
+            {"chunk": 2, "kind": "missing", "detail": "第四项偏差"},
+        ],
+    }
+
+    assert HARNESS.is_de_ai_structural_branch_repairable(three_issues)
+    assert not HARNESS.is_de_ai_structural_branch_repairable(four_issues)
+    assert not HARNESS.is_de_ai_structural_branch_repairable(
+        three_issues,
+        missing_protected_tokens=["A17"],
+    )
+    assert HARNESS.is_de_ai_structural_branch_repairable(
+        {"valid": True, "passed": True, "issues": []},
+    )
+    assert not HARNESS.is_de_ai_structural_branch_repairable(
+        {"valid": False, "passed": False, "issues": []},
+    )
 
 
 def test_insertion_guard_can_measure_strict_positive_progress():

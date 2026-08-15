@@ -5,7 +5,7 @@
 Siming is a free and open-source, local-first AI workspace for planning, writing, archiving, and maintaining continuity in long-form fiction.
 
 [![Latest Release](https://img.shields.io/github/v/release/teangtang1122/siming-ai?display_name=tag&sort=semver)](https://github.com/teangtang1122/siming-ai/releases/latest)
-![Windows x64](https://img.shields.io/badge/Windows-x64-2979ff?logo=windows11&logoColor=white)
+![Windows 10+ x64](https://img.shields.io/badge/Windows-10%2B%20x64-2979ff?logo=windows11&logoColor=white)
 ![Android 8+](https://img.shields.io/badge/Android-8%2B-3c7a57?logo=android&logoColor=white)
 ![Gateway](https://img.shields.io/badge/Gateway-amd64%20%7C%20arm64-963a36?logo=docker&logoColor=white)
 [![Backend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml)
@@ -13,6 +13,8 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 [![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
 [下载 Windows 版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
+
+> **系统要求：Windows 10 x64 或更高版本。Windows 7、Windows 8/8.1 以及 32 位 Windows 不在支持范围内。**
 
 > 💬 **用户交流 QQ 群：814283606**  
 > 欢迎交流使用体验、小说创作方法与功能建议。大陆地区访问 GitHub 下载较慢时，可使用 [Gitee 同步镜像 Releases](https://gitee.com/teangtang13/siming-ai/releases) 备用下载；下载后请核对版本号与对应的 SHA-256。
@@ -40,7 +42,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 ### 1. 下载并启动
 
-从 [官方 GitHub Release](https://github.com/teangtang1122/siming-ai/releases/latest) 下载 `Siming.exe`，双击即可启动。普通使用者不需要安装 Python、Node.js，也不需要打开 CMD 或 PowerShell。
+在 Windows 10 x64 或更高版本上，从 [官方 GitHub Release](https://github.com/teangtang1122/siming-ai/releases/latest) 下载 `Siming.exe`，双击即可启动。普通使用者不需要安装 Python、Node.js，也不需要打开 CMD 或 PowerShell。Windows 7、Windows 8/8.1 和 32 位 Windows 不受支持。
 
 首次启动会让你选择小说数据目录；不修改时使用 `%LOCALAPPDATA%\Siming`。旧版 `%LOCALAPPDATA%\Moshu` 和 `%LOCALAPPDATA%\NovelWritingAgent` 数据会兼容读取，不会被主动删除。
 
@@ -91,6 +93,7 @@ opencode_cli:opencode/deepseek-v4-flash-free
 
 - 桌面内置 Gateway：适合电脑开机时同步，仍可使用桌面本地模型、OpenCode、CLI 和 MCP。
 - Docker Gateway：适合 NAS、家中常开主机或云主机，提供同步和云端 API 写作；镜像不启用本地模型、OpenCode、CLI、MCP 或训练能力。
+- 手机在线编辑调用与 PC 前端相同的创作 API；项目助手可逐轮选择 PC 已配置模型或手机私有 Key，两者都执行 PC 的完整提示词与工具链。没有 Gateway 时，手机 Key 使用从 PC 源码自动导出的提示词/工具契约在设备上独立执行。
 - 手机端：可新建或导入 TXT，编辑章节、大纲、角色、世界观、伏笔与治理资料；离线照常写，联网后先上传再拉取。
 
 局域网可以直接连接；跨网络推荐 [Tailscale](https://tailscale.com/) 或自己配置 HTTPS。只有已显式加入同步的作品才会进入 Gateway，首次建档前会自动备份并核对数量与摘要哈希。完整部署、配对、备份和恢复步骤见 [Android 与 Gateway 指南](docs/gateway-mobile.md)，安全边界见 [Gateway 威胁模型](docs/security/gateway-threat-model.md)。
@@ -117,7 +120,7 @@ docker compose -f compose.gateway.yml up -d
 
 ## 下载与信任
 
-部分版本（包括 3.2.0）的 `Siming.exe` **尚未完成代码签名**，只提供用户主动下载、核对 SHA256 后手动安装。安全更新器会拒绝未签名包，不能用自动更新安装；具备可信 Windows 代码签名后才会恢复应用内更新。PyInstaller 打包的单文件 EXE 会在运行时解压内嵌 Python 组件、启动本地 Web 服务，并在用户授权时启动本机 CLI，因此未签名包还可能触发杀毒软件误报。
+部分版本（包括 3.2.1）的 `Siming.exe` **尚未完成代码签名**，只提供用户主动下载、核对 SHA256 后手动安装。安全更新器会拒绝未签名包，不能用自动更新安装；具备可信 Windows 代码签名后才会恢复应用内更新。PyInstaller 打包的单文件 EXE 会在运行时解压内嵌 Python 组件、启动本地 Web 服务，并在用户授权时启动本机 CLI，因此未签名包还可能触发杀毒软件误报。
 
 为减少供应链风险：
 
@@ -125,7 +128,7 @@ docker compose -f compose.gateway.yml up -d
 2. 下载同一版本的 `sha256.txt`，用 `certutil -hashfile Siming.exe SHA256` 计算文件哈希并与其对照。
 3. 不要使用网盘、聊天群或第三方网站二次分发的 EXE。
 
-3.2.0 发行页提供 Windows 桌面三件套：`Siming.exe`、`update.json` 和 `sha256.txt`。本版本暂不发布 Android APK。
+3.2.1 发行页提供 Windows 桌面三件套 `Siming.exe`、`update.json`、`sha256.txt`，以及 Android 的 `Siming.apk` 与 `Siming-apk-sha256.txt`。
 
 ## 外部 Agent 与提示词投稿
 

@@ -16,9 +16,11 @@ release\update.json
 release\sha256.txt
 ```
 
-`Siming.exe` 是 Windows 正式分发文件。Android 是可选的独立构建；3.2.0 暂不生成或上传 APK。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
+`Siming.exe` 是面向 Windows 10 x64 或更高版本的正式分发文件。Windows 7、Windows 8/8.1 和 32 位 Windows 不在支持范围内，不应将当前构建标记或分发为兼容这些系统。Android 使用独立的长期签名密钥构建；3.2.1 同时发布 APK。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
 
 ## 给普通用户运行
+
+**系统要求：Windows 10 x64 或更高版本。**
 
 新用户发送 `release\Siming.exe` 即可。用户双击后会：
 
@@ -106,11 +108,11 @@ SIMING_WINDOWS_CODESIGN_PASSWORD
   -ReleaseDir release `
   -CertificatePath C:\secure\siming-codesign.pfx `
   -CertificatePassword $env:SIMING_CODESIGN_PASSWORD `
-  -ExpectedVersion 3.2.0
+  -ExpectedVersion 3.2.1
 
 .\scripts\verify-release-assets.ps1 `
   -ReleaseDir release `
-  -ExpectedVersion 3.2.0 `
+  -ExpectedVersion 3.2.1 `
   -RequireTrustedSignature
 ```
 
@@ -119,18 +121,18 @@ SIMING_WINDOWS_CODESIGN_PASSWORD
 没有 Windows 代码签名证书时，可发布仅供手动安装的 Windows 资产：
 
 ```powershell
-.\scripts\publish-github.ps1 -Tag v3.2.0 -SkipBuild -ManualDownloadOnly
+.\scripts\publish-github.ps1 -Tag v3.2.1 -SkipBuild -ManualDownloadOnly
 ```
 
 该模式不会降低应用内更新器的签名要求，也不会包含 Android APK。
 
 ## Android APK
 
-Android 发布当前暂停，不属于 3.2.0 的发布资产。恢复 Android 发布时，必须继续使用同一把长期保存的发布密钥，并显式使用 `-IncludeAndroid` 运行发布脚本。
+3.2.1 恢复 Android 发布，并继续使用同一把长期保存的发布密钥。手动运行发布脚本时，必须显式使用 `-IncludeAndroid`，确保 APK 与校验文件一同上传。
 
 Android Release 必须使用同一把长期保存的发布密钥签名；丢失密钥后，已安装用户无法原位升级。密钥和口令不得写入仓库、构建日志或 Release 资产。
 
-构建机通过以下环境变量提供签名信息：
+本地构建机通过以下环境变量提供签名信息：
 
 ```text
 SIMING_ANDROID_KEYSTORE_FILE
@@ -140,6 +142,8 @@ SIMING_ANDROID_KEY_PASSWORD
 ANDROID_SDK_ROOT
 JAVA_HOME
 ```
+
+GitHub Actions 使用 `SIMING_ANDROID_KEYSTORE_BASE64` 保存同一密钥的 Base64 内容，并使用上述三个密码/别名 Secret；工作流只在临时目录还原密钥，构建结束后不保留该文件。
 
 然后运行：
 

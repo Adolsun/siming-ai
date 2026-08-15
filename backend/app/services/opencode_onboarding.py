@@ -8,17 +8,20 @@ import platform
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
 import uuid
 import zipfile
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from app.ai.local_cli_adapter import (
@@ -51,6 +54,11 @@ OPENCODE_INSTALL_DOCS_URL = "https://opencode.ai/docs/#install"
 OPENCODE_MODELS_DOCS_URL = "https://opencode.ai/docs/zen"
 OPENCODE_AUTH_URL = "https://opencode.ai/auth"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_PROBE_BYTES = 256 * 1024
+DOWNLOAD_PROBE_TIMEOUT = 6
+DOWNLOAD_SLOW_WINDOW_SECONDS = 12
+DOWNLOAD_MIN_SWITCH_RATE = 128 * 1024
+DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 1
 INSPECTION_CACHE_SECONDS = 30
 ACTIVATION_TEST_TIMEOUT = 60
 
@@ -70,6 +78,33 @@ _auth_sessions_lock = threading.Lock()
 class _ManagedAuthSession:
     process: Any
     credential: str = ""
+
+
+@dataclass(frozen=True)
+class _DownloadSource:
+    label: str
+    url: str
+    archive_format: str
+    digest_algorithm: str
+    expected_digest: str
+    expected_size: int
+
+    @property
+    def artifact_key(self) -> str:
+        return f"{self.digest_algorithm}-{self.expected_digest[:16]}"
+
+
+@dataclass(frozen=True)
+class _DownloadProbe:
+    source: _DownloadSource
+    available: bool
+    bytes_per_second: float = 0
+    latency_seconds: float = 0
+    error: str | None = None
+
+
+class _SlowDownloadSource(RuntimeError):
+    """Signal that a resumable download should continue on another source."""
 
 
 _auth_sessions: dict[str, _ManagedAuthSession] = {}
@@ -238,32 +273,6 @@ def _set_job(job_id: str, **changes: Any) -> dict[str, Any]:
         return dict(job)
 
 
-def _download_asset(
-    url: str,
-    destination: Path,
-    *,
-    expected_sha256: str,
-    progress: Callable[[int, int], None],
-) -> None:
-    request = Request(url, headers={"User-Agent": "Siming-OpenCode-Onboarding"})
-    sha256 = hashlib.sha256()
-    with urlopen(request, timeout=60) as response, destination.open("wb") as output:
-        total = int(response.headers.get("Content-Length") or 0)
-        downloaded = 0
-        while True:
-            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-            if not chunk:
-                break
-            output.write(chunk)
-            sha256.update(chunk)
-            downloaded += len(chunk)
-            progress(downloaded, total)
-    actual = sha256.hexdigest().lower()
-    if actual != expected_sha256.lower():
-        destination.unlink(missing_ok=True)
-        raise RuntimeError("OpenCode 安装包 SHA256 校验失败，文件已删除")
-
-
 def _mirror_urls(official_url: str, asset_name: str) -> list[str]:
     """Return operator-approved mirrors without trusting them for integrity."""
     configured = os.environ.get("SIMING_OPENCODE_MIRROR_URLS", "")
@@ -278,98 +287,445 @@ def _mirror_urls(official_url: str, asset_name: str) -> list[str]:
     return urls
 
 
+def _download_sources(asset: dict[str, Any]) -> list[_DownloadSource]:
+    """Build verified source candidates, including operator-provided ZIP mirrors."""
+    raw_sources = list(asset.get("download_sources") or [])
+    official_url = str(asset.get("browser_download_url") or "").strip()
+    if not raw_sources and official_url:
+        raw_sources.append({
+            "label": "GitHub 官方源",
+            "url": official_url,
+            "archive_format": "zip",
+            "size": int(asset.get("size") or 0),
+            "digest": str(asset.get("digest") or ""),
+        })
+
+    if official_url:
+        official_source = next(
+            (item for item in raw_sources if str(item.get("url") or "") == official_url),
+            None,
+        )
+        if official_source:
+            mirror_urls = _mirror_urls(
+                official_url,
+                str(asset.get("name") or ""),
+            )[1:]
+            for index, url in enumerate(mirror_urls, 1):
+                raw_sources.append({
+                    **official_source,
+                    "label": f"自定义加速源 {index}",
+                    "url": url,
+                })
+
+    sources: list[_DownloadSource] = []
+    seen_urls: set[str] = set()
+    for item in raw_sources:
+        url = str(item.get("url") or "").strip()
+        if urlparse(url).scheme.lower() != "https" or url in seen_urls:
+            continue
+        digest_value = str(item.get("digest") or "").strip().lower()
+        algorithm, separator, digest = digest_value.partition(":")
+        archive_format = str(item.get("archive_format") or "zip").strip().lower()
+        if separator != ":" or algorithm not in {"sha256", "sha512"}:
+            continue
+        if archive_format not in {"zip", "tgz"}:
+            continue
+        expected_length = hashlib.new(algorithm).digest_size * 2
+        invalid_hex = any(
+            character not in "0123456789abcdef"
+            for character in digest
+        )
+        if len(digest) != expected_length or invalid_hex:
+            continue
+        seen_urls.add(url)
+        sources.append(_DownloadSource(
+            label=str(item.get("label") or "备用下载源").strip() or "备用下载源",
+            url=url,
+            archive_format=archive_format,
+            digest_algorithm=algorithm,
+            expected_digest=digest,
+            expected_size=max(0, int(item.get("size") or 0)),
+        ))
+    return sources
+
+
+def _download_source_label(url: str | None) -> str | None:
+    if not url:
+        return None
+    host = (urlparse(url).hostname or "").lower()
+    if host == "registry.npmmirror.com" or host.endswith(".npmmirror.com"):
+        return "国内加速源"
+    if host == "registry.npmjs.org" or host.endswith(".npmjs.org"):
+        return "npm 官方源"
+    if host == "github.com" or host.endswith(".githubusercontent.com"):
+        return "GitHub 官方源"
+    return "自定义加速源"
+
+
+def _read_available_chunk(response: Any, size: int) -> bytes:
+    """Prefer a single buffered read so slow trickles can be measured promptly."""
+    read_once = getattr(response, "read1", None)
+    if callable(read_once):
+        return read_once(size)
+    return response.read(size)
+
+
+def _probe_download_source(source: _DownloadSource) -> _DownloadProbe:
+    """Read a small range so source ordering reflects this computer's network."""
+    started = time.monotonic()
+    request = Request(
+        source.url,
+        headers={
+            "User-Agent": "Siming-OpenCode-Onboarding",
+            "Range": f"bytes=0-{DOWNLOAD_PROBE_BYTES - 1}",
+            "Accept-Encoding": "identity",
+        },
+    )
+    try:
+        with urlopen(request, timeout=DOWNLOAD_PROBE_TIMEOUT) as response:
+            chunks: list[bytes] = []
+            received = 0
+            deadline = started + DOWNLOAD_PROBE_TIMEOUT
+            while received < DOWNLOAD_PROBE_BYTES and time.monotonic() < deadline:
+                chunk = _read_available_chunk(response, DOWNLOAD_PROBE_BYTES - received)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+            sample = b"".join(chunks)
+        elapsed = max(0.001, time.monotonic() - started)
+        if not sample:
+            raise RuntimeError("测速没有收到数据")
+        return _DownloadProbe(
+            source=source,
+            available=True,
+            bytes_per_second=len(sample) / elapsed,
+            latency_seconds=elapsed,
+        )
+    except Exception as exc:
+        return _DownloadProbe(
+            source=source,
+            available=False,
+            latency_seconds=max(0.001, time.monotonic() - started),
+            error=str(exc),
+        )
+
+
+def _rank_download_sources(sources: list[_DownloadSource]) -> list[_DownloadProbe]:
+    """Probe candidates in parallel and put the fastest reachable source first."""
+    if len(sources) <= 1:
+        return [_probe_download_source(source) for source in sources]
+    source_order = {source.url: index for index, source in enumerate(sources)}
+    probes: list[_DownloadProbe] = []
+    with ThreadPoolExecutor(
+        max_workers=min(4, len(sources)),
+        thread_name_prefix="opencode-source",
+    ) as executor:
+        futures = {executor.submit(_probe_download_source, source): source for source in sources}
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                probes.append(future.result())
+            except Exception as exc:  # pragma: no cover - the probe normally captures errors
+                probes.append(_DownloadProbe(source=source, available=False, error=str(exc)))
+    return sorted(
+        probes,
+        key=lambda probe: (
+            not probe.available,
+            -probe.bytes_per_second if probe.available else 0,
+            probe.latency_seconds,
+            source_order[probe.source.url],
+        ),
+    )
+
+
+def _file_matches_digest(path: Path, algorithm: str, expected_digest: str) -> bool:
+    digest = hashlib.new(algorithm)
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(DOWNLOAD_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower() == expected_digest.lower()
+
+
 def _download_asset_resumable(
     url: str,
     destination: Path,
     *,
-    expected_sha256: str,
     progress: Callable[[int, int], None],
+    expected_sha256: str | None = None,
+    expected_digest: str | None = None,
+    digest_algorithm: str = "sha256",
+    expected_size: int = 0,
 ) -> None:
     """Download with Range resume and verify the complete file afterwards."""
+    verified_digest = str(expected_digest or expected_sha256 or "").lower()
+    if not verified_digest:
+        raise RuntimeError("OpenCode 下载源缺少构建时固定的文件摘要")
+    if digest_algorithm not in {"sha256", "sha512"}:
+        raise RuntimeError("OpenCode 下载源使用了不支持的摘要算法")
     destination.parent.mkdir(parents=True, exist_ok=True)
     existing = destination.stat().st_size if destination.exists() else 0
-    if existing:
-        digest = hashlib.sha256()
-        with destination.open("rb") as source:
-            for chunk in iter(lambda: source.read(DOWNLOAD_CHUNK_SIZE), b""):
-                digest.update(chunk)
-        if digest.hexdigest().lower() == expected_sha256.lower():
+    if expected_size and existing > expected_size:
+        destination.unlink(missing_ok=True)
+        existing = 0
+    if existing and (not expected_size or existing == expected_size):
+        if _file_matches_digest(destination, digest_algorithm, verified_digest):
             progress(existing, existing)
             return
+        if expected_size and existing == expected_size:
+            destination.unlink(missing_ok=True)
+            existing = 0
     headers = {"User-Agent": "Siming-OpenCode-Onboarding"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
     request = Request(url, headers=headers)
     with urlopen(request, timeout=60) as response:
-        partial = existing > 0 and getattr(response, "status", None) == 206
+        content_range = str(response.headers.get("Content-Range") or "")
+        partial = (
+            existing > 0
+            and getattr(response, "status", None) == 206
+            and content_range.startswith(f"bytes {existing}-")
+        )
         mode = "ab" if partial else "wb"
         downloaded = existing if partial else 0
         remaining = int(response.headers.get("Content-Length") or 0)
-        total = downloaded + remaining if remaining else 0
+        total = expected_size or (downloaded + remaining if remaining else 0)
         with destination.open(mode) as output:
+            last_reported = downloaded
+            last_reported_at = time.monotonic()
             while True:
-                chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                chunk = _read_available_chunk(response, DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 output.write(chunk)
                 downloaded += len(chunk)
+                now = time.monotonic()
+                if now - last_reported_at >= DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
+                    progress(downloaded, total)
+                    last_reported = downloaded
+                    last_reported_at = now
+            if downloaded != last_reported:
                 progress(downloaded, total)
 
-    digest = hashlib.sha256()
-    with destination.open("rb") as source:
-        for chunk in iter(lambda: source.read(DOWNLOAD_CHUNK_SIZE), b""):
-            digest.update(chunk)
-    if digest.hexdigest().lower() != expected_sha256.lower():
+    actual_size = destination.stat().st_size
+    if expected_size and actual_size != expected_size:
+        if actual_size < expected_size:
+            raise RuntimeError(
+                f"连接提前结束（已下载 {actual_size}/{expected_size} 字节），进度已保留"
+            )
         destination.unlink(missing_ok=True)
-        raise RuntimeError("下载文件与 OpenCode 官方 SHA256 不一致，已删除并停止安装")
-
-
-def _extract_opencode(zip_path: Path, destination: Path) -> None:
-    with zipfile.ZipFile(zip_path) as archive:
-        member = next(
-            (
-                item for item in archive.infolist()
-                if not item.is_dir() and PurePosixPath(item.filename).name.lower() == "opencode.exe"
-            ),
-            None,
+        raise RuntimeError(f"下载文件大小异常（应为 {expected_size} 字节），已删除")
+    if not _file_matches_digest(destination, digest_algorithm, verified_digest):
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"下载文件与 OpenCode 发布时固定的 {digest_algorithm.upper()} 不一致，已删除"
         )
-        if member is None:
-            raise RuntimeError("OpenCode 官方安装包中没有找到 opencode.exe")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(".exe.new")
-        with archive.open(member) as source, temporary.open("wb") as output:
-            shutil.copyfileobj(source, output, length=DOWNLOAD_CHUNK_SIZE)
-        os.replace(temporary, destination)
+
+
+def _extract_opencode(
+    archive_path: Path,
+    destination: Path,
+    *,
+    archive_format: str = "zip",
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".exe.new")
+    if archive_format == "zip":
+        with zipfile.ZipFile(archive_path) as archive:
+            member = next(
+                (
+                    item for item in archive.infolist()
+                    if not item.is_dir()
+                    and PurePosixPath(item.filename).name.lower() == "opencode.exe"
+                ),
+                None,
+            )
+            if member is None:
+                raise RuntimeError("OpenCode 官方安装包中没有找到 opencode.exe")
+            with archive.open(member) as source, temporary.open("wb") as output:
+                shutil.copyfileobj(source, output, length=DOWNLOAD_CHUNK_SIZE)
+    elif archive_format == "tgz":
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            member = next(
+                (
+                    item for item in archive.getmembers()
+                    if item.isfile()
+                    and PurePosixPath(item.name).name.lower() == "opencode.exe"
+                ),
+                None,
+            )
+            if member is None:
+                raise RuntimeError("OpenCode 官方 npm 包中没有找到 opencode.exe")
+            source = archive.extractfile(member)
+            if source is None:
+                raise RuntimeError("OpenCode 官方 npm 包中的 opencode.exe 无法读取")
+            with source, temporary.open("wb") as output:
+                shutil.copyfileobj(source, output, length=DOWNLOAD_CHUNK_SIZE)
+    else:
+        raise RuntimeError(f"不支持的 OpenCode 安装包格式：{archive_format}")
+    os.replace(temporary, destination)
+
+
+def _download_part_path(root: Path, asset_name: str, source: _DownloadSource) -> Path:
+    base_name = Path(asset_name).stem or "opencode-windows"
+    return root / "downloads" / (
+        f"{base_name}-{source.artifact_key}.{source.archive_format}.part"
+    )
+
+
+def _download_release_archive(
+    root: Path,
+    asset: dict[str, Any],
+    *,
+    on_event: Callable[[str, dict[str, Any]], None],
+) -> tuple[Path, _DownloadSource, set[Path]]:
+    """Select, download, and verify a release archive across safe sources."""
+    sources = _download_sources(asset)
+    if not sources:
+        raise RuntimeError("OpenCode 发布目录中没有可校验的 HTTPS 下载源")
+    on_event("probing", {"source_count": len(sources)})
+    probes = _rank_download_sources(sources)
+    ordered = [probe.source for probe in probes]
+    probe_by_url = {probe.source.url: probe for probe in probes}
+    part_paths = {
+        _download_part_path(root, str(asset.get("name") or "opencode.zip"), source)
+        for source in sources
+    }
+    errors: list[str] = []
+    attempts = ordered * 2
+
+    for attempt_index, source in enumerate(attempts):
+        source_position = ordered.index(source) + 1
+        can_switch = attempt_index < len(attempts) - 1
+        probe = probe_by_url[source.url]
+        archive_path = _download_part_path(
+            root,
+            str(asset.get("name") or "opencode.zip"),
+            source,
+        )
+        start_bytes = archive_path.stat().st_size if archive_path.exists() else 0
+        attempt_started = time.monotonic()
+        on_event("source_selected", {
+            "source": source,
+            "source_position": source_position,
+            "source_count": len(ordered),
+            "round": attempt_index // len(ordered) + 1,
+            "probe": probe,
+            "resuming_bytes": start_bytes,
+        })
+
+        def on_progress(
+            downloaded: int,
+            total: int,
+            *,
+            started: float = attempt_started,
+            initial_bytes: int = start_bytes,
+            active_source: _DownloadSource = source,
+            allow_switch: bool = can_switch,
+        ) -> None:
+            elapsed = max(0.1, time.monotonic() - started)
+            transferred = max(0, downloaded - initial_bytes)
+            rate = transferred / elapsed
+            remaining = int((total - downloaded) / rate) if total and rate > 0 else None
+            on_event("progress", {
+                "source": active_source,
+                "downloaded": downloaded,
+                "total": total,
+                "bytes_per_second": rate,
+                "estimated_seconds_remaining": remaining,
+            })
+            if (
+                allow_switch
+                and elapsed >= DOWNLOAD_SLOW_WINDOW_SECONDS
+                and rate < DOWNLOAD_MIN_SWITCH_RATE
+            ):
+                raise _SlowDownloadSource(
+                    f"{active_source.label} 持续速度低于 "
+                    f"{DOWNLOAD_MIN_SWITCH_RATE // 1024} KB/s"
+                )
+
+        try:
+            _download_asset_resumable(
+                source.url,
+                archive_path,
+                progress=on_progress,
+                expected_digest=source.expected_digest,
+                digest_algorithm=source.digest_algorithm,
+                expected_size=source.expected_size,
+            )
+            return archive_path, source, part_paths
+        except Exception as exc:
+            errors.append(f"{source.label}（第 {attempt_index // len(ordered) + 1} 轮）：{exc}")
+            if can_switch:
+                on_event("switching", {
+                    "source": source,
+                    "reason": str(exc),
+                    "next_source": attempts[attempt_index + 1],
+                })
+
+    raise RuntimeError("所有安全下载线路均未完成。" + "；".join(errors[-4:]))
 
 
 def _install_worker(job_id: str) -> None:
     root = managed_opencode_root()
     try:
-        _set_job(job_id, status="running", phase="checking_release", percent=2, message="正在读取 OpenCode 官方发行信息")
+        _set_job(
+            job_id,
+            status="running",
+            phase="checking_release",
+            percent=2,
+            message="正在读取 OpenCode 官方发行信息",
+        )
         version, asset = _latest_release_asset()
         expected_sha256 = str(asset["digest"]).removeprefix("sha256:")
-        download_url = str(asset.get("browser_download_url") or "")
-        if not download_url:
-            raise RuntimeError("OpenCode 官方安装包没有下载地址")
         root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="download-", dir=root) as temporary_dir:
-            archive_path = Path(temporary_dir) / str(asset["name"])
 
-            def on_progress(downloaded: int, total: int) -> None:
-                fraction = downloaded / total if total else 0
+        def on_event(event: str, details: dict[str, Any]) -> None:
+            if event == "probing":
+                _set_job(
+                    job_id,
+                    phase="selecting_source",
+                    percent=3,
+                    message=f"正在测速 {details['source_count']} 条安全下载线路",
+                )
+            elif event == "source_selected":
+                source = details["source"]
                 _set_job(
                     job_id,
                     phase="downloading",
+                    percent=5,
+                    message=f"已选择{source.label}，正在下载 {version}",
+                    download_url=source.url,
+                    download_source=source.label,
+                )
+            elif event == "progress":
+                downloaded = int(details["downloaded"])
+                total = int(details["total"])
+                fraction = downloaded / total if total else 0
+                _set_job(
+                    job_id,
                     percent=max(5, min(85, int(5 + fraction * 80))),
                     bytes_downloaded=downloaded,
                     bytes_total=total,
-                    message="正在从 OpenCode 官方 GitHub 下载 Windows CLI",
+                    estimated_seconds_remaining=details["estimated_seconds_remaining"],
+                    bytes_per_second=int(details["bytes_per_second"]),
+                )
+            elif event == "switching":
+                _set_job(
+                    job_id,
+                    message=f"当前线路不稳定，正在切换到{details['next_source'].label}",
                 )
 
-            _download_asset(download_url, archive_path, expected_sha256=expected_sha256, progress=on_progress)
-            _set_job(job_id, phase="installing", percent=90, message="下载完成，正在解压到司命专用目录")
-            command = managed_opencode_command()
-            _extract_opencode(archive_path, command)
+        archive_path, source, part_paths = _download_release_archive(
+            root,
+            asset,
+            on_event=on_event,
+        )
+        _set_job(job_id, phase="installing", percent=90, message="下载完成，正在解压到司命专用目录")
+        command = managed_opencode_command()
+        _extract_opencode(archive_path, command, archive_format=source.archive_format)
+        for part_path in part_paths:
+            part_path.unlink(missing_ok=True)
 
         _set_job(job_id, phase="verifying", percent=96, message="正在检查 OpenCode 是否可以运行")
         inspected = inspect_opencode(str(managed_opencode_command()), timeout=15, refresh=True)
@@ -379,7 +735,9 @@ def _install_worker(job_id: str) -> None:
             "version": version,
             "asset": asset["name"],
             "sha256": expected_sha256,
-            "source": download_url,
+            "source": source.url,
+            "source_label": source.label,
+            "source_digest": f"{source.digest_algorithm}:{source.expected_digest}",
             "command": str(managed_opencode_command()),
             "installed_at": datetime.now(UTC).isoformat(),
         }
@@ -460,6 +818,7 @@ def _activation_payload(job: Any) -> dict[str, Any]:
         "preferred_model": job.preferred_model,
         "free_models": list(job.free_models_json or []),
         "download_url": job.download_url,
+        "download_source": _download_source_label(job.download_url),
         "sha256": job.sha256,
         "bytes_downloaded": job.bytes_downloaded or 0,
         "bytes_total": job.bytes_total or 0,
@@ -757,64 +1116,79 @@ def _install_for_activation(job_id: str) -> tuple[str, str, str]:
     )
     version, asset = _latest_release_asset()
     expected_sha256 = str(asset["digest"]).removeprefix("sha256:")
-    official_url = str(asset.get("browser_download_url") or "")
-    if not official_url:
-        raise RuntimeError("OpenCode 官方安装包没有下载地址")
-    archive_path = root / "downloads" / f"{asset['name']}.part"
-    errors: list[str] = []
-    download_started = time.monotonic()
 
-    for source_url in _mirror_urls(official_url, str(asset["name"])):
-        for attempt in range(2):
-            try:
-                _update_activation(
-                    job_id,
-                    status="running",
-                    phase="downloading",
-                    percent=5,
-                    message=f"正在从 OpenCode 官方发行页下载 {version}",
-                    download_url=source_url,
-                    sha256=expected_sha256,
-                )
+    def on_event(event: str, details: dict[str, Any]) -> None:
+        if event == "probing":
+            _update_activation(
+                job_id,
+                status="running",
+                phase="selecting_source",
+                percent=3,
+                message=f"正在测速 {details['source_count']} 条安全下载线路",
+                sha256=expected_sha256,
+            )
+        elif event == "source_selected":
+            source = details["source"]
+            probe = details["probe"]
+            measured = (
+                f"，测速约 {probe.bytes_per_second / 1024 / 1024:.1f} MB/s"
+                if probe.available and probe.bytes_per_second > 0
+                else ""
+            )
+            resumed = "，继续已有进度" if details["resuming_bytes"] else ""
+            _update_activation(
+                job_id,
+                status="running",
+                phase="downloading",
+                percent=5,
+                message=f"已选择{source.label}{measured}{resumed}，正在下载 {version}",
+                download_url=source.url,
+                sha256=expected_sha256,
+                bytes_downloaded=int(details["resuming_bytes"]),
+                bytes_total=source.expected_size,
+            )
+        elif event == "progress":
+            downloaded = int(details["downloaded"])
+            total = int(details["total"])
+            fraction = downloaded / total if total else 0
+            _update_activation(
+                job_id,
+                percent=max(5, min(78, int(5 + fraction * 73))),
+                bytes_downloaded=downloaded,
+                bytes_total=total,
+                estimated_seconds_remaining=details["estimated_seconds_remaining"],
+            )
+        elif event == "switching":
+            _update_activation(
+                job_id,
+                phase="switching_source",
+                message=f"当前线路速度过慢或连接失败，正在切换到{details['next_source'].label}",
+            )
 
-                def on_progress(downloaded: int, total: int) -> None:
-                    fraction = downloaded / total if total else 0
-                    elapsed = max(0.1, time.monotonic() - download_started)
-                    rate = downloaded / elapsed
-                    remaining = int((total - downloaded) / rate) if total and rate > 0 else None
-                    _update_activation(
-                        job_id,
-                        percent=max(5, min(78, int(5 + fraction * 73))),
-                        bytes_downloaded=downloaded,
-                        bytes_total=total,
-                        estimated_seconds_remaining=remaining,
-                    )
-
-                _download_asset_resumable(
-                    source_url,
-                    archive_path,
-                    expected_sha256=expected_sha256,
-                    progress=on_progress,
-                )
-                command = managed_opencode_command()
-                _update_activation(job_id, phase="verifying", percent=82, message="下载完成，正在校验并安装")
-                _extract_opencode(archive_path, command)
-                archive_path.unlink(missing_ok=True)
-                metadata = {
-                    "version": version,
-                    "asset": asset["name"],
-                    "sha256": expected_sha256,
-                    "source": source_url,
-                    "command": str(command),
-                    "installed_at": datetime.now(UTC).isoformat(),
-                }
-                (root / "install.json").write_text(
-                    json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                return str(command), version, expected_sha256
-            except Exception as exc:
-                errors.append(f"{source_url} 第 {attempt + 1} 次：{exc}")
-    raise RuntimeError("所有下载线路均未完成。" + "；".join(errors[-3:]))
+    archive_path, source, part_paths = _download_release_archive(
+        root,
+        asset,
+        on_event=on_event,
+    )
+    command = managed_opencode_command()
+    _update_activation(job_id, phase="verifying", percent=82, message="下载完成，正在校验并安装")
+    _extract_opencode(archive_path, command, archive_format=source.archive_format)
+    for part_path in part_paths:
+        part_path.unlink(missing_ok=True)
+    metadata = {
+        "version": version,
+        "asset": asset["name"],
+        "sha256": expected_sha256,
+        "source": source.url,
+        "source_label": source.label,
+        "source_digest": f"{source.digest_algorithm}:{source.expected_digest}",
+        "command": str(command),
+        "installed_at": datetime.now(UTC).isoformat(),
+    }
+    (root / "install.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return str(command), version, expected_sha256
 
 
 def _activation_worker(job_id: str) -> None:

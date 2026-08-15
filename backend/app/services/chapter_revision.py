@@ -12,22 +12,40 @@ from ..core.utils import count_words
 from ..database.models import Chapter, Project
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..prompts.anti_ai_prompts import (
+    apply_de_ai_macro_ledger,
     build_de_ai_chunk_repair_prompt,
     build_de_ai_chunked_rewrite_prompts,
     build_de_ai_fidelity_audit_prompt,
+    build_de_ai_macro_ledger_compression_prompt,
+    build_de_ai_macro_ledger_retry_feedback,
     build_de_ai_story_ledger_prompt,
     build_de_ai_style_audit_prompt,
     build_de_ai_style_repair_prompt,
+    normalize_de_ai_macro_ledger,
+    validate_de_ai_macro_ledger,
 )
 from ..prompts.style_prompts import build_style_context
 from .de_ai_validation import (
+    DE_AI_STRUCTURAL_OUTPUT_ATTEMPTS,
+    DE_AI_STRUCTURAL_REPAIR_ATTEMPTS,
     assess_de_ai_revision,
     count_de_ai_visible_characters,
     de_ai_chunk_length_rank,
+    de_ai_style_issue_rank,
+    is_de_ai_structural_branch_repairable,
     parse_de_ai_chunk_target,
     parse_de_ai_fidelity_audit,
     parse_de_ai_style_audit,
 )
+
+
+_DE_AI_API_LEDGER_TIMEOUT_SECONDS = 180
+_DE_AI_API_GENERATION_TIMEOUT_SECONDS = 240
+_DE_AI_LOCAL_CLI_GENERATION_TIMEOUT_SECONDS = 600
+_DE_AI_API_OPTIONAL_LENGTH_RETRY_SECONDS = 90.0
+_DE_AI_LOCAL_CLI_OPTIONAL_LENGTH_RETRY_SECONDS = 600.0
+_DE_AI_API_REVIEW_TIMEOUT_SECONDS = 180.0
+_DE_AI_LOCAL_CLI_REVIEW_TIMEOUT_SECONDS = 900.0
 
 
 def _clean_revision_output(value: Any) -> str:
@@ -293,7 +311,10 @@ async def preview_de_ai_revision(
         "moshu_task_type": "writing",
         "moshu_project_id": project_id,
     }
-    if is_local_cli_provider(LLMGateway.provider_for_model(model)):
+    provider_is_local_cli = is_local_cli_provider(
+        LLMGateway.provider_for_model(model)
+    )
+    if provider_is_local_cli:
         # A button-triggered text transform receives the text explicitly. It
         # needs neither filesystem access nor MCP write permission.
         request_body.update({
@@ -307,7 +328,11 @@ async def preview_de_ai_revision(
             model=model,
             temperature=0.1,
             max_tokens=ledger_max_tokens,
-            timeout=600,
+            timeout=(
+                _DE_AI_LOCAL_CLI_GENERATION_TIMEOUT_SECONDS
+                if provider_is_local_cli
+                else _DE_AI_API_LEDGER_TIMEOUT_SECONDS
+            ),
             retry=1,
             extra_body=extra_body,
         )
@@ -322,6 +347,83 @@ async def preview_de_ai_revision(
         )
         if not chunk_prompts:
             raise LLMError("去除 AI 味失败：故事账本无法切分为连续场景")
+        detailed_chunk_prompts = list(chunk_prompts)
+        if count_de_ai_visible_characters(original) >= 1_500:
+            compact_semaphore = asyncio.Semaphore(
+                1 if str(model or "").startswith("opencode_cli:") else 2
+            )
+
+            async def compact_chunk_prompt(chunk_prompt: str) -> str:
+                async with compact_semaphore:
+                    compact_prompt = build_de_ai_macro_ledger_compression_prompt(
+                        chunk_prompt
+                    )
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是小说事实账本压缩员。把详细事件合并成少量宏观叙事单元，"
+                                "保留人物、物件归属、数字、条件、因果、对白信息和先后。"
+                                "只输出用户要求的短账本，不写小说正文。"
+                            ),
+                        },
+                        {"role": "user", "content": compact_prompt},
+                    ]
+                    try:
+                        compact_ledger = ""
+                        valid_compact = False
+                        for compact_attempt in range(2):
+                            compact_result = await LLMGateway.chat_completion(
+                                messages=messages,
+                                model=model,
+                                temperature=0,
+                                max_tokens=1_500,
+                                timeout=(
+                                    _DE_AI_LOCAL_CLI_GENERATION_TIMEOUT_SECONDS
+                                    if provider_is_local_cli
+                                    else _DE_AI_API_LEDGER_TIMEOUT_SECONDS
+                                ),
+                                retry=1,
+                                extra_body=extra_body,
+                            )
+                            compact_ledger = normalize_de_ai_macro_ledger(
+                                _clean_revision_output(compact_result.get("content"))
+                            )
+                            valid_compact, missing = validate_de_ai_macro_ledger(
+                                chunk_prompt,
+                                compact_ledger,
+                            )
+                            if valid_compact:
+                                break
+                            if compact_attempt == 0:
+                                messages = [
+                                    *messages,
+                                    {"role": "assistant", "content": compact_ledger},
+                                    {
+                                        "role": "user",
+                                        "content": build_de_ai_macro_ledger_retry_feedback(
+                                            chunk_prompt,
+                                            compact_ledger,
+                                            missing,
+                                        ),
+                                    },
+                                ]
+                    except Exception:
+                        # Compression improves granularity but is not allowed
+                        # to hide an otherwise usable preview.
+                        return chunk_prompt
+                if not valid_compact:
+                    return chunk_prompt
+                # The macro ledger shapes prose granularity; it is not the
+                # story-safety authority.  One deterministic validation here
+                # keeps preview latency bounded, while the assembled candidate
+                # is still audited and repaired against the immutable source.
+                return apply_de_ai_macro_ledger(chunk_prompt, compact_ledger)
+
+            chunk_prompts = list(await asyncio.gather(*(
+                compact_chunk_prompt(chunk_prompt)
+                for chunk_prompt in chunk_prompts
+            )))
         model_name = str(model or "")
         if model_name.startswith("opencode_cli:"):
             concurrency_limit = 1
@@ -330,12 +432,25 @@ async def preview_de_ai_revision(
         else:
             concurrency_limit = 3
         semaphore = asyncio.Semaphore(min(concurrency_limit, len(chunk_prompts)))
+        event_loop = asyncio.get_running_loop()
+        optional_length_retry_seconds = (
+            _DE_AI_LOCAL_CLI_OPTIONAL_LENGTH_RETRY_SECONDS
+            if provider_is_local_cli
+            else _DE_AI_API_OPTIONAL_LENGTH_RETRY_SECONDS
+        )
+        generation_timeout_seconds = (
+            _DE_AI_LOCAL_CLI_GENERATION_TIMEOUT_SECONDS
+            if provider_is_local_cli
+            else _DE_AI_API_GENERATION_TIMEOUT_SECONDS
+        )
 
         async def generate_chunk(
             chunk_index: int,
             chunk_prompt: str,
+            *,
+            max_attempts: int = 3,
+            retry_usable_length: bool = True,
         ) -> tuple[str, dict[str, Any]]:
-            max_attempts = 3
             chunk_text = ""
             chunk_result: dict[str, Any] = {}
             best_chunk_text = ""
@@ -343,7 +458,17 @@ async def preview_de_ai_revision(
             best_length_rank: tuple[int, int, int] | None = None
             active_prompt = chunk_prompt
             target = parse_de_ai_chunk_target(chunk_prompt)
+            optional_length_retry_deadline: float | None = None
             for attempt in range(max_attempts):
+                # The first complete scene is mandatory.  Further calls only
+                # fine-tune its length, so never let those optional retries
+                # keep a usable whole-chapter candidate hidden indefinitely.
+                if (
+                    attempt > 0
+                    and optional_length_retry_deadline is not None
+                    and event_loop.time() >= optional_length_retry_deadline
+                ):
+                    break
                 async with semaphore:
                     chunk_result = await LLMGateway.chat_completion(
                         messages=[
@@ -353,11 +478,18 @@ async def preview_de_ai_revision(
                         model=model,
                         temperature=0.95,
                         max_tokens=2_500,
-                        timeout=600,
+                        timeout=generation_timeout_seconds,
                         retry=1,
                         extra_body=extra_body,
                     )
                 chunk_text = _clean_revision_output(chunk_result.get("content"))
+                if attempt == 0:
+                    # A slow mandatory first generation must not consume the
+                    # optional retry budget before a candidate even exists.
+                    # Start the bounded window only after that first response.
+                    optional_length_retry_deadline = (
+                        event_loop.time() + optional_length_retry_seconds
+                    )
                 visible_length = count_de_ai_visible_characters(chunk_text)
                 if len(chunk_text) >= 40:
                     length_rank = de_ai_chunk_length_rank(visible_length, target)
@@ -386,7 +518,10 @@ async def preview_de_ai_revision(
                         f"{target[0]}至{target[1]}字；删掉解释、同义复述和可选陈设，"
                         "不得删除硬事实。"
                     )
-                if len(chunk_text) >= 40 and not length_issue:
+                if (
+                    len(chunk_text) >= 40
+                    and (not length_issue or not retry_usable_length)
+                ):
                     break
                 active_prompt = build_de_ai_chunk_repair_prompt(
                     chunk_prompt,
@@ -406,6 +541,34 @@ async def preview_de_ai_revision(
         ))
         chunk_texts = [item[0] for item in chunk_outputs]
         result = chunk_outputs[-1][1]
+        review_deadline = event_loop.time() + (
+            _DE_AI_LOCAL_CLI_REVIEW_TIMEOUT_SECONDS
+            if provider_is_local_cli
+            else _DE_AI_API_REVIEW_TIMEOUT_SECONDS
+        )
+
+        def review_remaining_seconds() -> float:
+            return review_deadline - event_loop.time()
+
+        async def review_chat_completion(**kwargs: Any) -> dict[str, Any]:
+            """Bound optional review work after a complete candidate exists."""
+
+            remaining = review_remaining_seconds()
+            if remaining <= 0.05:
+                raise TimeoutError(
+                    "候选稿已生成；系统审核达到本轮时限，请对照原文确认"
+                )
+            requested_timeout = float(kwargs.get("timeout") or remaining)
+            kwargs["timeout"] = max(1, min(requested_timeout, remaining))
+            try:
+                return await asyncio.wait_for(
+                    LLMGateway.chat_completion(**kwargs),
+                    timeout=remaining,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    "候选稿已生成；系统审核达到本轮时限，请对照原文确认"
+                ) from exc
 
         fidelity_issue_history: dict[int, list[dict[str, Any]]] = {}
 
@@ -443,9 +606,11 @@ async def preview_de_ai_revision(
                 )
                 if focus_lines:
                     audit_prompt += (
-                        "\n\n【必须逐项复核的历史错误】\n"
-                        "下列错误曾在较早候选中出现。即使本稿文字更流畅，也必须明确检查是否复发；"
-                        "复发则 passed=false。\n"
+                        "\n\n【历史问题仅作复核线索】\n"
+                        "下列问题曾在较早候选中出现。必须重新以本轮不可变原文和当前候选为准；"
+                        "只有当前候选仍存在同一事实错误时才报告。若历史意见与原文、当前候选或"
+                        "另一条历史意见冲突，不得沿用历史结论。原文自身存在未交代的状态跳变时，"
+                        "只核对候选是否保留两端状态，不要求补写中间过程。\n"
                         + focus_lines
                     )
                 messages = [
@@ -464,7 +629,7 @@ async def preview_de_ai_revision(
                     "issues": [],
                 }
                 for _protocol_attempt in range(2):
-                    audit_result = await LLMGateway.chat_completion(
+                    audit_result = await review_chat_completion(
                         messages=messages,
                         model=model,
                         temperature=0,
@@ -522,7 +687,7 @@ async def preview_de_ai_revision(
                     "issues": [],
                 }
                 for _protocol_attempt in range(2):
-                    audit_result = await LLMGateway.chat_completion(
+                    audit_result = await review_chat_completion(
                         messages=messages,
                         model=model,
                         temperature=0,
@@ -570,7 +735,7 @@ async def preview_de_ai_revision(
                 matching_chunk = next(
                     (
                         index
-                        for index, prompt in enumerate(chunk_prompts, start=1)
+                        for index, prompt in enumerate(detailed_chunk_prompts, start=1)
                         if str(token) in prompt
                     ),
                     None,
@@ -598,31 +763,26 @@ async def preview_de_ai_revision(
                 pending_issues = collect_repair_issues(audit)
                 if not pending_issues:
                     break
+                current_issue_history: dict[int, list[dict[str, Any]]] = {}
                 for chunk_index, issues in pending_issues.items():
                     for issue in issues:
                         remember_fidelity_issue(issue)
-                    history = issue_history.setdefault(chunk_index, [])
-                    known = {
-                        (
-                            str(item.get("kind") or ""),
-                            str(item.get("detail") or ""),
-                        )
-                        for item in history
-                    }
-                    for issue in issues:
-                        identity = (
-                            str(issue.get("kind") or ""),
-                            str(issue.get("detail") or ""),
-                        )
-                        if identity not in known:
-                            history.append(issue)
-                            known.add(identity)
+                    # Repair only what the current audit still confirms.  Old
+                    # findings remain hints for the next independent audit,
+                    # not permanent prose constraints; otherwise conflicting
+                    # audits can make a faithful source impossible to satisfy.
+                    current_issue_history[chunk_index] = [dict(issue) for issue in issues]
+                    issue_history[chunk_index] = current_issue_history[chunk_index]
                 def fidelity_repair_prompt(
                     chunk_index: int,
                     *,
                     active_repair_attempt: int = repair_attempt,
+                    active_issue_history: dict[
+                        int,
+                        list[dict[str, Any]],
+                    ] = current_issue_history,
                 ) -> str:
-                    history = issue_history[chunk_index]
+                    history = active_issue_history[chunk_index]
                     if any(
                         str(item.get("kind") or "").startswith("style:")
                         for item in history
@@ -631,19 +791,43 @@ async def preview_de_ai_revision(
                             chunk_prompts[chunk_index - 1],
                             history,
                             repair_attempt=active_repair_attempt,
-                            allow_target_shrink=False,
+                            previous_candidate=chunk_texts[chunk_index - 1],
+                            fidelity_chunk_prompt=(
+                                detailed_chunk_prompts[chunk_index - 1]
+                            ),
                         )
                     return build_de_ai_chunk_repair_prompt(
-                        chunk_prompts[chunk_index - 1],
+                        detailed_chunk_prompts[chunk_index - 1],
                         history,
                         repair_attempt=active_repair_attempt,
+                        previous_candidate=chunk_texts[chunk_index - 1],
                     )
 
                 try:
-                    repair_outputs = await asyncio.gather(*(
-                        generate_chunk(chunk_index, fidelity_repair_prompt(chunk_index))
-                        for chunk_index in sorted(pending_issues)
-                    ))
+                    remaining = review_remaining_seconds()
+                    if remaining <= 0.05:
+                        raise TimeoutError(
+                            "候选稿已生成；故事保真修复达到本轮时限"
+                        )
+                    repair_outputs = await asyncio.wait_for(
+                        asyncio.gather(*(
+                            generate_chunk(
+                                chunk_index,
+                                fidelity_repair_prompt(chunk_index),
+                                # A factual correction receives the previous
+                                # usable prose and should change only the
+                                # audited facts.  Do not spend the entire
+                                # review window generating three length
+                                # variants before the corrected chapter can be
+                                # checked.  A second call remains available
+                                # only when the first response is empty.
+                                max_attempts=2,
+                                retry_usable_length=False,
+                            )
+                            for chunk_index in sorted(pending_issues)
+                        )),
+                        timeout=remaining,
+                    )
                 except Exception as exc:
                     return _mark_audit_exhausted(
                         audit,
@@ -653,12 +837,25 @@ async def preview_de_ai_revision(
                         ),
                         repair_attempts=repair_attempt - 1,
                     )
+                proposed_chunk_texts = list(chunk_texts)
                 for chunk_index, repair_output in zip(
                     sorted(pending_issues),
                     repair_outputs,
                     strict=True,
                 ):
-                    chunk_texts[chunk_index - 1] = repair_output[0]
+                    proposed_chunk_texts[chunk_index - 1] = repair_output[0]
+                proposed_assessment = assess_de_ai_revision(
+                    original,
+                    "\n\n".join(proposed_chunk_texts),
+                    require_substantial_revision=False,
+                )
+                if not proposed_assessment["accepted"]:
+                    # The immutable original and chapter floor outrank a
+                    # purported fact fix.  Try the same focused correction in
+                    # the next bounded repair pass without replacing the last
+                    # usable whole-chapter candidate.
+                    continue
+                chunk_texts[:] = proposed_chunk_texts
                 result = repair_outputs[-1][1]
                 audit = await audit_chunks(chunk_texts)
                 if not audit["valid"]:
@@ -678,34 +875,36 @@ async def preview_de_ai_revision(
         fidelity_audit = await repair_fidelity(await audit_chunks(chunk_texts))
 
         style_audit = await audit_style_chunks(chunk_texts)
+        style_issue_history: dict[int, list[dict[str, Any]]] = {}
 
         def style_candidate_score(
             values: list[str],
             fidelity: dict[str, Any],
             audit: dict[str, Any],
-        ) -> tuple[int, int, int, int, int, int]:
+        ) -> tuple[int, int, int, int, int, int, int, int, int]:
             assessment = assess_de_ai_revision(
                 original,
                 "\n\n".join(values),
                 require_substantial_revision=False,
             )
-            weights = {
-                "recap": 3,
-                "exposition": 3,
-                "preamble": 3,
-                "staged": 3,
-                "uniform": 3,
-                "camera": 2,
-                "stock": 2,
-                "checklist": 1,
-            }
             issues = audit.get("issues", [])
+            history = [
+                item
+                for values in style_issue_history.values()
+                for item in values
+            ]
+            issue_count, issue_severity, novel_kinds, novel_pairs = (
+                de_ai_style_issue_rank(issues, history)
+            )
             return (
                 0 if assessment["accepted"] else 1,
                 0 if fidelity.get("valid") and fidelity.get("passed") else 1,
                 0 if audit.get("valid") else 1,
-                len(issues),
-                sum(weights.get(str(item.get("kind") or ""), 2) for item in issues),
+                0 if audit.get("passed") and not issues else 1,
+                issue_count,
+                issue_severity,
+                novel_kinds,
+                novel_pairs,
                 # With revision/fidelity floors already satisfied, prefer the
                 # tighter branch when structural issue counts tie. The longer
                 # branch usually retains more of the staged/checklist padding
@@ -721,9 +920,8 @@ async def preview_de_ai_revision(
             fidelity_audit,
             style_audit,
         )
-        style_issue_history: dict[int, list[dict[str, Any]]] = {}
         style_repair_attempts = 0
-        for style_attempt in range(1, 4):
+        for style_attempt in range(1, DE_AI_STRUCTURAL_REPAIR_ATTEMPTS + 1):
             if not style_audit.get("valid"):
                 break
             pending_style_issues: dict[int, list[dict[str, Any]]] = {}
@@ -733,6 +931,21 @@ async def preview_de_ai_revision(
             if not pending_style_issues:
                 break
             style_repair_attempts = style_attempt
+            chapter_floor = (
+                max(2_000, round(count_de_ai_visible_characters(original) * 0.95))
+                if count_de_ai_visible_characters(original) >= 2_000
+                else round(count_de_ai_visible_characters(original) * 0.9)
+            )
+            preserved_visible = sum(
+                count_de_ai_visible_characters(value)
+                for index, value in enumerate(chunk_texts, start=1)
+                if index not in pending_style_issues
+            )
+            repair_visible = sum(
+                count_de_ai_visible_characters(chunk_texts[index - 1])
+                for index in pending_style_issues
+            )
+            remaining_floor = max(0, chapter_floor - preserved_visible)
             for chunk_index, issues in pending_style_issues.items():
                 history = style_issue_history.setdefault(chunk_index, [])
                 known = {
@@ -747,49 +960,51 @@ async def preview_de_ai_revision(
                     if identity not in known:
                         history.append(issue)
                         known.add(identity)
-                fidelity_history = issue_history.setdefault(chunk_index, [])
-                fidelity_known = {
-                    (str(item.get("kind") or ""), str(item.get("detail") or ""))
-                    for item in fidelity_history
-                }
-                for issue in history:
-                    persistent_issue = {
-                        **issue,
-                        "kind": f"style:{str(issue.get('kind') or '')}",
-                    }
-                    identity = (
-                        str(persistent_issue["kind"]),
-                        str(persistent_issue.get("detail") or ""),
-                    )
-                    if identity not in fidelity_known:
-                        fidelity_history.append(persistent_issue)
-                        fidelity_known.add(identity)
+            # Compare every branch against the same accumulated issue
+            # history.  The baseline was first scored before that history was
+            # populated; leaving its old novelty score in place would make an
+            # otherwise unchanged repair look better merely because its
+            # defects have now been seen once.
+            best_style_score = style_candidate_score(
+                best_chunk_texts,
+                best_fidelity_audit,
+                best_style_audit,
+            )
             try:
-                repair_outputs = await asyncio.gather(*(
-                    generate_chunk(
-                        chunk_index,
-                        build_de_ai_style_repair_prompt(
-                            chunk_prompts[chunk_index - 1],
-                            style_issue_history[chunk_index]
-                            + [
-                                {
-                                    **issue,
-                                    "kind": (
-                                        "fact:"
-                                        f"{str(issue.get('kind') or 'fidelity')}"
-                                    ),
-                                }
-                                for issue in fidelity_issue_history.get(
-                                    chunk_index,
-                                    [],
-                                )
-                            ],
-                            repair_attempt=style_attempt,
-                            allow_target_shrink=False,
-                        ),
+                remaining = review_remaining_seconds()
+                if remaining <= 0.05:
+                    raise TimeoutError(
+                        "候选稿已生成；表达结构修复达到本轮时限"
                     )
-                    for chunk_index in sorted(pending_style_issues)
-                ))
+                repair_outputs = await asyncio.wait_for(
+                    asyncio.gather(*(
+                        generate_chunk(
+                            chunk_index,
+                            build_de_ai_style_repair_prompt(
+                                chunk_prompts[chunk_index - 1],
+                                style_issue_history[chunk_index],
+                                repair_attempt=style_attempt,
+                                allow_target_shrink=False,
+                                minimum_target_characters=(
+                                    round(
+                                        remaining_floor
+                                        * count_de_ai_visible_characters(
+                                            chunk_texts[chunk_index - 1]
+                                        )
+                                        / max(1, repair_visible)
+                                    )
+                                ),
+                                previous_candidate=chunk_texts[chunk_index - 1],
+                                fidelity_chunk_prompt=(
+                                    detailed_chunk_prompts[chunk_index - 1]
+                                ),
+                            ),
+                            max_attempts=DE_AI_STRUCTURAL_OUTPUT_ATTEMPTS,
+                        )
+                        for chunk_index in sorted(pending_style_issues)
+                    )),
+                    timeout=remaining,
+                )
             except Exception as exc:
                 style_audit = _mark_audit_exhausted(
                     style_audit,
@@ -804,7 +1019,24 @@ async def preview_de_ai_revision(
             ):
                 chunk_texts[chunk_index - 1] = repair_output[0]
             result = repair_outputs[-1][1]
-            fidelity_audit = await repair_fidelity(await audit_chunks(chunk_texts))
+            branch_fidelity_audit = await audit_chunks(chunk_texts)
+            branch_assessment = assess_de_ai_revision(
+                original,
+                "\n\n".join(chunk_texts),
+                require_substantial_revision=False,
+            )
+            if not is_de_ai_structural_branch_repairable(
+                branch_fidelity_audit,
+                missing_protected_tokens=branch_assessment.get(
+                    "missing_protected_tokens",
+                    [],
+                ),
+            ):
+                chunk_texts = list(best_chunk_texts)
+                fidelity_audit = best_fidelity_audit
+                style_audit = best_style_audit
+                continue
+            fidelity_audit = await repair_fidelity(branch_fidelity_audit)
             style_audit = await audit_style_chunks(chunk_texts)
             if not style_audit["valid"]:
                 break

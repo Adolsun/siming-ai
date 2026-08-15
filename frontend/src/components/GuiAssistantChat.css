@@ -747,6 +747,9 @@
 }
 
 .gui-chat-msg-role {
+  align-items: center;
+  display: flex;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
   color: var(--ant-color-text-secondary);

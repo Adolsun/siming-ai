@@ -49,6 +49,7 @@ from app.prompts.cataloging_source import get_external_cataloging_system_prompt
 from app.services.cataloging import orchestrator as cataloging_orchestrator
 from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
+from app.services.cataloging.job_control import refresh_job_progress
 from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.operation_runtime import (
@@ -937,6 +938,11 @@ async def _run_cli_turn(
 def _finalize_completed_sidecars(db: Session, job: CatalogingJob) -> None:
     """Close the Agent/operation records after MCP finishes the last chapter."""
 
+    # CatalogingJob is the authoritative state.  Project it first, then commit
+    # the AgentRun and OperationRun sidecars together.  Previously the AgentRun
+    # helper committed before finish_operation(), leaving the latter update to
+    # be rolled back when this worker session closed.
+    refresh_job_progress(db, job)
     if job.agent_run_id:
         agent_run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
         if agent_run and agent_run.status != "completed":
@@ -956,6 +962,7 @@ def _finalize_completed_sidecars(db: Session, job: CatalogingJob) -> None:
             db=db,
         )
         unregister_operation_actions(job.operation_id)
+    commit_session(db)
 
 
 async def _coordinate_cataloging(job_id: str, provider: str) -> None:
@@ -970,6 +977,9 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                 if job.status in _TERMINAL_JOBS:
                     if job.status == "completed":
                         _finalize_completed_sidecars(db, job)
+                    else:
+                        refresh_job_progress(db, job)
+                        commit_session(db)
                     return
                 if job.status == "paused":
                     return
@@ -983,12 +993,13 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.current_chapter_id = None
                     job.blocked_chapter_id = None
                     job.completed_at = datetime.utcnow()
-                    commit_session(db)
                     _finalize_completed_sidecars(db, job)
                     return
                 if run.status == "failed":
                     job.status = "paused_on_failure"
                     job.blocked_chapter_id = run.chapter_id
+                    job.error = run.error
+                    refresh_job_progress(db, job)
                     commit_session(db)
                     update_run_status(db, agent_run.id, "failed", summary=run.error or "当前章节建档失败")
                     return
@@ -1069,8 +1080,6 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
                     run = db.query(CatalogingChapterRun).filter(CatalogingChapterRun.id == run_snapshot.id).first()
                     if job and run:
-                        from app.services.cataloging.job_control import refresh_job_progress
-
                         run.status = "failed"
                         run.error = str(exc)
                         job.status = "paused_on_failure"
@@ -1180,8 +1189,6 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     run.status = "failed"
                     run.error = f"本机 CLI 未通过 MCP 保存本章事实或候选；直连 JSONL 兜底也失败：{fallback_error}"
                 if run.status == "failed":
-                    from app.services.cataloging.job_control import refresh_job_progress
-
                     job.status = "paused_on_failure"
                     job.blocked_chapter_id = run.chapter_id
                     job.error = run.error
@@ -1204,6 +1211,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     if agent_run:
                         agent_run.status = "waiting_confirmation"
                         agent_run.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
+                    refresh_job_progress(db, job)
                     commit_session(db)
                     return
                 commit_session(db)
@@ -1230,6 +1238,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             if job and job.status not in _TERMINAL_JOBS:
                 job.status = "paused_on_failure"
                 job.error = str(exc)
+                refresh_job_progress(db, job)
                 commit_session(db)
                 if job.agent_run_id:
                     add_event(db, job.agent_run_id, "error", status="error", message=str(exc))

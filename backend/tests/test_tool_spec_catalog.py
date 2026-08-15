@@ -30,6 +30,100 @@ def test_creation_tool_schema_has_one_typed_source():
     )
 
 
+def test_creation_stage_mcp_contract_declares_conditional_model_requirement():
+    spec = registry.get_spec("generate_novel_creation_stage")
+    assert spec is not None
+
+    schema = spec.mcp_schema()["inputSchema"]
+    model_schema = schema["properties"]["model"]
+    assert "Required when stage or artifact is concepts or all" in model_schema["description"]
+    assert "external MCP client is not inherited" in model_schema["description"]
+    assert schema["allOf"] == [
+        {
+            "if": {
+                "properties": {"stage": {"enum": ["all", "concepts"]}},
+                "required": ["stage"],
+            },
+            "then": {
+                "properties": {
+                    "model": {"minLength": 1},
+                    "use_model": {"const": True},
+                },
+                "required": ["model"],
+            },
+        },
+    ]
+
+
+@pytest.mark.parametrize("stage", ["concepts", "all"])
+def test_creation_stage_contract_rejects_missing_model_when_runtime_requires_it(stage):
+    spec = registry.get_spec("generate_novel_creation_stage")
+    assert spec is not None
+
+    with pytest.raises(ValidationError, match="model is required"):
+        spec.validate_input({"session_id": "session-1", "stage": stage})
+
+    validated = spec.validate_input(
+        {"session_id": "session-1", "stage": stage, "model": "codex_cli:codex-cli"}
+    )
+    assert validated.model == "codex_cli:codex-cli"
+
+
+@pytest.mark.parametrize("stage", ["concepts", "all"])
+def test_creation_stage_contract_rejects_disabling_model_when_runtime_requires_it(stage):
+    spec = registry.get_spec("generate_novel_creation_stage")
+    assert spec is not None
+
+    with pytest.raises(ValidationError, match="use_model must be true"):
+        spec.validate_input(
+            {
+                "session_id": "session-1",
+                "stage": stage,
+                "model": "codex_cli:codex-cli",
+                "use_model": False,
+            }
+        )
+
+
+def test_creation_stage_contract_keeps_model_optional_for_deterministic_stages():
+    spec = registry.get_spec("generate_novel_creation_stage")
+    assert spec is not None
+
+    validated = spec.validate_input(
+        {"session_id": "session-1", "stage": "world_style", "use_model": False}
+    )
+    assert validated.model == ""
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "artifact"),
+    [
+        ("generate_creation_artifact", "concepts"),
+        ("generate_creation_artifact", "all"),
+        ("refine_creation_artifact", "concepts"),
+        ("refine_creation_artifact", "all"),
+        ("regenerate_creation_artifact", "concepts"),
+        ("regenerate_creation_artifact", "all"),
+    ],
+)
+def test_artifact_generation_contracts_apply_the_same_model_rule(tool_name, artifact):
+    spec = registry.get_spec(tool_name)
+    assert spec is not None
+    arguments = {
+        "session_id": "session-1",
+        "artifact": artifact,
+        "expected_revision": 3,
+    }
+    if tool_name == "refine_creation_artifact":
+        arguments["instruction"] = "调整核心冲突"
+
+    with pytest.raises(ValidationError, match="model is required"):
+        spec.validate_input(arguments)
+
+    arguments["model"] = "codex_cli:codex-cli"
+    assert spec.validate_input(arguments).model == "codex_cli:codex-cli"
+
+
 def test_every_creation_session_tool_has_a_typed_input_contract():
     unrelated_generators = {
         "design_plot",

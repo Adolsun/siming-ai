@@ -6,10 +6,10 @@
 
 ```text
 Windows 桌面 ─┐
-               ├─ 用户自有 Gateway（权威修订线） ─ 云端模型 API（可选）
-Android 离线副本 ┘
+               ├─ 用户自有 Gateway（权威修订线） ─ PC 已配置模型
+Android 离线副本 ┘                         └─ 手机 Key（单请求加密凭据）
 
-Android ── 用户选择的 OpenAI 兼容 API（独立创作，无需 Gateway）
+Android（无 Gateway） ─ PC 同源提示词/工具循环 ─ 用户选择的 OpenAI 兼容 API
 ```
 
 桌面内置 Gateway 保留桌面端全部本地能力。Docker Gateway 是 headless 运行时，只开放同步、设备管理和云端模型所需能力，不运行本地模型、OpenCode、CLI、MCP 或训练。电脑关机后，只有部署在 NAS、常开主机或云主机上的 Gateway 才能继续为手机同步和执行云端 AI 请求。
@@ -60,12 +60,18 @@ APK 支持 Android 8.0（API 26）及以上。手机端可以：
 
 - 新建作品或导入 TXT；较长章节会拆成不超过约 20 万字符的连续章节。
 - 离线编辑章节、大纲、角色、关系、世界观、伏笔与叙事治理资料。
+- 连接 Gateway 时，在线增删改走与 PC 前端完全相同的作品、章节、大纲、角色、世界观和叙事治理 API；因此服务端校验、章节快照、内容同步和治理副作用保持一致。未连接或暂时断网时才进入离线 outbox。
 - 在“设置”中配置 OpenAI 兼容 API，自动获取或手动填写模型后执行真实对话测试；配置成功后，无需 Gateway 或电脑开机即可使用项目助手。
-- 手机直连支持 Responses API 与 Chat Completions 自动回退，并对临时上游错误进行有限重试；生成结果由用户确认后保存为本机新章节，不会静默覆盖正文。
-- 也可使用 Gateway 已配置的云端模型和项目工具；如同时配置直连 API 与 Gateway，项目助手优先使用手机直连 API，避免电脑离线时中断。
+- 手机直连支持 Responses API 与 Chat Completions；配置测试会记住实际可用协议。无 Gateway 时，手机加载由 PC 源码生成的完整工作区提示词、工具 schema、写作规则和四类二级生成器，实际执行查询与写入动作，不再使用简化补全文本。
+- 同时存在 Gateway 和手机 Key 时，项目助手明确显示“PC 已配置线路”和“手机私有 Key”两个选择，不自动偷换。无论选哪条，Gateway 都执行同一套 PC 提示词、工具、数据结构和落库流程。
+- 手机首页提供独立的“AI 立项”入口，不再把立项伪装成手工表单：先以一句创意进入动态采访，再按创意、文风与世界观、角色、地点与势力、卷纲和最终审阅逐步生成、调整与确认；前三章细纲与 PC 一样可在建档前生成，也可稍后完善。题材预设、阶段顺序、影响依赖图、提示词与 JSON 契约都来自 PC 构建资产。
+- 立项连接 Gateway 时直接使用 PC 的 `/api/v1/novel-creation/...` 会话、阶段任务与 `/apply` 建档服务。选手机 Key 时，单次加密凭据驱动同一 PC 执行器；无 Gateway 时由 Android 执行同源 V3 提示词，并将正式建档结果保存为与 PC 同构的同步实体。
+- 选手机 Key 时，Key 仍只长期保存在 Android Keystore。手机使用配对二维码中签名的 X25519 公钥把本轮 `base_url/api_key/model/protocol/issued_at` 加密；Gateway 解密后仅放入请求作用域，任务结束立即释放且不会覆盖 PC 模型配置。
 - 查看同步状态与冲突。同步先上传本机变更再拉取服务器修订；同一资料两边都改动时保留双方版本，由用户选择。
 
 Android 不包含本地模型、OpenCode、本机 CLI、MCP 或训练能力。API Key 和 Gateway 令牌分别由 Android Keystore 加密保存，不进入作品数据库、同步队列或日志；系统备份被禁用。手机直连地址在正式版中必须使用 HTTPS。断开设备会尽力先撤销服务器授权再清除本机 Gateway 令牌。
+
+提示词资产不是手工维护的手机版副本。发布前必须运行 `scripts/export-mobile-prompt-contract.py`；后端漂移测试会从 PC `PromptSpec`、阶段依赖与工具注册表重新生成并逐项比较。导出资产还包含由 PC 运行时现场计算的确定性基线与归一化夹具，Android 单测会逐阶段重放并做 JSON 全等比较，覆盖概念种子、角色 profile、世界实体关系、分卷范围、开篇章节/场景 metadata 与最终审阅字段。配对记录若来自不含 `gateway_encryption_public_key` 的旧版本，需要断开并重新扫码后才能选择手机 Key 线路。
 
 ## 数据、备份与恢复
 
