@@ -1,0 +1,271 @@
+name: Apply Android interview reliability patch
+
+on:
+  push:
+    branches: ["codex/android-interview-reliability-3.2.1"]
+    paths:
+      - ".github/workflows/android-interview-reliability-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/android-interview-reliability-3.2.1
+          fetch-depth: 0
+
+      - name: Patch Android interview flow
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_between(text: str, start: str, end: str, replacement: str) -> str:
+              start_at = text.index(start)
+              end_at = text.index(end, start_at)
+              return text[:start_at] + replacement.rstrip() + "\n\n" + text[end_at:]
+
+          agent_path = Path("mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationAgent.kt")
+          agent = agent_path.read_text(encoding="utf-8")
+          if "import kotlinx.coroutines.CancellationException\n" not in agent:
+              agent = agent.replace(
+                  "import java.util.UUID\n",
+                  "import java.util.UUID\nimport kotlinx.coroutines.CancellationException\n",
+                  1,
+              )
+          interview = r'''    suspend fun interview(
+              source: JsonObject,
+              answer: String?,
+              skip: Boolean,
+              config: DirectApiConfig,
+          ): JsonObject {
+              val draft = source.objectValue("draft")
+              val existingInterview = draft.objectValue("interview")
+              val history = (existingInterview["history"] as? JsonArray).orEmpty().toMutableList()
+              val pending = existingInterview["pending_question"] as? JsonObject
+              if (!answer.isNullOrBlank() && pending != null) {
+                  history += buildJsonObject {
+                      put("question", pending.string("question"))
+                      put("answer", answer.trim())
+                  }
+              }
+              val historyArray = JsonArray(history)
+              if (skip || history.size >= contract.interviewMaxTurns) {
+                  return withInterview(
+                      source,
+                      historyArray,
+                      status = if (skip) "skipped" else "completed",
+                      reason = if (skip) "用户要求跳过采访并直接生成方案。" else "动态采访已达到安全轮次上限，使用现有回答进入方案生成。",
+                      model = config.model,
+                  )
+              }
+
+              val (system, user) = contract.interviewMessages(source, historyArray)
+              val interviewExtraBody = if (config.isDeepSeek()) buildJsonObject {
+                  put("thinking", buildJsonObject { put("type", "disabled") })
+              } else null
+              var raw = ""
+              val decision = try {
+                  raw = directApi.complete(
+                      config,
+                      system,
+                      user,
+                      maxOutputTokens = 900,
+                      temperature = 0.6,
+                      extraBody = interviewExtraBody,
+                  )
+                  try {
+                      MobileCreationInterviewReliability.parseDecision(raw, historyArray)
+                  } catch (initialError: MobileInterviewDecisionException) {
+                      if (!initialError.repairable) throw initialError
+                      val retryUser = MobileCreationInterviewReliability.retryUserPrompt(
+                          user,
+                          raw,
+                          initialError.message.orEmpty(),
+                      )
+                      raw = directApi.complete(
+                          config,
+                          system,
+                          retryUser,
+                          maxOutputTokens = 900,
+                          temperature = 0.0,
+                          extraBody = interviewExtraBody,
+                      )
+                      MobileCreationInterviewReliability.parseDecision(raw, historyArray)
+                  }
+              } catch (error: CancellationException) {
+                  throw error
+              } catch (error: Exception) {
+                  val failure = MobileCreationInterviewReliability.failure(error, raw)
+                  return withInterview(
+                      source,
+                      historyArray,
+                      status = "failed",
+                      reason = failure.message,
+                      model = config.model,
+                      failure = failure,
+                  )
+              }
+
+              return when (decision.string("action")) {
+                  "generate" -> withInterview(
+                      source,
+                      historyArray,
+                      status = "completed",
+                      reason = decision.string("reason").ifBlank { "模型判断信息已足够。" },
+                      model = config.model,
+                  )
+                  "ask_more" -> withInterview(
+                      source,
+                      historyArray,
+                      status = "awaiting_answer",
+                      reason = decision.string("reason"),
+                      model = config.model,
+                      pendingQuestion = decision["question"] as? JsonObject
+                          ?: error("动态采访规范化结果缺少问题"),
+                  )
+                  else -> error("动态采访规范化结果缺少有效决策")
+              }
+          }'''
+          agent = replace_between(
+              agent,
+              "    suspend fun interview(\n",
+              "    suspend fun generateStage(\n",
+              interview,
+          )
+          with_interview = r'''    private fun withInterview(
+              source: JsonObject,
+              history: JsonArray,
+              status: String,
+              reason: String,
+              model: String,
+              pendingQuestion: JsonObject? = null,
+              failure: MobileInterviewFailure? = null,
+          ): JsonObject = updateDraft(source) { draft ->
+              draft["interview"] = buildJsonObject {
+                  put("mode", "dynamic_model")
+                  put("status", status)
+                  put("history", history)
+                  put("pending_question", pendingQuestion ?: JsonNull)
+                  put("model", model)
+                  put("reason", reason)
+                  if (failure != null) {
+                      put("failure_class", failure.failureClass)
+                      put("next_action", failure.nextAction)
+                      put("error_message", failure.message)
+                      if (failure.rawResponsePreview.isNotBlank()) {
+                          put("raw_response_preview", failure.rawResponsePreview)
+                      }
+                  }
+                  put("updated_at", Instant.now().toString())
+              }
+          }'''
+          agent = replace_between(
+              agent,
+              "    private fun withInterview(\n",
+              "    private fun writeStage(\n",
+              with_interview,
+          )
+          agent_path.write_text(agent, encoding="utf-8")
+
+          repo_path = Path("mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt")
+          repo = repo_path.read_text(encoding="utf-8")
+          old_tail = '''        }
+              saveCreationSession(updated)
+              return updated
+          }
+
+          suspend fun generateCreationStage('''
+          new_tail = '''        }
+              saveCreationSession(updated)
+              val interview = updated.draft().objectValue("interview")
+              if (interview.string("status") == "failed") {
+                  error(
+                      interview.string("error_message").ifBlank {
+                          "动态采访失败；回答已保留，请发送“继续”重试。"
+                      },
+                  )
+              }
+              return updated
+          }
+
+          suspend fun generateCreationStage('''
+          if old_tail not in repo:
+              raise RuntimeError("advanceCreationInterview tail not found")
+          repo = repo.replace(old_tail, new_tail, 1)
+          repo_path.write_text(repo, encoding="utf-8")
+
+          screen_path = Path("mobile/android/app/src/main/java/com/siming/mobile/ui/CreationScreen.kt")
+          screen = screen_path.read_text(encoding="utf-8")
+          screen = screen.replace(
+              '''                    onSubmit = {
+                              onAnswer(answer, false)
+                              answer = ""
+                          },''',
+              '''                    onSubmit = {
+                              onAnswer(answer, false)
+                          },''',
+              1,
+          )
+          old_pending = '''            if (pending == null) {
+                  Text("我会先读你的完整构想，再决定是追问一个关键分岔，还是直接开始生成。", lineHeight = 23.sp)
+                  Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
+                      Text("开始 AI 采访")
+                  }
+              } else {'''
+          new_pending = '''            if (interview.string("status") == "failed") {
+                  Text("刚才的回答已经保存", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                  Text(
+                      interview.string("error_message").ifBlank { "模型没有完成本轮判断。" },
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                  Text(
+                      interview.string("next_action").ifBlank { "请发送“继续”重试。" },
+                      style = MaterialTheme.typography.bodySmall,
+                      color = SimingCinnabar,
+                  )
+                  Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
+                      Text("继续判断")
+                  }
+              } else if (pending == null) {
+                  Text("我会先读你的完整构想，再决定是追问一个关键分岔，还是直接开始生成。", lineHeight = 23.sp)
+                  Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
+                      Text("开始 AI 采访")
+                  }
+              } else {'''
+          if old_pending not in screen:
+              raise RuntimeError("InterviewCard pending block not found")
+          screen = screen.replace(old_pending, new_pending, 1)
+          screen_path.write_text(screen, encoding="utf-8")
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build APK
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/android-interview-reliability-patch.yml
+          git add mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationAgent.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/CreationScreen.kt
+          git commit -m "Fix Android novel interview reliability"
+          git push origin HEAD:codex/android-interview-reliability-3.2.1
