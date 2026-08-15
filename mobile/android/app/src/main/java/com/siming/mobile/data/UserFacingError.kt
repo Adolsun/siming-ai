@@ -6,6 +6,7 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import kotlinx.serialization.SerializationException
 
 internal fun Throwable.toUserFacingMessage(): String = when (this) {
     is DirectApiHttpException -> message?.takeIf(String::isNotBlank) ?: "API 请求没有完成，请稍后重试"
@@ -14,5 +15,10 @@ internal fun Throwable.toUserFacingMessage(): String = when (this) {
     is ConnectException -> "无法连接服务器，请确认网络和服务运行状态后重试"
     is SocketTimeoutException -> "连接服务器超时，请检查网络后重试"
     is IOException -> "网络通信失败，请检查连接后重试"
-    else -> message?.takeIf(String::isNotBlank) ?: "操作没有完成，请重试"
+    is SerializationException -> "模型返回的数据格式异常，自动修复未完成，请重试或切换模型"
+    else -> message?.takeIf(String::isNotBlank)?.let { raw ->
+        if (raw.contains("Unexpected JSON token") || raw.contains("Expected quotation mark")) {
+            "模型返回的数据格式异常，自动修复未完成，请重试或切换模型"
+        } else raw
+    } ?: "操作没有完成，请重试"
 }

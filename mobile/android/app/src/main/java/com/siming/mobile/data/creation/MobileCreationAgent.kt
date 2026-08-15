@@ -206,40 +206,86 @@ internal class MobileCreationAgent(
     }
 
     suspend fun generateStage(
-        source: JsonObject,
-        stage: String,
-        instruction: String,
-        config: DirectApiConfig,
-    ): JsonObject {
-        require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
-        val (system, user) = if (stage == "concepts") {
-            contract.conceptMessages(source, instruction)
-        } else {
-            contract.stageMessages(source, stage, baseline(source, stage), instruction)
-        }
-        val maxTokens = if (stage == "concepts") 3_200 else 6_000
-        val temperature = if (stage == "concepts") 0.8 else 0.65
-        val raw = directApi.complete(config, system, user, maxOutputTokens = maxTokens, temperature = temperature)
-        val stageBaseline = baseline(source, stage)
-        val data = try {
-            parseStageData(stage, raw, stageBaseline, source.objectValue("draft"))
-        } catch (initialError: Exception) {
-            val (repairSystem, repairUser) = contract.repairMessages(
-                raw,
-                initialError.message.orEmpty(),
-                stage,
-            )
-            val repaired = directApi.complete(
+    source: JsonObject,
+    stage: String,
+    instruction: String,
+    config: DirectApiConfig,
+): JsonObject {
+    require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
+    val (system, user) = if (stage == "concepts") {
+        contract.conceptMessages(source, instruction)
+    } else {
+        contract.stageMessages(source, stage, baseline(source, stage), instruction)
+    }
+    val maxTokens = if (stage == "concepts") 3_200 else 6_000
+    val temperature = if (stage == "concepts") 0.8 else 0.65
+    val creationExtraBody = if (config.isDeepSeek()) buildJsonObject {
+        put("thinking", buildJsonObject { put("type", "disabled") })
+    } else null
+    val raw = directApi.complete(
+        config,
+        system,
+        user,
+        maxOutputTokens = maxTokens,
+        temperature = temperature,
+        extraBody = creationExtraBody,
+    )
+    val stageBaseline = baseline(source, stage)
+    var sourceLabel = "model"
+    var warning = ""
+    var repairMethod = ""
+    var rawResponsePreview = ""
+    val data = try {
+        parseStageData(stage, raw, stageBaseline, source.objectValue("draft"))
+    } catch (initialError: Exception) {
+        val (repairSystem, repairUser) = contract.repairMessages(
+            raw,
+            initialError.message.orEmpty(),
+            stage,
+        )
+        val repaired = try {
+            directApi.complete(
                 config,
                 repairSystem,
                 repairUser,
                 maxOutputTokens = maxTokens,
                 temperature = 0.0,
+                extraBody = creationExtraBody,
             )
-            parseStageData(stage, repaired, stageBaseline, source.objectValue("draft"))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
         }
-        return writeStage(source, stage, data, status = "generated", sourceLabel = "model")
+        val repairedData = repaired?.let { repairedRaw ->
+            runCatching {
+                parseStageData(stage, repairedRaw, stageBaseline, source.objectValue("draft"))
+            }.getOrNull()
+        }
+        if (repairedData != null) {
+            sourceLabel = "model_repaired"
+            warning = "模型返回的结构已自动修复；请像 PC 端一样先审阅再确认。"
+            repairMethod = "model_json"
+            repairedData
+        } else {
+            sourceLabel = "contract_fallback"
+            warning = "模型回复格式不可用，已保留可编辑安全草稿；请重点检查后再确认。"
+            repairMethod = "safe_partial_draft"
+            rawResponsePreview = raw.take(4_000)
+            safeFallbackData(source, stage, raw)
+        }
     }
+    return writeStage(
+        source,
+        stage,
+        data,
+        status = "generated",
+        sourceLabel = sourceLabel,
+        warning = warning,
+        repairMethod = repairMethod,
+        rawResponsePreview = rawResponsePreview,
+    )
+}
 
     private fun parseStageData(
         stage: String,
@@ -259,6 +305,91 @@ internal class MobileCreationAgent(
         validateAuthorRequirements(stage, data, stageBaseline, draft)
         return data
     }
+
+    internal fun safeFallbackData(source: JsonObject, stage: String, raw: String): JsonObject {
+    require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
+    val draft = source.objectValue("draft")
+    val stageBaseline = baseline(source, stage)
+    if (stage == "concepts") {
+        safePartialConceptData(raw, draft)?.let { return it }
+        val fallback = normalizeConcepts(buildJsonObject {
+            put("concepts", JsonArray(listOf(safeConceptCard(draft))))
+        })
+        validateStage(stage, fallback)
+        validateAuthorRequirements(stage, fallback, JsonObject(emptyMap()), draft)
+        return fallback
+    }
+    runCatching { parseStageData(stage, raw, stageBaseline, draft) }
+        .getOrNull()
+        ?.let { return it }
+    validateStage(stage, stageBaseline)
+    validateAuthorRequirements(stage, stageBaseline, stageBaseline, draft)
+    return stageBaseline
+}
+
+private fun safePartialConceptData(raw: String, draft: JsonObject): JsonObject? {
+    val parsed = MobileCreationJsonRepair.parseObjectDetailed(raw)?.value ?: return null
+    val payload = (parsed["data"] as? JsonObject) ?: parsed
+    val rows = (payload["concepts"] as? JsonArray)
+        ?: (payload["options"] as? JsonArray)
+        ?: return null
+    val sourceCard = rows.firstOrNull() as? JsonObject ?: return null
+    val baseCard = safeConceptCard(draft)
+    val merged = baseCard.toMutableMap().apply { putAll(sourceCard) }
+    val protagonist = baseCard.objectValue("protagonist_seed").toMutableMap().apply {
+        (sourceCard["protagonist_seed"] as? JsonObject)?.let { putAll(it) }
+    }
+    merged["protagonist_seed"] = JsonObject(protagonist)
+    return try {
+        val data = normalizeConcepts(buildJsonObject {
+            put("concepts", JsonArray(listOf(JsonObject(merged))))
+        })
+        validateStage("concepts", data)
+        validateAuthorRequirements("concepts", data, JsonObject(emptyMap()), draft)
+        data
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun safeConceptCard(draft: JsonObject): JsonObject {
+    val form = draft.objectValue("form")
+    val brief = draft.string("author_brief")
+        .ifBlank { form.string("brief") }
+        .ifBlank { "待补充故事方案" }
+    val requirements = draft.arrayValue("locked_requirements")
+        .map(::stringElement)
+        .filter(String::isNotBlank)
+    val lockedSource = buildList {
+        add(brief)
+        addAll(requirements)
+    }.joinToString("；")
+    val protagonistName = Regex("(?:^|[，。；])\\s*([^，。；]{2,20}?)(?:必须是|必须为|是)")
+        .find(lockedSource)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        .orEmpty()
+        .ifBlank { "待确认主角" }
+    val titleSeed = brief.substringBefore('。').substringBefore('，').take(20).ifBlank { "作者方案" }
+    return buildJsonObject {
+        put("title", titleSeed)
+        put("subtitle", "依据作者原始设定整理，可继续编辑")
+        put("logline", brief.take(120))
+        put("protagonist_seed", buildJsonObject {
+            put("name", protagonistName)
+            put("identity", lockedSource.take(500))
+            put("goal", "落实作者方案中的首要目标")
+            put("lack", "待作者确认")
+        })
+        put("world_hook", lockedSource.take(500))
+        put("core_conflict", lockedSource.take(500))
+        put("story_engine", "遵循作者大纲持续推进")
+        put("opening_hook", "从作者指定的起点切入")
+        put("differentiators", strings(requirements.ifEmpty { listOf("保留作者原始设定") }))
+        put("risks", strings(listOf("这是模型格式异常后的安全草稿，请在继续前检查")))
+    }
+}
 
     fun confirmStage(source: JsonObject, stage: String, editedData: JsonObject? = null): JsonObject {
         require(stage in contract.stageOrder) { "未知立项阶段" }
@@ -321,6 +452,9 @@ internal class MobileCreationAgent(
         data: JsonObject,
         status: String,
         sourceLabel: String,
+        warning: String = "",
+        repairMethod: String = "",
+        rawResponsePreview: String = "",
     ): JsonObject = updateDraft(source) { draft ->
         val stages = (draft["stages"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         val previous = stages[stage] as? JsonObject
@@ -341,6 +475,9 @@ internal class MobileCreationAgent(
             put("status", status)
             put("data", data)
             put("source", sourceLabel)
+            if (warning.isNotBlank()) put("warning", warning)
+            if (repairMethod.isNotBlank()) put("repair_method", repairMethod)
+            if (rawResponsePreview.isNotBlank()) put("raw_response_preview", rawResponsePreview.take(4_000))
             put("updated_at", Instant.now().toString())
         }
         draft["stages"] = JsonObject(stages)
@@ -1394,18 +1531,9 @@ internal class MobileCreationAgent(
         }
     }
 
-    private fun parseObject(raw: String): JsonObject {
-        var clean = raw.trim()
-        if (clean.startsWith("```")) clean = clean.substringAfter('\n', clean.removePrefix("```")).trim()
-        if (clean.endsWith("```")) clean = clean.removeSuffix("```").trim()
-        val direct = runCatching { json.parseToJsonElement(clean) as? JsonObject }.getOrNull()
-        if (direct != null) return direct
-        val start = clean.indexOf('{')
-        val end = clean.lastIndexOf('}')
-        require(start >= 0 && end > start) { "模型没有返回 JSON 对象" }
-        return json.parseToJsonElement(clean.substring(start, end + 1)) as? JsonObject
-            ?: error("模型返回的 JSON 结构无效")
-    }
+    private fun parseObject(raw: String): JsonObject =
+    MobileCreationJsonRepair.parseObjectDetailed(raw)?.value
+        ?: error("模型返回的 JSON 结构无效")
 
     private fun strings(values: List<String>): JsonArray = JsonArray(
         values.map(String::trim).filter(String::isNotBlank).map(::JsonPrimitive),
