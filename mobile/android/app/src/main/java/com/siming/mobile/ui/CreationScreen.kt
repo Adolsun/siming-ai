@@ -678,6 +678,7 @@ private fun CreationWorkspace(
                 label = if (stage == "opening_outline") "$label（可选）" else label,
                 status = status,
                 data = data,
+                warning = state.string("warning"),
                 showBody = showBody,
                 canGenerate = previousReady && !running,
                 instruction = instructions[stage].orEmpty(),
@@ -854,6 +855,7 @@ private fun StageCard(
     label: String,
     status: String,
     data: JsonObject?,
+    warning: String,
     showBody: Boolean,
     canGenerate: Boolean,
     instruction: String,
@@ -894,7 +896,7 @@ private fun StageCard(
                     Text(
                         when (status) {
                             "confirmed" -> "已确认 · 成为下游事实"
-                            "generated" -> "AI 已生成 · 等你审阅"
+                            "generated" -> if (warning.isBlank()) "AI 已生成 · 等你审阅" else "已自动恢复 · 请重点审阅"
                             "stale" -> "上游有变化 · 建议重新生成"
                             else -> if (canGenerate) "已就绪 · 交给 AI 生成" else "等待上一步确认"
                         },
@@ -907,6 +909,20 @@ private fun StageCard(
             if (showBody) {
                 HorizontalDivider()
                 Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (warning.isNotBlank()) {
+                        Surface(
+                            color = Color(0xFFFFF4E5),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                warning,
+                                color = Color(0xFF7A4B17),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
+                    }
                     if (data != null) {
                         StageHumanSummary(stage, data)
                         TextButton(onClick = onToggleEditor) {

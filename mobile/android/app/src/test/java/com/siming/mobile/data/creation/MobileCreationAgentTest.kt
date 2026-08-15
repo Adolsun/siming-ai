@@ -155,6 +155,24 @@ class MobileCreationAgentTest {
         assertTrue(draft.objectValue("concept_seeds").containsKey("concept-1"))
     }
 
+    @Test
+    fun malformedConceptSchemaFallsBackToSafeEditableDraft() {
+        val started = agent.start(
+            CreationStartInput(
+                creationMode = "author_led",
+                brief = "林舟在记忆城寻找失踪姐姐。",
+                lockedRequirements = listOf("主角必须叫林舟"),
+            ),
+        )
+        val raw = """{"concepts":[{"title":"记忆城","logline":"林舟寻找姐姐","protagonist_seed":{name, identity, goal, lack},"world_hook":"记忆会被消耗","core_conflict":"救人与保住记忆冲突","opening_hook":"林舟忘了姐姐的脸"}]}"""
+        val fallback = agent.safeFallbackData(started, "concepts", raw)
+        val card = fallback.array("options").first().jsonObject
+
+        assertTrue(card.string("logline").isNotBlank())
+        assertTrue(card.objectValue("protagonist_seed").string("identity").contains("林舟"))
+        assertTrue(card.array("risks").first().jsonPrimitive.content.contains("安全草稿"))
+    }
+
     private fun conceptData(): JsonObject = buildJsonObject {
         put("options", buildJsonArray {
             add(buildJsonObject {
