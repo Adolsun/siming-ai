@@ -862,6 +862,14 @@ class SimingRepository(context: Context) {
             )
         }
         saveCreationSession(updated)
+        val interview = updated.draft().objectValue("interview")
+        if (interview.string("status") == "failed") {
+            error(
+                interview.string("error_message").ifBlank {
+                    "动态采访失败；回答已保留，请发送“继续”重试。"
+                },
+            )
+        }
         return updated
     }
 

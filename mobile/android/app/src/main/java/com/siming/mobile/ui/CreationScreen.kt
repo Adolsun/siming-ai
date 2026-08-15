@@ -642,7 +642,6 @@ private fun CreationWorkspace(
                     running = running,
                     onSubmit = {
                         onAnswer(answer, false)
-                        answer = ""
                     },
                     onSkip = { onAnswer("", true) },
                     onStart = { onAnswer("", false) },
@@ -801,7 +800,22 @@ private fun InterviewCard(
                     Text("一次只问真正会改变故事的问题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            if (pending == null) {
+            if (interview.string("status") == "failed") {
+                Text("刚才的回答已经保存", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    interview.string("error_message").ifBlank { "模型没有完成本轮判断。" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    interview.string("next_action").ifBlank { "请发送“继续”重试。" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SimingCinnabar,
+                )
+                Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
+                    Text("继续判断")
+                }
+            } else if (pending == null) {
                 Text("我会先读你的完整构想，再决定是追问一个关键分岔，还是直接开始生成。", lineHeight = 23.sp)
                 Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
                     Text("开始 AI 采访")
