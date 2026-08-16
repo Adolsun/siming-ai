@@ -1,0 +1,174 @@
+name: Publish v3.2.2 Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-v3.2.2-once.yml"
+
+permissions:
+  contents: write
+
+env:
+  TARGET_SHA: 6c37fc3a13d78a51234e29632df73e82929c25a4
+  RELEASE_TAG: v3.2.2
+  RELEASE_VERSION: 3.2.2
+  MOSHU_DISABLE_AUTO_MCP_SETUP: "1"
+  SIMING_ENABLE_LOCAL_RUNTIME: "0"
+  OPENAI_API_KEY: test-placeholder
+  ANTHROPIC_API_KEY: test-placeholder
+  ARK_API_KEY: test-placeholder
+  SIMING_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIMING_ANDROID_KEYSTORE_PASSWORD }}
+  SIMING_ANDROID_KEY_ALIAS: ${{ secrets.SIMING_ANDROID_KEY_ALIAS }}
+  SIMING_ANDROID_KEY_PASSWORD: ${{ secrets.SIMING_ANDROID_KEY_PASSWORD }}
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TARGET_SHA }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Verify release version at target commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $frontendVersion = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
+          $backendVersion = (Select-String -Path backend/app/version.py -Pattern 'APP_VERSION\s*=\s*["'']([^"'']+)' | Select-Object -First 1).Matches.Groups[1].Value
+          $androidBuild = Get-Content mobile/android/app/build.gradle.kts -Raw
+          $androidVersion = [regex]::Match($androidBuild, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:TARGET_SHA) { throw "Release checkout mismatch: $head" }
+          if ($frontendVersion -ne $env:RELEASE_VERSION -or $backendVersion -ne $env:RELEASE_VERSION -or $androidVersion -ne $env:RELEASE_VERSION) {
+            throw "Release versions do not match $($env:RELEASE_VERSION): $frontendVersion / $backendVersion / $androidVersion"
+          }
+
+      - name: Build Windows installer
+        shell: cmd
+        run: build-installer.bat
+
+      - name: Reject legacy Windows release assets
+        shell: pwsh
+        run: |
+          $legacyAssets = @("release\Siming.exe", "release\update.json", "release\sha256.txt")
+          $found = @($legacyAssets | Where-Object { Test-Path -LiteralPath $_ })
+          if ($found.Count -gt 0) { throw "Legacy Windows assets were emitted: $($found -join ', ')" }
+
+      - name: Prepare Android signing key
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIMING_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) { throw "SIMING_ANDROID_KEYSTORE_BASE64 is not configured." }
+          $path = Join-Path $env:RUNNER_TEMP "siming-android-release.jks"
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          "SIMING_ANDROID_KEYSTORE_FILE=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed Android APK
+        shell: pwsh
+        run: ./scripts/build-android-release.ps1
+
+      - name: Sign Windows installer when certificate is configured
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.SIMING_WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PASSWORD: ${{ secrets.SIMING_WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PASSWORD)
+          if (-not $hasCertificate -and -not $hasPassword) {
+            "SIMING_WINDOWS_RELEASE_SIGNED=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Warning "No Windows signing certificate configured; publishing manual-download-only installer."
+            exit 0
+          }
+          if ($hasCertificate -ne $hasPassword) { throw "Windows signing configuration is incomplete." }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "siming-windows-codesign.pfx"
+          try {
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
+            ./scripts/sign-windows-installer.ps1 -ReleaseDir release -CertificatePath $certificatePath -CertificatePassword $env:WINDOWS_CODESIGN_PASSWORD
+            "SIMING_WINDOWS_RELEASE_SIGNED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:SIMING_WINDOWS_RELEASE_SIGNED -eq "1") {
+            ./scripts/verify-windows-installer.ps1 -ReleaseDir release -RequireTrustedSignature
+          } else {
+            ./scripts/verify-windows-installer.ps1 -ReleaseDir release -AllowUnsignedManualRelease
+          }
+          ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $env:RELEASE_VERSION
+
+      - name: Smoke install Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installDir = Join-Path $env:RUNNER_TEMP "SimingInstallerReleaseSmoke"
+          Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath (Resolve-Path "release\Siming-Setup.exe") -ArgumentList @(
+            "/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SIMINGNOLAUNCH=1", "/MERGETASKS=!desktopicon", "/DIR=$installDir"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer smoke failed with exit code $($process.ExitCode)." }
+          foreach ($required in @("Siming.exe", ".siming-installed", "unins000.exe")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $installDir $required) -PathType Leaf)) { throw "Installed file missing: $required" }
+          }
+
+      - name: Create verified GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assets = @(
+            "release/Siming-Setup.exe",
+            "release/Siming-Setup.sha256",
+            "release/Siming.apk",
+            "release/Siming-apk-sha256.txt"
+          )
+          gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $($env:RELEASE_TAG) already exists; refusing to overwrite it." }
+          gh release create $env:RELEASE_TAG @assets -R $env:GITHUB_REPOSITORY --target $env:TARGET_SHA --title "司命 $($env:RELEASE_VERSION)" --notes-file "docs/release-notes-$($env:RELEASE_VERSION).md"
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release creation failed." }
+
+          $release = gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY --json assets,isDraft,isPrerelease,url,targetCommitish | ConvertFrom-Json
+          $names = @($release.assets | ForEach-Object { $_.name })
+          $expected = @("Siming-Setup.exe", "Siming-Setup.sha256", "Siming.apk", "Siming-apk-sha256.txt")
+          $forbidden = @("Siming.exe", "update.json", "sha256.txt")
+          $missing = @($expected | Where-Object { $_ -notin $names })
+          $bad = @($forbidden | Where-Object { $_ -in $names })
+          if ($release.isDraft -or $release.isPrerelease) { throw "Release state is not final." }
+          if ($missing.Count -gt 0) { throw "Release is missing assets: $($missing -join ', ')" }
+          if ($bad.Count -gt 0) { throw "Release contains forbidden legacy assets: $($bad -join ', ')" }
+          Write-Host "Published: $($release.url)"
