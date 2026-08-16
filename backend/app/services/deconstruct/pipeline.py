@@ -1,7 +1,6 @@
 """Pure data-processing functions for the deconstruct map-reduce pipeline."""
 import json
 import re
-from typing import Optional
 
 from sqlalchemy.orm import Session
 

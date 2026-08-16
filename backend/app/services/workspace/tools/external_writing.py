@@ -6,7 +6,6 @@ do their own generation. Quality review remains available as a separate tool.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy import or_
@@ -33,7 +32,7 @@ async def prepare_external_writing_context(
     writing package so one writing task does not silently run multiple phases.
     """
     from app.database.models import (
-        Project, Chapter, ChapterSummary, OutlineNode,
+        Project, Chapter, OutlineNode,
         Character, CharacterRelationship, WorldbuildingEntry,
         PublicPromptPack,
     )
@@ -458,8 +457,6 @@ async def save_external_chapter_draft(
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
     context_manifest_id = str(args.get("context_manifest_id") or "").strip() or None
     source_agent = str(args.get("source_agent") or "external").strip()
-    quality_review_json = args.get("quality_review_json")
-
     if str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}:
         if not context_manifest_id:
             return {
@@ -558,7 +555,6 @@ async def record_external_quality_review(
     """
     from app.database.models import Chapter
     from app.services.workspace.generated_drafts import get_chapter_draft
-    import json as _json
 
     draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip()
     chapter_id = str(args.get("chapter_id") or "").strip()

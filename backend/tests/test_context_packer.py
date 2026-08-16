@@ -1,17 +1,15 @@
 """Tests for RAG context packer: budget enforcement, pinned items, explanations."""
 import unittest
-from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
-    Base, Project, Chapter, ChapterSummary, Character, OutlineNode,
-    OutlineNodeCharacter, WorldbuildingEntry, RagChunk, RagDocument,
+    Base, Project, OutlineNode,
+    WorldbuildingEntry, RagChunk,
 )
 from app.services.rag.context_packer import (
     ContextBudget,
-    ContextSection,
     PackedContext,
     pack_context,
     _pack_outline,

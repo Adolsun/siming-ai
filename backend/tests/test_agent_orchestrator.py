@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 # Set test DB before importing app modules
 os.environ["DATABASE_URL"] = "sqlite:///./test_agent_orchestrator.db"
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
@@ -546,7 +546,7 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         orchestrator = PlanOrchestrator(self.db, "proj-2")
         plan = orchestrator.create_plan(graph)
 
-        events = _run_async(_collect_events(orchestrator.execute_plan(plan.id)))
+        _run_async(_collect_events(orchestrator.execute_plan(plan.id)))
 
         self.assertEqual(call_order[0], "tool_a")
         self.assertIn("tool_b", call_order)
@@ -934,7 +934,7 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
         call_order.clear()
 
         # Resume from b
-        events = _run_async(_collect_events(orchestrator.resume_from_step(plan.id, "b")))
+        _run_async(_collect_events(orchestrator.resume_from_step(plan.id, "b")))
         self.assertIn("tool_b", call_order)
         self.assertIn("tool_c", call_order)
         self.assertNotIn("tool_a", call_order)

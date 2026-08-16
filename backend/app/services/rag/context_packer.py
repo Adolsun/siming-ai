@@ -1,9 +1,7 @@
 """RAG context packer: budget-aware context assembly with explanations."""
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
@@ -23,8 +21,6 @@ def estimate_tokens(text: str) -> int:
     return cjk_count + max(1, non_cjk // 4)
 
 from ...database.models import (
-    Chapter,
-    ChapterSummary,
     Character,
     OutlineNode,
     RagChunk,
@@ -37,9 +33,8 @@ from ..context_builders import (
     _build_outline_context,
     _build_recent_summaries,
     _build_world_context,
-    _chapter_order_number,
 )
-from .indexer import detect_fts5_available, ensure_indexed
+from .indexer import detect_fts5_available
 from .retriever import SearchResult, search_chunks
 
 

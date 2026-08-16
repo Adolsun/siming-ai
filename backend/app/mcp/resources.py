@@ -69,9 +69,6 @@ def parse_uri(uri: str) -> ParsedUri | None:
             if "=" in part:
                 k, v = part.split("=", 1)
                 query_params[k] = v
-    else:
-        base = uri
-
     for pattern, resource_type in _PATTERNS:
         m = pattern.match(uri)  # match against full URI (pattern includes optional ?)
         if m:
@@ -247,7 +244,7 @@ def _read_chapters_index(db: Any, parsed: ParsedUri) -> ResourceContent:
 def _read_chapter_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
     import json
     from app.database.models import (
-        Chapter, ChapterSummary, OutlineNode,
+        Chapter, OutlineNode,
         ChapterCharacter, Character,
         ChapterWorldbuilding, WorldbuildingEntry,
     )

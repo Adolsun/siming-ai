@@ -1,6 +1,5 @@
 """Tests for external writing context tool — API-free context preparation."""
 import asyncio
-import json
 import sys
 import os
 import unittest
@@ -42,7 +41,6 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
 
     def test_returns_context_sections(self):
         from app.services.workspace.tools.external_writing import prepare_external_writing_context
-        from datetime import datetime
 
         # Mock project
         project = MagicMock()

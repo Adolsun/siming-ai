@@ -26,7 +26,12 @@ from app.services.novel_creation_failures import clear_stage_failure
 from app.services.novel_creation_conflicts import artifact_conflict_projection
 from app.services.novel_creation_patch import normalize_patch_operation
 from app.services.novel_creation_values import requested_volume_count as _requested_volume_count
-from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
+from app.services.novel_creation_runs import add_run_event  # noqa: F401 - compatibility export
+from app.services.novel_creation_runs import complete_run  # noqa: F401 - compatibility export
+from app.services.novel_creation_runs import confirm_run  # noqa: F401 - compatibility export
+from app.services.novel_creation_runs import create_run  # noqa: F401 - compatibility export
+from app.services.novel_creation_runs import fail_run  # noqa: F401 - compatibility export
+from app.services.novel_creation_runs import serialize_run
 
 _PRESET_ROWS: tuple[tuple[str, str, str, tuple[str, ...], dict[str, Any]], ...] = (
     ("xuanhuan", "玄幻奇幻", "力量体系、升级兑现与世界奇观", ("东方玄幻", "高武世界", "异世大陆", "诡秘奇幻"), {

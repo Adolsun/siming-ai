@@ -8,12 +8,11 @@ from datetime import datetime
 from typing import AsyncGenerator, Optional
 
 from ...core.db_helpers import get_project_or_404
-from ...core.exceptions import ValidationError
 from ...database.models import DeconstructionReport
 from ...database.session import SessionLocal
 from ...prompts.deconstruct import REDUCE_SECTION_LABELS
 from ...schemas.deconstruct import DeconstructRequest
-from .constants import MAX_MAP_CONCURRENCY, MAP_TIMEOUT_SECONDS
+from .constants import MAX_MAP_CONCURRENCY
 from .map_reduce import reduce_section, stream_map_chunk
 from .model_selection import (
     analysis_mode_from_payload,
@@ -24,12 +23,10 @@ from .model_selection import (
 )
 from .pipeline import (
     build_golden_three_source,
-    chapter_aware_chunks,
     default_reduce_result,
     merge_reduce_section,
     reduce_section_keys,
     resolve_report_chunks,
-    split_text,
     summarize_chunk_result,
 )
 from .report_store import append_log, get_report_or_404, load_report_data, report_payload
@@ -604,7 +601,7 @@ async def run_deconstruct_job(
     golden_text: str = "",
 ) -> None:
     """Run the full deconstruct pipeline as a background task (non-streaming)."""
-    from .map_reduce import map_chunk, reduce_analysis
+    from .map_reduce import reduce_analysis
     from .model_selection import limits_info_for
 
     db = SessionLocal()

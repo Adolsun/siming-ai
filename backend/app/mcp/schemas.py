@@ -4,7 +4,7 @@ Maps between internal ToolDef fields and MCP protocol structures.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 

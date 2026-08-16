@@ -14,7 +14,7 @@ from copy import deepcopy
 from typing import Any
 
 from app.mcp.permissions import filter_tools, is_allowed
-from app.mcp.schemas import McpTool, McpToolResult, make_json_result, make_text_result
+from app.mcp.schemas import McpTool, McpToolResult, make_text_result
 from app.services.workspace.registry import ToolDef, registry
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,6 @@ def _log_mcp_tool_call(
     arguments summary, execution status, and any error details.
     """
     try:
-        from app.services.workspace.run_log import start_run_step
         # Create a minimal step log for the MCP tool call
         # We don't have a full AssistantRun context, so we create a standalone log
         args_summary = json.dumps(arguments, ensure_ascii=False)[:500]

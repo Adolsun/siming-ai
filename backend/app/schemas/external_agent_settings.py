@@ -7,11 +7,11 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from ..modules.integrations.application.external_agent_settings import (
-    DEFAULT_ENABLED_PACKS,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-    DEFAULT_TRUSTED_LOCAL_CLIENTS,
-    DEFAULT_TRUSTED_LOCAL_ENABLED,
+    DEFAULT_ENABLED_PACKS,  # noqa: F401 - compatibility export
+    DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,  # noqa: F401 - compatibility export
+    DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,  # noqa: F401 - compatibility export
+    DEFAULT_TRUSTED_LOCAL_CLIENTS,  # noqa: F401 - compatibility export
+    DEFAULT_TRUSTED_LOCAL_ENABLED,  # noqa: F401 - compatibility export
 )
 
 

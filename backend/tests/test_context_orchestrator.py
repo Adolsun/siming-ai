@@ -15,7 +15,6 @@ from app.database.models import (
     CharacterAIConfig,
     CharacterRelationship,
     ContextManifest,
-    ContextManifestItem,
     LocalModel,
     LocalModelTaskSetting,
     ModelContextProfile,

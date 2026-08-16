@@ -179,8 +179,8 @@ class TestProjectListAPI(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_list_projects_ordered_by_updated_at_desc(self):
         """GET /projects returns projects ordered by updated_at descending."""
-        resp1 = self.client.post(f"{API_PREFIX}/projects", json={"title": "旧作品"})
-        resp2 = self.client.post(f"{API_PREFIX}/projects", json={"title": "新作品"})
+        self.client.post(f"{API_PREFIX}/projects", json={"title": "旧作品"})
+        self.client.post(f"{API_PREFIX}/projects", json={"title": "新作品"})
 
         response = self.client.get(f"{API_PREFIX}/projects")
         body = response.json()

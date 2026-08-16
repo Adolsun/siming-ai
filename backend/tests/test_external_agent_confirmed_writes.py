@@ -1,5 +1,4 @@
 """Tests for external Agent confirmed write flow."""
-import json
 import sys
 import os
 import unittest

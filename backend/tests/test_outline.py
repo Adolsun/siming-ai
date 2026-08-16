@@ -11,7 +11,6 @@ Covers:
 
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 

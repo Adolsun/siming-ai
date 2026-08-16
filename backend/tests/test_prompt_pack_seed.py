@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.prompt_packs.seed import BUILTIN_PACKS, seed_builtin_packs, ensure_builtin_packs
+from app.services.prompt_packs.seed import BUILTIN_PACKS, seed_builtin_packs
 
 
 class BuiltinPacksDefinitionTest(unittest.TestCase):

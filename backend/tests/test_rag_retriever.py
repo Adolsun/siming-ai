@@ -1,16 +1,14 @@
 """Tests for RAG retriever: FTS5 search, LIKE fallback, hybrid merge."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Project, RagChunk, RagDocument
+from app.database.models import Base, Project, RagChunk
 from app.services.rag.retriever import (
     _extract_terms,
     _build_fts_query,
-    _search_fts,
-    _search_like,
     search_chunks,
     SearchResult,
 )

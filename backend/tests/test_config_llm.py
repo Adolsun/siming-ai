@@ -46,7 +46,6 @@ from app.main import app
 from app.database.session import Base, engine, SessionLocal
 from app.database.models import APIConfig
 from app.core.crypto import encrypt, decrypt
-from app.ai.base import BaseAdapter
 from app.ai.gateway import LLMGateway, ADAPTER_MAP
 from app.ai.openai_adapter import OpenAIAdapter
 

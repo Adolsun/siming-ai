@@ -2,12 +2,10 @@
 
 Simulates a complete external Agent workflow using mocked database.
 """
-import asyncio
-import json
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -20,13 +18,10 @@ class ExternalAgentE2ETest(unittest.TestCase):
         """Test the complete workflow by importing and calling functions with mocks."""
         # Import the module to test
         import app.services.external_agent.run_service as svc
+        self.assertTrue(callable(svc.create_run))
 
         # Create a mock DB
         db = MagicMock()
-
-        # Track all events
-        events = []
-        seq = [0]
 
         # Mock the AgentRun model
         run = MagicMock()

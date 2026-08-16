@@ -69,8 +69,8 @@ from ..services.model_readiness import (
     readiness_payload,
 )
 from .application_updates import (
-    LauncherSettingsUpdateRequest,
-    update_launcher_settings,
+    LauncherSettingsUpdateRequest,  # noqa: F401 - compatibility export
+    update_launcher_settings,  # noqa: F401 - compatibility export
 )
 
 router = APIRouter(tags=["config"])

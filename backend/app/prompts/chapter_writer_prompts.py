@@ -1,13 +1,7 @@
 """Chapter Writer prompt — assembles full writing rules for chapter body generation."""
 from __future__ import annotations
 
-import json as _json
 
-from .anti_ai_prompts import build_anti_ai_system_prompt
-from .chapter_prompts import CHAPTER_ENDING_HOOK_TYPES, CHAPTER_OPENING_HOOKS, LITERARY_TECHNIQUES
-from .craft_prompts import build_craft_system_prompt
-from .dialogue_prompts import build_dialogue_system_prompt
-from .paragraph_hooks_prompts import build_paragraph_hooks_system_prompt
 
 
 def build_chapter_writer_messages(

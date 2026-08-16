@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ...database.models import RagChunk
-from .indexer import detect_fts5_available, ensure_indexed
+from .indexer import detect_fts5_available
 
 
 @dataclass

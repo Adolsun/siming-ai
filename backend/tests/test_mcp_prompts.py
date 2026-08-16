@@ -1,5 +1,4 @@
 """Tests for MCP prompts — moshu_writing_context and related prompts."""
-import json
 import sys
 import os
 import unittest

@@ -12,7 +12,6 @@ import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.security.VerifiedPairing
-import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
 import java.util.UUID
@@ -21,7 +20,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -617,18 +615,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showError(error)
             }
         }
-    }
-
-    private fun creationStageLabel(stage: String): String = when (stage) {
-        "constraints" -> "创作约束"
-        "concepts" -> "创意方向"
-        "world_style" -> "文风与世界观"
-        "characters" -> "角色与关系"
-        "locations" -> "地点与势力"
-        "macro_outline" -> "全书主线与卷纲"
-        "opening_outline" -> "前3章细纲"
-        "final_review" -> "最终审阅"
-        else -> stage
     }
 
     private fun showError(error: Throwable) {

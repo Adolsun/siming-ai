@@ -16,7 +16,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from fastapi.testclient import TestClient
 
-from app.database.models import Project, WorldbuildingEntry
+from app.database.models import Project
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 

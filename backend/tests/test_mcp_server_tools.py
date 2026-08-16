@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.mcp.adapter import execute_tool, _format_tool_result, _truncate_content
-from app.mcp.schemas import McpToolResult, make_text_result
 from app.mcp.server import handle_message
 
 

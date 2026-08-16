@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Project, AssistantMemory, RagDocument, RagChunk
+from app.database.models import Base, Project, AssistantMemory, RagChunk
 from app.services.workspace.tools.memory import (
     normalize_category,
     remember,

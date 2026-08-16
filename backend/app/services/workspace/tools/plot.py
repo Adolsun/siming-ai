@@ -12,9 +12,7 @@ from ....database.models import (
     Character,
     CharacterRelationship,
     Chapter,
-    ChapterCharacter,
     Project,
-    WorldbuildingEntry,
 )
 from ....prompts.plot_prompts import build_plot_design_messages
 from ....services.context_builders import (

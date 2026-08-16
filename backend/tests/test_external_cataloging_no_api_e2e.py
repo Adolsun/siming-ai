@@ -21,7 +21,6 @@ from app.database.models import (
     Base,
     Project,
     Chapter,
-    CatalogingJob,
     CatalogingChapterRun,
     CatalogingFact,
     CatalogingCandidate,

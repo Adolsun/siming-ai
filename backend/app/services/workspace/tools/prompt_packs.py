@@ -5,7 +5,6 @@ and MCP readonly collaboration pack.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy.orm import Session

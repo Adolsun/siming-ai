@@ -21,7 +21,6 @@ from ..database.models import (
     Character,
     CharacterRelationship,
     OutlineNode,
-    Project,
     WorldbuildingEntry,
 )
 from .outline_service import load_outline_nodes, outline_sort_context
@@ -264,7 +263,7 @@ def _generate_docx(
         def render_outline(node: OutlineNode, depth: int = 0):
             level = min(depth + 2, 5)
             status_map = {"pending": "[待规划]", "in_progress": "[进行中]", "completed": "[已完成]"}
-            heading = doc.add_heading(f"{node.title} {status_map.get(node.status, '')}", level=level)
+            doc.add_heading(f"{node.title} {status_map.get(node.status, '')}", level=level)
             if node.summary:
                 doc.add_paragraph(f"摘要: {node.summary[:200]}")
             for child in node.children:

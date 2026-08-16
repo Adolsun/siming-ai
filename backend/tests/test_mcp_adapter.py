@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.mcp.adapter import list_mcp_tools, is_tool_allowed, get_tool_def
 from app.mcp.schemas import tool_def_to_mcp_tool, make_text_result, make_json_result
-from app.mcp.permissions import get_tier, is_secret_tool, filter_tools
+from app.mcp.permissions import get_tier, is_secret_tool
 from app.services.workspace.registry import registry
 
 

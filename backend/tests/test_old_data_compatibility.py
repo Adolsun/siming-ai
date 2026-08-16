@@ -74,10 +74,17 @@ class OldDataCompatibilityTest(unittest.TestCase):
         from app.schemas.agent_run import AgentRunRead, AgentRunCreate
         from app.schemas.external_agent_settings import ExternalAgentSettingsRead, ExternalAgentSettingsUpdate
 
-        self.assertIsNotNone(PublicPromptPackRead)
-        self.assertIsNotNone(NovelCreationSessionRead)
-        self.assertIsNotNone(AgentRunRead)
-        self.assertIsNotNone(ExternalAgentSettingsRead)
+        for schema in (
+            PublicPromptPackRead,
+            PublicPromptPackCreate,
+            NovelCreationSessionRead,
+            NovelCreationSessionCreate,
+            AgentRunRead,
+            AgentRunCreate,
+            ExternalAgentSettingsRead,
+            ExternalAgentSettingsUpdate,
+        ):
+            self.assertIsNotNone(schema)
 
     def test_new_tools_importable(self):
         """All new tool modules should be importable."""
@@ -100,11 +107,21 @@ class OldDataCompatibilityTest(unittest.TestCase):
             get_quality_rubric,
         )
 
-        self.assertTrue(callable(prepare_external_writing_context))
-        self.assertTrue(callable(save_external_chapter_draft))
-        self.assertTrue(callable(start_novel_creation_session))
-        self.assertTrue(callable(apply_novel_blueprint))
-        self.assertTrue(callable(list_prompt_packs))
+        for tool in (
+            prepare_external_writing_context,
+            save_external_chapter_draft,
+            get_external_chapter_draft,
+            record_external_quality_review,
+            start_novel_creation_session,
+            draft_novel_blueprint,
+            review_novel_blueprint,
+            apply_novel_blueprint,
+            list_prompt_packs,
+            get_prompt_pack,
+            get_tool_playbook,
+            get_quality_rubric,
+        ):
+            self.assertTrue(callable(tool))
 
     def test_prompt_pack_seed_importable(self):
         """Prompt pack seed module should be importable."""

@@ -4,11 +4,10 @@ Proves external agents can write a chapter without any Siming model API.
 Monkeypatches all LLM gateway calls to fail.
 """
 import asyncio
-import json
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

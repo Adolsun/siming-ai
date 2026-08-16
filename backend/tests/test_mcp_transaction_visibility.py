@@ -5,11 +5,10 @@ the results are actually committed to the database and visible from a fresh
 session. Failed calls should roll back and return errors.
 """
 import asyncio
-import json
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
-from ..core.db_helpers import get_character_or_404, get_project_or_404
+from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
 from ..core.utils import utc_isoformat
@@ -26,25 +26,15 @@ from ..services.project_creation_context import (
     resolve_project_creation_session,
 )
 from ..services.context_builders import (
-    _build_chapter_detail_context,
     _build_character_ai_context,
-    _build_character_catalog,
     _build_character_context,
     _build_character_relationships,
     _build_character_timeline,
-    _build_outline_context,
-    _build_outline_overview,
-    _build_recent_chapter_details,
-    _build_recent_summaries,
-    _build_relationship_context,
-    _build_scene_characters_context,
-    _build_world_context,
     _count_words,
     _get_outline_node_or_404,
 )
 from ..services.content_store import ensure_project_folder
 from ..prompts.workspace_assistant import (
-    build_workspace_assistant_system_prompt,
     build_workspace_assistant_initial_user_message,
     format_tool_result_message,
     format_previous_search_context,
@@ -58,10 +48,8 @@ from ..ai.local_cli_adapter import CLIPermissionRequiredError, is_local_cli_prov
 from ..services.skills.service import select_relevant_skills, build_skill_prompt_section
 from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
-    STYLE_OPTIONS,
     _detect_forbidden_sentence_violations,
-    _mechanical_repair_forbidden_sentences,
-    _repair_assistant_parsed_style,
+    _mechanical_repair_forbidden_sentences,  # noqa: F401 - compatibility export
     _repair_forbidden_sentence_text,
 )
 from ..services.workspace.tool_schemas import (
@@ -1207,7 +1195,6 @@ async def workspace_assistant_stream(
         searched_context: list[dict] = []
         final_model = ""
         final_usage = None
-        parsed_fallback: dict = {}
         last_operation_report_at = 0.0
 
         def report_model_activity(text: str, *, signal: str = "output", message: str = "模型正在生成回复") -> None:
@@ -1451,7 +1438,6 @@ async def workspace_assistant_stream(
             yield _sse_event({"type": "status", "message": "AI 助手开始分析和检索资料...", "tool": "agent_loop"})
 
             searched_queries: set[tuple] = set()
-            parsed_fallback = {}
             try:
                 supports_function_calling = LLMGateway.supports_tool_calling(payload.model)
             except Exception:
@@ -1624,7 +1610,6 @@ async def workspace_assistant_stream(
                         "actions": [],
                         "needs_confirmation": False,
                     }
-                    parsed_fallback = parsed
                     final_model = payload.model or ""
                     final_usage = None
 

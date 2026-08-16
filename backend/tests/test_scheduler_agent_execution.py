@@ -42,7 +42,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         db = MagicMock()
 
-        result = _run_task_prompt(db, task)
+        _run_task_prompt(db, task)
         mock_llm.assert_called_once()
 
     @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
@@ -75,7 +75,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         db = MagicMock()
 
-        result = _run_task_prompt(db, task)
+        _run_task_prompt(db, task)
         self.assertEqual(mock_exec.call_count, 1)
 
     @patch("app.ai.gateway.LLMGateway.stream_chat_completion_with_tools", new_callable=AsyncMock)

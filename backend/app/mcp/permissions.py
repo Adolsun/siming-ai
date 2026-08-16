@@ -13,8 +13,7 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from app.services.workspace.registry import ToolDef
 

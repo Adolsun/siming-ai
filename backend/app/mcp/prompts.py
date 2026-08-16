@@ -5,8 +5,7 @@ writing context, continuity checks, and draft assistance.
 """
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -246,7 +245,7 @@ def _legacy_render_writing_context(
     and worldbuilding, then assembles a compact prompt.
     """
     from app.database.models import (
-        Project, Chapter, ChapterSummary, OutlineNode,
+        Project, Chapter, OutlineNode,
         Character, WorldbuildingEntry,
     )
 
@@ -389,7 +388,7 @@ def _legacy_render_fanfic_draft(
     requirements: str | None = None,
 ) -> list[McpPromptMessage]:
     """Render the moshu_fanfic_draft prompt."""
-    from app.database.models import Project, OutlineNode, Character, WorldbuildingEntry
+    from app.database.models import Project, OutlineNode, Character
 
     messages: list[McpPromptMessage] = []
 

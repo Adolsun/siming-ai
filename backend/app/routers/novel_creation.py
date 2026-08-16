@@ -1739,7 +1739,6 @@ async def apply_material_import_endpoint(
 async def save_imported_file(payload: SaveImportedFileRequest):
     """Save an imported file to the working directory for LLM CLI access."""
     from app.services.content_store import content_root
-    import os
 
     root = content_root()
     imported_dir = root / ".imported"

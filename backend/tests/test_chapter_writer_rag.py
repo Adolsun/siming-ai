@@ -1,19 +1,17 @@
 """Tests for chapter_writer RAG integration: alias resolution, snapshot metadata, lazy indexing."""
 import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
-    Base, Project, Character, CharacterAlias, CharacterRelationship,
-    WorldbuildingEntry, OutlineNode, OutlineNodeCharacter, Chapter, ChapterSummary,
+    Base, Project, Character, CharacterAlias, OutlineNode, OutlineNodeCharacter,
 )
 from app.services.workspace.tools.chapter_writer import (
     _build_character_details_with_rag,
     _build_enriched_snapshot,
     _section_text,
-    _format_character_detail,
 )
 from app.services.rag.context_packer import PackedContext, ContextSection
 

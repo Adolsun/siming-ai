@@ -131,7 +131,6 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
 def test_compact_concepts_never_switch_models_on_quota_failure():
     db = _db()
     session = _session(db)
-    content = json.dumps({"concepts": _concepts()})
     completion = _streaming_completion(RuntimeError("free usage quota exceeded"))
     with patch(
         "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",

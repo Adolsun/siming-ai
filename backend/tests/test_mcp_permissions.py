@@ -244,8 +244,6 @@ class FilterToolsTest(unittest.TestCase):
         all_defs = [d for d in all_defs if d is not None]
 
         readonly = filter_tools(all_defs, allowed_tiers={"readonly"})
-        readonly_names = {td.name for td in readonly}
-
         # No write tools in result
         for td in readonly:
             self.assertIn(

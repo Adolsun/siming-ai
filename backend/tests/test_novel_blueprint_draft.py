@@ -105,7 +105,6 @@ class DraftNovelBlueprintTest(unittest.TestCase):
 
     def test_external_agent_mode_returns_prompt(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
-        from app.database.models import NovelCreationSession
 
         session = MagicMock()
         session.id = "s1"

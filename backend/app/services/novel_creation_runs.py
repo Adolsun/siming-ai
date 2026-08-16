@@ -434,11 +434,6 @@ def mark_interrupted_novel_creation_runs(db: Session) -> int:
     )
     now = datetime.utcnow()
     for run in runs:
-        operation = (
-            db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
-            if run.operation_id
-            else None
-        )
         # Startup has no surviving producer. A saved result remains available
         # for author review; every other active producer becomes recoverable.
         if isinstance(run.result_json, dict):

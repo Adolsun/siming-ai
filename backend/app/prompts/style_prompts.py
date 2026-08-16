@@ -1,7 +1,7 @@
 """Style prompt builders — assembles project style context for LLM prompts."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..database.models import Project
@@ -145,8 +145,6 @@ def build_style_context(
                 parts.append("生成或改写时必须主动避开上述句式，包括同义变体和近似模板。")
         from .anti_ai_prompts import (
             TIER1_BANNED_WORDS,
-            AI_PATTERN_1_HIGH_FREQ_WORDS,
-            STACKED_WRITING_RULE,
         )
         # Build a compact banned-words summary from tiered source
         tier1_words = []

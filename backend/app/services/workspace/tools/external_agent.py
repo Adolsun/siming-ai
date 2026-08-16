@@ -255,7 +255,7 @@ async def finish_agent_run(
     args: dict[str, Any],
 ) -> dict:
     """Signal run completion."""
-    from app.services.external_agent.run_service import add_event, get_run, update_run_status
+    from app.services.external_agent.run_service import add_event, get_run
 
     run_id = str(args.get("run_id") or "").strip()
     if not run_id:
@@ -267,7 +267,7 @@ async def finish_agent_run(
 
     summary = str(args.get("summary") or "").strip()
 
-    event = add_event(
+    add_event(
         db, run_id, "run_finished",
         status="ok",
         message=summary[:500] or "Run completed",

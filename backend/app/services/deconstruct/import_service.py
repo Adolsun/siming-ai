@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from ..character_role_types import append_character_role_description, normalize_character_role_type
 
-from ...core.db_helpers import get_project_or_404
 from ...core.exceptions import ValidationError
 from ...database.models import (
     Chapter,

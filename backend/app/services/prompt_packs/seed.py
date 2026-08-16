@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.database.models import PublicPromptPack, MethodCard
+from app.database.models import PublicPromptPack
 
 logger = logging.getLogger(__name__)
 

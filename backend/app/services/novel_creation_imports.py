@@ -37,7 +37,6 @@ from app.services.operation_runtime import (
     fail_operation,
     finish_operation,
     heartbeat_loop,
-    register_operation_actions,
     record_operation_signal,
     unregister_operation_actions,
 )

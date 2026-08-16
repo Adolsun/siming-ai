@@ -4,7 +4,6 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from app.prompts.packs import PromptPack
 from app.prompts.packs.workspace_fast import PACK as WF
 from app.prompts.packs.workspace_quality import PACK as WQ
 from app.prompts.packs.chapter_fast import PACK as CF

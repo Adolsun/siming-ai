@@ -1003,9 +1003,6 @@ private fun safeConceptCard(draft: JsonObject): JsonObject {
         return eventType in metadataTypes || partType in metadataTypes
     }
 
-    private fun questionKey(value: String): String =
-        value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "")
-
     private fun authorText(value: JsonElement?): String = when (value) {
         null, JsonNull -> ""
         is JsonPrimitive -> value.booleanOrNull?.let { if (it) "是" else "否" }

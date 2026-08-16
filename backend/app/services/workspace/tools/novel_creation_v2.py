@@ -18,10 +18,10 @@ from ....modules.model_runtime.application.execution import model_executor as LL
 from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object_detailed
 from ....database.models import NovelCreationMaterialImport, NovelCreationSession, NovelCreationStageRun, OperationRun
-from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
+from ....services.context_orchestrator import activate_context_manifest
 from ....services.character_role_types import append_character_role_description, normalize_character_role_type
 from ....services.novel_creation_authoring import (
-    AuthorLockViolation,
+    AuthorLockViolation,  # noqa: F401 - compatibility export
     _WORLD_STYLE_TEXT_FIELDS,
     _author_context,
     _author_text,
@@ -42,7 +42,6 @@ from ....services.novel_creation_prompting import (
     build_compact_concept_messages,
     build_creation_stage_messages,
 )
-from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from ....services.novel_creation_imports import (
     apply_material_import,
     create_material_import,
@@ -76,21 +75,11 @@ from ....modules.operations.interfaces.dependencies import get_operation_service
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
     STAGE_LABELS,
-    STAGE_ORDER,
-    add_run_event,
-    complete_run,
     confirm_run,
-    create_run,
     creation_artifact_dependencies,
-    derive_stage,
-    fail_run,
     list_creation_artifacts,
     patch_creation_artifact,
     patch_session,
-    _requested_volume_count,
-    save_compact_concepts,
-    save_stage,
-    serialize_run,
     serialize_creation_artifact,
     serialize_session,
     set_creation_artifact_locks,
