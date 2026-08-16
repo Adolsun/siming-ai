@@ -14,6 +14,7 @@ import com.siming.mobile.data.local.OutboxMutation
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.local.SyncCursor
+import com.siming.mobile.data.local.orderReplicaEntities
 import com.siming.mobile.data.network.GatewayApi
 import com.siming.mobile.data.network.GatewayHttpException
 import com.siming.mobile.data.network.DirectApiClient
@@ -34,8 +35,9 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -95,7 +97,9 @@ class SimingRepository(context: Context) {
     val conflicts: Flow<List<LocalConflict>> = dao.observeConflicts()
 
     fun entities(projectId: String, entityType: String): Flow<List<ReplicaEntity>> =
-        dao.observeEntities(projectId, entityType)
+        dao.observeEntities(projectId, entityType).map { records ->
+            orderReplicaEntities(entityType, records)
+        }
 
     fun directApiSummary(): DirectApiSummary? = directApiStore.read()?.summary()
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +16,6 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException, UnauthorizedError, ValidationError
 from app.database import models as _models  # noqa: F401
 from app.database.session import Base, get_db
-from app.modules.gateway.infrastructure.service import GatewayService, token_digest
 from app.modules.gateway.infrastructure.models import (
     GatewayAccessToken,
     GatewayRefreshToken,
@@ -23,6 +24,7 @@ from app.modules.gateway.infrastructure.models import (
     SyncEntityState,
     SyncTombstone,
 )
+from app.modules.gateway.infrastructure.service import GatewayService, token_digest
 from app.modules.gateway.interfaces.contracts import (
     DeviceCapabilities,
     PairingCompleteRequest,
@@ -32,6 +34,7 @@ from app.modules.gateway.interfaces.contracts import (
 from app.modules.model_runtime.infrastructure.execution import CloudOnlyGatewayModelExecutor
 from app.modules.model_runtime.infrastructure.gateway import LLMGateway
 from app.modules.story.infrastructure.entities import Chapter, Project
+from app.routers import gateway as gateway_router
 
 
 def _database(tmp_path: Path):
@@ -41,6 +44,66 @@ def _database(tmp_path: Path):
     )
     Base.metadata.create_all(bind=engine)
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def test_gateway_address_discovery_prefers_default_route_over_virtual_adapters(monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "vEthernet (WSL)": [SimpleNamespace(address="172.30.96.1")],
+            "VMware Network Adapter VMnet8": [SimpleNamespace(address="192.168.204.1")],
+            "WLAN": [SimpleNamespace(address="192.168.31.205")],
+        },
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {
+            "vEthernet (WSL)": SimpleNamespace(isup=True),
+            "VMware Network Adapter VMnet8": SimpleNamespace(isup=True),
+            "WLAN": SimpleNamespace(isup=True),
+        },
+    )
+    monkeypatch.setattr(
+        gateway_router,
+        "_default_route_ipv4",
+        lambda: ipaddress.ip_address("192.168.31.205"),
+    )
+
+    assert gateway_router._discover_local_gateway_ipv4() == ipaddress.ip_address(
+        "192.168.31.205"
+    )
+
+
+def test_gateway_address_discovery_fallback_penalizes_virtual_adapters(monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "vEthernet (WSL)": [SimpleNamespace(address="172.30.96.1")],
+            "VMware Network Adapter VMnet8": [SimpleNamespace(address="192.168.204.1")],
+            "WLAN": [SimpleNamespace(address="192.168.31.205")],
+        },
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {
+            "vEthernet (WSL)": SimpleNamespace(isup=True),
+            "VMware Network Adapter VMnet8": SimpleNamespace(isup=True),
+            "WLAN": SimpleNamespace(isup=True),
+        },
+    )
+    monkeypatch.setattr(gateway_router, "_default_route_ipv4", lambda: None)
+
+    assert gateway_router._discover_local_gateway_ipv4() == ipaddress.ip_address(
+        "192.168.31.205"
+    )
 
 
 def test_headless_model_executor_rejects_local_cli(monkeypatch):

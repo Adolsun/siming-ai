@@ -2,6 +2,7 @@ package com.siming.mobile.data.agent
 
 import android.content.Context
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.orderReplicaEntities
 import com.siming.mobile.data.network.DirectAgentTurn
 import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
@@ -171,7 +172,6 @@ internal class MobileWorkspaceAgent(
 
     private suspend fun listChapters(projectId: String): JsonObject {
         val items = records(projectId, "chapter")
-            .sortedByDescending { it.entity.localModifiedAt }
             .take(500)
             .map { item -> select(item.payload, "id", "title", "outline_node_id") }
         return ok("list_chapters", if (items.isEmpty()) "该项目暂无章节" else "共 ${items.size} 个章节", JsonArray(items))
@@ -220,7 +220,6 @@ internal class MobileWorkspaceAgent(
                 if (outlineId.isNotBlank()) it.payload.string("outline_node_id") == outlineId
                 else query.isBlank() || it.payload.string("title").contains(query, ignoreCase = true)
             }
-            .sortedByDescending { it.entity.localModifiedAt }
             .take(args.limit(5, 20))
             .map { item ->
                 val payload = item.payload
@@ -308,14 +307,12 @@ internal class MobileWorkspaceAgent(
         val involved = args.stringList("involved_characters").take(12)
         val characterLimit = args.int("character_limit", 8).coerceIn(1, 16)
         val recentLimit = args.int("recent_limit", 5).coerceIn(1, 12)
+        val chapters = orderedChapters(all)
         val characters = all.filter { it.entity.entityType == "character" }
             .filter { involved.isEmpty() || it.payload.string("name") in involved }
             .take(characterLimit)
             .map { clean(it.payload) }
-        val recent = all.filter { it.entity.entityType == "chapter" }
-            .sortedByDescending { it.entity.localModifiedAt }
-            .take(recentLimit)
-            .reversed()
+        val recent = chapters.takeLast(recentLimit)
             .map { select(it.payload, "id", "title", "outline_node_id", "word_count", "summary") }
         val outline = outlineContext(all, outlineId)
         val world = worldContext(all)
@@ -696,9 +693,12 @@ internal class MobileWorkspaceAgent(
         return ok("update_worldbuilding_entry", "已更新世界观：${payload.string("title")}", clean(payload))
     }
 
-    private suspend fun records(projectId: String, entityType: String? = null): List<LocalRecord> =
-        loadSnapshot(projectId).asSequence()
+    private suspend fun records(projectId: String, entityType: String? = null): List<LocalRecord> {
+        val matching = loadSnapshot(projectId).asSequence()
             .filter { it.operation == "upsert" && (entityType == null || it.entityType == entityType) }
+            .toList()
+        val ordered = entityType?.let { orderReplicaEntities(it, matching) } ?: matching
+        return ordered.asSequence()
             .mapNotNull { entity ->
                 val payload = entity.payloadJson?.let {
                     runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull()
@@ -706,6 +706,15 @@ internal class MobileWorkspaceAgent(
                 LocalRecord(entity, payload)
             }
             .toList()
+    }
+
+    private fun orderedChapters(records: List<LocalRecord>): List<LocalRecord> {
+        val byKey = records.associateBy { it.entity.key }
+        return orderReplicaEntities(
+            "chapter",
+            records.filter { it.entity.entityType == "chapter" }.map(LocalRecord::entity),
+        ).mapNotNull { byKey[it.key] }
+    }
 
     private fun resolveDraft(args: JsonObject): JsonObject? {
         val reference = args.string("draft_id").ifBlank { args.string("content_ref") }
@@ -817,10 +826,7 @@ internal class MobileWorkspaceAgent(
     }
 
     private fun recentSummaries(all: List<LocalRecord>, limit: Int): String {
-        val chapters = all.filter { it.entity.entityType == "chapter" }
-            .sortedByDescending { it.entity.localModifiedAt }
-            .take(limit)
-            .reversed()
+        val chapters = orderedChapters(all).takeLast(limit)
         if (chapters.isEmpty()) return "暂无前文摘要。"
         return chapters.joinToString("\n") {
             val p = it.payload
