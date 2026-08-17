@@ -11,6 +11,7 @@ from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ValidationError
+from app.services.chapter_ordering import next_chapter_sort_order
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
     ChapterGovernanceReview,
@@ -347,6 +348,8 @@ def apply_domain_mutation(
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
+    if spec.model is Chapter and row is None and "sort_order" not in allowed:
+        allowed["sort_order"] = next_chapter_sort_order(db, project_id)
     _assert_parent_project(db, spec, allowed, project_id)
 
     if row is None:

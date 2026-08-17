@@ -187,6 +187,7 @@ def chapter_markdown(chapter: Chapter) -> str:
         "title": chapter.title,
         "word_count": chapter.word_count or count_words(chapter.content or ""),
         "current_version": chapter.current_version or 1,
+        "sort_order": chapter.sort_order,
         "updated_at": chapter.updated_at.isoformat() if chapter.updated_at else None,
     }
     return "---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n\n" + (chapter.content or "")
@@ -206,10 +207,14 @@ def parse_chapter_markdown(text: str) -> tuple[dict[str, Any], str]:
 def sync_chapter_to_file(db: Session, project: Project, chapter: Chapter, index: int = 0) -> None:
     folder = ensure_project_folder(db, project)
     old_rel = getattr(chapter, "content_file_path", None)
-    path = folder / old_rel if old_rel else _chapter_path(folder, chapter, index)
-    if old_rel and not path.exists():
+    old_path = (folder / old_rel) if old_rel else None
+    if index:
         path = _chapter_path(folder, chapter, index)
+    else:
+        path = old_path if old_path and old_path.exists() else _chapter_path(folder, chapter, index)
     digest = _write_text(path, chapter_markdown(chapter))
+    if old_path and old_path.resolve() != path.resolve() and old_path.exists():
+        old_path.unlink()
     chapter.content_file_path = _rel(path, folder)
     chapter.content_hash = digest
     invalidate_project(project.id)
@@ -382,7 +387,7 @@ def sync_project_to_files(db: Session, project_id: str) -> None:
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project.id)
-        .order_by(Chapter.created_at.asc())
+        .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
         .all()
     )
     for index, chapter in enumerate(chapters, start=1):

@@ -1,7 +1,6 @@
 """SQLAlchemy chapter and snapshot application adapter."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,6 +9,7 @@ from ....architecture.uow import SqlAlchemyUnitOfWork
 from ....core.db_helpers import get_outline_node_or_404, get_project_or_404
 from ....core.exceptions import NotFoundError, ValidationError
 from ....core.utils import count_words
+from ....services.chapter_ordering import next_chapter_sort_order
 from ....services.chapter_service import (
     chapter_to_detail,
     chapter_to_list_item,
@@ -116,16 +116,11 @@ class SqlAlchemyChapterWorkspace:
         get_project_or_404(self._session, project_id)
         outline_context = self._outline_context(project_id)
         chapters = (
-            self._session.query(Chapter).filter(Chapter.project_id == project_id).all()
+            self._session.query(Chapter)
+            .filter(Chapter.project_id == project_id)
+            .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
+            .all()
         )
-
-        def sort_key(chapter: Chapter) -> tuple:
-            outline_key = outline_context["sort_keys"].get(chapter.outline_node_id)
-            if outline_key is None:
-                return (1, (999999,), chapter.created_at or datetime.min)
-            return (0, outline_key, chapter.created_at or datetime.min)
-
-        chapters.sort(key=sort_key)
         items = [chapter_to_list_item(chapter, outline_context) for chapter in chapters]
         return {"items": items, "total": len(items)}
 
@@ -147,6 +142,7 @@ class SqlAlchemyChapterWorkspace:
             content=content,
             word_count=count_words(content),
             current_version=1,
+            sort_order=next_chapter_sort_order(self._session, project_id),
             context_manifest_id=payload.get("context_manifest_id"),
         )
         self._session.add(chapter)
@@ -234,6 +230,36 @@ class SqlAlchemyChapterWorkspace:
                     project_id=project_id,
                     target=ContentSyncTarget.CHAPTER,
                     entity_id=chapter.id,
+                )
+            ],
+        )
+
+    def reorder(self, project_id: str, chapter_ids: list[str]) -> StoryMutation:
+        get_project_or_404(self._session, project_id)
+        chapters = (
+            self._session.query(Chapter)
+            .filter(Chapter.project_id == project_id)
+            .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
+            .all()
+        )
+        existing_ids = [chapter.id for chapter in chapters]
+        requested_ids = [str(chapter_id) for chapter_id in chapter_ids]
+        if len(requested_ids) != len(set(requested_ids)):
+            raise ValidationError("章节排序中不能包含重复章节")
+        if set(requested_ids) != set(existing_ids):
+            raise ValidationError("章节排序必须包含当前作品的全部章节")
+
+        by_id = {chapter.id: chapter for chapter in chapters}
+        for index, chapter_id in enumerate(requested_ids, start=1):
+            by_id[chapter_id].sort_order = index * 1000
+        self._session.flush()
+        return StoryMutation(
+            data=self.list(project_id),
+            sync_intents=[
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.PROJECT,
+                    source="chapter_reorder",
                 )
             ],
         )
