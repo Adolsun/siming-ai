@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ValidationError
 from app.services.chapter_ordering import next_chapter_sort_order
+from app.services.character_service import character_to_dict, dumps_list, sync_character_aliases
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
     ChapterGovernanceReview,
@@ -158,6 +160,30 @@ DEFAULT_RECORD_TYPES = {
     "foreshadowing": "foreshadowing",
     "governance": "narrative_checkpoint",
 }
+CHARACTER_MUTATION_COLUMNS = frozenset(
+    {
+        "id",
+        "project_id",
+        "name",
+        "appearance",
+        "role_type",
+        "personality",
+        "background",
+        "abilities",
+        "age",
+        "is_evolution_tracked",
+        "life_status",
+        "current_location",
+        "realm_or_level",
+        "physical_state",
+        "mental_state",
+        "current_goal",
+        "active_conflict",
+        "abilities_state",
+        "items_or_assets",
+        "profile_json",
+    }
+)
 
 
 def _json_value(value: Any) -> Any:
@@ -172,6 +198,12 @@ def serialize_record(row: Any, spec: RecordSpec | None = None) -> dict[str, Any]
     spec = spec or SPEC_BY_MODEL.get(type(row))
     if spec is None:
         raise ValidationError(f"不支持同步记录：{type(row).__name__}")
+    if spec.model is Character:
+        # Android and the web UI consume the same Character contract. Do not
+        # leak DB-only shapes such as abilities JSON text or profile_json into
+        # sync snapshots, otherwise bootstrap can replace a canonical PC API
+        # response with an incompatible payload.
+        return {"_record_type": spec.record_type, **character_to_dict(row)}
     payload: dict[str, Any] = {"_record_type": spec.record_type}
     for column in sa_inspect(spec.model).columns:
         if column.key in LOCAL_ONLY_COLUMNS:
@@ -291,6 +323,55 @@ def _assert_parent_project(
         raise ValidationError("同步记录引用的父实体不属于当前作品")
 
 
+def _string_list(value: Any, *, field: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        normalized = raw.replace("，", ",").replace("、", ",").replace("\r", "\n")
+        return [item.strip() for line in normalized.split("\n") for item in line.split(",") if item.strip()]
+    raise ValidationError(f"角色 {field} 必须是字符串数组")
+
+
+def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
+    """Translate the public PC Character contract back to persistence fields."""
+    aliases = _string_list(values.pop("aliases", None), field="aliases")
+    abilities = _string_list(values.get("abilities"), field="abilities")
+    if abilities is not None:
+        values["abilities"] = dumps_list(abilities)
+    if "profile" in values:
+        profile = values.pop("profile")
+        if isinstance(profile, str):
+            raw = profile.strip()
+            if not raw:
+                profile = {}
+            else:
+                try:
+                    profile = json.loads(raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValidationError("角色 profile 必须是 JSON 对象") from exc
+        if profile is not None and not isinstance(profile, dict):
+            raise ValidationError("角色 profile 必须是对象")
+        values["profile_json"] = profile
+    tracked = values.get("is_evolution_tracked")
+    if isinstance(tracked, str):
+        values["is_evolution_tracked"] = tracked.strip().lower() not in {
+            "0", "false", "no", "off", "否"
+        }
+    return values, aliases
+
+
 def apply_domain_mutation(
     db: Session,
     *,
@@ -327,6 +408,9 @@ def apply_domain_mutation(
 
     values = dict(payload or {})
     values.pop("_record_type", None)
+    character_aliases: list[str] | None = None
+    if spec.model is Character:
+        values, character_aliases = _canonical_character_values(values)
     payload_id = values.get("id")
     if payload_id is not None and str(payload_id) != entity_id:
         raise ValidationError("同步记录 ID 与实体 ID 不一致")
@@ -344,7 +428,9 @@ def apply_domain_mutation(
     allowed = {
         key: _coerce_column_value(columns[key], value)
         for key, value in values.items()
-        if key in columns and key not in LOCAL_ONLY_COLUMNS
+        if key in columns
+        and key not in LOCAL_ONLY_COLUMNS
+        and (spec.model is not Character or key in CHARACTER_MUTATION_COLUMNS)
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
@@ -363,6 +449,9 @@ def apply_domain_mutation(
             if key != "id":
                 setattr(row, key, value)
     db.flush()
+    if spec.model is Character and character_aliases is not None:
+        sync_character_aliases(db, row, character_aliases)
+        db.flush()
 
 
 def spec_for_instance(row: Any) -> RecordSpec | None:
