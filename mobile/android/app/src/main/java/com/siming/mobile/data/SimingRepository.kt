@@ -25,6 +25,7 @@ import com.siming.mobile.data.network.PcApiPayloads
 import com.siming.mobile.data.network.RemoteSyncProject
 import com.siming.mobile.data.network.SyncMutationRequest
 import com.siming.mobile.data.network.WorkspaceAssistantRequest
+import com.siming.mobile.data.network.withMobileRefreshFailure
 import com.siming.mobile.security.PairingSecurity
 import com.siming.mobile.security.MobileProviderEncryption
 import com.siming.mobile.security.SecureApiConfigStore
@@ -35,6 +36,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -531,6 +533,122 @@ class SimingRepository(context: Context) {
             "单条资料不能超过 1 MiB；请把超长正文拆成多个章节"
         }
     }
+
+    private suspend fun canonicalCommandConnection(): GatewayConnection {
+        val connection = requireConnection()
+        check(prepareCanonicalWrite()) {
+            "当前无法连接 PC Gateway，高级结构命令不会在手机端猜测执行"
+        }
+        return connection
+    }
+
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
+        canonicalCommandMutex.withLock {
+            val connection = canonicalCommandConnection()
+            val result = api.reorderChapters(connection, projectId, chapterIds)
+            refreshAfterCanonicalWrite(connection, projectId, result)
+        }
+
+    private suspend fun refreshAfterCanonicalWrite(
+        connection: GatewayConnection,
+        projectId: String,
+        result: JsonObject,
+    ): JsonObject = try {
+        pullAll(connection, listOf(projectId))
+        result
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        result.withMobileRefreshFailure(error.toUserFacingMessage())
+    }
+
+    suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
+        api.listChapterSnapshots(requireConnection(), projectId, chapterId)
+
+    suspend fun getChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = api.getChapterSnapshot(
+        requireConnection(),
+        projectId,
+        chapterId,
+        snapshotId,
+    )
+
+    suspend fun diffChapterSnapshots(
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject = api.diffChapterSnapshots(
+        requireConnection(),
+        projectId,
+        chapterId,
+        fromSnapshotId,
+        toSnapshotId,
+    )
+
+    suspend fun restoreChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.restoreChapterSnapshot(connection, projectId, chapterId, snapshotId)
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
+        api.getCharacterRelationshipNetwork(requireConnection(), projectId)
+
+    suspend fun replaceCharacterRelationships(
+        projectId: String,
+        characterId: String,
+        relationships: JsonArray,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.replaceCharacterRelationships(
+            connection,
+            projectId,
+            characterId,
+            buildJsonObject { put("relationships", relationships) },
+        )
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
+        api.getCharacterAiConfig(requireConnection(), projectId, characterId)
+
+    suspend fun updateCharacterAiConfig(
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.updateCharacterAiConfig(connection, projectId, characterId, payload)
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
+        api.listCharacterVersions(requireConnection(), projectId, characterId)
+
+    suspend fun characterVersion(
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = api.getCharacterVersion(
+        requireConnection(),
+        projectId,
+        characterId,
+        versionId,
+    )
+
+    suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
+        api.listWorldVersions(requireConnection(), projectId, entryId)
+
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
+        api.listWorldTimeline(requireConnection(), projectId, entryId)
 
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
         val connection = requireConnection()
@@ -1508,6 +1626,7 @@ class SimingRepository(context: Context) {
             "governance" to "narrative_debt",
         )
         private val syncMutex = Mutex()
+        private val canonicalCommandMutex = Mutex()
     }
 }
 
