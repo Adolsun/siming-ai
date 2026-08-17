@@ -11,9 +11,13 @@ from sqlalchemy import Date, DateTime
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
+from app.core.db_helpers import get_outline_node_or_404
 from app.core.exceptions import ValidationError
-from app.services.chapter_ordering import next_chapter_sort_order
-from app.services.character_service import character_to_dict, dumps_list, sync_character_aliases
+from app.core.utils import count_words
+from app.modules.continuity.infrastructure.governance import (
+    STATUS_UPDATE_FIELDS,
+    apply_governance_status_update,
+)
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
     ChapterGovernanceReview,
@@ -29,6 +33,8 @@ from app.modules.continuity.infrastructure.models import (
     WorldbuildingTimeline,
     WorldbuildingVersion,
 )
+from app.modules.story.infrastructure.chapter_evidence import SqlAlchemyChapterEvidenceReader
+from app.modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
 from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
@@ -40,6 +46,26 @@ from app.modules.story.infrastructure.entities import (
     Project,
     WorldbuildingEntry,
     WorldbuildingRelation,
+)
+from app.services.chapter_ordering import next_chapter_sort_order
+from app.services.chapter_service import chapter_to_detail, create_snapshot
+from app.services.character_role_types import (
+    append_character_role_description,
+    normalize_character_role_type,
+)
+from app.services.character_service import (
+    character_to_dict,
+    create_character_version,
+    dumps_list,
+    sync_character_aliases,
+)
+from app.services.narrative_governance import create_narrative_checkpoint
+from app.services.outline_service import (
+    ensure_no_cycle,
+    load_outline_nodes,
+    node_to_dict,
+    outline_sort_context,
+    replace_character_links,
 )
 
 LOCAL_ONLY_COLUMNS = frozenset(
@@ -185,6 +211,90 @@ CHARACTER_MUTATION_COLUMNS = frozenset(
     }
 )
 
+MUTATION_COLUMNS_BY_MODEL: dict[type, frozenset[str]] = {
+    Project: frozenset(
+        {
+            "id",
+            "title",
+            "description",
+            "tags",
+            "narrative_perspective",
+            "writing_style",
+            "forbidden_sentence_patterns",
+            "rhetoric_guidelines",
+            "short_sentences",
+            "custom_style_prompt",
+            "daily_word_goal",
+        }
+    ),
+    Chapter: frozenset(
+        {"id", "project_id", "title", "outline_node_id", "content", "context_manifest_id"}
+    ),
+    OutlineNode: frozenset(
+        {
+            "id",
+            "project_id",
+            "parent_id",
+            "node_type",
+            "title",
+            "summary",
+            "status",
+            "sort_order",
+            "metadata_json",
+        }
+    ),
+    Character: CHARACTER_MUTATION_COLUMNS,
+    WorldbuildingEntry: frozenset(
+        {"id", "project_id", "dimension", "title", "content", "sort_order"}
+    ),
+    Foreshadowing: frozenset(
+        {
+            "id",
+            "project_id",
+            "title",
+            "description",
+            "status",
+            "importance",
+            "source_chapter_id",
+            "target_chapter_id",
+            "target_chapter_number",
+            "resolved_chapter_id",
+            "evidence",
+            "resolution_note",
+            "resolution_evidence",
+            "verification_note",
+            "closed_by",
+            "storyline",
+            "dedupe_key",
+            "source",
+        }
+    ),
+    NarrativeDebt: frozenset(
+        {
+            "id",
+            "project_id",
+            "debt_type",
+            "title",
+            "description",
+            "status",
+            "priority",
+            "source_chapter_id",
+            "target_chapter_id",
+            "target_chapter_number",
+            "resolved_chapter_id",
+            "linked_foreshadowing_id",
+            "linked_causal_edge_id",
+            "evidence",
+            "resolution_note",
+            "resolution_evidence",
+            "verification_note",
+            "closed_by",
+            "dedupe_key",
+            "source",
+        }
+    ),
+}
+
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -204,6 +314,8 @@ def serialize_record(row: Any, spec: RecordSpec | None = None) -> dict[str, Any]
         # sync snapshots, otherwise bootstrap can replace a canonical PC API
         # response with an incompatible payload.
         return {"_record_type": spec.record_type, **character_to_dict(row)}
+    if spec.model is OutlineNode:
+        return {"_record_type": spec.record_type, **node_to_dict(row)}
     payload: dict[str, Any] = {"_record_type": spec.record_type}
     for column in sa_inspect(spec.model).columns:
         if column.key in LOCAL_ONLY_COLUMNS:
@@ -262,11 +374,38 @@ def _rows_for_spec(db: Session, project_id: str, spec: RecordSpec) -> list[Any]:
     return []
 
 
+def _serialize_domain_row(db: Session, row: Any, spec: RecordSpec) -> dict[str, Any]:
+    if spec.model is Chapter:
+        context = outline_sort_context(load_outline_nodes(db, str(row.project_id)))
+        return {"_record_type": spec.record_type, **chapter_to_detail(row, context)}
+    return serialize_record(row, spec)
+
+
+def domain_snapshot_for_entity(
+    db: Session,
+    *,
+    project_id: str,
+    entity_type: str,
+    entity_id: str,
+) -> dict[str, Any] | None:
+    """Return the authoritative PC-shaped snapshot after a sync mutation."""
+    for spec in RECORD_SPECS:
+        if spec.entity_type != entity_type:
+            continue
+        row = db.get(spec.model, entity_id)
+        if row is None:
+            continue
+        if project_id_for_record(db, row, spec) != project_id:
+            continue
+        return _serialize_domain_row(db, row, spec)
+    return None
+
+
 def project_snapshots(db: Session, project_id: str) -> list[tuple[RecordSpec, Any, dict[str, Any]]]:
     snapshots: list[tuple[RecordSpec, Any, dict[str, Any]]] = []
     for spec in RECORD_SPECS:
         for row in _rows_for_spec(db, project_id, spec):
-            snapshots.append((spec, row, serialize_record(row, spec)))
+            snapshots.append((spec, row, _serialize_domain_row(db, row, spec)))
     snapshots.sort(key=lambda item: (item[0].entity_type, str(item[1].id)))
     return snapshots
 
@@ -340,8 +479,62 @@ def _string_list(value: Any, *, field: str) -> list[str] | None:
             if isinstance(parsed, list):
                 return [str(item).strip() for item in parsed if str(item).strip()]
         normalized = raw.replace("，", ",").replace("、", ",").replace("\r", "\n")
-        return [item.strip() for line in normalized.split("\n") for item in line.split(",") if item.strip()]
+        return [
+            item.strip()
+            for line in normalized.split("\n")
+            for item in line.split(",")
+            if item.strip()
+        ]
     raise ValidationError(f"角色 {field} 必须是字符串数组")
+
+
+def _canonical_project_values(values: dict[str, Any]) -> dict[str, Any]:
+    tags = values.get("tags")
+    if isinstance(tags, list):
+        values["tags"] = json.dumps([str(item) for item in tags], ensure_ascii=False)
+    elif tags is not None and not isinstance(tags, str):
+        raise ValidationError("作品 tags 必须是字符串数组")
+    return values
+
+
+def _canonical_outline_values(
+    values: dict[str, Any],
+) -> tuple[dict[str, Any], list[tuple[str, str | None]] | None]:
+    if "metadata" in values:
+        metadata = values.pop("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValidationError("大纲 metadata 必须是对象")
+        values["metadata_json"] = metadata
+
+    characters = values.pop("characters", None)
+    character_ids = values.pop("character_ids", None)
+    links: list[tuple[str, str | None]] | None = None
+    if characters is not None:
+        if not isinstance(characters, list):
+            raise ValidationError("大纲 characters 必须是数组")
+        links = []
+        seen: set[str] = set()
+        for item in characters:
+            if not isinstance(item, dict):
+                raise ValidationError("大纲 characters 元素必须是对象")
+            character_id = str(item.get("character_id") or "").strip()
+            if not character_id or character_id in seen:
+                continue
+            seen.add(character_id)
+            role = str(item.get("role_in_scene") or "").strip() or None
+            links.append((character_id, role))
+    elif character_ids is not None:
+        if not isinstance(character_ids, list):
+            raise ValidationError("大纲 character_ids 必须是数组")
+        links = []
+        seen: set[str] = set()
+        for raw in character_ids:
+            character_id = str(raw or "").strip()
+            if not character_id or character_id in seen:
+                continue
+            seen.add(character_id)
+            links.append((character_id, None))
+    return values, links
 
 
 def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
@@ -372,6 +565,28 @@ def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any],
     return values, aliases
 
 
+def _prepare_character_mutation_values(
+    values: dict[str, Any],
+    row: Character | None,
+) -> tuple[dict[str, Any], list[str] | None, str | None]:
+    raw_summary = values.pop("change_summary", None)
+    change_summary = str(raw_summary or "").strip() or None
+    if row is None and "role_type" not in values:
+        values["role_type"] = normalize_character_role_type(None)
+    if "role_type" in values:
+        raw_role_type = values["role_type"]
+        values["background"] = append_character_role_description(
+            values.get("background", row.background if row is not None else None),
+            raw_role_type,
+        )
+        values["role_type"] = normalize_character_role_type(
+            raw_role_type,
+            default=(row.role_type or "other") if row is not None else "other",
+        )
+    values, aliases = _canonical_character_values(values)
+    return values, aliases, change_summary
+
+
 def apply_domain_mutation(
     db: Session,
     *,
@@ -393,7 +608,10 @@ def apply_domain_mutation(
         if operation == "delete"
         else _spec_for_payload(entity_type, payload)
     )
+    if spec.model not in MUTATION_COLUMNS_BY_MODEL:
+        raise ValidationError("该同步记录由 PC 管理，移动端只读")
     row = db.get(spec.model, entity_id)
+    row_existed = row is not None
     if operation == "delete":
         if spec.model is Project:
             raise ValidationError("请在作品管理页确认删除，移动端不会直接删除整部作品")
@@ -409,8 +627,24 @@ def apply_domain_mutation(
     values = dict(payload or {})
     values.pop("_record_type", None)
     character_aliases: list[str] | None = None
+    character_change_summary: str | None = None
+    outline_links: list[tuple[str, str | None]] | None = None
+    governance_status_values: dict[str, Any] | None = None
+    if spec.model in {Foreshadowing, NarrativeDebt}:
+        governance_status_values = {
+            key: values.pop(key)
+            for key in STATUS_UPDATE_FIELDS
+            if key in values
+        }
+    if spec.model is Project:
+        values = _canonical_project_values(values)
     if spec.model is Character:
-        values, character_aliases = _canonical_character_values(values)
+        values, character_aliases, character_change_summary = _prepare_character_mutation_values(
+            values,
+            row,
+        )
+    if spec.model is OutlineNode:
+        values, outline_links = _canonical_outline_values(values)
     payload_id = values.get("id")
     if payload_id is not None and str(payload_id) != entity_id:
         raise ValidationError("同步记录 ID 与实体 ID 不一致")
@@ -424,13 +658,26 @@ def apply_domain_mutation(
             raise ValidationError("不能把记录移动到其他作品")
         values["project_id"] = project_id
 
+    if spec.model is Chapter and row_existed:
+        chapter_values = {
+            key: value
+            for key, value in values.items()
+            if key in {"title", "outline_node_id", "content", "context_manifest_id"}
+        }
+        SqlAlchemyChapterWorkspace(db).save(project_id, entity_id, chapter_values)
+        return
+
+    if spec.model is Chapter and values.get("outline_node_id"):
+        get_outline_node_or_404(db, project_id, values.get("outline_node_id"))
+    if spec.model is OutlineNode and "parent_id" in values:
+        ensure_no_cycle(db, project_id, entity_id, values.get("parent_id"))
+
     columns = {column.key: column for column in sa_inspect(spec.model).columns}
+    mutation_columns = MUTATION_COLUMNS_BY_MODEL[spec.model]
     allowed = {
         key: _coerce_column_value(columns[key], value)
         for key, value in values.items()
-        if key in columns
-        and key not in LOCAL_ONLY_COLUMNS
-        and (spec.model is not Character or key in CHARACTER_MUTATION_COLUMNS)
+        if key in columns and key in mutation_columns
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
@@ -449,8 +696,44 @@ def apply_domain_mutation(
             if key != "id":
                 setattr(row, key, value)
     db.flush()
+    if governance_status_values:
+        item_type = "foreshadowing" if spec.model is Foreshadowing else "narrative_debt"
+        updated = apply_governance_status_update(
+            db,
+            SqlAlchemyChapterEvidenceReader(),
+            project_id,
+            item_type,
+            row.id,
+            governance_status_values,
+            commit=False,
+        )
+        if updated is None:
+            raise ValidationError("治理项不存在")
+    if spec.model is Chapter and "content" in allowed:
+        row.word_count = count_words(row.content or "")
+        db.flush()
+    if spec.model is Chapter and not row_existed:
+        db.add(create_snapshot(row, "manual_save"))
+        create_narrative_checkpoint(
+            db,
+            project_id,
+            chapter=row,
+            label=f"{row.title} 创建",
+            trigger_type="chapter_create",
+        )
+        db.flush()
+    if spec.model is OutlineNode and outline_links is not None:
+        replace_character_links(db, project_id, row, outline_links)
+        db.flush()
     if spec.model is Character and character_aliases is not None:
         sync_character_aliases(db, row, character_aliases)
+        db.flush()
+    if spec.model is Character and row_existed:
+        create_character_version(
+            db,
+            row,
+            character_change_summary or "手动更新角色档案",
+        )
         db.flush()
 
 
@@ -463,6 +746,7 @@ __all__ = [
     "RECORD_SPECS",
     "RecordSpec",
     "apply_domain_mutation",
+    "domain_snapshot_for_entity",
     "project_id_for_record",
     "project_snapshots",
     "serialize_record",
