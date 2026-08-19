@@ -392,8 +392,53 @@ class SimingRepository(context: Context) {
         )
     }
 
+    suspend fun deleteProject(projectId: String) = canonicalCommandMutex.withLock {
+        val key = ReplicaEntity.key(projectId, "project", projectId)
+        val current = dao.entity(key) ?: return@withLock
+        require(!current.conflicted) { "请先处理这部作品的版本分岔，再执行删除" }
+
+        val connection = dao.connection()
+        if (connection != null) {
+            val canonicalReady = prepareCanonicalWrite()
+            if (canonicalReady) {
+                try {
+                    api.deleteProject(connection, projectId)
+                    purgeLocalProject(projectId)
+                    return@withLock
+                } catch (error: GatewayHttpException) {
+                    throw error
+                } catch (_: IOException) {
+                    // A canonical project must not be converted into a local-only
+                    // delete when the PC is unreachable: it would be resurrected
+                    // on the next authoritative pull.
+                }
+            }
+        }
+
+        check(isUnsyncedLocalProject(current)) {
+            "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
+        }
+        purgeLocalProject(projectId)
+    }
+
+    private suspend fun isUnsyncedLocalProject(project: ReplicaEntity): Boolean {
+        val pending = dao.pendingMutation(project.projectId, "project", project.projectId)
+        return project.dirty &&
+            project.revision == 0L &&
+            pending?.operation == "upsert" &&
+            pending.baseRevision == 0L
+    }
+
+    private suspend fun purgeLocalProject(projectId: String) {
+        database.withTransaction {
+            dao.deleteProjectMutations(projectId)
+            dao.deleteProjectConflicts(projectId)
+            dao.deleteProjectReplica(projectId)
+        }
+    }
+
     suspend fun deleteEntity(projectId: String, entityType: String, entityId: String) {
-        require(entityType != "project") { "移动端不会直接删除整部作品" }
+        require(entityType != "project") { "整部作品请使用作品库的删除操作" }
         require(entityType !in GOVERNANCE_ENTITY_TYPES) {
             "PC 端叙事治理不直接删除记录；请把状态改为 abandoned"
         }
@@ -549,6 +594,57 @@ class SimingRepository(context: Context) {
             refreshAfterCanonicalWrite(connection, projectId, result)
         }
 
+    suspend fun reorderOutline(
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        require(nodeIds.distinct().size == nodeIds.size) { "大纲排序包含重复节点" }
+        val connection = dao.connection()
+        if (connection != null && prepareCanonicalWrite()) {
+            try {
+                val result = api.reorderOutline(connection, projectId, parentId, nodeIds)
+                return@withLock refreshAfterCanonicalWrite(connection, projectId, result)
+            } catch (error: GatewayHttpException) {
+                throw error
+            } catch (_: IOException) {
+                // Reordering is replay-safe because each outline node already
+                // carries parent_id + sort_order in the canonical mutation.
+            }
+        }
+        reorderOutlineOffline(projectId, parentId, nodeIds)
+    }
+
+    private suspend fun reorderOutlineOffline(
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject {
+        nodeIds.forEachIndexed { index, nodeId ->
+            val key = ReplicaEntity.key(projectId, "outline", nodeId)
+            val current = dao.entity(key) ?: error("大纲节点不存在：$nodeId")
+            require(!current.conflicted) { "请先处理大纲节点的版本分岔，再调整顺序" }
+            val payload = current.payloadJson
+                ?.let(json::parseToJsonElement)
+                as? JsonObject
+                ?: error("大纲节点缺少结构化数据")
+            val actualParent = (payload["parent_id"] as? JsonPrimitive)?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            require(actualParent == parentId) { "只能调整同一父节点下的大纲顺序" }
+            val reordered = JsonObject(
+                payload.toMutableMap().apply {
+                    put("sort_order", JsonPrimitive(index))
+                },
+            )
+            saveOfflineEntity(projectId, "outline", nodeId, reordered)
+        }
+        return buildJsonObject {
+            put("mode", "offline_replay")
+            put("parent_id", parentId?.let(::JsonPrimitive) ?: JsonNull)
+            put("ids", JsonArray(nodeIds.map(::JsonPrimitive)))
+        }
+    }
+
     private suspend fun refreshAfterCanonicalWrite(
         connection: GatewayConnection,
         projectId: String,
@@ -561,6 +657,68 @@ class SimingRepository(context: Context) {
     } catch (error: Exception) {
         result.withMobileRefreshFailure(error.toUserFacingMessage())
     }
+
+
+suspend fun runCataloging(
+    projectId: String,
+    onProgress: suspend (MobileCatalogingProgress, String?) -> Unit,
+): MobileCatalogingProgress {
+    val connection = canonicalCommandConnection()
+    val chapters = orderReplicaEntities(
+        "chapter",
+        dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+    )
+    require(chapters.isNotEmpty()) { "作品没有可建档章节" }
+    val started = api.startCataloging(connection, projectId, chapters.map { it.entityId })
+    var latest = started.toMobileCatalogingProgress()
+    onProgress(latest, "作品建档任务已创建")
+    api.streamCataloging(connection, projectId, latest.jobId) { raw ->
+        val event = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+        val job = event?.get("job") as? JsonObject
+        if (job != null) latest = job.toMobileCatalogingProgress()
+        val message = (event?.get("message") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("detail") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("type") as? JsonPrimitive)?.contentOrNull
+        onProgress(latest, message)
+    }
+    val finalData = api.getCatalogingJob(connection, projectId, latest.jobId)
+    val finalJob = finalData["job"] as? JsonObject
+    if (finalJob != null) latest = finalJob.toMobileCatalogingProgress()
+    runCatching { pullAll(connection, listOf(projectId)) }
+    return latest
+}
+
+suspend fun cancelCataloging(projectId: String, jobId: String) {
+    val connection = requireConnection()
+    api.cancelCataloging(connection, projectId, jobId)
+}
+
+suspend fun exportProject(projectId: String, format: String): MobileExportFile {
+    val normalized = format.lowercase()
+    require(normalized in setOf("txt", "docx", "pdf")) { "不支持的导出格式：$format" }
+    val project = dao.entity(ReplicaEntity.key(projectId, "project", projectId))
+        ?: error("作品不存在")
+    val connection = dao.connection()
+    if (connection == null) {
+        require(normalized == "txt") { "Word / PDF 导出需要连接 PC Gateway" }
+        val chapters = orderReplicaEntities(
+            "chapter",
+            dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+        )
+        return buildLocalNovelExport(project, chapters)
+    }
+    check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出" }
+    val metadata = api.createProjectExport(connection, projectId, normalized)
+    val fileId = (metadata["file_id"] as? JsonPrimitive)?.contentOrNull
+        ?: error("PC 导出结果缺少 file_id")
+    val filename = (metadata["filename"] as? JsonPrimitive)?.contentOrNull
+        ?: "司命导出.$normalized"
+    return MobileExportFile(
+        filename = filename,
+        mimeType = exportMimeType(normalized),
+        bytes = api.downloadProjectExport(connection, projectId, fileId),
+    )
+}
 
     suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
         api.listChapterSnapshots(requireConnection(), projectId, chapterId)

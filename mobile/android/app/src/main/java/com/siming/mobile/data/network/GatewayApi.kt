@@ -17,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -180,6 +181,92 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
             "DELETE",
         )
     }
+
+    suspend fun deleteProject(connection: GatewayConnection, projectId: String) {
+        request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.project(projectId),
+            "DELETE",
+        )
+    }
+
+    suspend fun reorderOutline(
+        connection: GatewayConnection,
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.outlineReorder(projectId),
+        method = "PUT",
+        payload = buildJsonObject {
+            put(
+                "items",
+                JsonArray(
+                    nodeIds.mapIndexed { index, nodeId ->
+                        buildJsonObject {
+                            put("id", nodeId)
+                            put("parent_id", parentId?.let(::JsonPrimitive) ?: JsonNull)
+                            put("sort_order", index)
+                        }
+                    },
+                ),
+            )
+        },
+    )
+
+
+suspend fun startCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    chapterIds: List<String>,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingStart(projectId),
+    "POST",
+    json.encodeToString(
+        buildJsonObject {
+            put("execution_mode", "auto")
+            put("chapter_ids", JsonArray(chapterIds.map(::JsonPrimitive)))
+        },
+    ),
+).data
+
+suspend fun getCatalogingJob(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingJob(projectId, jobId),
+).data
+
+suspend fun cancelCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingCancel(projectId, jobId),
+    "POST",
+    json.encodeToString(JsonObject(emptyMap())),
+).data
+
+suspend fun createProjectExport(
+    connection: GatewayConnection,
+    projectId: String,
+    format: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.projectExport(projectId),
+    "POST",
+    json.encodeToString(
+        buildJsonObject {
+            put("scope", "chapters")
+            put("format", format)
+        },
+    ),
+).data
 
     suspend fun saveGovernanceEntity(
         connection: GatewayConnection,
@@ -470,6 +557,67 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         return response.data as? JsonObject
             ?: throw GatewayHttpException(502, "PC API 返回的数据结构无效")
     }
+
+
+suspend fun streamCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+    onEvent: suspend (String) -> Unit,
+) = withContext(Dispatchers.IO) {
+    var token = validAccessToken(connection.baseUrl)
+    repeat(2) { attempt ->
+        val request = Request.Builder()
+            .url(connection.baseUrl + PcApiPaths.catalogingStream(projectId, jobId))
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "text/event-stream")
+            .post(EMPTY_BODY)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 401 && attempt == 0) {
+                response.body?.close()
+                token = refresh(connection.baseUrl, token)
+                return@use
+            }
+            if (!response.isSuccessful) throw errorFrom(response.code, response.body?.string())
+            val source = response.body?.source() ?: throw IOException("作品建档响应为空")
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (line.startsWith("data:")) {
+                    val data = line.removePrefix("data:").trim()
+                    if (data.isNotEmpty() && data != "[DONE]") onEvent(data)
+                }
+            }
+            return@withContext
+        }
+    }
+    throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+}
+
+suspend fun downloadProjectExport(
+    connection: GatewayConnection,
+    projectId: String,
+    fileId: String,
+): ByteArray = withContext(Dispatchers.IO) {
+    var token = validAccessToken(connection.baseUrl)
+    repeat(2) { attempt ->
+        val request = Request.Builder()
+            .url(connection.baseUrl + PcApiPaths.projectExportDownload(projectId, fileId))
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 401 && attempt == 0) {
+                response.body?.close()
+                token = refresh(connection.baseUrl, token)
+                return@use
+            }
+            if (!response.isSuccessful) throw errorFrom(response.code, response.body?.string())
+            return@withContext response.body?.bytes() ?: throw IOException("导出文件为空")
+        }
+    }
+    throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+}
 
     suspend fun streamAssistant(
         connection: GatewayConnection,
