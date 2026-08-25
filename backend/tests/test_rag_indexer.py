@@ -1,6 +1,6 @@
 """Tests for RAG indexer: chunking, hashing, FTS5 sync, and dirty detection."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -13,7 +13,6 @@ from app.services.rag.indexer import (
     detect_fts5_available,
     index_document,
     reindex_project,
-    reindex_project_types,
     mark_dirty,
     ensure_indexed,
     project_has_chunks,

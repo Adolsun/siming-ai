@@ -5,21 +5,29 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.siming.mobile.data.SimingRepository
 import com.siming.mobile.data.AssistantRoute
+import com.siming.mobile.data.AssistantModelRoute
+import com.siming.mobile.data.MobileCatalogingProgress
+import com.siming.mobile.data.MobileExportFile
+import com.siming.mobile.data.MobileNovelImportFile
+import com.siming.mobile.data.creation.CreationExecutionRoute
+import com.siming.mobile.data.creation.CreationStartInput
 import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.security.VerifiedPairing
-import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -36,15 +44,32 @@ data class MobileUiState(
     val pairing: VerifiedPairing? = null,
     val pairingStatus: String? = null,
     val assistantOutput: String = "",
+    val assistantActivity: String = "",
     val assistantRunning: Boolean = false,
     val directApi: DirectApiSummary? = null,
     val discoveredModels: List<String> = emptyList(),
+    val activeCreationId: String? = null,
+    val creationRunning: Boolean = false,
+    val creationActivity: String = "",
+    val pendingCatalogingProjectId: String? = null,
+    val importedChapterCount: Int = 0,
+    val catalogingProjectId: String? = null,
+    val catalogingJobId: String? = null,
+    val catalogingStatus: String = "",
+    val catalogingTotal: Int = 0,
+    val catalogingCompleted: Int = 0,
+    val catalogingFailed: Int = 0,
+    val catalogingRunning: Boolean = false,
+    val catalogingActivity: String = "",
+    val exportRunning: Boolean = false,
 )
 
 @OptIn(ExperimentalSerializationApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SimingRepository(application)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private var assistantJob: Job? = null
+    private var catalogingJob: Job? = null
 
     val connection = repository.connection.stateIn(
         viewModelScope,
@@ -52,6 +77,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         null,
     )
     val projects = repository.projects.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
+    val creationDrafts = repository.creationDrafts.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList(),
@@ -77,8 +107,136 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
         private set
 
+    init {
+        viewModelScope.launch {
+            runCatching { repository.refreshCreationDrafts() }
+        }
+    }
+
     fun entities(projectId: String, entityType: String) =
         repository.entities(projectId, entityType)
+
+    fun beginCreation(input: CreationStartInput, route: CreationExecutionRoute) {
+        launchCreation("正在建立对话式立项会话…") {
+            val started = repository.beginCreation(input, route)
+            val sessionId = started["id"]?.jsonPrimitive?.contentOrNull
+                ?: error("立项草稿缺少 id")
+            uiState.value = uiState.value.copy(activeCreationId = sessionId)
+            repository.runCreationAgentTurn(sessionId, input.brief) { activity ->
+                uiState.value = uiState.value.copy(creationActivity = activity)
+            }
+            "Creation Agent 已边聊边写入第一轮立项资料"
+        }
+    }
+
+    fun resumeCreation(sessionId: String) {
+        uiState.value = uiState.value.copy(activeCreationId = sessionId, error = null)
+    }
+
+    fun closeCreation() {
+        uiState.value = uiState.value.copy(activeCreationId = null, creationActivity = "")
+    }
+
+    fun sendCreationMessage(sessionId: String, message: String) {
+        if (message.isBlank()) return
+        launchCreation("Creation Agent 正在处理…") {
+            repository.runCreationAgentTurn(sessionId, message) { activity ->
+                uiState.value = uiState.value.copy(creationActivity = activity)
+            }
+            "本轮已完成；确定事实已立即写入结构化立项资料"
+        }
+    }
+
+    fun generateCreationStage(
+        sessionId: String,
+        stage: String,
+        operation: String,
+        instruction: String,
+    ) = launchCreation("正在生成立项资料…") {
+        repository.generateCreationStage(
+            sessionId = sessionId,
+            stage = stage,
+            operation = operation,
+            instruction = instruction,
+            onProgress = { message ->
+                uiState.value = uiState.value.copy(creationActivity = message)
+            },
+        )
+        when (operation) {
+            "refine" -> "已按要求更新当前阶段；请检查后再确认"
+            "regenerate" -> "已重新生成当前阶段；旧内容仍可从修订历史追溯"
+            else -> "阶段内容已生成并保存，等待作者确认"
+        }
+    }
+
+    fun saveCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+        onSaved: () -> Unit = {},
+    ) = launchCreation("正在保存建档修改…") {
+        repository.updateCreationStage(sessionId, stage, data)
+        onSaved()
+        "建档修改已保存；受影响的下游阶段会按 PC 规则重新校验"
+    }
+
+    fun confirmCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+        onConfirmed: () -> Unit = {},
+    ) = launchCreation("正在确认立项阶段…") {
+        repository.confirmCreationStage(sessionId, stage, data)
+        onConfirmed()
+        "当前阶段已确认"
+    }
+
+    fun archiveCreation(sessionId: String, onArchived: (String) -> Unit) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                creationRunning = true,
+                creationActivity = "正在执行正式作品建档…",
+                error = null,
+            )
+            try {
+                val projectId = repository.archiveCreation(sessionId) { activity ->
+                    uiState.value = uiState.value.copy(creationActivity = activity)
+                }
+                uiState.value = uiState.value.copy(
+                    activeCreationId = null,
+                    creationRunning = false,
+                    creationActivity = "",
+                    notice = "正式作品已建档；角色、设定、关系和大纲已进入作品库",
+                )
+                onArchived(projectId)
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(creationRunning = false, creationActivity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun discardCreation(sessionId: String) {
+        viewModelScope.launch {
+            runCatching { repository.discardCreation(sessionId) }
+                .onSuccess {
+                    uiState.value = uiState.value.copy(
+                        activeCreationId = null,
+                        notice = "立项草稿已移除；正式作品和其他草稿没有变化",
+                    )
+                }
+                .onFailure(::showError)
+        }
+    }
+
+    fun refreshCreationDrafts() {
+        viewModelScope.launch {
+            runCatching { repository.refreshCreationDrafts() }
+                .onFailure { error ->
+                    uiState.value = uiState.value.copy(error = error.toUserFacingMessage())
+                }
+        }
+    }
 
     fun acceptPairingQr(raw: String) {
         runCatching { repository.verifyPairing(raw) }
@@ -253,11 +411,190 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         "同步完成"
     }
 
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
+        repository.reorderChapters(projectId, chapterIds)
+
+    fun reorderOutline(projectId: String, parentId: String?, nodeIds: List<String>) {
+        viewModelScope.launch {
+            try {
+                repository.reorderOutline(projectId, parentId, nodeIds)
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "大纲顺序已通过 PC 端同一排序 API 更新"
+                    } else {
+                        "大纲顺序已保存到手机，恢复连接后按节点修订同步"
+                    },
+                )
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+
+fun dismissImportCatalogingPrompt() {
+    uiState.value = uiState.value.copy(pendingCatalogingProjectId = null, importedChapterCount = 0)
+}
+
+fun startCataloging(projectId: String) {
+    if (catalogingJob?.isActive == true) return
+    catalogingJob = viewModelScope.launch {
+        uiState.value = uiState.value.copy(
+            pendingCatalogingProjectId = null,
+            catalogingProjectId = projectId,
+            catalogingRunning = true,
+            catalogingActivity = "正在准备作品建档…",
+            error = null,
+        )
+        try {
+            val result = repository.runCataloging(projectId) { progress, message ->
+                updateCatalogingProgress(projectId, progress, message)
+            }
+            updateCatalogingProgress(projectId, result, "作品建档已结束")
+            uiState.value = uiState.value.copy(
+                catalogingRunning = false,
+                catalogingActivity = "",
+                notice = when (result.status) {
+                    "completed" -> "作品建档完成，手机已刷新角色、设定和摘要副本"
+                    "cancelled" -> "作品建档已取消"
+                    else -> "作品建档已停止：${result.status}"
+                },
+            )
+        } catch (_: CancellationException) {
+            uiState.value = uiState.value.copy(catalogingRunning = false, catalogingActivity = "")
+        } catch (error: Exception) {
+            uiState.value = uiState.value.copy(catalogingRunning = false, catalogingActivity = "")
+            showError(error)
+        } finally {
+            catalogingJob = null
+        }
+    }
+}
+
+fun cancelCataloging(projectId: String) {
+    val jobId = uiState.value.catalogingJobId ?: return
+    viewModelScope.launch {
+        runCatching { repository.cancelCataloging(projectId, jobId) }
+            .onFailure(::showError)
+        catalogingJob?.cancel(CancellationException("用户取消作品建档"))
+        uiState.value = uiState.value.copy(
+            catalogingRunning = false,
+            catalogingStatus = "cancelled",
+            catalogingActivity = "",
+            notice = "作品建档已取消",
+        )
+    }
+}
+
+fun prepareExport(
+    projectId: String,
+    format: String,
+    onReady: (MobileExportFile) -> Unit,
+) {
+    viewModelScope.launch {
+        uiState.value = uiState.value.copy(exportRunning = true, error = null)
+        try {
+            val file = repository.exportProject(projectId, format)
+            uiState.value = uiState.value.copy(exportRunning = false)
+            onReady(file)
+        } catch (error: Exception) {
+            uiState.value = uiState.value.copy(exportRunning = false)
+            showError(error)
+        }
+    }
+}
+
+private fun updateCatalogingProgress(
+    projectId: String,
+    progress: MobileCatalogingProgress,
+    message: String?,
+) {
+    uiState.value = uiState.value.copy(
+        catalogingProjectId = projectId,
+        catalogingJobId = progress.jobId,
+        catalogingStatus = progress.status,
+        catalogingTotal = progress.totalChapters,
+        catalogingCompleted = progress.completedChapters,
+        catalogingFailed = progress.failedChapters,
+        catalogingActivity = message.orEmpty(),
+    )
+}
+
+    suspend fun chapterSnapshots(projectId: String, chapterId: String): JsonObject =
+        repository.listChapterSnapshots(projectId, chapterId)
+
+    suspend fun chapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = repository.getChapterSnapshot(projectId, chapterId, snapshotId)
+
+    suspend fun chapterSnapshotDiff(
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject = repository.diffChapterSnapshots(
+        projectId,
+        chapterId,
+        fromSnapshotId,
+        toSnapshotId,
+    )
+
+    suspend fun restoreChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = repository.restoreChapterSnapshot(projectId, chapterId, snapshotId)
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
+        repository.characterRelationshipNetwork(projectId)
+
+    suspend fun replaceCharacterRelationships(
+        projectId: String,
+        characterId: String,
+        relationships: JsonArray,
+    ): JsonObject = repository.replaceCharacterRelationships(
+        projectId,
+        characterId,
+        relationships,
+    )
+
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
+        repository.characterAiConfig(projectId, characterId)
+
+    suspend fun updateCharacterAiConfig(
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = repository.updateCharacterAiConfig(projectId, characterId, payload)
+
+    suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
+        repository.characterVersions(projectId, characterId)
+
+    suspend fun characterVersion(
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = repository.characterVersion(projectId, characterId, versionId)
+
+    suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
+        repository.worldVersions(projectId, entryId)
+
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
+        repository.worldTimeline(projectId, entryId)
+
     fun createProject(title: String, description: String, onCreated: (String) -> Unit) {
         viewModelScope.launch {
             try {
                 val id = repository.createProject(title, description)
-                uiState.value = uiState.value.copy(notice = "新作品已保存到离线库")
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "新作品已通过 PC 端同一 API 创建，手机副本已更新"
+                    } else {
+                        "新作品已保存到手机，连接 Gateway 后自动同步"
+                    },
+                )
                 onCreated(id)
             } catch (error: Exception) {
                 showError(error)
@@ -265,33 +602,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importNovel(fileName: String, content: String, onCreated: (String) -> Unit) {
+    fun deleteProject(projectId: String, onDeleted: () -> Unit) {
         viewModelScope.launch {
-            uiState.value = uiState.value.copy(busy = true, activity = "正在离线拆分并建档…")
             try {
-                require(content.length <= 20_000_000) { "单个导入文件不能超过 2000 万字符" }
-                val title = fileName.substringBeforeLast('.').ifBlank { "导入作品" }
-                val projectId = repository.createProject(title, "由手机导入的已有小说")
-                val chapters = splitChapters(content)
-                chapters.forEachIndexed { index, (chapterTitle, chapterContent) ->
-                    saveRecordInternal(
-                        projectId,
-                        "chapter",
-                        null,
-                        mapOf(
-                            "title" to chapterTitle.ifBlank { "第 ${index + 1} 章" },
-                            "content" to chapterContent,
-                            "word_count" to chapterContent.count { !it.isWhitespace() },
-                            "current_version" to 1,
-                        ),
-                    )
+                repository.deleteProject(projectId)
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "作品已从 PC 权威库删除，手机副本已清理"
+                    } else {
+                        "尚未同步的本地作品已从手机删除"
+                    },
+                )
+                onDeleted()
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+    fun importNovel(file: MobileNovelImportFile, onCreated: (String) -> Unit) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在识别编码并准备批量导入…",
+                error = null,
+            )
+            try {
+                val result = repository.importNovel(file) { activity ->
+                    uiState.value = uiState.value.copy(activity = activity)
                 }
+                val refreshWarning = result.refreshWarning
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
-                    notice = "已离线导入 ${chapters.size} 章，联网后自动同步",
+                    notice = when {
+                        refreshWarning != null ->
+                            "Gateway 已导入 ${result.chapterCount} 章（${result.encoding}），" +
+                                "但手机刷新失败：$refreshWarning；请在同步页重试"
+                        result.remote ->
+                            "已通过 Gateway 单次批量导入 ${result.chapterCount} 章，识别编码：${result.encoding}"
+                        else ->
+                            "已在手机本地事务中导入 ${result.chapterCount} 章，识别编码：${result.encoding}"
+                    },
+                    pendingCatalogingProjectId = if (refreshWarning == null) result.projectId else null,
+                    importedChapterCount = if (refreshWarning == null) result.chapterCount else 0,
                 )
-                onCreated(projectId)
+                if (refreshWarning == null) onCreated(result.projectId)
             } catch (error: Exception) {
                 uiState.value = uiState.value.copy(busy = false, activity = "")
                 showError(error)
@@ -310,7 +666,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 saveRecordInternal(projectId, entityType, entityId, fields, basePayload)
-                uiState.value = uiState.value.copy(notice = "已保存到手机；联网后自动同步")
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "已通过 PC 端同一 API 保存，服务端副作用与桌面端一致"
+                    } else {
+                        "已保存到手机；连接 Gateway 后自动同步"
+                    },
+                )
                 onSaved()
             } catch (error: Exception) {
                 showError(error)
@@ -356,15 +718,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 put("debt_type", "promise")
             }
         }
-        repository.saveEntity(projectId, entityType, id, payload)
-        return id
+        return repository.saveEntity(projectId, entityType, id, payload)
     }
 
     fun deleteRecord(projectId: String, entityType: String, entityId: String, onDeleted: () -> Unit) {
         viewModelScope.launch {
             try {
                 repository.deleteEntity(projectId, entityType, entityId)
-                uiState.value = uiState.value.copy(notice = "删除已记入离线修订")
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "已通过 PC 端同一 API 删除，手机副本已更新"
+                    } else {
+                        "删除已保存到手机，连接 Gateway 后自动同步"
+                    },
+                )
                 onDeleted()
             } catch (error: Exception) {
                 showError(error)
@@ -372,33 +739,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun runAssistant(projectId: String, scope: String, prompt: String) {
-        if (prompt.isBlank()) return
-        viewModelScope.launch {
+    fun runAssistant(
+        projectId: String,
+        scope: String,
+        prompt: String,
+        modelRoute: AssistantModelRoute,
+    ) {
+        if (prompt.isBlank() || assistantJob?.isActive == true) return
+        assistantJob = viewModelScope.launch {
             uiState.value = uiState.value.copy(
                 assistantRunning = true,
                 assistantOutput = "",
+                assistantActivity = "正在加载与 PC 同源的工作区流程…",
                 error = null,
             )
             try {
-                val route = repository.runAssistant(projectId, scope, prompt) { event ->
+                val route = repository.runAssistant(projectId, scope, prompt, modelRoute) { event ->
+                    val update = parseAssistantEvent(event)
+                    val current = uiState.value
                     uiState.value = uiState.value.copy(
-                        assistantOutput = uiState.value.assistantOutput + parseAssistantEvent(event),
+                        assistantOutput = when {
+                            update.output == null -> current.assistantOutput
+                            update.replaceOutput -> update.output
+                            else -> current.assistantOutput + update.output
+                        },
+                        assistantActivity = update.activity ?: current.assistantActivity,
                     )
                 }
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
-                    notice = if (route == AssistantRoute.Gateway) {
-                        "AI 任务完成，相关修改已同步到离线库"
-                    } else {
-                        "AI 生成完成；结果尚未写入正文，可复制或保存为新章节"
+                    assistantActivity = "",
+                    notice = when (route) {
+                        AssistantRoute.GatewayPc ->
+                            "AI 任务已使用 PC 配置线路执行，相关修改已同步到手机"
+                        AssistantRoute.GatewayMobileKey ->
+                            "AI 任务已使用手机 Key 执行；提示词、工具和落库流程与 PC 一致"
+                        AssistantRoute.DirectApi ->
+                            "手机独立工作区任务已完成，本地产生的修改已写入手机副本"
                     },
                 )
+            } catch (_: CancellationException) {
+                uiState.value = uiState.value.copy(
+                    assistantRunning = false,
+                    assistantActivity = "",
+                    notice = "任务已取消；未提交的章节不会写入，已生成草稿可在下次相同请求中恢复",
+                )
             } catch (error: Exception) {
-                uiState.value = uiState.value.copy(assistantRunning = false)
+                uiState.value = uiState.value.copy(
+                    assistantRunning = false,
+                    assistantActivity = "",
+                )
                 showError(error)
+            } finally {
+                assistantJob = null
             }
         }
+    }
+
+    fun cancelAssistant() {
+        val job = assistantJob ?: return
+        if (!job.isActive) return
+        uiState.value = uiState.value.copy(assistantActivity = "正在取消；不会写入未提交的章节…")
+        job.cancel(CancellationException("用户取消手机工作区任务"))
     }
 
     fun saveAssistantAsChapter(projectId: String, onSaved: () -> Unit = {}) {
@@ -448,6 +850,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         uiState.value = uiState.value.copy(error = message)
     }
 
+    fun reportNotice(message: String) {
+        uiState.value = uiState.value.copy(notice = message)
+    }
+
     private fun launchActivity(label: String, action: suspend () -> String) {
         viewModelScope.launch {
             uiState.value = uiState.value.copy(busy = true, activity = label, error = null)
@@ -461,39 +867,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun showError(error: Throwable) {
-        uiState.value = uiState.value.copy(error = error.toUserFacingMessage())
-    }
-
-    private fun splitChapters(content: String): List<Pair<String, String>> {
-        val marker = Regex("(?m)^(第[\\p{L}\\p{N}一二三四五六七八九十百千万零〇两]{1,16}[章节卷回部].*)$")
-        val matches = marker.findAll(content).toList()
-        val chapters = if (matches.isEmpty()) {
-            content.chunked(5_000).mapIndexed { index, text ->
-                "第 ${index + 1} 章" to text.trim()
-            }.filter { it.second.isNotBlank() }
-        } else {
-            matches.mapIndexed { index, match ->
-                val start = match.range.last + 1
-                val end = matches.getOrNull(index + 1)?.range?.first ?: content.length
-                match.value.trim() to content.substring(start, end).trim()
-            }.filter { it.second.isNotBlank() }
-        }
-        return chapters.flatMap { (title, body) ->
-            body.chunked(200_000).mapIndexed { index, part ->
-                (if (index == 0) title else "$title（续 ${index + 1}）") to part
+    private fun launchCreation(label: String, action: suspend () -> String) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                creationRunning = true,
+                creationActivity = label,
+                error = null,
+            )
+            try {
+                val notice = action()
+                uiState.value = uiState.value.copy(
+                    creationRunning = false,
+                    creationActivity = "",
+                    notice = notice,
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(creationRunning = false, creationActivity = "")
+                showError(error)
             }
         }
     }
 
-    private fun parseAssistantEvent(raw: String): String = runCatching {
-        val objectValue = json.parseToJsonElement(raw) as? JsonObject ?: return@runCatching raw
-        val candidateKeys = listOf("content", "text", "message", "detail", "reply")
-        candidateKeys.firstNotNullOfOrNull { key ->
-            objectValue[key]?.jsonPrimitive?.contentOrNull
-        } ?: if (objectValue["type"]?.jsonPrimitive?.content == "done") "\n\n任务完成。" else ""
-    }.getOrDefault(raw)
+    private fun showError(error: Throwable) {
+        uiState.value = uiState.value.copy(error = error.toUserFacingMessage())
+    }
+
+    private fun parseAssistantEvent(raw: String): AssistantEventUpdate = runCatching {
+        if (raw == "[DONE]") return@runCatching AssistantEventUpdate(activity = "")
+        val event = json.parseToJsonElement(raw) as? JsonObject
+            ?: return@runCatching AssistantEventUpdate(output = raw)
+        val type = event["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val directContent = listOf("content", "text", "reply")
+            .firstNotNullOfOrNull { key -> event[key]?.jsonPrimitive?.contentOrNull }
+        val message = event["message"]?.jsonPrimitive?.contentOrNull
+        val detail = event["detail"]?.jsonPrimitive?.contentOrNull
+        val tool = event["tool"]?.jsonPrimitive?.contentOrNull
+
+        when (type) {
+            "content" -> AssistantEventUpdate(output = directContent.orEmpty())
+            "complete" -> {
+                val data = event["data"] as? JsonObject
+                val reply = data?.get("reply")?.jsonPrimitive?.contentOrNull
+                    ?: (data?.get("message") as? JsonObject)
+                        ?.get("content")?.jsonPrimitive?.contentOrNull
+                    ?: directContent.orEmpty()
+                AssistantEventUpdate(output = reply, replaceOutput = true, activity = "")
+            }
+            "done" -> AssistantEventUpdate(activity = "")
+            "error", "permission_required" -> AssistantEventUpdate(
+                output = message ?: detail ?: directContent.orEmpty(),
+                replaceOutput = true,
+                activity = "",
+            )
+            "thinking", "thinking_delta" -> AssistantEventUpdate(activity = "模型正在生成回复…")
+            "tool_call" -> AssistantEventUpdate(activity = "模型准备调用：${tool ?: "工作区工具"}")
+            "tool", "search_result", "write_result" -> AssistantEventUpdate(
+                activity = detail ?: message ?: tool?.let { "$it 已执行" } ?: "工作区工具已执行",
+            )
+            "search_start", "write_start" -> AssistantEventUpdate(
+                activity = message ?: tool?.let { "正在执行：$it" } ?: "正在执行工作区工具…",
+            )
+            "iteration_start", "iteration_end", "status" -> AssistantEventUpdate(
+                activity = message ?: detail ?: "正在执行工作区流程…",
+            )
+            else -> when {
+                directContent != null -> AssistantEventUpdate(output = directContent)
+                message != null || detail != null -> AssistantEventUpdate(activity = message ?: detail)
+                else -> AssistantEventUpdate()
+            }
+        }
+    }.getOrElse { AssistantEventUpdate(output = raw) }
 }
+
+private data class AssistantEventUpdate(
+    val output: String? = null,
+    val replaceOutput: Boolean = false,
+    val activity: String? = null,
+)
 
 fun ReplicaEntity.payload(): JsonObject? = payloadJson?.let {
     runCatching { Json.parseToJsonElement(it) as JsonObject }.getOrNull()
@@ -514,7 +964,7 @@ private fun kotlinx.serialization.json.JsonObjectBuilder.putAny(key: String, val
         is Float -> put(key, value)
         is Double -> put(key, value)
         is Boolean -> put(key, value)
-        is JsonPrimitive -> put(key, value)
+        is JsonElement -> put(key, value)
         else -> put(key, value.toString())
     }
 }

@@ -9,6 +9,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -31,6 +33,13 @@ interface SimingDao {
             "ORDER BY localModifiedAt DESC",
     )
     fun observeProjects(): Flow<List<ReplicaEntity>>
+
+    @Query(
+        "SELECT * FROM replica_entities " +
+            "WHERE entityType = 'creation_session' AND operation = 'upsert' " +
+            "ORDER BY localModifiedAt DESC",
+    )
+    fun observeCreationDrafts(): Flow<List<ReplicaEntity>>
 
     @Query(
         "SELECT * FROM replica_entities WHERE projectId = :projectId " +
@@ -60,13 +69,28 @@ interface SimingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveEntities(entities: List<ReplicaEntity>)
 
+    @Query(
+        "DELETE FROM replica_entities WHERE projectId = :projectId " +
+            "AND dirty = 0 AND conflicted = 0",
+    )
+    suspend fun deleteCleanProjectReplicas(projectId: String)
+
     @Query("DELETE FROM replica_entities WHERE projectId = :projectId")
     suspend fun deleteProjectReplica(projectId: String)
+
+    @Query("DELETE FROM sync_outbox WHERE projectId = :projectId")
+    suspend fun deleteProjectMutations(projectId: String)
+
+    @Query("DELETE FROM local_conflicts WHERE projectId = :projectId")
+    suspend fun deleteProjectConflicts(projectId: String)
 
     @Query("SELECT DISTINCT projectId FROM replica_entities WHERE entityType = 'project' AND operation = 'upsert'")
     suspend fun localProjectIds(): List<String>
 
-    @Query("SELECT * FROM sync_outbox WHERE state IN ('pending', 'sending') ORDER BY createdAt LIMIT :limit")
+    @Query(
+        "SELECT * FROM sync_outbox WHERE state IN ('pending', 'sending') " +
+            "ORDER BY createdAt, rowid LIMIT :limit",
+    )
     suspend fun pendingMutations(limit: Int): List<OutboxMutation>
 
     @Query(
@@ -96,6 +120,9 @@ interface SimingDao {
 
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')")
     fun observePendingCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')")
+    suspend fun pendingMutationCount(): Int
 
     @Query("SELECT * FROM sync_cursor WHERE id = 1")
     suspend fun cursor(): SyncCursor?
@@ -145,7 +172,7 @@ interface SimingDao {
         SyncCursor::class,
         LocalConflict::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class SimingDatabase : RoomDatabase() {
@@ -159,7 +186,19 @@ abstract class SimingDatabase : RoomDatabase() {
                 context.applicationContext,
                 SimingDatabase::class.java,
                 "siming-mobile.db",
-            ).build().also { instance = it }
+            )
+                .addMigrations(MIGRATION_1_2)
+                .build()
+                .also { instance = it }
+        }
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE gateway_connection " +
+                        "ADD COLUMN gatewayEncryptionPublicKey TEXT NOT NULL DEFAULT ''",
+                )
+            }
         }
     }
 }

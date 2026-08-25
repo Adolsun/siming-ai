@@ -1,7 +1,9 @@
 param(
   [string]$ReleaseDir = "release",
   [string]$AppName = "Siming",
-  [string]$ExpectedVersion = ""
+  [string]$ExpectedVersion = "",
+  [switch]$RequireTrustedSignature,
+  [switch]$AllowUnsignedManualRelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +49,24 @@ if ($IsPrerelease) {
   }
 } elseif (-not $Manifest.download_url.EndsWith("/releases/latest/download/$AppName.exe")) {
   throw "Stable download_url must target releases/latest."
+}
+
+if ($RequireTrustedSignature -and $AllowUnsignedManualRelease) {
+  throw "Choose either -RequireTrustedSignature or -AllowUnsignedManualRelease, not both."
+}
+
+if ($RequireTrustedSignature -or $AllowUnsignedManualRelease) {
+  $Signature = Get-AuthenticodeSignature -FilePath $ExePath
+  if ($Signature.Status -eq "Valid" -and $Signature.SignerCertificate) {
+    if (-not $Signature.TimeStamperCertificate) {
+      throw "Windows Authenticode signature has no trusted timestamp."
+    }
+    Write-Host "Trusted Windows signer: $($Signature.SignerCertificate.Subject) thumbprint=$($Signature.SignerCertificate.Thumbprint)" -ForegroundColor Green
+  } elseif ($AllowUnsignedManualRelease -and $Signature.Status -eq "NotSigned") {
+    Write-Warning "Siming.exe is unsigned and may only be distributed for explicit manual download. The in-app updater will reject it."
+  } else {
+    throw "Windows Authenticode signature is not trusted: status=$($Signature.Status) message=$($Signature.StatusMessage)"
+  }
 }
 
 Write-Host "Release assets verified: $AppName.exe version=$($Manifest.version) sha256=$ActualSha" -ForegroundColor Green

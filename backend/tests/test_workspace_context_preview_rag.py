@@ -1,19 +1,17 @@
 """Tests for preview_writing_context RAG integration."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import asyncio
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
-    Base, Project, Character, CharacterAlias, CharacterRelationship,
-    WorldbuildingEntry, OutlineNode, Chapter, ChapterSummary, OutlineNodeCharacter,
+    Base, Project, Character, CharacterAlias, WorldbuildingEntry, OutlineNode, OutlineNodeCharacter,
 )
 from app.services.workspace.tools.context_preview import (
     preview_writing_context,
     _resolve_characters_with_aliases,
-    _section_text,
 )
 
 

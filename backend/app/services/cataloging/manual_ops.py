@@ -8,7 +8,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
-from .candidate_io import float_or_none
+from .candidate_io import candidate_has_usable_summary, float_or_none
+from .candidate_validation import inspect_candidate_coverage
 from .constants import VALID_ITEM_TYPES
 from .job_control import refresh_job_progress
 
@@ -49,22 +50,37 @@ def create_manual_candidate(
 
 
 def has_usable_chapter_summary(db: Session, run: CatalogingChapterRun) -> bool:
-    return (
-        db.query(CatalogingCandidate.id)
+    candidates = (
+        db.query(CatalogingCandidate)
         .filter(
             CatalogingCandidate.chapter_run_id == run.id,
             CatalogingCandidate.item_type == "chapter_summary",
             CatalogingCandidate.status.notin_(["rejected"]),
         )
-        .first()
-        is not None
+        .all()
     )
+    return any(candidate_has_usable_summary(candidate) for candidate in candidates)
+
+
+def candidate_coverage_for_run(db: Session, run: CatalogingChapterRun):
+    """Return the same completeness verdict used by automatic cataloging."""
+
+    candidates = (
+        db.query(CatalogingCandidate)
+        .filter(
+            CatalogingCandidate.chapter_run_id == run.id,
+            CatalogingCandidate.status != "rejected",
+        )
+        .all()
+    )
+    return inspect_candidate_coverage(candidates, db=db, project_id=run.project_id)
 
 
 def recover_failed_run_for_review(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
     run.status = "awaiting_confirmation"
     run.completed_at = run.completed_at or datetime.utcnow()
     run.error = None
+    run.review_warning = None
     job.status = "waiting_confirmation"
     job.blocked_chapter_id = run.chapter_id
     job.error = None

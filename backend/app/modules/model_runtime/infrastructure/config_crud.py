@@ -40,6 +40,15 @@ class SqlAlchemyModelConfigCrud:
     def clear_global(self) -> None:
         self.session.query(APIConfig).update({"is_global_default": False})
 
+    def make_global_if_no_ready_default(self, config: APIConfig) -> bool:
+        """Promote a verified model only when the user has no usable default."""
+
+        if self.get_ready_global() is not None:
+            return False
+        self.clear_global()
+        config.is_global_default = True
+        return True
+
     def list_local_models(self):
         return self.session.query(LocalModel).order_by(LocalModel.recommended_vram_gb.asc()).all()
 

@@ -8,6 +8,8 @@ const { Text } = Typography
 interface ComposerProps {
   input: string
   generating: boolean
+  disabled?: boolean
+  disabledPlaceholder?: string
   cancelPending?: boolean
   selectedText?: string
   showSelectionTag: boolean
@@ -21,6 +23,8 @@ interface ComposerProps {
 export function Composer({
   input,
   generating,
+  disabled = false,
+  disabledPlaceholder,
   cancelPending = false,
   selectedText,
   showSelectionTag,
@@ -46,10 +50,11 @@ export function Composer({
         <Input.TextArea
           value={input}
           onChange={(event) => onInputChange(event.target.value)}
-          placeholder={INPUT_PLACEHOLDER}
+          placeholder={disabled && disabledPlaceholder ? disabledPlaceholder : INPUT_PLACEHOLDER}
           autoSize={{ minRows: 2, maxRows: 5 }}
-          disabled={generating}
+          disabled={generating || disabled}
           onKeyDown={(event) => {
+            if (disabled) return
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               onSend()
@@ -77,7 +82,7 @@ export function Composer({
               {cancelPending ? '正在取消' : '取消任务'}
             </Button>
           ) : (
-            <Button type="primary" icon={<SendOutlined />} onClick={onSend} disabled={!input.trim()}>
+            <Button type="primary" icon={<SendOutlined />} onClick={onSend} disabled={disabled || !input.trim()}>
               发送
             </Button>
           )}

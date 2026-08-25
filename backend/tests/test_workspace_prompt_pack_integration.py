@@ -2,7 +2,7 @@
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -38,8 +38,8 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
         self.assertIn("质量模式章节写作", result)
         self.assertIn("1.0.0", result)
         self.assertIn("完整技法", result)
-        self.assertIn("opening_hook", result)
-        self.assertIn("仿佛", result)
+        self.assertNotIn("opening_hook", result)
+        self.assertNotIn("仿佛", result)
 
     def test_returns_original_if_no_pack(self):
         db = MagicMock()

@@ -27,15 +27,17 @@ class MCPExternalWritingToolsTest(unittest.TestCase):
         names = {t.name for t in tools}
         self.assertIn("record_external_quality_review", names)
 
-    def test_apply_updates_in_project_writing(self):
+    def test_formal_chapter_writes_in_project_writing(self):
         tools = list_mcp_tools(permission_pack="project_writing")
         names = {t.name for t in tools}
-        self.assertIn("apply_external_story_updates", names)
+        self.assertIn("create_chapter", names)
+        self.assertIn("update_chapter", names)
 
-    def test_apply_updates_not_in_readonly(self):
+    def test_formal_chapter_writes_not_in_readonly(self):
         tools = list_mcp_tools(permission_pack="readonly_collaboration")
         names = {t.name for t in tools}
-        self.assertNotIn("apply_external_story_updates", names)
+        self.assertNotIn("create_chapter", names)
+        self.assertNotIn("update_chapter", names)
 
 
 if __name__ == "__main__":

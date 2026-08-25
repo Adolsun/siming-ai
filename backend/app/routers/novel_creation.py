@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_cli_adapter import is_local_cli_provider
+from ..core.exceptions import ValidationError
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..database.session import SessionLocal
@@ -26,6 +27,7 @@ from ..schemas.novel_creation import (
     NovelCreationStageRunResponse,
     NovelCreationStageRunStartData,
 )
+from ..schemas.ai_writer import MobileProviderEnvelope
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_claims import (
@@ -95,7 +97,6 @@ from ..services.operation_runtime import (
     unregister_operation_actions,
 )
 from ..services.workspace.tools.novel_creation import (
-    advance_novel_creation_interview,
     apply_novel_blueprint,
     draft_novel_blueprint,
     review_novel_blueprint,
@@ -210,6 +211,40 @@ def _inline_operation_http_error(exc: Exception) -> HTTPException:
     )
 
 
+def _resolve_mobile_creation_provider(
+    db: Session,
+    payload: Any,
+    request: Request,
+    *,
+    binding_id: str,
+):
+    """Resolve an Android-owned key for one canonical creation operation.
+
+    The encrypted envelope is deliberately excluded from every Pydantic dump.
+    Only the decrypted in-memory provider object crosses into model execution.
+    """
+
+    if getattr(payload, "model_route", "pc") != "mobile":
+        return None
+    if (
+        getattr(request.state, "gateway_device_platform", None) != "android"
+        or not getattr(request.state, "gateway_device_id", None)
+    ):
+        raise ValidationError("手机模型线路只允许已配对的 Android 设备使用")
+
+    from ..services.mobile_provider_envelope import decrypt_mobile_provider
+
+    request_provider = decrypt_mobile_provider(
+        db,
+        payload.mobile_provider,
+        device_id=request.state.gateway_device_id,
+        project_id=binding_id,
+    )
+    payload.mobile_provider = None
+    payload.model = f"{request_provider.provider}:{request_provider.default_model}"
+    return request_provider
+
+
 class NovelCreationStartRequest(BaseModel):
     mode: str = "template"
     user_brief: str = ""
@@ -247,13 +282,6 @@ class NovelCreationDraftRequest(BaseModel):
     depth: Literal["concept", "full"] = "full"
 
 
-class NovelCreationInterviewNextRequest(BaseModel):
-    user_brief: str = ""
-    model: str | None = None
-    qa_history: list[dict[str, str]] = Field(default_factory=list)
-    skip_questions: bool = False
-
-
 class NovelCreationReviewRequest(BaseModel):
     session_id: str
     execution_mode: Literal["template", "hybrid", "external_agent", "internal_llm"] = "hybrid"
@@ -287,52 +315,6 @@ async def draft_blueprints(payload: NovelCreationDraftRequest, db: Session = Dep
     return _tool_response(result)
 
 
-@router.post("/novel-creation/sessions/{session_id}/interview/next")
-async def advance_creation_interview(
-    session_id: str,
-    payload: NovelCreationInterviewNextRequest,
-    db: Session = Depends(get_db),
-):
-    session = novel_creation_session_store(db).session(session_id)
-    operation_id = _start_inline_operation(
-        db,
-        source_kind="novel_interview",
-        title="新书立项 · 动态采访",
-        phase="interview",
-        model=payload.model,
-        resume_url=f"/novel-creation?session={session_id}",
-        input_value={"session_id": session_id, **payload.model_dump()},
-        input_revision=int(session.revision or 0) if session else None,
-    )
-
-    async def run_interview() -> dict[str, Any]:
-        result = await advance_novel_creation_interview(
-            db,
-            "",
-            {**payload.model_dump(), "session_id": session_id},
-        )
-        if result.get("status") != "ok":
-            data = result.get("data") if isinstance(result.get("data"), dict) else {}
-            runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": result.get("detail") or "动态采访失败",
-                    "failure_class": runtime.get("failure_class") or data.get("failure_class"),
-                    "next_action": runtime.get("next_action") or data.get("next_action"),
-                    "runtime": runtime,
-                },
-            )
-        return result
-
-    result = await _run_inline_operation(
-        operation_id,
-        run_interview,
-        success_message="本轮动态采访已完成",
-    )
-    return ApiResponse.success(data=result.get("data"), message=result.get("detail") or "采访状态已更新")
-
-
 @router.post("/novel-creation/review")
 async def review_blueprint(payload: NovelCreationReviewRequest, db: Session = Depends(get_db)):
     result = await review_novel_blueprint(db, "", payload.model_dump())
@@ -340,8 +322,25 @@ async def review_blueprint(payload: NovelCreationReviewRequest, db: Session = De
 
 
 @router.post("/novel-creation/apply")
-async def apply_blueprint(payload: NovelCreationApplyRequest, db: Session = Depends(get_db)):
+async def apply_blueprint(
+    payload: NovelCreationApplyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     result = await apply_novel_blueprint(db, "", payload.model_dump())
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    project_id = str(data.get("project_id") or "")
+    if (
+        result.get("status") == "ok"
+        and project_id
+        and getattr(request.state, "gateway_device_id", None)
+        and getattr(request.state, "gateway_device_platform", None) == "android"
+    ):
+        # Match /projects: a work created by a paired phone is immediately part
+        # of that phone's explicit sync set, including every archived artifact.
+        from ..modules.gateway.infrastructure.service import GatewayService
+
+        GatewayService(db).enable_project(project_id)
     return _tool_response(result)
 
 
@@ -359,6 +358,8 @@ class NovelCreationSessionPatchRequest(BaseModel):
 class NovelCreationStageRunRequest(BaseModel):
     stage: str
     model: str | None = None
+    model_route: Literal["pc", "mobile"] = "pc"
+    mobile_provider: MobileProviderEnvelope | None = Field(default=None, repr=False, exclude=True)
     use_model: bool = True
     auto_confirm: bool = False
     operation: Literal["generate", "regenerate", "refine"] = "generate"
@@ -396,6 +397,10 @@ class NovelCreationStageRunRequest(BaseModel):
             raise ValueError("entity_id and entity_type are mutually exclusive")
         if (self.entity_id or self.entity_type) and self.stage == "all":
             raise ValueError("entity-level generation requires one artifact stage")
+        if self.model_route == "mobile" and self.mobile_provider is None:
+            raise ValueError("选择手机模型线路时必须提供加密凭据")
+        if self.model_route == "pc" and self.mobile_provider is not None:
+            raise ValueError("PC 模型线路不能携带手机模型凭据")
         return self
 
 
@@ -747,6 +752,7 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
 async def start_creation_stage_run(
     session_id: str,
     payload: NovelCreationStageRunRequest,
+    request: Request,
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
@@ -773,6 +779,12 @@ async def start_creation_stage_run(
                 "session": serialize_session(session),
             },
         )
+    request_provider = _resolve_mobile_creation_provider(
+        db,
+        payload,
+        request,
+        binding_id=session_id,
+    )
     blocked_by = generation_blockers(session, payload.stage)
     if blocked_by:
         raise HTTPException(
@@ -791,17 +803,17 @@ async def start_creation_stage_run(
             data={"run": serialize_run(existing), "stream_url": f"/api/novel-creation/runs/{existing.id}/stream"},
             message="该阶段任务仍在运行，已恢复订阅",
         )
-    request = payload.model_dump()
+    run_request = payload.model_dump()
     if payload.session_patch:
         patch_session(session, payload.session_patch)
-        request["session_patch"] = None
+        run_request["session_patch"] = None
     input_revision = int(session.revision or 0)
     snapshot_hash = input_snapshot_hash(session.draft_json if isinstance(session.draft_json, dict) else {})
     request_key = creation_idempotency_key(
         session_id=session_id,
         stage=payload.stage,
         operation=payload.operation,
-        request=request,
+        request=run_request,
         input_revision=input_revision,
         input_snapshot_hash=snapshot_hash,
         explicit_key=idempotency_key,
@@ -834,13 +846,19 @@ async def start_creation_stage_run(
         db,
         session,
         payload.stage,
-        request,
+        run_request,
         claim_id=claim.id,
         idempotency_key=request_key,
     )
     commit_session(db)
     run_id = run.id
-    schedule_creation_stage(run_id, session_id, request, operation_id=run.operation_id)
+    schedule_creation_stage(
+        run_id,
+        session_id,
+        run_request,
+        operation_id=run.operation_id,
+        request_provider=request_provider,
+    )
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
@@ -848,11 +866,49 @@ async def start_creation_stage_run(
     "/novel-creation/runs/{run_id}",
     response_model=ApiResponse[NovelCreationStageRunResponse],
 )
-async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
+async def get_creation_stage_run(
+    run_id: str,
+    model: str | None = None,
+    db: Session = Depends(get_db),
+):
     run = novel_creation_session_store(db).run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="阶段任务不存在")
-    return ApiResponse.success(data=serialize_run(run))
+    from ..services.novel_creation_run_presentation import present_serialized_run
+
+    return ApiResponse.success(data=await present_serialized_run(db, run=run, model=model))
+
+
+class NovelCreationRunCardRequest(BaseModel):
+    message: str = Field(default="", max_length=100_000)
+    model: str | None = None
+
+
+class NovelCreationRunCardResponse(BaseModel):
+    run: NovelCreationStageRunResponse
+
+
+@router.post(
+    "/novel-creation/runs/{run_id}/card-presentation",
+    response_model=ApiResponse[NovelCreationRunCardResponse],
+)
+async def adjudicate_creation_run_card(
+    run_id: str,
+    payload: NovelCreationRunCardRequest,
+    db: Session = Depends(get_db),
+):
+    """Re-evaluate a terminal card with the selected API or local-CLI model."""
+    run = novel_creation_session_store(db).run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="阶段任务不存在")
+    from ..services.novel_creation_run_presentation import present_serialized_run
+
+    return ApiResponse.success(data={"run": await present_serialized_run(
+        db,
+        run=run,
+        model=payload.model,
+        assistant_reply=payload.message,
+    )})
 
 
 @router.get("/novel-creation/runs/{run_id}/stream")
@@ -897,7 +953,14 @@ async def stream_creation_stage_run(
                     yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 sent = max([int(event.sequence or 0) for event in rows] or [sent])
                 if run.status in {"completed", "waiting_user", "waiting_author", "failed", "cancelled", "interrupted"}:
-                    yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
+                    from ..services.novel_creation_run_presentation import present_serialized_run
+
+                    terminal_run = await present_serialized_run(
+                        db,
+                        run=run,
+                        model=run.model_source,
+                    )
+                    yield "event: done\ndata: " + json.dumps(terminal_run, ensure_ascii=False) + "\n\n"
                     return
             finally:
                 db.close()
@@ -1001,6 +1064,11 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
                 commit_session(db)
             if producing_run.operation_id:
                 get_operation_service().complete_author_confirmation(producing_run.operation_id)
+        # The submission result is serialized before the run changes from
+        # waiting_user to completed. Re-serialize after confirmation so every
+        # caller receives one coherent snapshot instead of a confirmed
+        # artifact paired with a stale waiting task.
+        result["data"] = serialize_session(session)
     return _tool_response(result)
 
 
@@ -1036,6 +1104,7 @@ async def confirm_and_generate_recommended(
     payload: NovelCreationConfirmAndGenerateRequest,
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    request: Request = None,
 ):
     if idempotency_key:
         existing_claim = get_creation_claim_by_idempotency_key(
@@ -1094,6 +1163,7 @@ async def confirm_and_generate_recommended(
     started = await start_creation_stage_run(
         session_id,
         start_payload,
+        request,
         db,
         idempotency_key=stable_key,
     )
@@ -1206,53 +1276,90 @@ async def undo_creation_artifact_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-class RefreshQuestionRequest(BaseModel):
-    session_id: str
-    question: str
-    existing_options: list[str] = []
-    user_brief: str = ""
-    model: str | None = None
-
-
-@router.post("/novel-creation/refresh-question")
-async def refresh_question(payload: RefreshQuestionRequest, db: Session = Depends(get_db)):
-    from app.services.workspace.tools.novel_creation import refresh_question_options
-
-    session = novel_creation_session_store(db).session(payload.session_id)
-    operation_id = _start_inline_operation(
-        db,
-        source_kind="novel_interview_option",
-        title="新书立项 · 更换回答选项",
-        phase="refreshing_option",
-        model=payload.model,
-        resume_url=f"/novel-creation?session={payload.session_id}",
-        input_value=payload.model_dump(),
-        input_revision=int(session.revision or 0) if session else None,
-    )
-
-    async def run_refresh() -> dict[str, Any]:
-        return await refresh_question_options(
-            db=db,
-            session_id=payload.session_id,
-            question=payload.question,
-            existing_options=payload.existing_options,
-            user_brief=payload.user_brief,
-            model=payload.model,
-        )
-
-    try:
-        result = await _run_inline_operation(operation_id, run_refresh, success_message="新的回答选项已生成")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise _inline_operation_http_error(exc) from exc
-    return ApiResponse.success(data=result)
-
-
 class SystemChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = None
     context: dict[str, Any] | None = None  # {blueprints, sessionId, brief, importedFiles, history}
+
+
+class AssistantInputRouteRequest(BaseModel):
+    source_name: str = Field(default="聊天长文本.txt", min_length=1, max_length=500)
+    source_text: str = Field(min_length=1, max_length=5_000_000)
+    source_kind: Literal["long_text", "attachment"] = "attachment"
+    user_instruction: str = Field(default="", max_length=1_000_000)
+    clarification_question: str = Field(default="", max_length=500)
+    clarification_answer: str = Field(default="", max_length=20_000)
+    clarification_already_asked: bool = False
+    clarification_history: list[dict[str, Any]] = Field(default_factory=list)
+    context_scope: Literal["system", "creation", "project"] = "system"
+    active_project_id: str = Field(default="", max_length=36)
+    creation_session_id: str = Field(default="", max_length=36)
+    history: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    model: str | None = None
+
+
+@router.post("/novel-creation/assistant-input/route")
+async def route_assistant_input(payload: AssistantInputRouteRequest):
+    """Let the selected model interpret chat instructions and document content together."""
+    from ..services.assistant_input_routing import classify_assistant_data_input
+
+    result = await classify_assistant_data_input(**payload.model_dump())
+    return ApiResponse.success(data=result, message="输入处理意图已判断")
+
+
+@router.post("/novel-creation/assistant-input/route-file")
+async def route_assistant_input_file(
+    file: UploadFile = File(...),
+    user_instruction: str = Form(default=""),
+    clarification_question: str = Form(default=""),
+    clarification_answer: str = Form(default=""),
+    clarification_already_asked: bool = Form(default=False),
+    clarification_history: str = Form(default="[]"),
+    context_scope: Literal["system", "creation", "project"] = Form(default="system"),
+    active_project_id: str = Form(default=""),
+    creation_session_id: str = Form(default=""),
+    history: str = Form(default="[]"),
+    model: str | None = Form(default=None),
+):
+    """Parse the real uploaded binary before asking the model to route it."""
+    from ..services.assistant_input_routing import classify_assistant_data_input
+    from ..services.novel_creation_imports import parse_creation_material
+
+    filename = (file.filename or "").strip()
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        source_text, _extension = parse_creation_material(filename, raw)
+    except ValueError as exc:
+        status_code = 413 if "25MB" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    try:
+        parsed_history = json.loads(history or "[]")
+    except (TypeError, ValueError):
+        parsed_history = []
+    try:
+        parsed_clarification_history = json.loads(clarification_history or "[]")
+    except (TypeError, ValueError):
+        parsed_clarification_history = []
+    result = await classify_assistant_data_input(
+        source_name=filename,
+        source_text=source_text,
+        source_kind="attachment",
+        user_instruction=user_instruction,
+        clarification_question=clarification_question,
+        clarification_answer=clarification_answer,
+        clarification_already_asked=clarification_already_asked,
+        clarification_history=(
+            parsed_clarification_history
+            if isinstance(parsed_clarification_history, list)
+            else []
+        ),
+        context_scope=context_scope,
+        active_project_id=active_project_id,
+        creation_session_id=creation_session_id,
+        history=parsed_history if isinstance(parsed_history, list) else [],
+        model=model,
+    )
+    return ApiResponse.success(data=result, message="文件内容与处理意图已判断")
 
 
 @router.post("/novel-creation/system-chat")
@@ -1313,22 +1420,59 @@ class CreationAgentRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    model_route: Literal["pc", "mobile"] = "pc"
+    mobile_provider: MobileProviderEnvelope | None = Field(default=None, repr=False, exclude=True)
+    local_cli_permission_grant: Literal["chat_only", "creation_agent_once"] = "chat_only"
+    local_cli_read_permission_grant: Literal["none", "read_once"] = "none"
+    local_cli_read_paths: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def require_mobile_provider_envelope(self) -> "CreationAgentRequest":
+        if self.model_route == "mobile" and self.mobile_provider is None:
+            raise ValueError("选择手机模型线路时必须提供加密凭据")
+        if self.model_route == "pc" and self.mobile_provider is not None:
+            raise ValueError("PC 模型线路不能携带手机模型凭据")
+        return self
 
 
 @router.post("/novel-creation/agent-turn")
-async def creation_agent_turn(payload: CreationAgentRequest, db: Session = Depends(get_db)):
+async def creation_agent_turn(
+    payload: CreationAgentRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     session = novel_creation_session_store(db).session(payload.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     from ..services.novel_creation_agent import run_creation_agent
 
-    result = await run_creation_agent(
+    request_provider = _resolve_mobile_creation_provider(
         db,
-        session=session,
-        message=payload.message,
-        model=payload.model,
-        history=payload.history,
+        payload,
+        request,
+        binding_id=session.id,
     )
+
+    async def run_agent() -> dict[str, Any]:
+        return await run_creation_agent(
+            db,
+            session=session,
+            message=payload.message,
+            model=payload.model,
+            history=payload.history,
+            local_cli_write_granted=payload.local_cli_permission_grant == "creation_agent_once",
+            local_cli_read_paths=(
+                list(payload.local_cli_read_paths)
+                if payload.local_cli_read_permission_grant == "read_once" else []
+            ),
+        )
+
+    if request_provider is None:
+        result = await run_agent()
+    else:
+        from ..modules.model_runtime.application.request_override import use_request_provider
+        with use_request_provider(request_provider):
+            result = await run_agent()
     return ApiResponse.success(data=result)
 
 
@@ -1595,7 +1739,6 @@ async def apply_material_import_endpoint(
 async def save_imported_file(payload: SaveImportedFileRequest):
     """Save an imported file to the working directory for LLM CLI access."""
     from app.services.content_store import content_root
-    import os
 
     root = content_root()
     imported_dir = root / ".imported"

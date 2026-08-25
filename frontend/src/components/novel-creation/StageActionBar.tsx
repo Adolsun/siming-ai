@@ -44,7 +44,7 @@ export function StageActionBar({
     action = createdProjectId ? (
       <Button size="large" type="primary" icon={<BookOutlined />} onClick={onOpenProject}>进入已创建作品</Button>
     ) : (
-      <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!finalReady || busy} loading={busy} onClick={onCreateProject}>确认并创建正式作品</Button>
+      <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!finalReady || busy} loading={busy} onClick={onCreateProject}>创建正式作品（开篇细纲可稍后完善）</Button>
     )
   } else if (status === 'generated' || status === 'stale') {
     action = (

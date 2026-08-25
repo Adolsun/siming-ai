@@ -59,6 +59,7 @@ data class GatewayConnection(
     val baseUrl: String,
     val gatewayName: String,
     val gatewayFingerprint: String,
+    val gatewayEncryptionPublicKey: String = "",
     val deviceId: String,
     val deviceRole: String,
     val protocolVersion: Int,

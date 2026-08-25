@@ -76,6 +76,7 @@ def handle_message(
     project_id: str = "",
     allowed_tiers: set[str] | None = None,
     permission_pack: str | None = None,
+    creation_session_id: str = "",
 ) -> str:
     """Process one JSON-RPC message and return the response string.
 
@@ -85,6 +86,7 @@ def handle_message(
         project_id: Current project ID (required for tools/call).
         allowed_tiers: Permission tiers to allow. Defaults to {"readonly"}.
         permission_pack: Permission pack name. If set, overrides allowed_tiers.
+        creation_session_id: Session boundary required by the creation_session pack.
 
     Returns:
         JSON-RPC response string.
@@ -106,10 +108,26 @@ def handle_message(
     elif method == "tools/list":
         return _handle_tools_list(msg_id, allowed_tiers, permission_pack)
     elif method == "tools/call":
-        return _handle_tools_call(msg_id, params, db, project_id, allowed_tiers, permission_pack)
+        return _handle_tools_call(
+            msg_id,
+            params,
+            db,
+            project_id,
+            allowed_tiers,
+            permission_pack,
+            creation_session_id,
+        )
     elif method == "prompts/list":
+        if permission_pack == "creation_session":
+            return _jsonrpc_result(msg_id, {"prompts": []})
         return _handle_prompts_list(msg_id)
     elif method == "prompts/get":
+        if permission_pack == "creation_session":
+            return _jsonrpc_error(
+                msg_id,
+                PERMISSION_DENIED,
+                "Prompts are not exposed in a creation-only turn",
+            )
         return _handle_prompts_get(msg_id, params, db)
     elif method == "ping":
         return _jsonrpc_result(msg_id, {})
@@ -201,6 +219,7 @@ async def _handle_tools_call_async(
     project_id: str,
     allowed_tiers: set[str],
     permission_pack: str | None = None,
+    creation_session_id: str = "",
 ) -> str:
     """Handle tools/call request — async version for actual execution."""
     tool_name = params.get("name", "")
@@ -221,6 +240,7 @@ async def _handle_tools_call_async(
         db, project_id, tool_name, arguments,
         allowed_tiers=allowed_tiers,
         permission_pack=permission_pack,
+        creation_session_id=creation_session_id,
     )
     return _jsonrpc_result(msg_id, _tool_result_to_dict(result))
 
@@ -232,6 +252,7 @@ def _handle_tools_call(
     project_id: str,
     allowed_tiers: set[str],
     permission_pack: str | None = None,
+    creation_session_id: str = "",
 ) -> str:
     """Handle tools/call request — sync wrapper.
 
@@ -259,6 +280,7 @@ def _handle_tools_call(
             db, project_id, tool_name, arguments,
             allowed_tiers=allowed_tiers,
             permission_pack=permission_pack,
+            creation_session_id=creation_session_id,
         ))
     except RuntimeError:
         # If there's already a running event loop, use nest_asyncio or fallback
@@ -267,6 +289,7 @@ def _handle_tools_call(
             db, project_id, tool_name, arguments,
             allowed_tiers=allowed_tiers,
             permission_pack=permission_pack,
+            creation_session_id=creation_session_id,
         ))
     return _jsonrpc_result(msg_id, _tool_result_to_dict(result))
 
@@ -285,6 +308,7 @@ def serve_stdio(
     project_id: str = "",
     allowed_tiers: set[str] | None = None,
     permission_pack: str | None = None,
+    creation_session_id: str = "",
 ) -> None:
     """Run the MCP server over stdio (blocking).
 
@@ -296,11 +320,14 @@ def serve_stdio(
         allowed_tiers: Permission tiers to allow. Defaults to {"readonly"}.
         permission_pack: Permission pack name. If "auto", resolves from
             global/project settings. If a fixed pack name, uses that directly.
+        creation_session_id: Session boundary required by the creation_session pack.
     """
     _configure_stdio_utf8()
 
     # Resolve "auto" permission pack from settings
     resolved_pack = permission_pack
+    if permission_pack == "creation_session" and not creation_session_id:
+        raise ValueError("creation_session permission pack requires --creation-session-id")
     managed_agent_kind = get_compatible_env("SIMING_MANAGED_AGENT_KIND").strip().lower()
     if managed_agent_kind == "cataloging":
         resolved_pack = "cataloging_worker"
@@ -331,6 +358,7 @@ def serve_stdio(
             project_id=project_id,
             allowed_tiers=allowed_tiers,
             permission_pack=resolved_pack,
+            creation_session_id=creation_session_id,
         )
         stdout.write(response + "\n")
         stdout.flush()

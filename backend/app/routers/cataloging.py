@@ -24,6 +24,8 @@ from ..schemas.cataloging import (
 )
 from ..services.cataloging.applier import apply_candidates_for_run
 from ..services.cataloging.candidate_io import candidate_payload, candidate_to_dict
+from ..services.cataloging.candidate_store import recover_candidates_from_raw_output
+from ..services.cataloging.candidate_validation import candidate_coverage_error_message
 from ..services.cataloging.job_control import (
     cancel_job,
     first_blocking_run,
@@ -36,7 +38,11 @@ from ..services.cataloging.job_control import (
 )
 from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ..services.cataloging.lookups import find_character_by_name_or_id
-from ..services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
+from ..services.cataloging.manual_ops import (
+    candidate_coverage_for_run,
+    create_manual_candidate,
+    recover_failed_run_for_review,
+)
 from ..services.cataloging.model_selection import cataloging_model_selection
 from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
 from ..services.cataloging.local_cli_agent import (
@@ -295,10 +301,14 @@ def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends
     run = cataloging_queries(db).first_awaiting_confirmation(job.id)
     if not run:
         raise ValidationError("当前没有等待确认的章节")
+    coverage = candidate_coverage_for_run(db, run)
+    if not coverage.is_complete:
+        raise ValidationError(candidate_coverage_error_message(coverage))
     events = apply_candidates_for_run(db, job, run)
     has_failed = any(event["type"] == "candidate_apply_failed" for event in events)
     run.status = "completed_with_warnings" if has_failed else "completed"
     run.completed_at = datetime.utcnow()
+    run.error = None
     job.status = "running"
     job.last_completed_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
@@ -354,11 +364,39 @@ def recover_current_cataloging_chapter(project_id: str, job_id: str, db: Session
     run = first_blocking_run(db, job)
     if not run or run.status != "failed":
         raise ValidationError("当前没有可转入人工确认的失败章节")
-    if not has_usable_chapter_summary(db, run):
+    recovered = recover_candidates_from_raw_output(db, job, run)
+    coverage = candidate_coverage_for_run(db, run)
+    observed_coverage = recovered.get("coverage") or coverage
+    if not coverage.has_chapter_summary and not observed_coverage.has_chapter_summary:
         raise ValidationError("当前章节缺少 chapter_summary，请先手动新增章节摘要候选项")
+    if not coverage.is_complete:
+        effective_coverage = observed_coverage if observed_coverage.cli_parity_missing else coverage
+        raise ValidationError(
+            candidate_coverage_error_message(
+                effective_coverage,
+                prefix="当前章节候选仍不完整",
+            )
+            + "；请重试当前章节或手动补充对应候选项"
+        )
     recover_failed_run_for_review(db, job, run)
     commit_session(db)
-    return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已转入人工确认")
+    recovered_count = len([
+        result
+        for result in recovered.get("results", [])
+        if result.get("candidate")
+    ])
+    message = "当前章节已转入人工确认"
+    if recovered_count:
+        message = f"已从模型原始输出恢复 {recovered_count} 个候选项，当前章节已转入人工确认"
+    return ApiResponse.success(
+        data={
+            "job": job_to_dict(job),
+            "run": run_to_dict(run),
+            "recovered_candidates": recovered_count,
+            "coverage": coverage.to_dict(),
+        },
+        message=message,
+    )
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/pause")

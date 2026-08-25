@@ -144,13 +144,14 @@ def inject_public_prompt_pack_section(
         sections.append(f"\n\n【公开写作方法参考 — {pack.title} v{pack.version}】")
         if pack.summary:
             sections.append(f"方法概述：{pack.summary}")
-        if pack.quality_rubric_json:
+        include_review_material = scope != "chapter_writing"
+        if include_review_material and pack.quality_rubric_json:
             rubric = pack.quality_rubric_json
             dims = rubric.get("dimensions", [])
             if dims:
                 dim_names = ", ".join(d["name"] for d in dims[:5])
                 sections.append(f"质量维度：{dim_names}")
-        if pack.forbidden_patterns_json:
+        if include_review_material and pack.forbidden_patterns_json:
             patterns = pack.forbidden_patterns_json[:5]
             sections.append(f"禁用句式示例：{', '.join(patterns)}")
 

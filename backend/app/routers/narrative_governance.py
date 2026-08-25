@@ -16,8 +16,10 @@ from ..modules.story.application.chapters import ChapterWorkspace
 from ..modules.story.interfaces.chapter_dependencies import get_chapter_workspace
 from ..schemas.narrative_governance import (
     CheckpointCreate,
+    CheckpointRestoreRequest,
     GovernanceCandidateBatch,
     GovernanceItemPayload,
+    GovernanceReviewVerification,
     GovernanceStatusUpdate,
 )
 from ..services.narrative_governance import (
@@ -31,6 +33,7 @@ from ..services.narrative_governance import (
     upsert_causal_edge,
     upsert_foreshadowing,
     upsert_narrative_debt,
+    verify_chapter_governance_review,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/narrative-governance", tags=["narrative-governance"])
@@ -84,11 +87,36 @@ def update_status(project_id: str, item_type: str, item_id: str, payload: Govern
             item_id,
             payload.model_dump(exclude_unset=True),
         )
-    except ValueError:
-        raise ValidationError("不支持的治理对象类型")
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     if not updated:
         raise NotFoundError("治理项不存在")
-    return ApiResponse.success(message="状态已更新")
+    return ApiResponse.success(data=updated, message="治理状态与证据已更新")
+
+
+@router.post("/reviews/{review_id}/verify")
+def verify_review(
+    project_id: str,
+    review_id: str,
+    payload: GovernanceReviewVerification,
+    db: Session = Depends(get_db),
+):
+    get_project_or_404(db, project_id)
+    try:
+        row = verify_chapter_governance_review(
+            db,
+            project_id,
+            review_id,
+            evidence=payload.evidence,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise ValidationError(str(exc)) from exc
+    commit_session(db)
+    return ApiResponse.success(
+        data={column.name: getattr(row, column.name) for column in row.__table__.columns},
+        message="本章治理覆盖已确认",
+    )
 
 
 @router.post("/candidates")
@@ -132,7 +160,12 @@ def diff_checkpoint(project_id: str, checkpoint_id: str, db: Session = Depends(g
 
 
 @router.post("/checkpoints/{checkpoint_id}/restore")
-def restore_checkpoint(project_id: str, checkpoint_id: str, db: Session = Depends(get_db)):
+def restore_checkpoint(
+    project_id: str,
+    checkpoint_id: str,
+    payload: CheckpointRestoreRequest,
+    db: Session = Depends(get_db),
+):
     get_project_or_404(db, project_id)
     try:
         row = restore_narrative_checkpoint(db, project_id, checkpoint_id)

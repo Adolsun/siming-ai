@@ -18,17 +18,40 @@ def apply_chapter_link(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     linked = {"characters": [], "worldbuilding": [], "outline": None}
-    for name in payload.get("character_names") or []:
+    character_names = list(payload.get("character_names") or [])
+    worldbuilding_titles = list(payload.get("worldbuilding_titles") or [])
+    generic_endpoints = [payload.get("source"), payload.get("target")]
+    for value in generic_endpoints:
+        name = str(value or "").strip()
+        if not name or name == chapter.title:
+            continue
+        character = find_character_by_name_or_id(db, chapter.project_id, name)
+        if character and name not in character_names:
+            character_names.append(name)
+            continue
+        entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, name)
+        if entry and name not in worldbuilding_titles:
+            worldbuilding_titles.append(name)
+            continue
+        if not linked["outline"]:
+            node = find_outline_by_title_or_id(db, chapter.project_id, name)
+            if node:
+                chapter.outline_node_id = node.id
+                linked["outline"] = node.title
+
+    for name in character_names:
         character = find_character_by_name_or_id(db, chapter.project_id, name)
         if character:
             link_chapter_character(db, chapter, character, str(payload.get("description") or "关联"))
-            linked["characters"].append(character.name)
+            if character.name not in linked["characters"]:
+                linked["characters"].append(character.name)
 
-    for title in payload.get("worldbuilding_titles") or []:
+    for title in worldbuilding_titles:
         entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, title)
         if entry:
             link_chapter_worldbuilding(db, chapter, entry, str(payload.get("description") or "关联"))
-            linked["worldbuilding"].append(entry.title)
+            if entry.title not in linked["worldbuilding"]:
+                linked["worldbuilding"].append(entry.title)
 
     outline_title = payload.get("outline_title")
     if outline_title:
@@ -38,7 +61,18 @@ def apply_chapter_link(
             linked["outline"] = node.title
     element_payload = {
         key: payload.get(key)
-        for key in ("locations", "items", "events", "importance", "appearance_order", "description")
+        for key in (
+            "locations",
+            "items",
+            "events",
+            "importance",
+            "appearance_order",
+            "description",
+            "source",
+            "target",
+            "relation",
+            "chapter",
+        )
         if payload.get(key) not in (None, "", [], {})
     }
     fact = None

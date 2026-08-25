@@ -15,7 +15,11 @@ from ..database.session import get_db
 from ..modules.model_runtime.application.getting_started import (
     get_getting_started_configuration,
 )
-from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+from ..services.external_agent.mcp_auto_config import (
+    configure_cli_integration,
+    scan_cli_integrations,
+)
+from ..services.external_agent.mcp_preflight import preflight_cli_integration
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
@@ -78,6 +82,7 @@ class OpenCodeActivationStatus(BaseModel):
     preferred_model: str | None = None
     free_models: list[FreeModelOption] = Field(default_factory=list)
     download_url: str | None = None
+    download_source: str | None = None
     sha256: str | None = None
     bytes_downloaded: int = 0
     bytes_total: int = 0
@@ -109,7 +114,9 @@ class GettingStartedStatus(BaseModel):
     needs_setup: bool = True
     recommended_action: str
     global_model: dict[str, str | None] | None = None
+    available_model: dict[str, str | None] | None = None
     activation_job: OpenCodeActivationStatus | None = None
+    opencode_mcp_configured: bool = False
     official_links: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"protected_namespaces": ()}
@@ -117,6 +124,19 @@ class GettingStartedStatus(BaseModel):
 
 def _getting_started_summary(db: Session) -> dict:
     state = get_getting_started_configuration().state(db)
+    opencode_mcp_configured = False
+    if state.opencode_command:
+        try:
+            scan = scan_cli_integrations()
+            opencode_mcp_configured = any(
+                item.get("provider") == "opencode_cli" and bool(item.get("configured"))
+                for item in scan.get("clients") or []
+            )
+        except Exception:
+            opencode_mcp_configured = False
+    has_usable_model = bool(
+        state.has_usable_models and state.usable_provider and state.usable_model
+    )
     return {
         "installed": bool(state.opencode_command),
         "command": state.opencode_command,
@@ -134,13 +154,21 @@ def _getting_started_summary(db: Session) -> dict:
         "has_any_model": state.has_any_model,
         "has_detected_models": state.has_detected_models,
         "has_usable_models": state.has_usable_models,
-        "needs_setup": state.global_provider is None,
-        "recommended_action": "start_writing" if state.global_provider else "verify_detected" if state.has_detected_models else "activate_opencode",
+        "needs_setup": not has_usable_model,
+        "recommended_action": "start_writing" if has_usable_model else "verify_detected" if state.has_detected_models else "activate_opencode",
         "global_model": {
             "provider": state.global_provider,
             "model": state.global_model,
         } if state.global_provider else None,
-        "activation_job": get_latest_opencode_activation_job(db),
+        "available_model": {
+            "provider": state.usable_provider,
+            "model": state.usable_model,
+        } if has_usable_model else None,
+        # An old interrupted activation must not restart UI polling after any
+        # verified model is already available. Users can still revalidate a
+        # model explicitly from model settings.
+        "activation_job": None if has_usable_model else get_latest_opencode_activation_job(db),
+        "opencode_mcp_configured": opencode_mcp_configured,
         "official_links": {
             "releases": OPENCODE_RELEASES_URL,
             "install_docs": OPENCODE_INSTALL_DOCS_URL,
@@ -151,11 +179,16 @@ def _getting_started_summary(db: Session) -> dict:
 
 def _getting_started_status(db: Session, *, refresh: bool = False) -> dict:
     state = get_getting_started_configuration().state(db)
+    summary = _getting_started_summary(db)
+    # The persisted readiness result is the stable completion state. Opening
+    # Quick Start must not repeatedly launch CLI discovery once it is reached;
+    # refresh=True remains the explicit user-requested recheck path.
+    if state.has_usable_models and not refresh:
+        return summary
     inspected = inspect_opencode(
         state.opencode_command,
         refresh=refresh,
     )
-    summary = _getting_started_summary(db)
     return {
         **summary,
         **inspected,
@@ -190,7 +223,15 @@ def install_opencode():
 
 
 @router.post("/config/getting-started/opencode/activate")
-def activate_opencode(payload: OpenCodeActivateRequest | None = None):
+def activate_opencode(
+    payload: OpenCodeActivateRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    if get_getting_started_configuration().state(db).has_usable_models:
+        raise ValidationError(
+            "系统中已有通过验证的可用模型，无需在快速开始中重复检测；"
+            "如需重新验证，请前往“模型与训练”。"
+        )
     try:
         job = start_opencode_activation(
             preferred_model=payload.preferred_model if payload else None,
@@ -198,6 +239,39 @@ def activate_opencode(payload: OpenCodeActivateRequest | None = None):
     except RuntimeError as exc:
         raise ValidationError(str(exc)) from exc
     return ApiResponse.success(data=job, message="免费写作能力正在准备")
+
+
+
+@router.post("/config/getting-started/opencode/mcp/configure")
+def configure_getting_started_opencode_mcp(db: Session = Depends(get_db)):
+    """Explicitly configure and verify Siming MCP after OpenCode is usable."""
+
+    state = get_getting_started_configuration().state(db)
+    command = resolve_opencode_command(state.opencode_command)
+    if not command:
+        raise ValidationError("还没有可运行的 OpenCode，请先完成快速开始")
+    configured = configure_cli_integration(
+        "opencode_cli",
+        cli_command=command,
+        permission_pack="auto",
+    )
+    preflight = preflight_cli_integration(
+        "opencode_cli",
+        cli_command=command,
+        permission_pack="cataloging_worker",
+    )
+    return ApiResponse.success(
+        data={
+            **configured,
+            "ready": bool(preflight.get("ready")),
+            "preflight": preflight,
+        },
+        message=(
+            "OpenCode 与 Siming MCP 已配置并验证"
+            if preflight.get("ready")
+            else preflight.get("detail") or configured.get("detail") or "MCP 配置未完成"
+        ),
+    )
 
 
 @router.get("/config/getting-started/opencode/jobs/{job_id}")
@@ -264,15 +338,13 @@ def configure_opencode(payload: OpenCodeConfigureRequest, db: Session = Depends(
         model=model,
         cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
     )
-    mcp_setup = auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
     return ApiResponse.success(
         data={
             "provider": config.provider,
             "model": config.model,
             "command": config.command,
             "cli_args": config.cli_args,
-            "mcp_auto_setup": mcp_setup,
             "status": _getting_started_status(db),
         },
-        message="OpenCode 已交给司命管理，下一步测试免费模型",
+        message="OpenCode 模型已保存；如需连接 MCP，请在系统设置中单独授权",
     )

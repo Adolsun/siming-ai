@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.modules.gateway.application.contracts import MutationResult, SyncMutation
-from app.services.gateway_legacy_replication import apply_domain_mutation
+from app.services.gateway_legacy_replication import (
+    apply_domain_mutation,
+    domain_snapshot_for_entity,
+)
 
 from .models import SyncChange, SyncConflict, SyncEntityState, SyncTombstone
 from .support import MAX_ENTITY_PAYLOAD_BYTES, canonical_payload, payload_hash, utcnow
@@ -54,7 +57,10 @@ class GatewayMutationApplier:
         projection_error = self._project_to_domain(mutation) if project_domain else None
         if projection_error is not None:
             return projection_error
-        return self._record_applied(mutation, state=state, device_id=device_id)
+        result = self._record_applied(mutation, state=state, device_id=device_id)
+        if result.status == "applied":
+            self._defer_post_commit_side_effects(mutation)
+        return result
 
     def _previous_result(self, mutation: SyncMutation) -> MutationResult | None:
         change = (
@@ -163,7 +169,15 @@ class GatewayMutationApplier:
         device_id: str | None,
     ) -> MutationResult:
         now = utcnow()
-        digest = payload_hash(mutation.payload)
+        effective_payload = mutation.payload
+        if mutation.operation != "delete":
+            effective_payload = domain_snapshot_for_entity(
+                self.db,
+                project_id=mutation.project_id,
+                entity_type=mutation.entity_type,
+                entity_id=mutation.entity_id,
+            ) or mutation.payload
+        digest = payload_hash(effective_payload)
         change = SyncChange(
             mutation_id=mutation.mutation_id,
             project_id=mutation.project_id,
@@ -171,7 +185,7 @@ class GatewayMutationApplier:
             entity_id=mutation.entity_id,
             operation=mutation.operation,
             base_revision=mutation.base_revision,
-            payload_json=mutation.payload,
+            payload_json=effective_payload,
             content_hash=digest,
             device_id=device_id,
             changed_at=now,
@@ -183,6 +197,7 @@ class GatewayMutationApplier:
             state=state,
             revision=change.revision,
             digest=digest,
+            payload=effective_payload,
             device_id=device_id,
             now=now,
         )
@@ -199,6 +214,30 @@ class GatewayMutationApplier:
             revision=change.revision,
         )
 
+    def _defer_post_commit_side_effects(self, mutation: SyncMutation) -> None:
+        """Record async side effects only after the canonical mutation was accepted.
+
+        The sync projection itself runs inside a savepoint and the push service
+        commits all mutations as one unit.  Cataloging therefore cannot be
+        launched inside ``apply_domain_mutation`` without racing uncommitted
+        chapter data.  The router consumes this ordered map after ``push`` has
+        committed and starts the canonical cataloging launcher on the request
+        event loop.
+        """
+
+        if mutation.entity_type != "chapter" or mutation.operation != "upsert":
+            return
+        snapshot = domain_snapshot_for_entity(
+            self.db,
+            project_id=mutation.project_id,
+            entity_type=mutation.entity_type,
+            entity_id=mutation.entity_id,
+        )
+        if not snapshot or int(snapshot.get("word_count") or 0) <= 0:
+            return
+        pending = self.db.info.setdefault("siming_deferred_chapter_cataloging", {})
+        pending[(mutation.project_id, mutation.entity_id)] = mutation.mutation_id
+
     def _update_state(
         self,
         mutation: SyncMutation,
@@ -206,12 +245,13 @@ class GatewayMutationApplier:
         state: SyncEntityState | None,
         revision: int,
         digest: str,
+        payload: dict | None,
         device_id: str | None,
         now: datetime,
     ) -> None:
         values = {
             "revision": revision,
-            "payload_json": mutation.payload,
+            "payload_json": payload,
             "content_hash": digest,
             "is_deleted": mutation.operation == "delete",
             "modified_by_device_id": device_id,

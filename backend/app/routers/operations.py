@@ -11,7 +11,6 @@ from ..core.response import ApiResponse
 from ..modules.operations.interfaces.contracts import OperationListData, OperationResponse
 from ..modules.operations.interfaces.dependencies import get_operation_service
 
-
 router = APIRouter(tags=["operations"])
 
 
@@ -23,8 +22,15 @@ class OperationAttentionReadRequest(BaseModel):
 def list_operations(
     active_only: bool = False,
     limit: int = Query(30, ge=1, le=100),
+    project_id: str | None = None,
+    source_kind: str | None = None,
 ):
-    items = get_operation_service().list(active_only=active_only, limit=limit)
+    items = get_operation_service().list(
+        active_only=active_only,
+        limit=limit,
+        project_id=project_id,
+        source_kind=source_kind,
+    )
     return ApiResponse.success(data={"items": items})
 
 
@@ -32,6 +38,16 @@ def list_operations(
 def mark_operation_attention_read(payload: OperationAttentionReadRequest):
     count = get_operation_service().mark_attention_read(payload.operation_ids)
     return ApiResponse.success(data={"marked": count})
+
+
+@router.delete("/operations/{operation_id}")
+def delete_operation(operation_id: str):
+    status = get_operation_service().delete(operation_id)
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if status != "ok":
+        raise HTTPException(status_code=409, detail="任务仍在运行或等待处理，结束后才能删除记录")
+    return ApiResponse.success(data={"operation_id": operation_id}, message="任务记录已删除")
 
 
 @router.get("/operations/{operation_id}", response_model=ApiResponse[OperationResponse])

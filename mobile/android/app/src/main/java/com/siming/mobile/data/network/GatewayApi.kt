@@ -15,8 +15,16 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -43,7 +51,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         publicKey: String,
     ): PairingCompleteResponse = request<ApiEnvelope<PairingCompleteResponse>>(
         baseUrl = pairing.gatewayUrl,
-        path = "/api/v1/pairing/complete",
+        path = PcApiPaths.PAIRING_COMPLETE,
         method = "POST",
         body = json.encodeToString(
             PairingCompleteRequest(
@@ -59,7 +67,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
     suspend fun listSyncProjects(connection: GatewayConnection): List<RemoteSyncProject> =
         request<ApiEnvelope<List<RemoteSyncProject>>>(
             connection.baseUrl,
-            "/api/v1/sync/projects",
+            PcApiPaths.SYNC_PROJECTS,
         ).data
 
     suspend fun bootstrap(
@@ -67,7 +75,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         projectIds: List<String>,
     ): SyncBootstrapResponse = request<ApiEnvelope<SyncBootstrapResponse>>(
         connection.baseUrl,
-        "/api/v1/sync/bootstrap",
+        PcApiPaths.SYNC_BOOTSTRAP,
         "POST",
         json.encodeToString(SyncBootstrapRequest(projectIds = projectIds)),
     ).data
@@ -77,7 +85,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         mutations: List<SyncMutationRequest>,
     ): SyncPushResponse = request<ApiEnvelope<SyncPushResponse>>(
         connection.baseUrl,
-        "/api/v1/sync/push",
+        PcApiPaths.SYNC_PUSH,
         "POST",
         json.encodeToString(SyncPushRequest(mutations = mutations)),
     ).data
@@ -88,7 +96,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         projectIds: List<String>,
         limit: Int = 200,
     ): SyncPullResponse {
-        val url = (connection.baseUrl + "/api/v1/sync/pull").toHttpUrl().newBuilder()
+        val url = (connection.baseUrl + PcApiPaths.SYNC_PULL).toHttpUrl().newBuilder()
             .addQueryParameter("cursor", cursor.toString())
             .addQueryParameter("limit", limit.toString())
             .addQueryParameter("protocol_version", "1")
@@ -101,7 +109,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
     suspend fun listConflicts(connection: GatewayConnection): List<RemoteConflict> =
         request<ApiEnvelope<List<RemoteConflict>>>(
             connection.baseUrl,
-            "/api/v1/sync/conflicts?status=open",
+            "${PcApiPaths.SYNC_CONFLICTS}?status=open",
         ).data
 
     suspend fun resolveConflict(
@@ -110,7 +118,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         choice: String,
     ): RemoteConflict = request<ApiEnvelope<RemoteConflict>>(
         connection.baseUrl,
-        "/api/v1/sync/conflicts/$conflictId/resolve",
+        PcApiPaths.conflictResolution(conflictId),
         "POST",
         json.encodeToString(ConflictResolutionRequest(choice)),
     ).data
@@ -118,10 +126,534 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
     suspend fun revokeSelf(connection: GatewayConnection) {
         request<ApiEnvelope<kotlinx.serialization.json.JsonElement>>(
             connection.baseUrl,
-            "/api/v1/devices/me",
+            PcApiPaths.DEVICES_ME,
             "DELETE",
         )
     }
+
+    /** Create a work through the exact endpoint used by the PC frontend. */
+    suspend fun createProject(
+        connection: GatewayConnection,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.PROJECTS,
+        method = "POST",
+        payload = payload,
+    )
+
+    /**
+     * Create or update one core authoring record through the canonical PC API.
+     * This preserves server validation, snapshots, cataloging, governance, and
+     * all other business side effects that raw sync projection cannot emulate.
+     */
+    suspend fun saveAuthoringEntity(
+        connection: GatewayConnection,
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        create: Boolean,
+        payload: JsonObject,
+    ): JsonObject {
+        val path = if (entityType == "project") {
+            PcApiPaths.project(projectId)
+        } else if (create) {
+            PcApiPaths.authoringCollection(projectId, entityType)
+        } else {
+            PcApiPaths.authoringItem(projectId, entityType, entityId)
+        }
+        return canonicalWrite(
+            connection = connection,
+            path = path,
+            method = if (create) "POST" else "PUT",
+            payload = payload,
+        )
+    }
+
+    suspend fun deleteAuthoringEntity(
+        connection: GatewayConnection,
+        projectId: String,
+        entityType: String,
+        entityId: String,
+    ) {
+        request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.authoringItem(projectId, entityType, entityId),
+            "DELETE",
+        )
+    }
+
+    suspend fun importNovelProject(
+        connection: GatewayConnection,
+        filename: String,
+        bytes: ByteArray,
+    ): JsonObject = withContext(Dispatchers.IO) {
+        var token = validAccessToken(connection.baseUrl)
+        repeat(2) { attempt ->
+            val multipart = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    filename,
+                    bytes.toRequestBody(BINARY_MEDIA_TYPE),
+                )
+                .build()
+            val request = Request.Builder()
+                .url(connection.baseUrl + PcApiPaths.IMPORT_PROJECT_FILE)
+                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/json")
+                .post(multipart)
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code == 401 && attempt == 0) {
+                    response.body?.close()
+                    token = refresh(connection.baseUrl, token)
+                    return@use
+                }
+                val raw = response.body?.string().orEmpty()
+                if (!response.isSuccessful) throw errorFrom(response.code, raw)
+                return@withContext json.decodeFromString<ApiEnvelope<JsonObject>>(raw).data
+            }
+        }
+        throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+    }
+
+    suspend fun deleteProject(connection: GatewayConnection, projectId: String) {
+        request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.project(projectId),
+            "DELETE",
+        )
+    }
+
+    suspend fun reorderOutline(
+        connection: GatewayConnection,
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.outlineReorder(projectId),
+        method = "PUT",
+        payload = buildJsonObject {
+            put(
+                "items",
+                JsonArray(
+                    nodeIds.mapIndexed { index, nodeId ->
+                        buildJsonObject {
+                            put("id", nodeId)
+                            put("parent_id", parentId?.let(::JsonPrimitive) ?: JsonNull)
+                            put("sort_order", index)
+                        }
+                    },
+                ),
+            )
+        },
+    )
+
+
+suspend fun startCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    chapterIds: List<String>,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingStart(projectId),
+    "POST",
+    json.encodeToString(
+        buildJsonObject {
+            put("execution_mode", "auto")
+            put("chapter_ids", JsonArray(chapterIds.map(::JsonPrimitive)))
+        },
+    ),
+).data
+
+suspend fun getCatalogingJob(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingJob(projectId, jobId),
+).data
+
+suspend fun cancelCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.catalogingCancel(projectId, jobId),
+    "POST",
+    json.encodeToString(JsonObject(emptyMap())),
+).data
+
+suspend fun createProjectExport(
+    connection: GatewayConnection,
+    projectId: String,
+    format: String,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl,
+    PcApiPaths.projectExport(projectId),
+    "POST",
+    json.encodeToString(
+        buildJsonObject {
+            put("scope", "chapters")
+            put("format", format)
+        },
+    ),
+).data
+
+    suspend fun saveGovernanceEntity(
+        connection: GatewayConnection,
+        projectId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.narrativeGovernanceItems(projectId),
+        method = "POST",
+        payload = payload,
+    )
+
+    suspend fun updateGovernanceStatus(
+        connection: GatewayConnection,
+        projectId: String,
+        itemType: String,
+        itemId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.narrativeGovernanceStatus(projectId, itemType, itemId),
+        method = "PATCH",
+        payload = payload,
+    )
+
+    suspend fun reorderChapters(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterIds: List<String>,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.chapterReorder(projectId),
+        method = "PUT",
+        payload = buildJsonObject {
+            put("ids", JsonArray(chapterIds.map(::JsonPrimitive)))
+        },
+    )
+
+    suspend fun listChapterSnapshots(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterSnapshots(projectId, chapterId),
+    ).data
+
+    suspend fun getChapterSnapshot(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterSnapshot(projectId, chapterId, snapshotId),
+    ).data
+
+    suspend fun diffChapterSnapshots(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject {
+        val url = (connection.baseUrl + PcApiPaths.chapterSnapshotDiff(projectId, chapterId))
+            .toHttpUrl()
+            .newBuilder()
+            .addQueryParameter("from_snapshot_id", fromSnapshotId)
+            .addQueryParameter("to_snapshot_id", toSnapshotId)
+            .build()
+            .toString()
+        return request<ApiEnvelope<JsonObject>>(connection.baseUrl, url, absolutePath = true).data
+    }
+
+    suspend fun restoreChapterSnapshot(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterRestore(projectId, chapterId, snapshotId),
+        "POST",
+        json.encodeToString(JsonObject(emptyMap())),
+    ).data
+
+    suspend fun getCharacterRelationshipNetwork(
+        connection: GatewayConnection,
+        projectId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterRelationshipNetwork(projectId),
+    ).data
+
+    suspend fun replaceCharacterRelationships(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.characterRelationships(projectId, characterId),
+        method = "PUT",
+        payload = payload,
+    )
+
+    suspend fun getCharacterAiConfig(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterAiConfig(projectId, characterId),
+    ).data
+
+    suspend fun updateCharacterAiConfig(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.characterAiConfig(projectId, characterId),
+        method = "PUT",
+        payload = payload,
+    )
+
+    suspend fun listCharacterVersions(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterVersions(projectId, characterId),
+    ).data
+
+    suspend fun getCharacterVersion(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterVersion(projectId, characterId, versionId),
+    ).data
+
+    suspend fun listWorldVersions(
+        connection: GatewayConnection,
+        projectId: String,
+        entryId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.worldVersions(projectId, entryId),
+    ).data
+
+    suspend fun listWorldTimeline(
+        connection: GatewayConnection,
+        projectId: String,
+        entryId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.worldTimeline(projectId, entryId),
+    ).data
+
+    suspend fun listNovelCreationSessions(connection: GatewayConnection): List<JsonObject> {
+        val data = request<ApiEnvelope<JsonObject>>(
+            connection.baseUrl,
+            PcApiPaths.NOVEL_CREATION_SESSIONS,
+        ).data
+        return (data["sessions"] as? kotlinx.serialization.json.JsonArray)
+            .orEmpty()
+            .mapNotNull { it as? JsonObject }
+    }
+
+    suspend fun startNovelCreation(
+        connection: GatewayConnection,
+        payload: JsonObject,
+    ): JsonObject {
+        val data = request<ApiEnvelope<JsonObject>>(
+            connection.baseUrl,
+            PcApiPaths.NOVEL_CREATION_START,
+            "POST",
+            json.encodeToString(payload),
+        ).data
+        return data["session"] as? JsonObject
+            ?: throw GatewayHttpException(502, "PC 立项 API 没有返回 V3 会话")
+    }
+
+    suspend fun getNovelCreationSession(
+        connection: GatewayConnection,
+        sessionId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationSession(sessionId),
+    ).data
+
+    suspend fun novelCreationAgentTurn(
+        connection: GatewayConnection,
+        payload: JsonObject,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.NOVEL_CREATION_AGENT_TURN,
+        "POST",
+        json.encodeToString(payload),
+    ).data
+
+    suspend fun startNovelCreationRun(
+        connection: GatewayConnection,
+        sessionId: String,
+        payload: JsonObject,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationRuns(sessionId),
+        "POST",
+        json.encodeToString(payload),
+    ).data
+
+    suspend fun getNovelCreationRun(
+        connection: GatewayConnection,
+        runId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationRun(runId),
+    ).data
+
+    suspend fun confirmNovelCreationStage(
+        connection: GatewayConnection,
+        sessionId: String,
+        stage: String,
+        payload: JsonObject,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationStageConfirm(sessionId, stage),
+        "POST",
+        json.encodeToString(payload),
+    ).data
+
+    suspend fun updateNovelCreationStage(
+        connection: GatewayConnection,
+        sessionId: String,
+        stage: String,
+        payload: JsonObject,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationStage(sessionId, stage),
+        "PATCH",
+        json.encodeToString(payload),
+    ).data
+
+    suspend fun deleteNovelCreationSession(
+        connection: GatewayConnection,
+        sessionId: String,
+    ) {
+        request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.novelCreationSession(sessionId),
+            "DELETE",
+        )
+    }
+
+    suspend fun applyNovelCreation(
+        connection: GatewayConnection,
+        sessionId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.NOVEL_CREATION_APPLY,
+        "POST",
+        json.encodeToString(
+            buildJsonObject {
+                put("session_id", sessionId)
+                put("mode", "auto")
+            },
+        ),
+    ).data
+
+    private suspend fun canonicalWrite(
+        connection: GatewayConnection,
+        path: String,
+        method: String,
+        payload: JsonObject,
+    ): JsonObject {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            path,
+            method,
+            json.encodeToString(payload),
+        )
+        return response.data as? JsonObject
+            ?: throw GatewayHttpException(502, "PC API 返回的数据结构无效")
+    }
+
+
+suspend fun streamCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    jobId: String,
+    onEvent: suspend (String) -> Unit,
+) = withContext(Dispatchers.IO) {
+    var token = validAccessToken(connection.baseUrl)
+    repeat(2) { attempt ->
+        val request = Request.Builder()
+            .url(connection.baseUrl + PcApiPaths.catalogingStream(projectId, jobId))
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "text/event-stream")
+            .post(EMPTY_BODY)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 401 && attempt == 0) {
+                response.body?.close()
+                token = refresh(connection.baseUrl, token)
+                return@use
+            }
+            if (!response.isSuccessful) throw errorFrom(response.code, response.body?.string())
+            val source = response.body?.source() ?: throw IOException("作品建档响应为空")
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (line.startsWith("data:")) {
+                    val data = line.removePrefix("data:").trim()
+                    if (data.isNotEmpty() && data != "[DONE]") onEvent(data)
+                }
+            }
+            return@withContext
+        }
+    }
+    throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+}
+
+suspend fun downloadProjectExport(
+    connection: GatewayConnection,
+    projectId: String,
+    fileId: String,
+): ByteArray = withContext(Dispatchers.IO) {
+    var token = validAccessToken(connection.baseUrl)
+    repeat(2) { attempt ->
+        val request = Request.Builder()
+            .url(connection.baseUrl + PcApiPaths.projectExportDownload(projectId, fileId))
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 401 && attempt == 0) {
+                response.body?.close()
+                token = refresh(connection.baseUrl, token)
+                return@use
+            }
+            if (!response.isSuccessful) throw errorFrom(response.code, response.body?.string())
+            return@withContext response.body?.bytes() ?: throw IOException("导出文件为空")
+        }
+    }
+    throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+}
 
     suspend fun streamAssistant(
         connection: GatewayConnection,
@@ -132,7 +664,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         var token = validAccessToken(connection.baseUrl)
         repeat(2) { attempt ->
             val request = Request.Builder()
-                .url(connection.baseUrl + "/api/v1/projects/$projectId/ai/workspace-assistant/stream")
+                .url(connection.baseUrl + PcApiPaths.assistantStream(projectId))
                 .header("Authorization", "Bearer $token")
                 .header("Accept", "text/event-stream")
                 .post(json.encodeToString(requestBody).toRequestBody(JSON_MEDIA_TYPE))
@@ -195,7 +727,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
             }
             val response = execute(
                 baseUrl,
-                "/api/v1/auth/refresh",
+                PcApiPaths.AUTH_REFRESH,
                 "POST",
                 json.encodeToString(RefreshRequest(current.refreshToken)),
                 null,
@@ -232,6 +764,8 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         when (method) {
             "GET" -> builder.get()
             "POST" -> builder.post(requestBody ?: EMPTY_BODY)
+            "PUT" -> builder.put(requestBody ?: EMPTY_BODY)
+            "PATCH" -> builder.patch(requestBody ?: EMPTY_BODY)
             "DELETE" -> builder.delete(requestBody)
             else -> error("Unsupported method")
         }
@@ -243,9 +777,9 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
     private fun errorFrom(status: Int, raw: String?): GatewayHttpException {
         val message = runCatching {
             json.parseToJsonElement(raw.orEmpty()).let { element ->
-                (element as? kotlinx.serialization.json.JsonObject)
+                (element as? JsonObject)
                     ?.get("message")
-                    ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.let { it as? JsonPrimitive }
                     ?.content
             }
         }.getOrNull() ?: "Gateway 请求失败（HTTP $status）"
@@ -261,6 +795,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        private val BINARY_MEDIA_TYPE = "application/octet-stream".toMediaType()
         private val EMPTY_BODY = ByteArray(0).toRequestBody(JSON_MEDIA_TYPE)
         private val refreshMutex = Mutex()
     }

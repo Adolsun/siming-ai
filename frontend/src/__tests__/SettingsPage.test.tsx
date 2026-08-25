@@ -101,6 +101,44 @@ describe('SettingsPage startup and update controls', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 
+  it('scans and configures each CLI only after separate user actions', async () => {
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/cli-integrations/scan') {
+        return Promise.resolve({ data: { data: {
+          status: 'scanned', detected_count: 1, supported_count: 10,
+          clients: [{
+            provider: 'codex_cli', label: 'Codex CLI', detected: true,
+            command: 'C:/tools/codex.cmd', config_path: 'C:/Users/test/.codex/config.toml',
+            configured: false, can_restore: false,
+          }],
+        } } })
+      }
+      if (url === '/config/cli-integrations/codex_cli/configure') {
+        return Promise.resolve({ data: { data: {
+          provider: 'codex_cli', label: 'Codex CLI', status: 'configured',
+          configured: true, can_restore: true,
+        } } })
+      }
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    renderSettings()
+    expect(await screen.findByText('尚未扫描本机 CLI')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalledWith('/config/cli-integrations/scan')
+
+    fireEvent.click(screen.getByRole('button', { name: '扫描本机 CLI' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/cli-integrations/scan'))
+    expect(await screen.findByText('Codex CLI')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalledWith('/config/cli-integrations/codex_cli/configure')
+
+    fireEvent.click(screen.getByRole('button', { name: '自动配置 Codex CLI' }))
+    expect((await screen.findAllByText('允许司命自动配置 Codex CLI？')).length).toBeGreaterThan(0)
+    expect(screen.getByText(/不会改变该 CLI 现有的沙箱、审批或工具权限设置/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '我知情，自动配置' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/cli-integrations/codex_cli/configure'))
+  })
+
   it('saves browser mode for the next launch', async () => {
     renderSettings()
 
@@ -179,6 +217,34 @@ describe('SettingsPage startup and update controls', () => {
       model: 'gpt-5.6-sol',
     })))
     expect(await screen.findByText('模型真实回复成功（Responses API）')).toBeInTheDocument()
+  })
+
+  it('lets users revalidate a ready model instead of trusting stale status forever', async () => {
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'deepseek-config', provider: 'deepseek', default_model: 'deepseek-v4-flash',
+        provider_type: 'api', readiness_status: 'ready', readiness_message: '真实对话测试成功',
+        is_usable: true, is_global_default: true, last_tested_at: '2026-08-01T12:00:00Z',
+      }] } } })
+      if (url === '/config/global-model') return Promise.resolve({ data: { data: {
+        provider: 'deepseek', model: 'deepseek-v4-flash',
+      } } })
+      if (url === '/config/content-root') return Promise.resolve({ data: { data: {
+        current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true,
+        exists: true, is_empty: true,
+      } } })
+      if (url === '/config/launcher') return Promise.resolve({ data: { data: launcherSettings } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockResolvedValue({ data: {
+      message: '模型已经通过真实对话测试', data: { became_global_default: false },
+    } })
+
+    renderSettings()
+    expect(await screen.findByText(/上次验证：/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /重新验证/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/deepseek/verify'))
   })
 
   it('automatically discovers models for a custom provider after credentials are complete', async () => {

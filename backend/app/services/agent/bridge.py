@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.architecture.uow import commit_session
 
 from ...ai.local_cli_adapter import is_local_cli_provider
-from ...core.db_helpers import get_project_or_404
 from ...core.numbers import extract_chapter_number
 from ...database.models import (
     AgentPlanStep,
@@ -37,8 +36,7 @@ from ..workspace.run_log import (
 )
 from .chapter_intent import has_chapter_rewrite_intent, has_strong_chapter_writing_intent
 from .outline_resolution import resolve_outline_node_id as _resolve_outline_node_id
-from .orchestrator import PlanOrchestrator, _serialize_step
-from .plan_graph import PlanGraph
+from .orchestrator import PlanOrchestrator
 from .planner import (
     build_plan_from_intent,
     detect_intent,

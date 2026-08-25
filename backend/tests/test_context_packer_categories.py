@@ -1,15 +1,15 @@
 """Tests for pack_context include_categories and RAG miss warnings."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
-    Base, Project, WorldbuildingEntry, OutlineNode, Character,
+    Base, Project, WorldbuildingEntry, Character,
 )
 from app.services.rag.context_packer import (
-    pack_context, ContextBudget, ContextSection, PackedContext,
+    pack_context,
 )
 
 

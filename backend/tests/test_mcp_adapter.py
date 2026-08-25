@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.mcp.adapter import list_mcp_tools, is_tool_allowed, get_tool_def
 from app.mcp.schemas import tool_def_to_mcp_tool, make_text_result, make_json_result
-from app.mcp.permissions import get_tier, is_secret_tool, filter_tools
+from app.mcp.permissions import get_tier, is_secret_tool
 from app.services.workspace.registry import registry
 
 
@@ -118,6 +118,32 @@ class McpToolSchemaTest(unittest.TestCase):
         by_name = {t.name: t for t in tools}
         self.assertIn("run_id", by_name["search_chapters"].input_schema["properties"])
         self.assertIn("run_id", by_name["report_agent_progress"].input_schema["properties"])
+
+    def test_mcp_exports_creation_model_requirement(self):
+        project_tools = list_mcp_tools(permission_pack="project_writing")
+        by_name = {t.name: t for t in project_tools}
+
+        stage_tool = by_name["generate_novel_creation_stage"]
+        self.assertIn("explicit Siming model", stage_tool.description)
+        self.assertIn("not inherited", stage_tool.description)
+        self.assertIn(
+            "Required when stage or artifact is concepts or all",
+            stage_tool.input_schema["properties"]["model"]["description"],
+        )
+        self.assertEqual(
+            stage_tool.input_schema["allOf"][0]["then"]["required"],
+            ["model"],
+        )
+
+        creation_tools = list_mcp_tools(permission_pack="creation_session")
+        creation_by_name = {t.name: t for t in creation_tools}
+        artifact_tool = creation_by_name["generate_creation_artifact"]
+        self.assertIn("artifact is concepts or all", artifact_tool.description)
+        self.assertIn("patch_creation_artifact instead", artifact_tool.description)
+        self.assertEqual(
+            artifact_tool.input_schema["allOf"][0]["if"]["properties"]["artifact"]["enum"],
+            ["all", "concepts"],
+        )
 
 
 class PermissionFilterTest(unittest.TestCase):

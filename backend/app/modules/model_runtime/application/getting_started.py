@@ -17,6 +17,8 @@ class GettingStartedModelState:
     has_usable_models: bool
     global_provider: str | None
     global_model: str | None
+    usable_provider: str | None
+    usable_model: str | None
 
 
 @dataclass(frozen=True)

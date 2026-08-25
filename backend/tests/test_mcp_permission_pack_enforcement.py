@@ -6,7 +6,6 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.mcp.adapter import list_mcp_tools, is_tool_allowed
-from app.services.workspace.registry import registry
 
 
 class ListMcpToolsByPackTest(unittest.TestCase):

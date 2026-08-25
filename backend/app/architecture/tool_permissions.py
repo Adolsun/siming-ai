@@ -39,8 +39,6 @@ WRITE_PROJECT_DATA = {
     "apply_pending_cataloging",
     "set_cataloging_mode",
     "set_daily_word_goal",
-    "apply_external_story_updates",
-    "archive_chapter_after_write",
     "repair_story_granularity",
     "apply_novel_blueprint",
     "submit_novel_creation_stage",
@@ -48,6 +46,8 @@ WRITE_PROJECT_DATA = {
     "save_external_cataloging_candidates",
     "write_project_file",
     "sync_project_files",
+    "apply_narrative_governance_candidates",
+    "update_narrative_ledger_entry",
 }
 
 MANAGEMENT_TOOLS = {
@@ -77,6 +77,7 @@ MANAGEMENT_TOOLS = {
     "cancel_cataloging_job",
     "pause_cataloging_job",
     "set_cataloging_mode",
+    "restore_narrative_governance_checkpoint",
 }
 
 DESTRUCTIVE_TOOLS = {
@@ -100,6 +101,7 @@ HIGH_RISK_TOOLS = {
     "rerun_failed_deconstruct_chunks",
     "run_scheduled_task_now",
     "cancel_cataloging_job",
+    "restore_narrative_governance_checkpoint",
 }
 
 INTERNAL_LLM_TOOLS = {
@@ -164,7 +166,11 @@ def _permission_values(tool: ToolDef) -> tuple[set[str], str, bool]:
         elif name in WRITE_PROJECT_DATA:
             tags, risk, writes = {"write", "create"}, "medium", True
         else:
-            tags, risk = {"write", "management"}, "low"
+            # A write ToolDef is state-changing even when a new tool name has
+            # not yet been added to a more specific policy group. Failing
+            # closed here prevents MCP/CLI from receiving a false read-only
+            # classification.
+            tags, risk, writes = {"write", "management"}, "medium", True
 
     if name in INTERNAL_LLM_TOOLS or tool.tool_type == "generator":
         tags = {"internal_llm", "model"}

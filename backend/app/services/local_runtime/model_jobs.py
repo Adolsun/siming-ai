@@ -72,10 +72,13 @@ def ensure_catalog_rows() -> None:
             runtime.port = None
             runtime.pid = None
             runtime.active_model_id = None
+        recommended_context = detect_hardware().recommended_context
         for setting in db.query(LocalModelTaskSetting).all():
             model_context = context_by_model.get(setting.model_key)
-            if model_context and (not setting.context_length or setting.context_length < model_context):
-                setting.context_length = model_context
+            if model_context and not setting.context_length:
+                # The catalog advertises capacity, not a safe launch default.
+                # Never silently expand a user's task context during startup.
+                setting.context_length = min(model_context, recommended_context)
         commit_session(db)
 
 

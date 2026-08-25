@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +16,6 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException, UnauthorizedError, ValidationError
 from app.database import models as _models  # noqa: F401
 from app.database.session import Base, get_db
-from app.modules.gateway.infrastructure.service import GatewayService, token_digest
 from app.modules.gateway.infrastructure.models import (
     GatewayAccessToken,
     GatewayRefreshToken,
@@ -23,6 +24,7 @@ from app.modules.gateway.infrastructure.models import (
     SyncEntityState,
     SyncTombstone,
 )
+from app.modules.gateway.infrastructure.service import GatewayService, token_digest
 from app.modules.gateway.interfaces.contracts import (
     DeviceCapabilities,
     PairingCompleteRequest,
@@ -32,6 +34,7 @@ from app.modules.gateway.interfaces.contracts import (
 from app.modules.model_runtime.infrastructure.execution import CloudOnlyGatewayModelExecutor
 from app.modules.model_runtime.infrastructure.gateway import LLMGateway
 from app.modules.story.infrastructure.entities import Chapter, Project
+from app.routers import gateway as gateway_router
 
 
 def _database(tmp_path: Path):
@@ -41,6 +44,66 @@ def _database(tmp_path: Path):
     )
     Base.metadata.create_all(bind=engine)
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def test_gateway_address_discovery_prefers_default_route_over_virtual_adapters(monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "vEthernet (WSL)": [SimpleNamespace(address="172.30.96.1")],
+            "VMware Network Adapter VMnet8": [SimpleNamespace(address="192.168.204.1")],
+            "WLAN": [SimpleNamespace(address="192.168.31.205")],
+        },
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {
+            "vEthernet (WSL)": SimpleNamespace(isup=True),
+            "VMware Network Adapter VMnet8": SimpleNamespace(isup=True),
+            "WLAN": SimpleNamespace(isup=True),
+        },
+    )
+    monkeypatch.setattr(
+        gateway_router,
+        "_default_route_ipv4",
+        lambda: ipaddress.ip_address("192.168.31.205"),
+    )
+
+    assert gateway_router._discover_local_gateway_ipv4() == ipaddress.ip_address(
+        "192.168.31.205"
+    )
+
+
+def test_gateway_address_discovery_fallback_penalizes_virtual_adapters(monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "vEthernet (WSL)": [SimpleNamespace(address="172.30.96.1")],
+            "VMware Network Adapter VMnet8": [SimpleNamespace(address="192.168.204.1")],
+            "WLAN": [SimpleNamespace(address="192.168.31.205")],
+        },
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {
+            "vEthernet (WSL)": SimpleNamespace(isup=True),
+            "VMware Network Adapter VMnet8": SimpleNamespace(isup=True),
+            "WLAN": SimpleNamespace(isup=True),
+        },
+    )
+    monkeypatch.setattr(gateway_router, "_default_route_ipv4", lambda: None)
+
+    assert gateway_router._discover_local_gateway_ipv4() == ipaddress.ip_address(
+        "192.168.31.205"
+    )
 
 
 def test_headless_model_executor_rejects_local_cli(monkeypatch):
@@ -234,17 +297,24 @@ def test_same_entity_divergence_preserves_both_versions(tmp_path):
             ).results[0]
             assert result.status == "conflict"
             assert result.revision == server_revision
-            assert result.server_snapshot["payload"] == {"content": "桌面版本"}
+            server_payload = result.server_snapshot["payload"]
+            assert server_payload["_record_type"] == "chapter"
+            assert server_payload["id"] == "chapter-1"
+            assert server_payload["content"] == "桌面版本"
+            assert server_payload["current_version"] == 1
+            assert server_payload["word_count"] > 0
 
             conflict = db.query(SyncConflict).one()
+            # Client branch keeps the exact stale request for conflict review;
+            # server branch is the authoritative PC-shaped domain snapshot.
             assert conflict.client_payload_json == {"content": "手机离线版本"}
-            assert conflict.server_payload_json == {"content": "桌面版本"}
+            assert conflict.server_payload_json == server_payload
             state = (
                 db.query(SyncEntityState)
                 .filter(SyncEntityState.entity_type == "chapter")
                 .one()
             )
-            assert state.payload_json == {"content": "桌面版本"}
+            assert state.payload_json == server_payload
 
             view = service.resolve_conflict(
                 conflict.id,
@@ -264,6 +334,9 @@ def test_same_entity_divergence_preserves_both_versions(tmp_path):
                 .one()
             )
             assert resolved_state.revision > server_revision
+            assert resolved_state.payload_json["_record_type"] == "chapter"
+            assert resolved_state.payload_json["content"] == "手机离线版本"
+            assert resolved_state.payload_json["current_version"] == 2
             assert service.list_conflicts(status="open") == []
             assert service.list_conflicts(status="resolved")[0].id == conflict.id
     finally:
@@ -489,6 +562,11 @@ def test_gateway_http_boundary_pairs_locally_and_denies_unauthorized_remote_clie
             started = local_client.post("/api/v1/pairing/start")
             assert started.status_code == 200
             pairing = started.json()["data"]
+            assert len(pairing["gateway_encryption_public_key"]) >= 43
+            assert (
+                pairing["qr_payload"]["gateway_encryption_public_key"]
+                == pairing["gateway_encryption_public_key"]
+            )
             application = {
                 "pairing_id": pairing["pairing_id"],
                 "pairing_secret": pairing["pairing_secret"],
@@ -531,11 +609,42 @@ def test_gateway_http_boundary_pairs_locally_and_denies_unauthorized_remote_clie
             assert accepted.status_code == 200
             assert accepted.json()["data"]["protocol_version"] == 1
 
-            hidden_desktop_api = remote_client.get(
+            visible_authoring_api = remote_client.get(
                 "/api/v1/projects",
                 headers={"authorization": f"Bearer {access_token}"},
             )
-            assert hidden_desktop_api.status_code == 404
+            assert visible_authoring_api.status_code == 200
+            visible_items = visible_authoring_api.json()["data"]["items"]
+            assert [item["id"] for item in visible_items] == [enabled_project_id]
+            assert visible_items[0]["folder_path"] is None
+
+            private_project_api = remote_client.get(
+                f"/api/v1/projects/{private_project_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+            )
+            assert private_project_api.status_code == 404
+            enabled_project_api = remote_client.get(
+                f"/api/v1/projects/{enabled_project_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+            )
+            assert enabled_project_api.status_code == 200
+            assert enabled_project_api.json()["data"]["folder_path"] is None
+
+            created_chapter = remote_client.post(
+                f"/api/v1/projects/{enabled_project_id}/chapters",
+                headers={"authorization": f"Bearer {access_token}"},
+                json={"title": "手机规范写入", "content": "第一版正文"},
+            )
+            assert created_chapter.status_code == 200
+            chapter_id = created_chapter.json()["data"]["id"]
+            updated_chapter = remote_client.put(
+                f"/api/v1/projects/{enabled_project_id}/chapters/{chapter_id}",
+                headers={"authorization": f"Bearer {access_token}"},
+                json={"content": "第二版正文", "trigger_type": "manual_save"},
+            )
+            assert updated_chapter.status_code == 200
+            assert updated_chapter.json()["data"]["content"] == "第二版正文"
+            assert updated_chapter.json()["data"]["snapshot_count"] >= 1
 
             private_assistant = remote_client.head(
                 f"/api/v1/projects/{private_project_id}/ai/workspace-assistant/stream",

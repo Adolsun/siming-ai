@@ -1,14 +1,24 @@
 """Application configuration."""
 
+import sys
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    # Source checkouts may retain deprecated keys in their development .env.
+    # They must not prevent the application from starting; validation remains
+    # strict for every setting that is still part of this model.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     
     database_url: str = "sqlite:///./novel_agent.db"
     secret_key: str = "change-me-in-production"
@@ -84,10 +94,6 @@ class Settings(BaseSettings):
         ),
     )
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-    
     def get_cors_origins(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
         values = [origin.strip().rstrip("/") for origin in self.cors_origins.split(",")]
@@ -134,4 +140,10 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
+    if getattr(sys, "frozen", False):
+        # A packaged executable can be launched by another CLI from that CLI's
+        # working directory.  Never interpret the caller's .env as Siming
+        # configuration; packaged builds only accept the real process
+        # environment prepared by launcher.py.
+        return Settings(_env_file=None)
     return Settings()

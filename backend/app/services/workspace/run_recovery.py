@@ -10,14 +10,13 @@ from __future__ import annotations
 from app.architecture.uow import commit_session
 
 import json
-from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import AssistantRun, AssistantRunStep, Chapter, Character, OutlineNode, WorldbuildingEntry, CharacterRelationship
+from ...database.models import AssistantRun, AssistantRunStep
 from .executor import execute_workspace_action
-from .idempotency import check_idempotency, generate_idempotency_key
-from .run_log import finish_run_step, mark_assistant_run, start_run_step, step_payload
+from .idempotency import generate_idempotency_key
+from .run_log import finish_run_step, mark_assistant_run, start_run_step
 
 
 # ---------------------------------------------------------------------------

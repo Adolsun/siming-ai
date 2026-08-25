@@ -8,13 +8,14 @@ import json
 import os
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import SqlAlchemyUnitOfWork
+from app.core.utils import utc_isoformat
 from app.database.session import SessionLocal
 from app.modules.operations.domain.failures import classify_failure
 from app.modules.operations.domain.state import (
@@ -34,15 +35,6 @@ _ACTION_HANDLERS: dict[str, dict[str, Callable[[], Any]]] = {}
 
 def utcnow() -> datetime:
     return datetime.utcnow()
-
-
-def _utc_iso(value: datetime | None) -> str | None:
-    """Serialize database UTC timestamps with an explicit offset for clients."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).isoformat()
 
 
 def _write_with_uow(callback: Callable[[Session], None], db: Session | None = None) -> None:
@@ -522,7 +514,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "health_status": _derived_health(operation, now),
         "outcome": outcome,
         "attention": attention,
-        "attention_read_at": _utc_iso(operation.attention_read_at),
+        "attention_read_at": utc_isoformat(operation.attention_read_at),
         "result": public_result,
         "result_summary": (result or {}).get("summary")
         or (
@@ -550,13 +542,13 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "input_snapshot_hash": operation.input_snapshot_hash,
         "process_metrics": deepcopy(operation.process_metrics_json),
         "elapsed_seconds": elapsed,
-        "heartbeat_at": _utc_iso(operation.heartbeat_at),
-        "last_activity_at": _utc_iso(operation.last_activity_at),
-        "last_output_at": _utc_iso(operation.last_output_at),
-        "last_checkpoint_at": _utc_iso(operation.last_checkpoint_at),
-        "created_at": _utc_iso(operation.created_at),
-        "updated_at": _utc_iso(operation.updated_at),
-        "completed_at": _utc_iso(operation.completed_at),
+        "heartbeat_at": utc_isoformat(operation.heartbeat_at),
+        "last_activity_at": utc_isoformat(operation.last_activity_at),
+        "last_output_at": utc_isoformat(operation.last_output_at),
+        "last_checkpoint_at": utc_isoformat(operation.last_checkpoint_at),
+        "created_at": utc_isoformat(operation.created_at),
+        "updated_at": utc_isoformat(operation.updated_at),
+        "completed_at": utc_isoformat(operation.completed_at),
     }
     if include_events:
         data["result"] = result
@@ -567,7 +559,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
                 "status": event.status,
                 "message": event.message,
                 "payload": deepcopy(event.payload_json),
-                "created_at": _utc_iso(event.created_at),
+                "created_at": utc_isoformat(event.created_at),
             }
             for event in operation.events
         ]

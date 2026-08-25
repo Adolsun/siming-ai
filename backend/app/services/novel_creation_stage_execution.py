@@ -22,8 +22,8 @@ from app.services.novel_creation_entities import (
     _extract_records,
     get_creation_entity,
 )
-from app.services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from app.services.novel_creation_runs import block_run_for_context
+from app.services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from app.services.novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
@@ -93,7 +93,11 @@ def _preserve_conflict_candidate(
     exc.candidate_data = deepcopy(data)
 
 
-def _capture_model_diagnostic(context: StageExecution, stage: str, metadata: dict[str, Any]) -> None:
+def _capture_model_diagnostic(
+    context: StageExecution,
+    stage: str,
+    metadata: dict[str, Any],
+) -> None:
     """Persist the complete raw model reply while keeping public events bounded."""
     raw = metadata.pop("_diagnostic_raw", None)
     if not isinstance(raw, str) or not raw:
@@ -226,7 +230,11 @@ def _prepare_execution(
         entity_target = {
             "entity_type": entity_type,
             "mode": "new",
-            "count": max(1, min(int(args["entity_count"]), 20)) if args.get("entity_count") else None,
+            "count": (
+                max(1, min(int(args["entity_count"]), 20))
+                if args.get("entity_count")
+                else None
+            ),
         }
     if entity_target:
         working_draft["_entity_target"] = deepcopy(entity_target)
@@ -634,7 +642,11 @@ def _finish_execution(context: StageExecution) -> dict[str, Any]:
             "stage_completed",
             "ok" if final.get("ready") else "warning",
             "最终审阅已完成",
-            {"stage": "final_review", "ready": bool(final.get("ready")), "storage_target": "session_draft"},
+            {
+                "stage": "final_review",
+                "ready": bool(final.get("ready")),
+                "storage_target": "session_draft",
+            },
         )
         commit_session(context.db)
     warnings = [str(item.get("warning")) for item in context.run_metadata if item.get("warning")]
@@ -668,16 +680,25 @@ async def execute_novel_creation_stage(
     enhance_with_model: Any,
     model_response_error: type[Exception],
 ) -> dict[str, Any]:
-    context, early_result = _prepare_execution(
-        db,
-        project_id,
-        args,
-        ensure_not_cancelled=ensure_not_cancelled,
-        generate_concepts=generate_concepts,
-        normalize_stage=normalize_stage,
-        enhance_with_model=enhance_with_model,
-        model_response_error=model_response_error,
-    )
+    try:
+        context, early_result = _prepare_execution(
+            db,
+            project_id,
+            args,
+            ensure_not_cancelled=ensure_not_cancelled,
+            generate_concepts=generate_concepts,
+            normalize_stage=normalize_stage,
+            enhance_with_model=enhance_with_model,
+            model_response_error=model_response_error,
+        )
+    except Exception as exc:
+        db.rollback()
+        return {
+            "tool": "generate_novel_creation_stage",
+            "status": "error",
+            "detail": str(exc),
+            "data": None,
+        }
     if early_result is not None:
         return early_result
     assert context is not None
@@ -691,7 +712,11 @@ async def execute_novel_creation_stage(
     except Exception as exc:
         db.rollback()
         session = _session(db, context.session_id)
-        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == context.run.id).first()
+        run = (
+            db.query(NovelCreationStageRun)
+            .filter(NovelCreationStageRun.id == context.run.id)
+            .first()
+        )
         if run and session:
             fail_run(db, run, exc, failed_stage=context.active_stage)
             commit_session(db)

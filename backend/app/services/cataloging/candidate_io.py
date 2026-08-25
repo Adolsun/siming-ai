@@ -5,15 +5,30 @@ import json
 from typing import Any
 
 from ...database.models import CatalogingCandidate
+from ..story_granularity import derive_chapter_summary_text
 
 
 def candidate_payload(candidate: CatalogingCandidate) -> dict[str, Any]:
     text = candidate.edited_payload or candidate.raw_payload
     try:
         parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else {}
+        if not isinstance(parsed, dict):
+            return {}
+        if candidate.item_type == "chapter_summary":
+            summary = derive_chapter_summary_text(parsed)
+            if summary:
+                parsed.setdefault("summary_text", summary)
+                parsed.setdefault("summary", summary)
+        return parsed
     except Exception:
         return {}
+
+
+def candidate_has_usable_summary(candidate: CatalogingCandidate) -> bool:
+    if candidate.item_type != "chapter_summary" or candidate.status == "rejected":
+        return False
+    payload = candidate_payload(candidate)
+    return bool(derive_chapter_summary_text(payload))
 
 
 def candidate_to_dict(candidate: CatalogingCandidate) -> dict[str, Any]:

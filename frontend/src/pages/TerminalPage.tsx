@@ -10,6 +10,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import './TerminalPage.css'
 
 const { Text } = Typography
 
@@ -92,32 +93,38 @@ function TerminalPage() {
     }
   }
 
+  const setAutoRefreshWithImmediateFeedback = (checked: boolean) => {
+    setAutoRefresh(checked)
+    if (checked) void fetchLogs()
+  }
+
+  const clearCurrentView = () => {
+    setAutoRefresh(false)
+    setLogContent('')
+    setLogLines(0)
+    message.info('已清空当前视图并暂停自动刷新；原日志文件未删除')
+  }
+
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Toolbar */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          padding: '12px 0',
-          borderBottom: '1px solid var(--ant-color-border-secondary)',
-          marginBottom: 12,
-          flexShrink: 0,
-        }}
-      >
-        <div>
-          <Text strong style={{ fontSize: 15 }}>终端日志</Text>
+    <div className="terminal-page">
+      <div className="terminal-toolbar">
+        <div className="terminal-heading">
+          <Text strong className="terminal-title">终端日志</Text>
           {logPath && (
-            <Text type="secondary" style={{ fontSize: 12, marginLeft: 12 }}>
-              {logPath} · {logLines}/{logTotal} 行
+            <Text type="secondary" className="terminal-log-path" title={logPath}>
+              {logPath} · 最近 {logLines}/{logTotal} 行
             </Text>
           )}
         </div>
-        <Space size={8}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
-            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+        <Space size={8} wrap className="terminal-controls">
+          <span className="terminal-auto-refresh">
+            <Text type="secondary" className="terminal-auto-refresh-label">自动刷新</Text>
+            <Switch
+              size="small"
+              checked={autoRefresh}
+              aria-label="自动刷新日志"
+              onChange={setAutoRefreshWithImmediateFeedback}
+            />
           </span>
           <Button
             icon={<ReloadOutlined />}
@@ -130,12 +137,10 @@ function TerminalPage() {
           <Button
             icon={<ClearOutlined />}
             size="small"
-            onClick={() => {
-              setLogContent('')
-              setLogLines(0)
-            }}
+            aria-label="清空当前日志视图"
+            onClick={clearCurrentView}
           >
-            清屏
+            清空视图
           </Button>
           <Button
             type="primary"
@@ -148,42 +153,19 @@ function TerminalPage() {
         </Space>
       </div>
 
-      {/* Terminal output */}
       <pre
         ref={termRef}
-        style={{
-          flex: 1,
-          margin: 0,
-          padding: '12px 16px',
-          background: '#16181d',
-          color: '#d7dbe2',
-          borderRadius: 8,
-          fontSize: 12.5,
-          lineHeight: 1.7,
-          fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
-          overflow: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          border: '1px solid var(--ant-color-border-secondary)',
-        }}
+        className="terminal-output"
       >
         {logContent || (
-          <span style={{ color: '#7e8794', fontStyle: 'italic' }}>
+          <span className="terminal-empty-state">
             {loading ? '正在加载日志...' : '暂无日志输出'}
           </span>
         )}
         {autoRefresh && (
-          <span style={{ display: 'inline-block', width: 8, height: 15, background: '#79c0ff', marginLeft: 2, animation: 'blink 1s step-end infinite', verticalAlign: 'text-bottom' }} />
+          <span className="terminal-cursor" />
         )}
       </pre>
-
-      {/* Inline keyframe for cursor blink */}
-      <style>{`
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
-        }
-      `}</style>
     </div>
   )
 }

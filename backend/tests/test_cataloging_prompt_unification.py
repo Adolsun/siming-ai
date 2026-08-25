@@ -53,6 +53,15 @@ class CatalogingPromptUnificationTest(unittest.TestCase):
         self.assertIn("只输出 JSONL", shared_facts)
         self.assertIn("不要输出 Markdown", shared_facts)
 
+    def test_candidate_prompts_require_summary_and_outline_in_the_first_object(self):
+        external = get_external_cataloging_system_prompt()
+        internal = CATALOGING_RESOLUTION_SYSTEM_PROMPT
+
+        for prompt in (external, internal):
+            self.assertIn("首个响应对象必须同时包含两个必填对象", prompt)
+            self.assertIn('"chapter_outline"', prompt)
+            self.assertIn("不能只返回其中一个", prompt)
+
     def test_character_state_schema_tracks_appearance_and_age(self):
         external = get_external_cataloging_system_prompt()
 

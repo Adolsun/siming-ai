@@ -230,6 +230,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/config/app-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get App Info
+         * @description Return local build identity without performing a network update check.
+         */
+        get: operations["get_app_info_api_v1_config_app_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config/cli-integrations/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan Local Cli Integrations
+         * @description Discover supported CLIs only after the author clicks Scan.
+         */
+        post: operations["scan_local_cli_integrations_api_v1_config_cli_integrations_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config/cli-integrations/{provider}/configure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure Local Cli Integration
+         * @description Apply one explicitly authorized CLI integration.
+         */
+        post: operations["configure_local_cli_integration_api_v1_config_cli_integrations__provider__configure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config/cli-integrations/{provider}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Local Cli Integration
+         * @description Restore one CLI only from an explicit, conflict-checked snapshot.
+         */
+        post: operations["restore_local_cli_integration_api_v1_config_cli_integrations__provider__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/config/content-root": {
         parameters: {
             query?: never;
@@ -421,6 +501,26 @@ export interface paths {
         put?: never;
         /** Retry Activation */
         post: operations["retry_activation_api_v1_config_getting_started_opencode_jobs__job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config/getting-started/opencode/mcp/configure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure Getting Started Opencode Mcp
+         * @description Explicitly configure and verify Siming MCP after OpenCode is usable.
+         */
+        post: operations["configure_getting_started_opencode_mcp_api_v1_config_getting_started_opencode_mcp_configure_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -746,6 +846,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/import/project-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Project File As Project
+         * @description Decode, split and persist a complete novel in one transaction.
+         */
+        post: operations["import_project_file_as_project_api_v1_import_project_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/local-models/adapters": {
         parameters: {
             query?: never;
@@ -978,6 +1098,26 @@ export interface paths {
         put?: never;
         /** Install Model */
         post: operations["install_model_api_v1_local_models_install_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/qualify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Qualify
+         * @description Verify that a local model can execute Siming's critical task contracts.
+         */
+        post: operations["qualify_api_v1_local_models_qualify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1242,6 +1382,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/assistant-input/route": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Route Assistant Input
+         * @description Let the selected model interpret chat instructions and document content together.
+         */
+        post: operations["route_assistant_input_api_v1_novel_creation_assistant_input_route_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/assistant-input/route-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Route Assistant Input File
+         * @description Parse the real uploaded binary before asking the model to route it.
+         */
+        post: operations["route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/conversation-command": {
         parameters: {
             query?: never;
@@ -1403,23 +1583,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/novel-creation/refresh-question": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh Question */
-        post: operations["refresh_question_api_v1_novel_creation_refresh_question_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/novel-creation/review": {
         parameters: {
             query?: never;
@@ -1448,6 +1611,26 @@ export interface paths {
         get: operations["get_creation_stage_run_api_v1_novel_creation_runs__run_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/runs/{run_id}/card-presentation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adjudicate Creation Run Card
+         * @description Re-evaluate a terminal card with the selected API or local-CLI model.
+         */
+        post: operations["adjudicate_creation_run_card_api_v1_novel_creation_runs__run_id__card_presentation_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1700,23 +1883,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/novel-creation/sessions/{session_id}/interview/next": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Advance Creation Interview */
-        post: operations["advance_creation_interview_api_v1_novel_creation_sessions__session_id__interview_next_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/novel-creation/sessions/{session_id}/runs": {
         parameters: {
             query?: never;
@@ -1884,7 +2050,8 @@ export interface paths {
         get: operations["get_operation_api_v1_operations__operation_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Operation */
+        delete: operations["delete_operation_api_v1_operations__operation_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2987,6 +3154,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/chapters/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Chapters */
+        put: operations["reorder_chapters_api_v1_projects__project_id__chapters_reorder_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/chapters/{chapter_id}": {
         parameters: {
             query?: never;
@@ -3001,6 +3185,46 @@ export interface paths {
         post?: never;
         /** Delete Chapter */
         delete: operations["delete_chapter_api_v1_projects__project_id__chapters__chapter_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/de-ai-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * De Ai Preview
+         * @description Generate a reviewable candidate; never write it to the chapter automatically.
+         */
+        post: operations["de_ai_preview_api_v1_projects__project_id__chapters__chapter_id__de_ai_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/quality-score-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Quality Score Preview
+         * @description Return a manual quality review without changing chapter data.
+         */
+        post: operations["quality_score_preview_api_v1_projects__project_id__chapters__chapter_id__quality_score_preview_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3500,6 +3724,50 @@ export interface paths {
         put?: never;
         /** Search Manifest */
         post: operations["search_manifest_api_v1_projects__project_id__context_manifests__manifest_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/creation-brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Project Creation Brief
+         * @description Read the authoritative, editable brief linked to a formal project.
+         */
+        get: operations["get_project_creation_brief_api_v1_projects__project_id__creation_brief_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Project Creation Brief
+         * @description Save visible creation constraints, direction and style for a formal work.
+         */
+        patch: operations["patch_project_creation_brief_api_v1_projects__project_id__creation_brief_patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/creation-brief/ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensure Project Creation Brief
+         * @description Create an editable brief for imported/legacy projects when requested.
+         */
+        post: operations["ensure_project_creation_brief_api_v1_projects__project_id__creation_brief_ensure_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4012,6 +4280,23 @@ export interface paths {
         head?: never;
         /** Update Status */
         patch: operations["update_status_api_v1_projects__project_id__narrative_governance_items__item_type___item_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/narrative-governance/reviews/{review_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify Review */
+        post: operations["verify_review_api_v1_projects__project_id__narrative_governance_reviews__review_id__verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{project_id}/outline": {
@@ -5077,6 +5362,20 @@ export interface components {
              */
             message: string;
         };
+        /** ApiResponse[NovelCreationRunCardResponse] */
+        ApiResponse_NovelCreationRunCardResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["NovelCreationRunCardResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
         /** ApiResponse[NovelCreationStageRunResponse] */
         ApiResponse_NovelCreationStageRunResponse_: {
             /**
@@ -5388,6 +5687,68 @@ export interface components {
              */
             message: string;
         };
+        /** AssistantInputRouteRequest */
+        AssistantInputRouteRequest: {
+            /**
+             * Active Project Id
+             * @default
+             */
+            active_project_id: string;
+            /**
+             * Clarification Already Asked
+             * @default false
+             */
+            clarification_already_asked: boolean;
+            /**
+             * Clarification Answer
+             * @default
+             */
+            clarification_answer: string;
+            /** Clarification History */
+            clarification_history?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Clarification Question
+             * @default
+             */
+            clarification_question: string;
+            /**
+             * Context Scope
+             * @default system
+             * @enum {string}
+             */
+            context_scope: "system" | "creation" | "project";
+            /**
+             * Creation Session Id
+             * @default
+             */
+            creation_session_id: string;
+            /** History */
+            history?: {
+                [key: string]: unknown;
+            }[];
+            /** Model */
+            model?: string | null;
+            /**
+             * Source Kind
+             * @default attachment
+             * @enum {string}
+             */
+            source_kind: "long_text" | "attachment";
+            /**
+             * Source Name
+             * @default 聊天长文本.txt
+             */
+            source_name: string;
+            /** Source Text */
+            source_text: string;
+            /**
+             * User Instruction
+             * @default
+             */
+            user_instruction: string;
+        };
         /** BenchmarkRequest */
         BenchmarkRequest: {
             /**
@@ -5416,6 +5777,64 @@ export interface components {
         Body_import_file_api_v1_projects__project_id__import_file_post: {
             /** File */
             file: string;
+        };
+        /** Body_import_project_file_as_project_api_v1_import_project_file_post */
+        Body_import_project_file_as_project_api_v1_import_project_file_post: {
+            /** File */
+            file: string;
+        };
+        /** Body_route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post */
+        Body_route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post: {
+            /**
+             * Active Project Id
+             * @default
+             */
+            active_project_id: string;
+            /**
+             * Clarification Already Asked
+             * @default false
+             */
+            clarification_already_asked: boolean;
+            /**
+             * Clarification Answer
+             * @default
+             */
+            clarification_answer: string;
+            /**
+             * Clarification History
+             * @default []
+             */
+            clarification_history: string;
+            /**
+             * Clarification Question
+             * @default
+             */
+            clarification_question: string;
+            /**
+             * Context Scope
+             * @default system
+             * @enum {string}
+             */
+            context_scope: "system" | "creation" | "project";
+            /**
+             * Creation Session Id
+             * @default
+             */
+            creation_session_id: string;
+            /** File */
+            file: string;
+            /**
+             * History
+             * @default []
+             */
+            history: string;
+            /** Model */
+            model?: string | null;
+            /**
+             * User Instruction
+             * @default
+             */
+            user_instruction: string;
         };
         /** CatalogingCandidateBulkUpdate */
         CatalogingCandidateBulkUpdate: {
@@ -5511,6 +5930,56 @@ export interface components {
             title: string;
         };
         /**
+         * ChapterDeAiPreviewRequest
+         * @description Generate a non-destructive de-AI revision candidate for editor review.
+         */
+        ChapterDeAiPreviewRequest: {
+            /** Content */
+            content: string;
+            /**
+             * Model
+             * @description API or local CLI model identity. Falls back to the global default.
+             */
+            model?: string | null;
+            /**
+             * Original Content
+             * @description Initial source text for a multi-round revision. Required after round 1 so every round can be audited against the unchanged original.
+             */
+            original_content?: string | null;
+            /**
+             * Revision Round
+             * @description One-based de-AI treatment round; at most three rounds are supported.
+             * @default 1
+             */
+            revision_round: number;
+        };
+        /**
+         * ChapterQualityScoreRequest
+         * @description Score the current editor text without modifying the saved chapter.
+         */
+        ChapterQualityScoreRequest: {
+            /** Content */
+            content: string;
+            /**
+             * Model
+             * @description API or local CLI model identity. Falls back to the global default.
+             */
+            model?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * ChapterReorderRequest
+         * @description Replace the reading order of all chapters in one project.
+         */
+        ChapterReorderRequest: {
+            /**
+             * Ids
+             * @description Chapter IDs in reading order
+             */
+            ids?: string[];
+        };
+        /**
          * ChapterUpdate
          * @description Schema for saving a chapter.
          */
@@ -5528,7 +5997,7 @@ export interface components {
              * @default manual_save
              * @enum {string}
              */
-            trigger_type: "manual_save" | "ai_insert" | "restore";
+            trigger_type: "manual_save" | "ai_insert" | "de_ai" | "restore";
         };
         /**
          * CharacterAIConfigUpdate
@@ -5792,6 +6261,14 @@ export interface components {
              */
             trigger_type: string;
         };
+        /** CheckpointRestoreRequest */
+        CheckpointRestoreRequest: {
+            /**
+             * Confirmation
+             * @constant
+             */
+            confirmation: "restore";
+        };
         /**
          * ConfirmImportRequest
          * @description Request to save imported text as chapters.
@@ -5848,7 +6325,7 @@ export interface components {
             provider: string;
             /**
              * Timeout Seconds
-             * @description Optional shorter CLI smoke-test timeout
+             * @description Optional model connection smoke-test timeout
              */
             timeout_seconds?: number | null;
         };
@@ -5946,10 +6423,31 @@ export interface components {
             history?: {
                 [key: string]: string;
             }[];
+            /**
+             * Local Cli Permission Grant
+             * @default chat_only
+             * @enum {string}
+             */
+            local_cli_permission_grant: "chat_only" | "creation_agent_once";
+            /** Local Cli Read Paths */
+            local_cli_read_paths?: string[];
+            /**
+             * Local Cli Read Permission Grant
+             * @default none
+             * @enum {string}
+             */
+            local_cli_read_permission_grant: "none" | "read_once";
             /** Message */
             message: string;
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /** Session Id */
             session_id: string;
         };
@@ -6351,6 +6849,10 @@ export interface components {
          */
         GettingStartedStatus: {
             activation_job?: components["schemas"]["OpenCodeActivationStatus"] | null;
+            /** Available Model */
+            available_model?: {
+                [key: string]: string | null;
+            } | null;
             /** Command */
             command?: string | null;
             /**
@@ -6414,6 +6916,11 @@ export interface components {
                 [key: string]: string;
             };
             /**
+             * Opencode Mcp Configured
+             * @default false
+             */
+            opencode_mcp_configured: boolean;
+            /**
              * Platform Supported
              * @default true
              */
@@ -6476,10 +6983,21 @@ export interface components {
             /** Type */
             type: string;
         };
+        /** GovernanceReviewVerification */
+        GovernanceReviewVerification: {
+            /** Evidence */
+            evidence: string;
+        };
         /** GovernanceStatusUpdate */
         GovernanceStatusUpdate: {
+            /** Closed By */
+            closed_by?: string | null;
             /** Evidence */
             evidence?: string | null;
+            /** Resolution Evidence */
+            resolution_evidence?: string | null;
+            /** Resolution Note */
+            resolution_note?: string | null;
             /** Resolved Chapter Id */
             resolved_chapter_id?: string | null;
             /**
@@ -6491,6 +7009,8 @@ export interface components {
             target_chapter_id?: string | null;
             /** Target Chapter Number */
             target_chapter_number?: number | null;
+            /** Verification Note */
+            verification_note?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -6593,6 +7113,24 @@ export interface components {
             transport?: string | null;
             /** Url */
             url?: string | null;
+        };
+        /**
+         * MobileProviderEnvelope
+         * @description End-to-end encrypted Android-owned provider configuration.
+         */
+        MobileProviderEnvelope: {
+            /** Ciphertext */
+            ciphertext: string;
+            /** Ephemeral Public Key */
+            ephemeral_public_key: string;
+            /** Nonce */
+            nonce: string;
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
         };
         /** ModelContextProfilePayload */
         ModelContextProfilePayload: {
@@ -6818,25 +7356,6 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
         };
-        /** NovelCreationInterviewNextRequest */
-        NovelCreationInterviewNextRequest: {
-            /** Model */
-            model?: string | null;
-            /** Qa History */
-            qa_history?: {
-                [key: string]: string;
-            }[];
-            /**
-             * Skip Questions
-             * @default false
-             */
-            skip_questions: boolean;
-            /**
-             * User Brief
-             * @default
-             */
-            user_brief: string;
-        };
         /** NovelCreationReviewRequest */
         NovelCreationReviewRequest: {
             /** Blueprint */
@@ -6849,6 +7368,58 @@ export interface components {
             execution_mode: "template" | "hybrid" | "external_agent" | "internal_llm";
             /** Session Id */
             session_id: string;
+        };
+        /**
+         * NovelCreationRunCardPresentation
+         * @description Author-facing interpretation of a durable run's factual evidence.
+         */
+        NovelCreationRunCardPresentation: {
+            /**
+             * Judged By
+             * @default model
+             * @enum {string}
+             */
+            judged_by: "model" | "fallback";
+            /** Label */
+            label: string;
+            /** Message */
+            message: string;
+            /** Model */
+            model?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /** Raw Status */
+            raw_status?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Resolved Model */
+            resolved_model?: string | null;
+            /** Route */
+            route?: ("api" | "cli" | "unknown") | null;
+            /**
+             * Show Retry
+             * @default false
+             */
+            show_retry: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "waiting_user" | "paused" | "completed" | "partial_success" | "failed" | "cancelled" | "interrupted";
+        };
+        /** NovelCreationRunCardRequest */
+        NovelCreationRunCardRequest: {
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Model */
+            model?: string | null;
+        };
+        /** NovelCreationRunCardResponse */
+        NovelCreationRunCardResponse: {
+            run: components["schemas"]["NovelCreationStageRunResponse"];
         };
         /** NovelCreationSessionPatchRequest */
         NovelCreationSessionPatchRequest: {
@@ -6948,8 +7519,15 @@ export interface components {
             expected_revision?: number | null;
             /** Instruction */
             instruction?: string | null;
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /**
              * Operation
              * @default generate
@@ -6978,6 +7556,7 @@ export interface components {
              * @default 0
              */
             attempt: number;
+            card_presentation?: components["schemas"]["NovelCreationRunCardPresentation"] | null;
             /** Completed At */
             completed_at?: string | null;
             /** Context Manifest Id */
@@ -7171,6 +7750,8 @@ export interface components {
             command?: string | null;
             /** Created At */
             created_at?: string | null;
+            /** Download Source */
+            download_source?: string | null;
             /** Download Url */
             download_url?: string | null;
             /** Error */
@@ -7541,6 +8122,8 @@ export interface components {
         PairingStartResponse: {
             /** Expires At */
             expires_at: unknown;
+            /** Gateway Encryption Public Key */
+            gateway_encryption_public_key: unknown;
             /** Gateway Fingerprint */
             gateway_fingerprint: unknown;
             /** Gateway Name */
@@ -7651,6 +8234,26 @@ export interface components {
              * @default natural
              */
             writing_style: string | null;
+        };
+        /**
+         * ProjectCreationBriefPatchRequest
+         * @description Author-controlled updates to a formal project's creation brief.
+         */
+        ProjectCreationBriefPatchRequest: {
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            } | null;
+            /** Creative Direction */
+            creative_direction?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** World Style */
+            world_style?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * ProjectListData
@@ -7790,24 +8393,12 @@ export interface components {
             /** Test Notes */
             test_notes?: string | null;
         };
-        /** RefreshQuestionRequest */
-        RefreshQuestionRequest: {
-            /**
-             * Existing Options
-             * @default []
-             */
-            existing_options: string[];
-            /** Model */
-            model?: string | null;
-            /** Question */
-            question: string;
-            /** Session Id */
-            session_id: string;
-            /**
-             * User Brief
-             * @default
-             */
-            user_brief: string;
+        /** QualificationRequest */
+        QualificationRequest: {
+            /** Context Length */
+            context_length?: number | null;
+            /** Model Key */
+            model_key: string;
         };
         /** RefreshTokenRequest */
         RefreshTokenRequest: {
@@ -7816,7 +8407,7 @@ export interface components {
         };
         /**
          * RelationshipInput
-         * @description Relationship from the current character to another character.
+         * @description One directed relationship connected to the character being edited.
          */
         RelationshipInput: {
             /**
@@ -7830,8 +8421,13 @@ export interface components {
              */
             relationship_type: string;
             /**
+             * Source Character Id
+             * @description 关系起点角色ID；省略时使用当前角色，以兼容旧客户端
+             */
+            source_character_id?: string | null;
+            /**
              * Target Character Id
-             * @description 目标角色ID
+             * @description 关系终点角色ID
              */
             target_character_id: string;
         };
@@ -8154,7 +8750,7 @@ export interface components {
              * Entity Type
              * @enum {string}
              */
-            entity_type: "project" | "chapter" | "chapter_version" | "outline" | "character" | "character_alias" | "character_relation" | "world" | "world_relation" | "summary" | "timeline" | "foreshadowing" | "governance";
+            entity_type: "project" | "chapter" | "chapter_version" | "outline" | "character" | "character_ai_config" | "character_alias" | "character_relation" | "world" | "world_relation" | "summary" | "timeline" | "foreshadowing" | "governance";
             /** Mutation Id */
             mutation_id: string;
             /**
@@ -8456,12 +9052,39 @@ export interface components {
             history?: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Local Cli Permission Grant
+             * @description One-turn user grant for a local CLI to use the scoped Siming MCP tools
+             * @default chat_only
+             * @enum {string}
+             */
+            local_cli_permission_grant: "chat_only" | "project_agent_once";
+            /**
+             * Local Cli Read Paths
+             * @description Absolute files/directories explicitly confirmed by the user for this turn
+             */
+            local_cli_read_paths?: string[];
+            /**
+             * Local Cli Read Permission Grant
+             * @description One-turn consent to snapshot explicitly named local paths for OpenCode
+             * @default none
+             * @enum {string}
+             */
+            local_cli_read_permission_grant: "none" | "read_once";
             /** Max Tokens */
             max_tokens?: number | null;
             /** Message */
             message: string;
+            /** @description Encrypted, request-only provider credentials from a paired Android device */
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /**
              * Outline Batch Count
              * @description Preferred number of consecutive outline chapters to plan
@@ -9120,6 +9743,108 @@ export interface operations {
             };
         };
     };
+    get_app_info_api_v1_config_app_info_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    scan_local_cli_integrations_api_v1_config_cli_integrations_scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    configure_local_cli_integration_api_v1_config_cli_integrations__provider__configure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_local_cli_integration_api_v1_config_cli_integrations__provider__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_content_root_settings_api_v1_config_content_root_get: {
         parameters: {
             query?: never;
@@ -9466,6 +10191,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    configure_getting_started_opencode_mcp_api_v1_config_getting_started_opencode_mcp_configure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -10151,6 +10896,39 @@ export interface operations {
             };
         };
     };
+    import_project_file_as_project_api_v1_import_project_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_project_file_as_project_api_v1_import_project_file_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_adapters_api_v1_local_models_adapters_get: {
         parameters: {
             query?: {
@@ -10532,6 +11310,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ModelInstallRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    qualify_api_v1_local_models_qualify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QualificationRequest"];
             };
         };
         responses: {
@@ -11105,6 +11916,72 @@ export interface operations {
             };
         };
     };
+    route_assistant_input_api_v1_novel_creation_assistant_input_route_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantInputRouteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     creation_conversation_command_api_v1_novel_creation_conversation_command_post: {
         parameters: {
             query?: never;
@@ -11442,39 +12319,6 @@ export interface operations {
             };
         };
     };
-    refresh_question_api_v1_novel_creation_refresh_question_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshQuestionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     review_blueprint_api_v1_novel_creation_review_post: {
         parameters: {
             query?: never;
@@ -11510,7 +12354,9 @@ export interface operations {
     };
     get_creation_stage_run_api_v1_novel_creation_runs__run_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                model?: string | null;
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -11526,6 +12372,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_NovelCreationStageRunResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adjudicate_creation_run_card_api_v1_novel_creation_runs__run_id__card_presentation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovelCreationRunCardRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NovelCreationRunCardResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -12176,41 +13057,6 @@ export interface operations {
             };
         };
     };
-    advance_creation_interview_api_v1_novel_creation_sessions__session_id__interview_next_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NovelCreationInterviewNextRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     start_creation_stage_run_api_v1_novel_creation_sessions__session_id__runs_post: {
         parameters: {
             query?: never;
@@ -12460,6 +13306,8 @@ export interface operations {
             query?: {
                 active_only?: boolean;
                 limit?: number;
+                project_id?: string | null;
+                source_kind?: string | null;
             };
             header?: never;
             path?: never;
@@ -12538,6 +13386,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_OperationResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_operation_api_v1_operations__operation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -14768,6 +15647,41 @@ export interface operations {
             };
         };
     };
+    reorder_chapters_api_v1_projects__project_id__chapters_reorder_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChapterReorderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_chapter_detail_api_v1_projects__project_id__chapters__chapter_id__get: {
         parameters: {
             query?: never;
@@ -14847,6 +15761,78 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    de_ai_preview_api_v1_projects__project_id__chapters__chapter_id__de_ai_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                chapter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChapterDeAiPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    quality_score_preview_api_v1_projects__project_id__chapters__chapter_id__quality_score_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                chapter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChapterQualityScoreRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -15878,6 +16864,103 @@ export interface operations {
             };
         };
     };
+    get_project_creation_brief_api_v1_projects__project_id__creation_brief_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_project_creation_brief_api_v1_projects__project_id__creation_brief_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectCreationBriefPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ensure_project_creation_brief_api_v1_projects__project_id__creation_brief_ensure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     deconstruct_text_api_v1_projects__project_id__deconstruct_post: {
         parameters: {
             query?: never;
@@ -16733,7 +17816,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckpointRestoreRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -16837,6 +17924,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["GovernanceStatusUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_review_api_v1_projects__project_id__narrative_governance_reviews__review_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GovernanceReviewVerification"];
             };
         };
         responses: {

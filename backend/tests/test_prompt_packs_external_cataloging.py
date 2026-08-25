@@ -2,6 +2,7 @@
 import sys
 import os
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -77,6 +78,38 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("parent_title", prompt)
         self.assertIn("2-6", prompt)
         self.assertIn("内部建档、外部 MCP 建档、本机 CLI 建档", prompt)
+
+    def test_pack_requires_explicit_governance_coverage_and_stable_resolution_identity(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn("narrative_review", prompt)
+        self.assertIn("没有发现时各数组也写 []", prompt)
+        self.assertIn("resolves_item_id", prompt)
+        self.assertIn("不得按标题猜测", prompt)
+
+    def test_pack_requires_complete_character_and_relationship_contract(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn("coverage_manifest", prompt)
+        self.assertIn("relationships", prompt)
+        self.assertIn("character_profiles", prompt)
+        self.assertIn("character_relationship", prompt)
+        self.assertIn("core_motivation", prompt)
+
+    def test_pack_requires_atomic_summary_outline_skeleton(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn("首个响应对象", prompt)
+        self.assertIn('"chapter_outline"', prompt)
+        self.assertIn("不能只返回摘要后结束", prompt)
+        self.assertIn("空数组是合法结果", prompt)
+
+    def test_seed_contains_no_second_legacy_cataloging_workflow(self):
+        source = Path(__file__).resolve().parents[1] / "app" / "services" / "prompt_packs" / "seed.py"
+        text = source.read_text(encoding="utf-8")
+        self.assertNotIn('"name": "extract_facts"', text)
+        self.assertNotIn("save_external_cataloging_facts / save_external_cataloging_candidates", text)
+        self.assertEqual(text.count('"pack_id": "cataloging_external_no_api"'), 1)
 
     def test_pack_requires_verification(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")

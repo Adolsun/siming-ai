@@ -34,7 +34,11 @@ def plan_fast_chapter(
     involved_characters: list[str] | None = None,
     rewrite: bool = False,
 ) -> PlanGraph:
-    """Fast chapter write path: search -> write -> save -> detect changes."""
+    """Focused chapter path: locate context -> write -> save.
+
+    The save command atomically starts the canonical single-chapter cataloging
+    job; cataloging is intentionally not a second model-controlled plan step.
+    """
     chars = involved_characters or []
     char_args = {"involved_characters": chars} if chars else {}
 
@@ -63,6 +67,10 @@ def plan_fast_chapter(
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
                 "title": "{search_outline.data.0.title}",
+                # De-AI revision is an explicit editor action. The base write
+                # must not silently spend another model turn rewriting prose.
+                "skip_style_repair": True,
+                "_cataloging_model": "{chapter_writer.data.model}",
                 **({
                     "rewrite": True,
                     "rewrite_request_id": "{chapter_writer.data.draft_id}",
@@ -71,21 +79,6 @@ def plan_fast_chapter(
             },
             depends_on=["chapter_writer"],
             label="保存为章节新版本" if rewrite else "保存章节",
-        ),
-        "archive_chapter_after_write": StepDef(
-            tool="archive_chapter_after_write",
-            args={
-                "chapter_id": "{create_chapter.data.chapter_id}",
-                "draft_id": "{chapter_writer.data.draft_id}",
-                "content_ref": "{chapter_writer.data.content_ref}",
-                "outline_node_id": outline_node_id,
-                "source": "internal_writer",
-                "mode": "auto",
-                "generate_if_missing": True,
-                "model": "{chapter_writer.data.model}",
-            },
-            depends_on=["create_chapter"],
-            label="写后统一归档",
         ),
     }
 
@@ -99,81 +92,32 @@ def plan_quality_chapter(
     involved_characters: list[str] | None = None,
     rewrite: bool = False,
 ) -> PlanGraph:
-    """Quality chapter write path: preview -> plot -> roleplay -> write -> evaluate -> save -> detect."""
+    """Focused quality path with the same three stages as every model route.
+
+    Quality now comes from the richer chapter prompt, not from chaining plot,
+    roleplay, evaluation, and prose repair into one opaque task. Optional
+    revision and review remain separate user-triggered operations.
+    """
     chars = involved_characters or []
     char_args = {"involved_characters": chars} if chars else {}
 
-    # Roleplay tool selection: 2+ characters -> dialogue_battle, else roleplay_character
-    if len(chars) >= 2:
-        roleplay_key = "dialogue_battle"
-        roleplay_step = StepDef(
-            tool="dialogue_battle",
-            args={
-                "character_names": chars,
-                "scene": "{design_plot.data.scenes.0}",
-                "outline_node_id": outline_node_id,
-            },
-            depends_on=["design_plot"],
-            label="多角色对话演练",
-        )
-    else:
-        roleplay_key = "roleplay"
-        roleplay_step = StepDef(
-            tool="roleplay_character",
-            args={
-                "character_name": chars[0] if chars else "",
-                "situation": "{design_plot.data.scenes.0}",
-                "outline_node_id": outline_node_id,
-            },
-            depends_on=["design_plot"],
-            label="角色反应演练",
-        )
-
     steps: dict[str, StepDef] = {
-        "preview_context": StepDef(
-            tool="preview_writing_context",
-            args={
-                "outline_node_id": outline_node_id,
-                "requirements": requirements,
-                **char_args,
-            },
+        "search_outline": StepDef(
+            tool="search_outline",
+            args={"node_id": outline_node_id},
             depends_on=[],
-            label="预览写作上下文",
+            label="查找大纲节点",
         ),
-        "design_plot": StepDef(
-            tool="design_plot",
-            args={
-                "outline_node_id": outline_node_id,
-                "requirements": requirements,
-                "context_summary": "{preview_context.data}",
-            },
-            depends_on=["preview_context"],
-            retry_policy="auto",
-            label="设计剧情",
-        ),
-        roleplay_key: roleplay_step,
         "chapter_writer": StepDef(
             tool="chapter_writer",
             args={
                 "outline_node_id": outline_node_id,
                 "requirements": requirements,
-                "previous_plot": "{design_plot.data}",
-                "previous_roleplay": "{" + roleplay_key + ".data}",
                 **char_args,
             },
-            depends_on=[roleplay_key],
+            depends_on=["search_outline"],
             retry_policy="auto",
             label="生成章节内容",
-        ),
-        "evaluate_chapter": StepDef(
-            tool="evaluate_chapter",
-            args={
-                "draft_id": "{chapter_writer.data.draft_id}",
-                "content_ref": "{chapter_writer.data.content_ref}",
-                "outline_node_id": outline_node_id,
-            },
-            depends_on=["chapter_writer"],
-            label="评估章节质量",
         ),
         "create_chapter": StepDef(
             tool="update_chapter" if rewrite else "create_chapter",
@@ -181,30 +125,17 @@ def plan_quality_chapter(
                 "outline_node_id": outline_node_id,
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
-                "title": "{preview_context.data.outline_context.title}",
+                "title": "{search_outline.data.0.title}",
+                "skip_style_repair": True,
+                "_cataloging_model": "{chapter_writer.data.model}",
                 **({
                     "rewrite": True,
                     "rewrite_request_id": "{chapter_writer.data.draft_id}",
                     "trigger_type": "ai_insert",
                 } if rewrite else {}),
             },
-            depends_on=["evaluate_chapter"],
+            depends_on=["chapter_writer"],
             label="保存为章节新版本" if rewrite else "保存章节",
-        ),
-        "archive_chapter_after_write": StepDef(
-            tool="archive_chapter_after_write",
-            args={
-                "chapter_id": "{create_chapter.data.chapter_id}",
-                "draft_id": "{chapter_writer.data.draft_id}",
-                "content_ref": "{chapter_writer.data.content_ref}",
-                "outline_node_id": outline_node_id,
-                "source": "internal_writer",
-                "mode": "auto",
-                "generate_if_missing": True,
-                "model": "{chapter_writer.data.model}",
-            },
-            depends_on=["create_chapter"],
-            label="写后统一归档",
         ),
     }
 
@@ -490,7 +421,7 @@ def plan_external_writing(
     *,
     requirements: str = "",
 ) -> PlanGraph:
-    """External writing path — prepare context, wait for external draft, save, review, apply."""
+    """External base-writing path — prepare context, save the draft, then persist."""
     steps = {
         "prepare_context": StepDef(
             tool="prepare_external_writing_context",
@@ -504,23 +435,11 @@ def plan_external_writing(
             depends_on=["prepare_context"],
             label="保存外部草稿",
         ),
-        "record_review": StepDef(
-            tool="record_external_quality_review",
-            args={"draft_id": "$save_draft.draft_id", "pass": True},
-            depends_on=["save_draft"],
-            label="记录质量评审",
-        ),
         "create_chapter": StepDef(
             tool="create_chapter",
-            args={"draft_id": "$save_draft.draft_id"},
-            depends_on=["record_review"],
+            args={"draft_id": "$save_draft.draft_id", "skip_style_repair": True},
+            depends_on=["save_draft"],
             label="创建章节",
-        ),
-        "archive_updates": StepDef(
-            tool="archive_chapter_after_write",
-            args={"chapter_id": "$create_chapter.chapter_id", "mode": "auto", "source": "external_agent"},
-            depends_on=["create_chapter"],
-            label="写后统一归档",
         ),
     }
     return PlanGraph(name="external_writing", steps=steps)

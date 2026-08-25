@@ -94,7 +94,19 @@ const ROLE_OPTIONS = [
   { value: 'other', label: '其他', desc: '路人、工具人、背景角色等' },
 ]
 
-const roleTypeLabel = (value?: string) => ROLE_OPTIONS.find((option) => option.value === value)?.label || '未分类'
+const canonicalRoleType = (value?: string) => {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return 'other'
+  if (ROLE_OPTIONS.some((option) => option.value === text)) return text
+  const tokens = text.split(/[,，、/|;；\n]+/).map((item) => item.trim())
+  if (tokens.some((item) => ['主角', '主人公', '男主', '女主', 'lead', 'protagonist'].includes(item))) return 'protagonist'
+  if (tokens.some((item) => /反派|敌对|宿敌|antagonist|villain/.test(item))) return 'antagonist'
+  if (tokens.some((item) => /导师|师父|师傅|引路人|mentor/.test(item))) return 'mentor'
+  if (tokens.some((item) => /配角|同伴|伙伴|家人|亲属|support/.test(item))) return 'supporting'
+  return 'other'
+}
+
+const roleTypeLabel = (value?: string) => ROLE_OPTIONS.find((option) => option.value === canonicalRoleType(value))?.label || '其他'
 
 const TONE_OPTIONS = [
   { value: 'neutral', label: '中性' }, { value: 'arrogant', label: '傲慢' },
@@ -175,7 +187,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       const res = await apiClient.get<ApiResponse<Character>>(`/projects/${projectId}/characters/${characterId}`)
       setSelectedDetail(res.data.data)
       form.setFieldsValue({
-        name: res.data.data.name, role_type: res.data.data.role_type, age: res.data.data.age,
+        name: res.data.data.name, role_type: canonicalRoleType(res.data.data.role_type), age: res.data.data.age,
         appearance: res.data.data.appearance, personality: res.data.data.personality,
         background: res.data.data.background, abilities: res.data.data.abilities || [],
         aliases: res.data.data.aliases || [],
@@ -256,6 +268,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     try {
       const payload = {
         ...values,
+        role_type: canonicalRoleType(values.role_type),
         abilities: values.abilities || [],
         aliases: values.aliases || [],
         is_evolution_tracked: values.is_evolution_tracked ?? true,

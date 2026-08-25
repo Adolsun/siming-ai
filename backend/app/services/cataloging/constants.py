@@ -26,7 +26,8 @@ APPLY_ORDER = {
     "chapter_link": 50,
 }
 
-from ..story_granularity import VALID_CANDIDATE_TYPES, WORLD_DIMENSIONS
+from ..story_granularity import VALID_CANDIDATE_TYPES
+from ..story_granularity import WORLD_DIMENSIONS  # noqa: F401 - compatibility export
 
 VALID_ITEM_TYPES = set(VALID_CANDIDATE_TYPES)
 

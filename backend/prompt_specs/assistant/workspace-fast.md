@@ -1,6 +1,6 @@
 ---
 id: assistant.workspace.fast
-version: 3.0.0
+version: 3.1.0
 scope: assistant
 visibility: internal
 inputs: [scope_label, outline_batch_count, auto_apply, tool_names]
@@ -11,7 +11,6 @@ tools:
   - chapter_writer
   - evaluate_chapter
   - create_chapter
-  - archive_chapter_after_write
   - outline_writer
   - create_outline_nodes
   - start_local_cli_agent_run
@@ -21,5 +20,5 @@ budget:
   context_chars: 5000
 golden_cases:
   - name: same-controller-contract
-    required_text: ["evaluate_chapter", "archive_chapter_after_write"]
+    required_text: ["基础写作", "独立操作", "统一建档"]
 ---

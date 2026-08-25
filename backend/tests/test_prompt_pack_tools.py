@@ -102,6 +102,19 @@ class GetMoshuUsageGuideTest(unittest.TestCase):
         self.assertIn("save_external_chapter_draft", rules)
         self.assertIn("不要把整章正文", rules)
         self.assertIn("save_external_cataloging_candidates", rules)
+        self.assertIn("基础写作任务不要调用", rules)
+
+    def test_writing_guides_keep_revision_and_review_separate(self):
+        from app.services.workspace.tools.prompt_packs import get_moshu_usage_guide
+
+        db = MagicMock()
+        with patch("app.services.prompt_packs.seed.ensure_builtin_packs"):
+            for scenario in ("writing_no_api", "writing_internal"):
+                result = asyncio.run(get_moshu_usage_guide(db, "p1", {"scenario": scenario}))
+                text = json.dumps(result["data"]["guide"], ensure_ascii=False)
+                self.assertIn("独立", text)
+                self.assertNotIn("record_external_quality_review", text)
+                self.assertNotIn("角色对戏", text)
 
 
 class GetPromptPackTest(unittest.TestCase):
@@ -161,7 +174,10 @@ class GetPromptPackTest(unittest.TestCase):
         self.assertEqual(result["data"]["pack_id"], "chapter_writing_fast")
         self.assertEqual(result["data"]["effective_pack_id"], "chapter_writing_fast")
         self.assertIn("快速模式定位", result["data"]["system_prompt"])
-        self.assertIn("archive_chapter_after_write", result["data"]["system_prompt"])
+        self.assertIn("统一建档", result["data"]["system_prompt"])
+        self.assertEqual(result["data"]["forbidden_patterns"], [])
+        self.assertIsNone(result["data"]["quality_rubric"])
+        self.assertNotIn("去AI味硬规则", result["data"]["system_prompt"])
 
 
 class ToolRegistrationTest(unittest.TestCase):

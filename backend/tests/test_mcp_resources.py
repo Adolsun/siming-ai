@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.mcp.resources import parse_uri, build_uri, ParsedUri, list_resource_uris, get_resource_description, read_resource
+from app.mcp.resources import parse_uri, build_uri, list_resource_uris, get_resource_description, read_resource
 
 
 class ParseUriTest(unittest.TestCase):

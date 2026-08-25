@@ -28,7 +28,7 @@ def _build_system(
 
 PACK = PromptPack(
     name="workspace_quality",
-    version="3.0.0",
+    version="3.1.0",
     pack_type="workspace",
     description="Compiled workspace controller with truthful tool outcomes",
     input_fields=["scope", "outline_batch_count", "auto_apply"],
@@ -39,7 +39,7 @@ PACK = PromptPack(
     unavailable_tools=[],
     forbidden_behaviors=[
         "禁止在信息不充分时输出最终回复",
-        "禁止跳过 evaluate_chapter 直接 create_chapter",
+        "禁止在基础写作中自动追加去除 AI 味或质量评审轮次",
         "禁止用文件写入冒充数据库写入",
         "禁止把失败、跳过或空结果说成已完成",
         "禁止重复执行历史对话中的操作",

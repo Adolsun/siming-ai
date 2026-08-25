@@ -3,37 +3,57 @@ package com.siming.mobile.data
 import android.content.Context
 import androidx.room.withTransaction
 import com.siming.mobile.BuildConfig
+import com.siming.mobile.data.agent.MobileWorkspaceAgent
+import com.siming.mobile.data.creation.CreationExecutionRoute
+import com.siming.mobile.data.creation.CreationStartInput
+import com.siming.mobile.data.creation.MobileCreationAgent
+import com.siming.mobile.data.creation.MobileCreationConversationAgent
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.local.SyncCursor
+import com.siming.mobile.data.local.orderReplicaEntities
 import com.siming.mobile.data.network.GatewayApi
+import com.siming.mobile.data.network.GatewayHttpException
 import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.data.network.PairingCompleteResponse
+import com.siming.mobile.data.network.PcApiPayloads
 import com.siming.mobile.data.network.RemoteSyncProject
 import com.siming.mobile.data.network.SyncMutationRequest
 import com.siming.mobile.data.network.WorkspaceAssistantRequest
+import com.siming.mobile.data.network.withMobileRefreshFailure
 import com.siming.mobile.security.PairingSecurity
+import com.siming.mobile.security.MobileProviderEncryption
 import com.siming.mobile.security.SecureApiConfigStore
 import com.siming.mobile.security.SecureTokenStore
 import com.siming.mobile.security.StoredTokenPair
 import com.siming.mobile.security.VerifiedPairing
+import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -46,15 +66,42 @@ class SimingRepository(context: Context) {
     private val api = GatewayApi(tokenStore)
     private val directApi = DirectApiClient(allowCleartextForTests = BuildConfig.DEBUG)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private val mobileWorkspaceAgent by lazy {
+        MobileWorkspaceAgent(
+            context = appContext,
+            directApi = directApi,
+            loadSnapshot = dao::projectSnapshot,
+            saveEntity = { projectId, entityType, entityId, payload ->
+                saveEntity(projectId, entityType, entityId, payload)
+            },
+        )
+    }
+    private val mobileCreationAgent by lazy { MobileCreationAgent(appContext, directApi) }
+    private val mobileCreationConversationAgent by lazy {
+        MobileCreationConversationAgent(
+            context = appContext,
+            stageAgent = mobileCreationAgent,
+            directApi = directApi,
+            persistSession = ::saveCreationSession,
+            finalizeSession = { session ->
+                saveCreationSession(session)
+                val projectId = archiveCreation(session.string("id")) {}
+                loadCreationSession(session.string("id")) to projectId
+            },
+        )
+    }
 
     val connection: Flow<GatewayConnection?> = dao.observeConnection()
     val projects: Flow<List<ReplicaEntity>> = dao.observeProjects()
+    val creationDrafts: Flow<List<ReplicaEntity>> = dao.observeCreationDrafts()
     val pendingCount: Flow<Int> = dao.observePendingCount()
     val cursor: Flow<SyncCursor?> = dao.observeCursor()
     val conflicts: Flow<List<LocalConflict>> = dao.observeConflicts()
 
     fun entities(projectId: String, entityType: String): Flow<List<ReplicaEntity>> =
-        dao.observeEntities(projectId, entityType)
+        dao.observeEntities(projectId, entityType).map { records ->
+            orderReplicaEntities(entityType, records)
+        }
 
     fun directApiSummary(): DirectApiSummary? = directApiStore.read()?.summary()
 
@@ -78,15 +125,18 @@ class SimingRepository(context: Context) {
             model = model.trim(),
             protocol = protocol,
         )
-        directApi.test(config)
-        directApiStore.save(config)
-        return config.summary()
+        val probe = directApi.testAndResolve(config)
+        val resolved = config.copy(protocol = probe.protocol)
+        directApiStore.save(resolved)
+        return resolved.summary()
     }
 
     suspend fun testDirectApi(): DirectApiSummary {
         val config = directApiStore.read() ?: error("请先配置手机直连 API")
-        directApi.test(config)
-        return config.summary()
+        val probe = directApi.testAndResolve(config)
+        val resolved = config.copy(protocol = probe.protocol)
+        directApiStore.save(resolved)
+        return resolved.summary()
     }
 
     fun clearDirectApi() {
@@ -118,6 +168,7 @@ class SimingRepository(context: Context) {
                     baseUrl = pairing.gatewayUrl,
                     gatewayName = pairing.gatewayName,
                     gatewayFingerprint = pairing.gatewayFingerprint,
+                    gatewayEncryptionPublicKey = pairing.gatewayEncryptionPublicKey,
                     deviceId = requireNotNull(response.deviceId),
                     deviceRole = response.deviceRole ?: "member",
                     protocolVersion = 1,
@@ -138,12 +189,22 @@ class SimingRepository(context: Context) {
         val projectIds = api.listSyncProjects(connection)
             .filter { it.status == "enabled" }
             .map { it.projectId }
+        return bootstrapProjects(connection, projectIds)
+    }
+
+    private suspend fun bootstrapProjects(
+        connection: GatewayConnection,
+        projectIds: List<String>,
+    ): Int {
         if (projectIds.isEmpty()) {
             dao.saveCursor(SyncCursor(cursor = 0, lastSuccessfulSyncAt = System.currentTimeMillis()))
             return 0
         }
         val response = api.bootstrap(connection, projectIds)
         database.withTransaction {
+            projectIds.forEach { projectId ->
+                dao.deleteCleanProjectReplicas(projectId)
+            }
             for (snapshot in response.entities) {
                 val key = ReplicaEntity.key(
                     snapshot.projectId,
@@ -176,24 +237,186 @@ class SimingRepository(context: Context) {
         return projectIds.size
     }
 
-    suspend fun createProject(title: String, description: String = ""): String {
-        val id = UUID.randomUUID().toString()
-        saveEntity(
-            projectId = id,
-            entityType = "project",
-            entityId = id,
-            payload = buildJsonObject {
-                put("_record_type", "project")
-                put("id", id)
-                put("title", title.trim().ifBlank { "未命名作品" })
-                put("description", description.trim())
-                put("narrative_perspective", "third_person")
-                put("writing_style", "natural")
-                put("short_sentences", false)
-                put("daily_word_goal", 6000)
-            },
+    suspend fun importNovel(
+        file: MobileNovelImportFile,
+        onProgress: suspend (String) -> Unit = {},
+    ): MobileNovelImportResult {
+        require(file.bytes.isNotEmpty()) { "TXT 文件内容为空" }
+        require(file.bytes.size <= MAX_NOVEL_IMPORT_BYTES) {
+            "单个导入文件不能超过 20 MiB"
+        }
+
+        val connection = dao.connection()
+        if (connection != null && prepareCanonicalWrite()) {
+            onProgress("正在将原始 TXT 一次性上传到 Gateway…")
+            val remote = try {
+                api.importNovelProject(connection, file.filename, file.bytes)
+            } catch (error: GatewayHttpException) {
+                throw error
+            } catch (_: IOException) {
+                null
+            }
+            if (remote != null) {
+                val projectId = remote.string("project_id")
+                    .ifBlank { error("Gateway 批量导入结果缺少 project_id") }
+                val chapterCount = remote.int("total")
+                val encoding = remote.string("encoding").ifBlank { "未知" }
+                onProgress("Gateway 已批量落库，正在下载作品离线副本…")
+                val refreshWarning = runCatching {
+                    bootstrapProjects(connection, listOf(projectId))
+                }.exceptionOrNull()?.toUserFacingMessage()
+                return MobileNovelImportResult(
+                    projectId = projectId,
+                    chapterCount = chapterCount,
+                    encoding = encoding,
+                    remote = true,
+                    refreshWarning = refreshWarning,
+                )
+            }
+        }
+        return importNovelOffline(file, onProgress)
+    }
+
+    private suspend fun importNovelOffline(
+        file: MobileNovelImportFile,
+        onProgress: suspend (String) -> Unit,
+    ): MobileNovelImportResult {
+        onProgress("正在本机识别 TXT 编码…")
+        val decoded = withContext(Dispatchers.Default) {
+            TxtImportDecoder.decode(file.bytes)
+        }
+        onProgress("正在本机识别章节边界…")
+        val chapters = withContext(Dispatchers.Default) {
+            NovelImportSplitter.split(decoded.text)
+        }
+        val projectId = UUID.randomUUID().toString()
+        val title = file.filename.substringBeforeLast('.').trim().ifBlank { "导入作品" }
+        val now = Instant.now().toString()
+        val projectPayload = buildJsonObject {
+            put("_record_type", "project")
+            put("id", projectId)
+            put("title", title.take(200))
+            put("description", "由手机批量导入的已有小说")
+            put("narrative_perspective", "third_person")
+            put("writing_style", "natural")
+            put("short_sentences", false)
+            put("daily_word_goal", 6000)
+        }
+
+        onProgress("正在一个本地事务中写入 ${chapters.size} 章…")
+        database.withTransaction {
+            saveOfflineImportEntity(
+                projectId = projectId,
+                entityType = "project",
+                entityId = projectId,
+                payload = projectPayload,
+                now = now,
+            )
+            chapters.forEachIndexed { index, chapter ->
+                val chapterId = UUID.randomUUID().toString()
+                saveOfflineImportEntity(
+                    projectId = projectId,
+                    entityType = "chapter",
+                    entityId = chapterId,
+                    payload = buildJsonObject {
+                        put("_record_type", "chapter")
+                        put("id", chapterId)
+                        put("project_id", projectId)
+                        put("title", chapter.title.take(200))
+                        put("content", chapter.content)
+                        put("word_count", chapter.wordCount)
+                        put("current_version", 1)
+                        put("sort_order", (index + 1) * 1000)
+                    },
+                    now = now,
+                )
+            }
+        }
+        if (dao.connection() != null) SyncScheduler.enqueue(appContext)
+        return MobileNovelImportResult(
+            projectId = projectId,
+            chapterCount = chapters.size,
+            encoding = decoded.encoding,
+            remote = false,
         )
-        return id
+    }
+
+    private suspend fun saveOfflineImportEntity(
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        payload: JsonObject,
+        now: String,
+    ) {
+        validateEntitySize(payload)
+        val encoded = json.encodeToString(payload)
+        val mutationEncoded = canonicalMutationJson(
+            projectId,
+            entityType,
+            entityId,
+            encoded,
+        ) ?: error("同步写入缺少 payload")
+        dao.saveEntity(
+            ReplicaEntity(
+                key = ReplicaEntity.key(projectId, entityType, entityId),
+                projectId = projectId,
+                entityType = entityType,
+                entityId = entityId,
+                revision = 0,
+                operation = "upsert",
+                payloadJson = encoded,
+                contentHash = sha256(encoded),
+                serverModifiedAt = now,
+                dirty = true,
+                conflicted = false,
+            ),
+        )
+        dao.saveMutation(
+            OutboxMutation(
+                mutationId = UUID.randomUUID().toString(),
+                projectId = projectId,
+                entityType = entityType,
+                entityId = entityId,
+                operation = "upsert",
+                baseRevision = 0,
+                payloadJson = mutationEncoded,
+                clientModifiedAt = now,
+            ),
+        )
+    }
+
+    suspend fun createProject(title: String, description: String = ""): String {
+        val localId = UUID.randomUUID().toString()
+        val payload = buildJsonObject {
+            put("_record_type", "project")
+            put("id", localId)
+            put("title", title.trim().ifBlank { "未命名作品" })
+            put("description", description.trim())
+            put("narrative_perspective", "third_person")
+            put("writing_style", "natural")
+            put("short_sentences", false)
+            put("daily_word_goal", 6000)
+        }
+        validateEntitySize(payload)
+        val connection = dao.connection()
+        if (connection == null || !prepareCanonicalWrite()) {
+            return saveOfflineEntity(localId, "project", localId, payload)
+        }
+
+        val response = try {
+            api.createProject(
+                connection,
+                PcApiPayloads.authoring("project", payload, create = true),
+            )
+        } catch (error: GatewayHttpException) {
+            throw error
+        } catch (_: IOException) {
+            return saveOfflineEntity(localId, "project", localId, payload)
+        }
+        val projectId = response.requiredId()
+        saveCanonicalReplica(projectId, "project", projectId, response)
+        SyncScheduler.enqueue(appContext)
+        return projectId
     }
 
     suspend fun saveEntity(
@@ -202,11 +425,71 @@ class SimingRepository(context: Context) {
         entityId: String = UUID.randomUUID().toString(),
         payload: JsonObject,
     ): String {
+        validateEntitySize(payload)
+        val connection = dao.connection()
+        if (
+            connection != null &&
+            entityType in CANONICAL_ENTITY_TYPES &&
+            prepareCanonicalWrite()
+        ) {
+            val key = ReplicaEntity.key(projectId, entityType, entityId)
+            val current = dao.entity(key)
+            require(current?.conflicted != true) { "请先处理这条资料的版本分岔，再继续保存" }
+            val create = entityType != "project" && current == null
+            val response = try {
+                if (entityType in GOVERNANCE_ENTITY_TYPES) {
+                    var saved = api.saveGovernanceEntity(
+                        connection,
+                        projectId,
+                        PcApiPayloads.governanceContent(entityType, payload, entityId, create),
+                    )
+                    val canonicalId = saved.requiredId()
+                    val statusPayload = PcApiPayloads.governanceStatus(entityType, payload)
+                    val desiredStatus = (statusPayload?.get("status") as? JsonPrimitive)?.content.orEmpty()
+                    val serverStatus = (saved["status"] as? JsonPrimitive)?.content.orEmpty()
+                    if (statusPayload != null && desiredStatus.isNotBlank() && desiredStatus != serverStatus) {
+                        saved = api.updateGovernanceStatus(
+                            connection,
+                            projectId,
+                            PcApiPayloads.governanceItemType(entityType),
+                            canonicalId,
+                            statusPayload,
+                        )
+                    }
+                    saved
+                } else {
+                    api.saveAuthoringEntity(
+                        connection = connection,
+                        projectId = projectId,
+                        entityType = entityType,
+                        entityId = entityId,
+                        create = create,
+                        payload = PcApiPayloads.authoring(entityType, payload, create),
+                    )
+                }
+            } catch (error: GatewayHttpException) {
+                throw error
+            } catch (_: IOException) {
+                return saveOfflineEntity(projectId, entityType, entityId, payload)
+            }
+            val canonicalId = response.requiredId()
+            saveCanonicalReplica(projectId, entityType, canonicalId, response)
+            SyncScheduler.enqueue(appContext)
+            return canonicalId
+        }
+        return saveOfflineEntity(projectId, entityType, entityId, payload)
+    }
+
+    private suspend fun saveOfflineEntity(
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        payload: JsonObject,
+    ): String {
         val key = ReplicaEntity.key(projectId, entityType, entityId)
         val encoded = json.encodeToString(payload)
-        require(encoded.toByteArray(Charsets.UTF_8).size <= MAX_ENTITY_BYTES) {
-            "单条资料不能超过 1 MiB；请把超长正文拆成多个章节"
-        }
+        val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
+            ?: error("同步写入缺少 payload")
         val now = Instant.now().toString()
         database.withTransaction {
             val current = dao.entity(key)
@@ -234,10 +517,10 @@ class SimingRepository(context: Context) {
                     entityId = entityId,
                     operation = "upsert",
                     baseRevision = current?.revision ?: 0,
-                    payloadJson = encoded,
+                    payloadJson = mutationEncoded,
                     clientModifiedAt = now,
                 )).copy(
-                    payloadJson = encoded,
+                    payloadJson = mutationEncoded,
                     clientModifiedAt = now,
                     state = "pending",
                     lastError = null,
@@ -248,8 +531,105 @@ class SimingRepository(context: Context) {
         return entityId
     }
 
+    private fun canonicalMutationJson(
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        rawPayload: String?,
+    ): String? {
+        if (rawPayload == null) return null
+        val source = json.parseToJsonElement(rawPayload) as? JsonObject
+            ?: error("本机资料 payload 不是 JSON 对象")
+        return json.encodeToString(
+            PcApiPayloads.syncMutation(entityType, source, projectId, entityId),
+        )
+    }
+
+    suspend fun deleteProject(projectId: String) = canonicalCommandMutex.withLock {
+        val key = ReplicaEntity.key(projectId, "project", projectId)
+        val current = dao.entity(key) ?: return@withLock
+        require(!current.conflicted) { "请先处理这部作品的版本分岔，再执行删除" }
+
+        val connection = dao.connection()
+        if (connection != null) {
+            val canonicalReady = prepareCanonicalWrite()
+            if (canonicalReady) {
+                try {
+                    api.deleteProject(connection, projectId)
+                    purgeLocalProject(projectId)
+                    return@withLock
+                } catch (error: GatewayHttpException) {
+                    throw error
+                } catch (_: IOException) {
+                    // A canonical project must not be converted into a local-only
+                    // delete when the PC is unreachable: it would be resurrected
+                    // on the next authoritative pull.
+                }
+            }
+        }
+
+        check(isUnsyncedLocalProject(current)) {
+            "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
+        }
+        purgeLocalProject(projectId)
+    }
+
+    private suspend fun isUnsyncedLocalProject(project: ReplicaEntity): Boolean {
+        val pending = dao.pendingMutation(project.projectId, "project", project.projectId)
+        return project.dirty &&
+            project.revision == 0L &&
+            pending?.operation == "upsert" &&
+            pending.baseRevision == 0L
+    }
+
+    private suspend fun purgeLocalProject(projectId: String) {
+        database.withTransaction {
+            dao.deleteProjectMutations(projectId)
+            dao.deleteProjectConflicts(projectId)
+            dao.deleteProjectReplica(projectId)
+        }
+    }
+
     suspend fun deleteEntity(projectId: String, entityType: String, entityId: String) {
-        require(entityType != "project") { "移动端不会直接删除整部作品" }
+        require(entityType != "project") { "整部作品请使用作品库的删除操作" }
+        require(entityType !in GOVERNANCE_ENTITY_TYPES) {
+            "PC 端叙事治理不直接删除记录；请把状态改为 abandoned"
+        }
+        val connection = dao.connection()
+        if (
+            connection != null &&
+            entityType in CANONICAL_DELETABLE_ENTITY_TYPES &&
+            prepareCanonicalWrite()
+        ) {
+            val key = ReplicaEntity.key(projectId, entityType, entityId)
+            val current = dao.entity(key) ?: return
+            require(!current.conflicted) { "请先处理这条资料的版本分岔，再继续删除" }
+            try {
+                api.deleteAuthoringEntity(connection, projectId, entityType, entityId)
+            } catch (error: GatewayHttpException) {
+                throw error
+            } catch (_: IOException) {
+                deleteOfflineEntity(projectId, entityType, entityId)
+                return
+            }
+            dao.saveEntity(
+                current.copy(
+                    operation = "delete",
+                    payloadJson = null,
+                    contentHash = sha256("null"),
+                    serverModifiedAt = Instant.now().toString(),
+                    dirty = false,
+                    conflicted = false,
+                    localModifiedAt = System.currentTimeMillis(),
+                ),
+            )
+            SyncScheduler.enqueue(appContext)
+            return
+        }
+        deleteOfflineEntity(projectId, entityType, entityId)
+    }
+
+    private suspend fun deleteOfflineEntity(projectId: String, entityType: String, entityId: String) {
         val key = ReplicaEntity.key(projectId, entityType, entityId)
         val now = Instant.now().toString()
         database.withTransaction {
@@ -285,6 +665,301 @@ class SimingRepository(context: Context) {
         }
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
     }
+
+    /**
+     * Preserve the ordering of previously queued offline edits. Connectivity
+     * failures fall back to the outbox; authenticated HTTP errors stay visible
+     * because silently replaying them could duplicate a server-side write.
+     */
+    private suspend fun prepareCanonicalWrite(): Boolean {
+        if (dao.pendingMutationCount() == 0) return true
+        return try {
+            syncNow()
+            check(dao.pendingMutationCount() == 0) {
+                "仍有离线修订未通过 PC 端校验，请先在同步页处理"
+            }
+            true
+        } catch (error: GatewayHttpException) {
+            throw error
+        } catch (_: IOException) {
+            false
+        }
+    }
+
+    private suspend fun saveCanonicalReplica(
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        response: JsonObject,
+    ) {
+        val key = ReplicaEntity.key(projectId, entityType, entityId)
+        val current = dao.entity(key)
+        val replicaPayload = buildJsonObject {
+            put("_record_type", RECORD_TYPES.getValue(entityType))
+            response.forEach { (name, value) -> put(name, value) }
+            put("id", entityId)
+            if (entityType != "project" && response["project_id"] == null) {
+                put("project_id", projectId)
+            }
+        }
+        val encoded = json.encodeToString(replicaPayload)
+        dao.saveEntity(
+            ReplicaEntity(
+                key = key,
+                projectId = projectId,
+                entityType = entityType,
+                entityId = entityId,
+                revision = current?.revision ?: 0,
+                operation = "upsert",
+                payloadJson = encoded,
+                contentHash = sha256(encoded),
+                serverModifiedAt = (response["updated_at"] as? JsonPrimitive)?.content
+                    ?: Instant.now().toString(),
+                dirty = false,
+                conflicted = false,
+            ),
+        )
+    }
+
+    private fun JsonObject.requiredId(): String =
+        (get("id") as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+            ?: error("PC API 返回的数据缺少 id")
+
+    private fun validateEntitySize(payload: JsonObject) {
+        val encoded = json.encodeToString(payload)
+        require(encoded.toByteArray(Charsets.UTF_8).size <= MAX_ENTITY_BYTES) {
+            "单条资料不能超过 1 MiB；请把超长正文拆成多个章节"
+        }
+    }
+
+    private suspend fun canonicalCommandConnection(): GatewayConnection {
+        val connection = requireConnection()
+        check(prepareCanonicalWrite()) {
+            "当前无法连接 PC Gateway，高级结构命令不会在手机端猜测执行"
+        }
+        return connection
+    }
+
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
+        canonicalCommandMutex.withLock {
+            val connection = canonicalCommandConnection()
+            val result = api.reorderChapters(connection, projectId, chapterIds)
+            refreshAfterCanonicalWrite(connection, projectId, result)
+        }
+
+    suspend fun reorderOutline(
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        require(nodeIds.distinct().size == nodeIds.size) { "大纲排序包含重复节点" }
+        val connection = dao.connection()
+        if (connection != null && prepareCanonicalWrite()) {
+            try {
+                val result = api.reorderOutline(connection, projectId, parentId, nodeIds)
+                return@withLock refreshAfterCanonicalWrite(connection, projectId, result)
+            } catch (error: GatewayHttpException) {
+                throw error
+            } catch (_: IOException) {
+                // Reordering is replay-safe because each outline node already
+                // carries parent_id + sort_order in the canonical mutation.
+            }
+        }
+        reorderOutlineOffline(projectId, parentId, nodeIds)
+    }
+
+    private suspend fun reorderOutlineOffline(
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject {
+        nodeIds.forEachIndexed { index, nodeId ->
+            val key = ReplicaEntity.key(projectId, "outline", nodeId)
+            val current = dao.entity(key) ?: error("大纲节点不存在：$nodeId")
+            require(!current.conflicted) { "请先处理大纲节点的版本分岔，再调整顺序" }
+            val payload = current.payloadJson
+                ?.let(json::parseToJsonElement)
+                as? JsonObject
+                ?: error("大纲节点缺少结构化数据")
+            val actualParent = (payload["parent_id"] as? JsonPrimitive)?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            require(actualParent == parentId) { "只能调整同一父节点下的大纲顺序" }
+            val reordered = JsonObject(
+                payload.toMutableMap().apply {
+                    put("sort_order", JsonPrimitive(index))
+                },
+            )
+            saveOfflineEntity(projectId, "outline", nodeId, reordered)
+        }
+        return buildJsonObject {
+            put("mode", "offline_replay")
+            put("parent_id", parentId?.let(::JsonPrimitive) ?: JsonNull)
+            put("ids", JsonArray(nodeIds.map(::JsonPrimitive)))
+        }
+    }
+
+    private suspend fun refreshAfterCanonicalWrite(
+        connection: GatewayConnection,
+        projectId: String,
+        result: JsonObject,
+    ): JsonObject = try {
+        pullAll(connection, listOf(projectId))
+        result
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        result.withMobileRefreshFailure(error.toUserFacingMessage())
+    }
+
+
+suspend fun runCataloging(
+    projectId: String,
+    onProgress: suspend (MobileCatalogingProgress, String?) -> Unit,
+): MobileCatalogingProgress {
+    val connection = canonicalCommandConnection()
+    val chapters = orderReplicaEntities(
+        "chapter",
+        dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+    )
+    require(chapters.isNotEmpty()) { "作品没有可建档章节" }
+    val started = api.startCataloging(connection, projectId, chapters.map { it.entityId })
+    var latest = started.toMobileCatalogingProgress()
+    onProgress(latest, "作品建档任务已创建")
+    api.streamCataloging(connection, projectId, latest.jobId) { raw ->
+        val event = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+        val job = event?.get("job") as? JsonObject
+        if (job != null) latest = job.toMobileCatalogingProgress()
+        val message = (event?.get("message") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("detail") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("type") as? JsonPrimitive)?.contentOrNull
+        onProgress(latest, message)
+    }
+    val finalData = api.getCatalogingJob(connection, projectId, latest.jobId)
+    val finalJob = finalData["job"] as? JsonObject
+    if (finalJob != null) latest = finalJob.toMobileCatalogingProgress()
+    runCatching { pullAll(connection, listOf(projectId)) }
+    return latest
+}
+
+suspend fun cancelCataloging(projectId: String, jobId: String) {
+    val connection = requireConnection()
+    api.cancelCataloging(connection, projectId, jobId)
+}
+
+suspend fun exportProject(projectId: String, format: String): MobileExportFile {
+    val normalized = format.lowercase()
+    require(normalized in setOf("txt", "docx", "pdf")) { "不支持的导出格式：$format" }
+    val project = dao.entity(ReplicaEntity.key(projectId, "project", projectId))
+        ?: error("作品不存在")
+    val connection = dao.connection()
+    if (connection == null) {
+        require(normalized == "txt") { "Word / PDF 导出需要连接 PC Gateway" }
+        val chapters = orderReplicaEntities(
+            "chapter",
+            dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+        )
+        return buildLocalNovelExport(project, chapters)
+    }
+    check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出" }
+    val metadata = api.createProjectExport(connection, projectId, normalized)
+    val fileId = (metadata["file_id"] as? JsonPrimitive)?.contentOrNull
+        ?: error("PC 导出结果缺少 file_id")
+    val filename = (metadata["filename"] as? JsonPrimitive)?.contentOrNull
+        ?: "司命导出.$normalized"
+    return MobileExportFile(
+        filename = filename,
+        mimeType = exportMimeType(normalized),
+        bytes = api.downloadProjectExport(connection, projectId, fileId),
+    )
+}
+
+    suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
+        api.listChapterSnapshots(requireConnection(), projectId, chapterId)
+
+    suspend fun getChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = api.getChapterSnapshot(
+        requireConnection(),
+        projectId,
+        chapterId,
+        snapshotId,
+    )
+
+    suspend fun diffChapterSnapshots(
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject = api.diffChapterSnapshots(
+        requireConnection(),
+        projectId,
+        chapterId,
+        fromSnapshotId,
+        toSnapshotId,
+    )
+
+    suspend fun restoreChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.restoreChapterSnapshot(connection, projectId, chapterId, snapshotId)
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
+        api.getCharacterRelationshipNetwork(requireConnection(), projectId)
+
+    suspend fun replaceCharacterRelationships(
+        projectId: String,
+        characterId: String,
+        relationships: JsonArray,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.replaceCharacterRelationships(
+            connection,
+            projectId,
+            characterId,
+            buildJsonObject { put("relationships", relationships) },
+        )
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
+        api.getCharacterAiConfig(requireConnection(), projectId, characterId)
+
+    suspend fun updateCharacterAiConfig(
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalCommandMutex.withLock {
+        val connection = canonicalCommandConnection()
+        val result = api.updateCharacterAiConfig(connection, projectId, characterId, payload)
+        refreshAfterCanonicalWrite(connection, projectId, result)
+    }
+
+    suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
+        api.listCharacterVersions(requireConnection(), projectId, characterId)
+
+    suspend fun characterVersion(
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = api.getCharacterVersion(
+        requireConnection(),
+        projectId,
+        characterId,
+        versionId,
+    )
+
+    suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
+        api.listWorldVersions(requireConnection(), projectId, entryId)
+
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
+        api.listWorldTimeline(requireConnection(), projectId, entryId)
 
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
         val connection = requireConnection()
@@ -368,7 +1043,17 @@ class SimingRepository(context: Context) {
                             val revision = result.revision ?: current?.revision ?: sent.baseRevision
                             dao.deleteMutation(sent.mutationId)
                             if (current != null) {
-                                val unchanged = sha256(current.payloadJson ?: "null") ==
+                                val currentMutation = if (current.operation == "delete") {
+                                    null
+                                } else {
+                                    canonicalMutationJson(
+                                        sent.projectId,
+                                        sent.entityType,
+                                        sent.entityId,
+                                        current.payloadJson,
+                                    )
+                                }
+                                val unchanged = sha256(currentMutation ?: "null") ==
                                     sha256(sent.payloadJson ?: "null") && current.operation == sent.operation
                                 dao.saveEntity(
                                     current.copy(
@@ -391,7 +1076,7 @@ class SimingRepository(context: Context) {
                                             entityId = sent.entityId,
                                             operation = current.operation,
                                             baseRevision = revision,
-                                            payloadJson = current.payloadJson,
+                                            payloadJson = currentMutation,
                                             clientModifiedAt = Instant.now().toString(),
                                         ),
                                     )
@@ -538,78 +1223,842 @@ class SimingRepository(context: Context) {
         projectId: String,
         scope: String,
         prompt: String,
+        modelRoute: AssistantModelRoute,
         onEvent: suspend (String) -> Unit,
     ): AssistantRoute {
-        val directConfig = directApiStore.read()
-        if (directConfig != null) {
-            val (systemPrompt, userPrompt) = buildDirectAssistantPrompt(projectId, scope, prompt)
-            onEvent(directApi.complete(directConfig, systemPrompt, userPrompt))
-            return AssistantRoute.DirectApi
-        }
-
         val connection = dao.connection()
         if (connection != null) {
+            val directConfig = if (modelRoute == AssistantModelRoute.MobileKey) {
+                resolvedDirectConfig()
+            } else {
+                null
+            }
             api.streamAssistant(
                 connection,
                 projectId,
-                WorkspaceAssistantRequest(scope = scope, message = prompt),
+                WorkspaceAssistantRequest(
+                    scope = scope,
+                    message = prompt,
+                    modelRoute = if (directConfig == null) "pc" else "mobile",
+                    mobileProvider = directConfig?.let {
+                        MobileProviderEncryption.seal(it, connection, projectId)
+                    },
+                ),
                 onEvent,
             )
             syncNow()
-            return AssistantRoute.Gateway
+            return if (directConfig == null) AssistantRoute.GatewayPc else AssistantRoute.GatewayMobileKey
+        }
+
+        val directConfig = directApiStore.read()?.let { resolvedDirectConfig() }
+        if (directConfig != null) {
+            mobileWorkspaceAgent.run(projectId, scope, prompt, directConfig, onEvent)
+            return AssistantRoute.DirectApi
         }
         error("请先配置手机直连 API，或连接自己的 Gateway")
     }
 
-    private suspend fun buildDirectAssistantPrompt(
-        projectId: String,
-        scope: String,
-        prompt: String,
-    ): Pair<String, String> {
-        val scopeTypes = when (scope) {
-            "outline" -> setOf("project", "outline", "character", "world")
-            "characters" -> setOf("project", "character", "world", "chapter")
-            "worldbuilding" -> setOf("project", "world", "character", "outline")
-            else -> setOf("project", "outline", "character", "world", "foreshadowing", "governance", "chapter")
+    suspend fun refreshCreationDrafts(): Int {
+        val connection = dao.connection() ?: return 0
+        val sessions = api.listNovelCreationSessions(connection)
+        sessions.forEach { remote ->
+            val sessionId = remote.string("id")
+            val local = storedCreationSession(sessionId)
+            val route = local?.let(::creationRoute) ?: CreationExecutionRoute.Pc
+            saveCreationSession(tagCreationRoute(remote, route, CREATION_HOST_GATEWAY))
         }
-        val priorities = mapOf(
-            "project" to 0,
-            "outline" to 1,
-            "character" to 2,
-            "world" to 3,
-            "foreshadowing" to 4,
-            "governance" to 5,
-            "chapter" to 6,
-        )
-        val context = StringBuilder()
-        dao.projectSnapshot(projectId)
-            .filter { it.entityType in scopeTypes && !it.payloadJson.isNullOrBlank() }
-            .sortedWith(compareBy<ReplicaEntity> { priorities[it.entityType] ?: 99 }.thenByDescending { it.localModifiedAt })
-            .forEach { entity ->
-                if (context.length >= DIRECT_CONTEXT_CHARACTERS) return@forEach
-                val remaining = DIRECT_CONTEXT_CHARACTERS - context.length
-                val payload = entity.payloadJson.orEmpty().take(remaining.coerceAtLeast(0))
-                if (payload.isNotBlank()) {
-                    context.append("\n[${entity.entityType}:${entity.entityId}]\n")
-                    context.append(payload)
+        return sessions.size
+    }
+
+    suspend fun beginCreation(
+        input: CreationStartInput,
+        route: CreationExecutionRoute,
+    ): JsonObject {
+        require(input.brief.isNotBlank()) { "先用一两句话告诉 AI 你想写什么" }
+        val session = when (route) {
+            CreationExecutionRoute.Pc -> {
+                val connection = requireConnection()
+                tagCreationRoute(
+                    api.startNovelCreation(connection, creationStartPayload(input)),
+                    route,
+                    CREATION_HOST_GATEWAY,
+                )
+            }
+            CreationExecutionRoute.MobileKey -> {
+                resolvedDirectConfig()
+                val connection = dao.connection()
+                if (connection == null) {
+                    tagCreationRoute(
+                        mobileCreationAgent.start(input),
+                        route,
+                        CREATION_HOST_DEVICE,
+                    )
+                } else {
+                    tagCreationRoute(
+                        api.startNovelCreation(connection, creationStartPayload(input)),
+                        route,
+                        CREATION_HOST_GATEWAY,
+                    )
                 }
             }
+        }
+        saveCreationSession(session)
+        return session
+    }
 
-        val systemPrompt = """
-            你是司命手机版的小说项目助手。请使用简体中文，严格依据作者提供的本地项目资料完成任务。
-            手机独立模式不能调用服务器工具，也不能声称已经修改数据库；请直接返回可复制、可保存的成品文本。
-            保持人物动机、世界规则、叙事视角和既有事实一致。资料不足时明确说明合理假设，不要编造已存在的设定。
-        """.trimIndent()
-        val userPrompt = """
-            作者请求：
-            ${prompt.trim()}
+    suspend fun getCreationSession(sessionId: String): JsonObject = loadCreationSession(sessionId)
 
-            处理范围：$scope
+    suspend fun runCreationAgentTurn(
+        sessionId: String,
+        message: String,
+        onProgress: suspend (String) -> Unit = {},
+    ): JsonObject {
+        require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
+        val current = loadCreationSession(sessionId)
+        val history = creationAgentHistory(current)
+        val userHistory = history + agentHistoryMessage("user", message)
+        saveCreationSession(withCreationAgentHistory(current, userHistory))
+        val route = creationRoute(current)
+        val gatewayExecution = creationHost(current) == CREATION_HOST_GATEWAY
+        val updated = when {
+            route == CreationExecutionRoute.Pc || gatewayExecution -> {
+                val connection = requireConnection()
+                val mobileProvider = if (route == CreationExecutionRoute.MobileKey) {
+                    mobileProviderPayload(connection, sessionId)
+                } else null
+                onProgress(
+                    if (mobileProvider == null) "PC Creation Agent 正在读取并增量写入…"
+                    else "手机 Key 正在驱动 PC Creation Agent…"
+                )
+                val result = api.novelCreationAgentTurn(
+                    connection,
+                    buildJsonObject {
+                        put("session_id", sessionId)
+                        put("message", message)
+                        put("history", JsonArray(history.takeLast(12)))
+                        put("model_route", if (mobileProvider == null) "pc" else "mobile")
+                        mobileProvider?.let { put("mobile_provider", it) }
+                    },
+                )
+                val reply = result.string("reply").ifBlank { "已完成本轮立项工具调用" }
+                val fresh = tagCreationRoute(
+                    api.getNovelCreationSession(connection, sessionId),
+                    route,
+                    CREATION_HOST_GATEWAY,
+                )
+                withCreationAgentHistory(
+                    fresh,
+                    userHistory + agentHistoryMessage("assistant", reply),
+                )
+            }
+            else -> {
+                onProgress("手机 Creation Agent 正在读取资料并执行工具…")
+                val result = mobileCreationConversationAgent.run(
+                    source = current,
+                    message = message,
+                    history = history,
+                    config = resolvedDirectConfig(),
+                    onProgress = onProgress,
+                )
+                withCreationAgentHistory(
+                    result.session,
+                    userHistory + agentHistoryMessage("assistant", result.reply),
+                )
+            }
+        }
+        saveCreationSession(updated)
+        return updated
+    }
 
-            本地项目资料：
-            ${context.ifEmpty { "（当前项目尚无可用资料）" }}
-        """.trimIndent()
-        return systemPrompt to userPrompt
+    suspend fun generateCreationStage(
+        sessionId: String,
+        stage: String,
+        operation: String = "generate",
+        instruction: String = "",
+        onProgress: suspend (String) -> Unit = {},
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(operation in setOf("generate", "regenerate", "refine")) { "不支持的生成操作：$operation" }
+        if (operation == "refine") require(instruction.isNotBlank()) { "请先填写本次调整要求" }
+
+        val current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            onProgress("正在用手机模型生成${creationStageLabel(stage)}…")
+            tagCreationRoute(
+                mobileCreationAgent.generateStage(
+                    current,
+                    stage,
+                    instruction.trim(),
+                    resolvedDirectConfig(),
+                ),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            onProgress("正在由 PC 权威建档服务生成${creationStageLabel(stage)}…")
+            val payload = buildJsonObject {
+                put("stage", stage)
+                put("model_route", if (route == CreationExecutionRoute.MobileKey) "mobile" else "pc")
+                put("use_model", true)
+                put("auto_confirm", false)
+                put("operation", operation)
+                put("expected_revision", current.int("revision"))
+                if (instruction.isNotBlank()) put("instruction", instruction.trim())
+                if (route == CreationExecutionRoute.MobileKey) {
+                    put("mobile_provider", mobileProviderPayload(connection, sessionId))
+                }
+            }
+            val started = api.startNovelCreationRun(connection, sessionId, payload)
+            val run = started["run"] as? JsonObject ?: started
+            val runId = run.string("id").ifBlank { run.string("run_id") }
+            require(runId.isNotBlank()) { "PC 立项任务没有返回 run_id" }
+            awaitCreationRun(connection, runId, onProgress)
+            tagCreationRoute(
+                api.getNovelCreationSession(connection, sessionId),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    suspend fun updateCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(data.isNotEmpty()) { "阶段内容不能为空" }
+        val current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            tagCreationRoute(
+                mobileCreationAgent.replaceArtifact(current, stage, data, sourceLabel = "author"),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            tagCreationRoute(
+                api.updateNovelCreationStage(
+                    connection,
+                    sessionId,
+                    stage,
+                    buildJsonObject {
+                        put("data", data)
+                        put("source", "author")
+                        put("expected_revision", current.int("revision"))
+                    },
+                ),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    suspend fun confirmCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(data.isNotEmpty()) { "阶段内容不能为空" }
+        var current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+
+        if (stage == "concepts" && current.stageState("constraints").string("status") != "confirmed") {
+            val constraintData = current.draft().objectValue("form")
+            current = if (host == CREATION_HOST_DEVICE) {
+                tagCreationRoute(
+                    mobileCreationAgent.confirmStage(current, "constraints", constraintData),
+                    route,
+                    CREATION_HOST_DEVICE,
+                )
+            } else {
+                val connection = requireConnection()
+                tagCreationRoute(
+                    api.confirmNovelCreationStage(
+                        connection,
+                        sessionId,
+                        "constraints",
+                        buildJsonObject {
+                            put("data", constraintData)
+                            put("confirm", true)
+                            put("source", "author")
+                            put("expected_revision", current.int("revision"))
+                        },
+                    ),
+                    route,
+                    CREATION_HOST_GATEWAY,
+                )
+            }
+        }
+
+        val normalizedData = if (stage == "concepts") {
+            val selected = data.string("selected_concept_id")
+                .ifBlank { current.draft().string("selected_concept_id") }
+                .ifBlank {
+                    ((data["options"] as? JsonArray)?.firstOrNull() as? JsonObject)
+                        ?.string("id")
+                        .orEmpty()
+                }
+            require(selected.isNotBlank()) { "请先选择一个创意方向" }
+            JsonObject(data.toMutableMap().apply {
+                put("selected_concept_id", JsonPrimitive(selected))
+            })
+        } else {
+            data
+        }
+
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            tagCreationRoute(
+                mobileCreationAgent.confirmStage(current, stage, normalizedData),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            tagCreationRoute(
+                api.confirmNovelCreationStage(
+                    connection,
+                    sessionId,
+                    stage,
+                    buildJsonObject {
+                        put("data", normalizedData)
+                        put("confirm", true)
+                        put("source", "author")
+                        put("expected_revision", current.int("revision"))
+                    },
+                ),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    private suspend fun awaitCreationRun(
+        connection: GatewayConnection,
+        runId: String,
+        onProgress: suspend (String) -> Unit,
+    ): JsonObject {
+        repeat(640) {
+            val run = api.getNovelCreationRun(connection, runId)
+            val status = run.string("status")
+            val message = run.string("current_message")
+                .ifBlank { run.objectValue("card_presentation").string("message") }
+            if (message.isNotBlank()) onProgress(message)
+            if (status in CREATION_TERMINAL_RUN_STATUSES) {
+                if (status in CREATION_SUCCESS_RUN_STATUSES) return run
+                val nextAction = run.string("next_action")
+                    .ifBlank { run.objectValue("card_presentation").string("reason") }
+                error(nextAction.ifBlank { "${creationStageLabel(run.string("stage"))}生成失败，请重试" })
+            }
+            kotlinx.coroutines.delay(750)
+        }
+        error("PC 立项任务等待超时；任务仍保留，可稍后继续查看")
+    }
+
+    suspend fun archiveCreation(
+        sessionId: String,
+        onProgress: suspend (String) -> Unit = {},
+    ): String {
+        val current = loadCreationSession(sessionId)
+        requireCreationReady(current)
+        val route = creationRoute(current)
+        val executionHost = creationHost(current)
+        val connection = dao.connection()
+        val projectId = when {
+            executionHost == CREATION_HOST_GATEWAY -> {
+                onProgress("正在通过 PC 立项服务创建正式作品…")
+                val applied = api.applyNovelCreation(requireConnection(), sessionId)
+                applied.string("project_id").ifBlank { error("PC 建档结果缺少 project_id") }
+            }
+            connection != null -> {
+                onProgress("正在把手机 V3 草稿提交给 PC 的正式建档流程…")
+                applyLocalCreationThroughPc(connection, current, onProgress)
+            }
+            else -> {
+                onProgress("正在手机本地建立作品、角色、设定与大纲档案…")
+                archiveLocalCreation(current)
+            }
+        }
+        val completed = mobileCreationAgent.markCompleted(current, projectId)
+        saveCreationSession(tagCreationRoute(completed, route, executionHost))
+        if (connection != null) {
+            onProgress("正在下载正式作品的可离线副本…")
+            bootstrapEnabledProjects()
+        }
+        return projectId
+    }
+
+    suspend fun discardCreation(sessionId: String) {
+        val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
+        val entity = dao.entity(key) ?: return
+        val session = entity.payloadJson
+            ?.let { json.parseToJsonElement(it) as? JsonObject }
+        if (session != null && creationHost(session) == CREATION_HOST_GATEWAY) {
+            api.deleteNovelCreationSession(requireConnection(), sessionId)
+        }
+        dao.saveEntity(entity.copy(operation = "delete", localModifiedAt = System.currentTimeMillis()))
+    }
+
+    private fun creationStartPayload(input: CreationStartInput): JsonObject = buildJsonObject {
+        put("mode", "hybrid")
+        put("user_brief", input.brief.trim())
+        put("target_audience", input.targetAudience.trim())
+        put("genre", input.genre.trim())
+        put("platform", input.platform.trim())
+        put("preset_id", input.presetId)
+        put("theme_id", input.themeId)
+        put("target_words", input.targetWords)
+        put("target_chapters", input.targetChapters)
+        put("world_tone", input.worldTone.trim())
+        put("story_structure", input.storyStructure.trim())
+        put("pacing", input.pacing.trim())
+        put("writing_style", input.writingStyle.trim())
+        put("special_requirements", JsonArray(input.specialRequirements.map(::JsonPrimitive)))
+        put("avoid", JsonArray(input.avoid.map(::JsonPrimitive)))
+        put("author_overrides", buildJsonObject {})
+        put("creation_mode", input.creationMode)
+        put("author_brief", if (input.creationMode == "author_led") input.brief.trim() else "")
+        put("author_outline", input.authorOutline.trim())
+        put("locked_requirements", JsonArray(input.lockedRequirements.map(::JsonPrimitive)))
+    }
+
+    private fun creationAgentHistory(session: JsonObject): List<JsonObject> =
+        (session.draft()["agent_history"] as? JsonArray)
+            .orEmpty()
+            .mapNotNull { it as? JsonObject }
+
+    private fun agentHistoryMessage(role: String, content: String): JsonObject = buildJsonObject {
+        put("id", UUID.randomUUID().toString())
+        put("role", role)
+        put("content", content)
+        put("created_at", Instant.now().toString())
+    }
+
+    private fun withCreationAgentHistory(session: JsonObject, history: List<JsonObject>): JsonObject {
+        val draft = session.draft().toMutableMap()
+        draft["agent_history"] = JsonArray(history.takeLast(40))
+        return JsonObject(session.toMutableMap().apply { put("draft", JsonObject(draft)) })
+    }
+
+    private suspend fun saveCreationSession(session: JsonObject) {
+        val sessionId = session.string("id")
+        require(sessionId.isNotBlank()) { "立项会话缺少 id" }
+        val encoded = json.encodeToString(session)
+        val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
+        dao.saveEntity(
+            ReplicaEntity(
+                key = key,
+                projectId = CREATION_REPLICA_PROJECT,
+                entityType = "creation_session",
+                entityId = sessionId,
+                revision = session.int("revision").toLong(),
+                operation = "upsert",
+                payloadJson = encoded,
+                contentHash = sha256(encoded),
+                serverModifiedAt = session.string("updated_at").ifBlank { Instant.now().toString() },
+                dirty = false,
+                conflicted = false,
+            ),
+        )
+    }
+
+    private suspend fun loadCreationSession(sessionId: String): JsonObject {
+        return storedCreationSession(sessionId) ?: error("立项草稿不存在或已删除")
+    }
+
+    private suspend fun storedCreationSession(sessionId: String): JsonObject? {
+        val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
+        val raw = dao.entity(key)?.payloadJson ?: return null
+        return json.parseToJsonElement(raw) as? JsonObject
+    }
+
+    private fun tagCreationRoute(
+        session: JsonObject,
+        route: CreationExecutionRoute,
+        executionHost: String,
+    ): JsonObject {
+        val draft = session.draft().toMutableMap().apply {
+            put("execution_route", JsonPrimitive(if (route == CreationExecutionRoute.Pc) "pc" else "mobile"))
+            put("execution_host", JsonPrimitive(executionHost))
+        }
+        return JsonObject(session.toMutableMap().apply { put("draft", JsonObject(draft)) })
+    }
+
+    private fun creationRoute(session: JsonObject): CreationExecutionRoute =
+        if (session.draft().string("execution_route") == "pc") {
+            CreationExecutionRoute.Pc
+        } else {
+            CreationExecutionRoute.MobileKey
+        }
+
+    private fun creationHost(session: JsonObject): String =
+        session.draft().string("execution_host").ifBlank {
+            if (creationRoute(session) == CreationExecutionRoute.Pc) {
+                CREATION_HOST_GATEWAY
+            } else {
+                CREATION_HOST_DEVICE
+            }
+        }
+
+    private suspend fun mobileProviderPayload(
+        connection: GatewayConnection,
+        sessionId: String,
+    ): JsonObject {
+        val envelope = MobileProviderEncryption.seal(
+            resolvedDirectConfig(),
+            connection,
+            sessionId,
+        )
+        return buildJsonObject {
+            put("version", envelope.version)
+            put("ephemeral_public_key", envelope.ephemeralPublicKey)
+            put("nonce", envelope.nonce)
+            put("ciphertext", envelope.ciphertext)
+        }
+    }
+
+    private fun ensureSelectedConcept(data: JsonObject): JsonObject {
+        if (data.string("selected_concept_id").isNotBlank()) return data
+        val id = ((data["options"] as? JsonArray)?.firstOrNull() as? JsonObject)
+            ?.string("id")
+            .orEmpty()
+        require(id.isNotBlank()) { "请选择一个创意方向" }
+        return JsonObject(data.toMutableMap().apply { put("selected_concept_id", JsonPrimitive(id)) })
+    }
+
+    private fun requireCreationReady(session: JsonObject) {
+        val requiredStages = listOf("constraints", "concepts", "world_style", "characters", "locations", "macro_outline")
+        val missing = requiredStages.filter { stage ->
+            session.stageState(stage).string("status") != "confirmed"
+        }
+        require(missing.isEmpty()) {
+            "请先确认${creationStageLabel(missing.first())}，再建立正式作品"
+        }
+        val reviewState = session.stageState("final_review")
+        require(reviewState.string("status") in setOf("generated", "confirmed")) {
+            "请先让 AI 完成最终审阅"
+        }
+        val review = reviewState["data"] as? JsonObject
+            ?: error("请先完成最终审阅")
+        require((review["ready"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() == true) {
+            val blocking = (review["blocking"] as? JsonArray).orEmpty()
+                .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                .joinToString("；")
+            blocking.ifBlank { "最终审阅尚未通过" }
+        }
+    }
+
+    private suspend fun applyLocalCreationThroughPc(
+        connection: GatewayConnection,
+        local: JsonObject,
+        onProgress: suspend (String) -> Unit,
+    ): String {
+        val draft = local.draft()
+        val form = draft.objectValue("form")
+        var remote = api.startNovelCreation(
+            connection,
+            buildJsonObject {
+                put("mode", "hybrid")
+                put("user_brief", local.string("user_brief"))
+                listOf("target_audience", "genre", "platform").forEach { key ->
+                    put(key, form[key] ?: JsonPrimitive(local.string(key)))
+                }
+                listOf(
+                    "preset_id", "theme_id", "target_words", "target_chapters", "world_tone",
+                    "story_structure", "pacing", "writing_style", "special_requirements", "avoid",
+                    "author_overrides",
+                ).forEach { key -> form[key]?.let { put(key, it) } }
+                put("creation_mode", draft.string("creation_mode"))
+                put("author_brief", draft.string("author_brief"))
+                put("author_outline", draft.string("author_outline"))
+                put("locked_requirements", draft["locked_requirements"] ?: JsonArray(emptyList()))
+            },
+        )
+        val remoteId = remote.string("id")
+        for (stage in CREATION_STAGE_ORDER) {
+            val state = local.stageState(stage)
+            if (state.string("status") != "confirmed") continue
+            var data = state["data"] as? JsonObject ?: continue
+            if (stage == "concepts") data = ensureSelectedConcept(data)
+            onProgress("正在提交${creationStageLabel(stage)}…")
+            remote = api.confirmNovelCreationStage(
+                connection,
+                remoteId,
+                stage,
+                buildJsonObject {
+                    put("data", data)
+                    put("confirm", true)
+                    put("source", "author")
+                    put("expected_revision", remote.int("revision"))
+                },
+            )
+        }
+        onProgress("结构校验通过，正在执行 PC 正式建档…")
+        val applied = api.applyNovelCreation(connection, remoteId)
+        return applied.string("project_id").ifBlank { error("PC 建档结果缺少 project_id") }
+    }
+
+    private suspend fun archiveLocalCreation(session: JsonObject): String {
+        val draft = session.draft()
+        val form = draft.objectValue("form")
+        val conceptData = session.stageData("concepts")
+        val concepts = (conceptData["options"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+        val selectedId = conceptData.string("selected_concept_id").ifBlank { draft.string("selected_concept_id") }
+        val concept = concepts.firstOrNull { it.string("id") == selectedId }
+            ?: concepts.firstOrNull()
+            ?: error("创意方向为空")
+        val worldStyle = session.stageData("world_style")
+        val characters = session.stageData("characters")
+        val locations = session.stageData("locations")
+        val macro = session.stageData("macro_outline")
+        val opening = if (session.stageState("opening_outline").string("status") == "confirmed") {
+            session.stageData("opening_outline")
+        } else {
+            JsonObject(emptyMap())
+        }
+        val projectId = UUID.randomUUID().toString()
+        val title = concept.string("title").ifBlank { "未命名作品" }
+        val projectTags = listOfNotNull(
+            form.string("genre").takeIf(String::isNotBlank),
+            concept.string("subtitle").takeIf(String::isNotBlank),
+            form.string("platform").takeIf(String::isNotBlank),
+        )
+
+        saveEntity(
+            projectId,
+            "project",
+            projectId,
+            buildJsonObject {
+                put("_record_type", "project")
+                put("id", projectId)
+                put("title", title.take(200))
+                put("description", concept.string("logline"))
+                if (projectTags.isNotEmpty()) {
+                    // Project.tags is a JSON-array *string* in the canonical
+                    // database/sync record, not a nested JSON array.
+                    put("tags", JsonArray(projectTags.map(::JsonPrimitive)).toString())
+                }
+                put("narrative_perspective", "third_person")
+                put("writing_style", worldStyle.string("writing_style").ifBlank { "natural" }.take(50))
+                put("short_sentences", false)
+                put("daily_word_goal", 6000)
+                put("forbidden_sentence_patterns", jsonLines(worldStyle["forbidden_patterns"]))
+                put("rhetoric_guidelines", jsonLines(worldStyle["style_rules"]))
+                put("custom_style_prompt", concept.string("subtitle"))
+            },
+        )
+
+        val characterIds = linkedMapOf<String, String>()
+        (characters["characters"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEach { row ->
+            val name = row.string("name").ifBlank { "未命名角色" }.take(100)
+            if (characterIds.containsKey(name)) return@forEach
+            val id = UUID.randomUUID().toString()
+            characterIds[name] = id
+            saveEntity(projectId, "character", id, buildJsonObject {
+                put("_record_type", "character")
+                put("id", id)
+                put("project_id", projectId)
+                put("name", name)
+                put("role_type", normalizeCharacterRole(row.string("role_type")))
+                put("appearance", row.string("appearance"))
+                put("personality", row.string("personality"))
+                put("background", row.string("background"))
+                put("age", row.string("age"))
+                put("life_status", row.string("life_status").ifBlank { "active" })
+                put("current_location", row.string("current_location"))
+                put("realm_or_level", row.string("realm_or_level"))
+                put("physical_state", row.string("physical_state"))
+                put("mental_state", row.string("mental_state"))
+                put("current_goal", row.string("goal").ifBlank { row.string("current_goal") })
+                put("active_conflict", row.string("conflict").ifBlank { row.string("active_conflict") })
+                put("abilities_state", row.string("abilities_state"))
+                put("items_or_assets", row.string("items_or_assets"))
+                row["abilities"]?.let { put("abilities", if (it is JsonPrimitive) it else JsonPrimitive(it.toString())) }
+                row["profile"]?.let { put("profile_json", it) }
+                put("is_evolution_tracked", true)
+            })
+        }
+
+        (characters["relationships"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEach { row ->
+            val sourceName = row.string("character_a").ifBlank { row.string("source") }
+            val targetName = row.string("character_b").ifBlank { row.string("target") }
+            val a = characterIds[sourceName]
+            val b = characterIds[targetName]
+            if (a != null && b != null && a != b) {
+                val id = UUID.randomUUID().toString()
+                saveEntity(projectId, "character_relation", id, buildJsonObject {
+                    put("_record_type", "character_relationship")
+                    put("id", id)
+                    put("project_id", projectId)
+                    put("character_a_id", a)
+                    put("character_b_id", b)
+                    put("relationship_type", row.string("relationship_type").ifBlank { "related" }.take(100))
+                    put("description", row.string("description"))
+                })
+            }
+        }
+
+        val worldIds = linkedMapOf<String, String>()
+        val worldRows = buildList {
+            addAll((worldStyle["worldbuilding"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject })
+            addAll((locations["entries"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject })
+        }.distinctBy { it.string("title") }
+        worldRows.forEachIndexed { index, row ->
+            val titleValue = row.string("title").ifBlank { "未命名设定 ${index + 1}" }.take(200)
+            val id = UUID.randomUUID().toString()
+            worldIds[titleValue] = id
+            saveEntity(projectId, "world", id, buildJsonObject {
+                put("_record_type", "world_entry")
+                put("id", id)
+                put("project_id", projectId)
+                put("title", titleValue)
+                put("dimension", normalizeWorldDimension(row.string("dimension")))
+                put("content", row.string("content").ifBlank { row.string("description") }.ifBlank { "待补充" })
+            })
+        }
+        (locations["relations"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEach { row ->
+            val sourceId = worldIds[row.string("source_title")]
+            val targetId = worldIds[row.string("target_title")]
+            if (sourceId != null && targetId != null && sourceId != targetId) {
+                val id = UUID.randomUUID().toString()
+                saveEntity(projectId, "world_relation", id, buildJsonObject {
+                    put("_record_type", "world_relationship")
+                    put("id", id)
+                    put("project_id", projectId)
+                    put("source_entry_id", sourceId)
+                    put("target_entry_id", targetId)
+                    put("relation_type", row.string("relation_type").ifBlank { "related" }.take(100))
+                    put("description", row.string("description"))
+                    row["metadata"]?.let { put("metadata_json", it) }
+                })
+            }
+        }
+
+        val volumeIds = mutableListOf<String>()
+        (macro["volumes"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
+            val id = UUID.randomUUID().toString()
+            volumeIds += id
+            saveEntity(projectId, "outline", id, buildJsonObject {
+                put("_record_type", "outline_node")
+                put("id", id)
+                put("project_id", projectId)
+                put("parent_id", JsonNull)
+                put("node_type", "volume")
+                put("title", row.string("title").ifBlank { "第 ${index + 1} 卷" }.take(200))
+                put("summary", row.string("summary"))
+                put("planned_summary", row.string("summary"))
+                put("status", "pending")
+                put("sort_order", index)
+                put("metadata_json", buildJsonObject {
+                    row["start_chapter"]?.let { put("start_chapter", it) }
+                    row["end_chapter"]?.let { put("end_chapter", it) }
+                })
+            })
+        }
+        val outlineIdsByClient = linkedMapOf<String, String>()
+        (opening["chapters"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
+            val id = UUID.randomUUID().toString()
+            outlineIdsByClient[row.string("client_id")] = id
+            val parentIndex = row.int("parent_index")
+            saveEntity(projectId, "outline", id, buildJsonObject {
+                put("_record_type", "outline_node")
+                put("id", id)
+                put("project_id", projectId)
+                put("parent_id", volumeIds.getOrNull(parentIndex)?.let(::JsonPrimitive) ?: JsonNull)
+                put("node_type", "chapter")
+                put("title", row.string("title").take(200))
+                put("summary", row.string("summary"))
+                put("planned_summary", row.string("planned_summary").ifBlank { row.string("summary") })
+                put("status", "pending")
+                put("sort_order", row.int("sort_order").takeIf { it > 0 } ?: index + 1)
+                outlineMetadata(row).takeIf(JsonObject::isNotEmpty)?.let { put("metadata_json", it) }
+            })
+        }
+        (opening["sections"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
+            val parent = outlineIdsByClient[row.string("parent_client_id")] ?: return@forEachIndexed
+            val id = UUID.randomUUID().toString()
+            saveEntity(projectId, "outline", id, buildJsonObject {
+                put("_record_type", "outline_node")
+                put("id", id)
+                put("project_id", projectId)
+                put("parent_id", parent)
+                put("node_type", "section")
+                put("title", row.string("title").take(200))
+                put("summary", row.string("summary"))
+                put("planned_summary", row.string("planned_summary").ifBlank { row.string("summary") })
+                put("status", "pending")
+                put("sort_order", row.int("sort_order").takeIf { it > 0 } ?: index + 1)
+                outlineMetadata(row).takeIf(JsonObject::isNotEmpty)?.let { put("metadata_json", it) }
+            })
+        }
+        return projectId
+    }
+
+    private fun jsonLines(value: JsonElement?): String = when (value) {
+        is JsonArray -> value.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.joinToString("\n")
+        is JsonPrimitive -> value.contentOrNull.orEmpty()
+        else -> ""
+    }
+
+    private fun normalizeWorldDimension(value: String): String = value.takeIf {
+        it in setOf("geography", "history", "factions", "power_system", "races", "culture")
+    } ?: "culture"
+
+    private fun normalizeCharacterRole(value: String): String = when (value.trim().lowercase()) {
+        "protagonist", "primary", "lead", "main character", "主角", "主人公", "男主", "女主" -> "protagonist"
+        "antagonist", "villain", "rival", "反派", "敌人", "对手", "宿敌" -> "antagonist"
+        "mentor", "guide", "导师", "师父", "师傅", "老师", "引路人" -> "mentor"
+        "other", "其他", "路人", "背景角色" -> "other"
+        else -> "supporting"
+    }
+
+    private fun outlineMetadata(row: JsonObject): JsonObject {
+        val metadata = ((row["metadata"] as? JsonObject)?.toMutableMap() ?: mutableMapOf())
+        listOf(
+            "scene_number",
+            "purpose",
+            "location",
+            "timeline",
+            "pov_character",
+            "characters",
+            "entry_state",
+            "exit_state",
+            "emotional_residue",
+            "unresolved_actions",
+        ).forEach { field ->
+            if (field !in metadata) row[field]?.let { metadata[field] = it }
+        }
+        return JsonObject(metadata)
+    }
+
+    private fun creationStageLabel(stage: String): String = CREATION_STAGE_LABELS[stage] ?: stage
+
+    private fun JsonObject.draft(): JsonObject = objectValue("draft")
+    private fun JsonObject.stageState(stage: String): JsonObject = draft().objectValue("stages").objectValue(stage)
+    private fun JsonObject.stageData(stage: String): JsonObject = stageState(stage)["data"] as? JsonObject ?: JsonObject(emptyMap())
+    private fun JsonObject.objectValue(name: String): JsonObject = get(name) as? JsonObject ?: JsonObject(emptyMap())
+    private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+    private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
+
+    private suspend fun resolvedDirectConfig(): DirectApiConfig {
+        val config = directApiStore.read() ?: error("请先在设置中配置手机 API Key")
+        if (config.protocol != DirectApiConfig.PROTOCOL_AUTO) return config
+        val resolved = config.copy(protocol = directApi.testAndResolve(config).protocol)
+        directApiStore.save(resolved)
+        return resolved
     }
 
     suspend fun disconnect(clearOfflineData: Boolean): Boolean {
@@ -641,8 +2090,56 @@ class SimingRepository(context: Context) {
     companion object {
         private const val MAX_ENTITY_BYTES = 1024 * 1024
         private const val MAX_PUSH_BYTES = 6 * 1024 * 1024
-        private const val DIRECT_CONTEXT_CHARACTERS = 28_000
+        private const val CREATION_REPLICA_PROJECT = "__novel_creation__"
+        private const val CREATION_HOST_GATEWAY = "gateway"
+        private const val CREATION_HOST_DEVICE = "device"
+        private val CREATION_STAGE_ORDER = listOf(
+            "constraints",
+            "concepts",
+            "world_style",
+            "characters",
+            "locations",
+            "macro_outline",
+            "opening_outline",
+            "final_review",
+        )
+        private val CREATION_STAGE_LABELS = mapOf(
+            "constraints" to "创作约束",
+            "concepts" to "创意方向",
+            "world_style" to "文风与世界观",
+            "characters" to "角色与关系",
+            "locations" to "地点与势力",
+            "macro_outline" to "全书主线与卷纲",
+            "opening_outline" to "前3章细纲",
+            "final_review" to "最终审阅",
+        )
+        private val CREATION_SUCCESS_RUN_STATUSES = setOf(
+            "waiting_user",
+            "waiting_author",
+            "completed",
+            "partial_success",
+        )
+        private val CREATION_TERMINAL_RUN_STATUSES = CREATION_SUCCESS_RUN_STATUSES + setOf(
+            "failed",
+            "cancelled",
+            "interrupted",
+            "superseded",
+        )
+        private val GOVERNANCE_ENTITY_TYPES = setOf("foreshadowing", "governance")
+        private val CANONICAL_DELETABLE_ENTITY_TYPES = setOf("chapter", "outline", "character", "world")
+        private val CANONICAL_ENTITY_TYPES = CANONICAL_DELETABLE_ENTITY_TYPES +
+            GOVERNANCE_ENTITY_TYPES + "project"
+        private val RECORD_TYPES = mapOf(
+            "project" to "project",
+            "chapter" to "chapter",
+            "outline" to "outline_node",
+            "character" to "character",
+            "world" to "world_entry",
+            "foreshadowing" to "foreshadowing",
+            "governance" to "narrative_debt",
+        )
         private val syncMutex = Mutex()
+        private val canonicalCommandMutex = Mutex()
     }
 }
 
@@ -651,6 +2148,12 @@ sealed interface SyncOutcome {
 }
 
 enum class AssistantRoute {
-    Gateway,
+    GatewayPc,
+    GatewayMobileKey,
     DirectApi,
+}
+
+enum class AssistantModelRoute {
+    Pc,
+    MobileKey,
 }

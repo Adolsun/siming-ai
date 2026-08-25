@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ...core.utils import utc_isoformat
 from ...database.models import (
     AgentPlan,
     AssistantMessage,
@@ -348,9 +349,9 @@ def run_payload(run: AssistantRun) -> dict:
         "model": run.model,
         "current_iteration": run.current_iteration or 0,
         "error": run.error,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "created_at": utc_isoformat(run.created_at),
+        "updated_at": utc_isoformat(run.updated_at),
+        "completed_at": utc_isoformat(run.completed_at),
     }
 
 
@@ -368,8 +369,8 @@ def step_payload(step: AssistantRunStep) -> dict:
         "retry_of_step_id": step.retry_of_step_id,
         "resolved_step_id": step.resolved_step_id,
         "idempotency_key": step.idempotency_key,
-        "started_at": step.started_at.isoformat() if step.started_at else None,
-        "completed_at": step.completed_at.isoformat() if step.completed_at else None,
+        "started_at": utc_isoformat(step.started_at),
+        "completed_at": utc_isoformat(step.completed_at),
     }
 
 

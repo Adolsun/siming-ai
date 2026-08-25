@@ -3,10 +3,8 @@ from __future__ import annotations
 
 from app.architecture.uow import commit_session
 
-import json
 import logging
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy.orm import Session
 

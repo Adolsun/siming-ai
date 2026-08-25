@@ -10,9 +10,6 @@ class ApiClient {
     this.client = axios.create({
       baseURL: API_BASE_URL,
       timeout: API_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'application/json',
-      },
     })
 
     this.client.interceptors.response.use(
@@ -50,6 +47,10 @@ class ApiClient {
 
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return this.client.post<T>(url, data, config)
+  }
+
+  postForm<T>(url: string, data: FormData, config?: AxiosRequestConfig) {
+    return this.client.postForm<T>(url, data, config)
   }
 
   put<T>(url: string, data?: unknown) {

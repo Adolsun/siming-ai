@@ -6,7 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import launcher
 from app.routers import config
@@ -150,18 +150,6 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
             self.assertNotIn("gateway_bootstrap_key", saved)
 
     def test_browser_mode_starts_local_server_without_creating_a_webview_window(self):
-        class FakeThread:
-            instances = []
-
-            def __init__(self, *, target, daemon=False):
-                self.target = target
-                self.daemon = daemon
-                self.started = False
-                self.__class__.instances.append(self)
-
-            def start(self):
-                self.started = True
-
         class FakeEvent:
             def wait(self):
                 return None
@@ -170,20 +158,119 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         browser_app.app = object()
         with tempfile.TemporaryDirectory() as temp_dir:
             home = Path(temp_dir)
+            instance = MagicMock()
+            instance.acquire.return_value = True
+            server = MagicMock()
+            server.start.return_value = True
+            server.stop.return_value = True
             with patch.object(launcher.sys, "argv", ["launcher.py", "--browser"]), patch(
                 "launcher._find_free_port", return_value=9876
+            ), patch("launcher._app_home", return_value=home), patch(
+                "launcher.DesktopInstanceCoordinator", return_value=instance
+            ), patch(
+                "launcher.UvicornServerController", return_value=server
             ), patch("launcher._prepare_environment", return_value=home), patch(
                 "launcher._wait_for_server", return_value=True
-            ), patch("launcher._log"), patch("launcher.threading.Thread", FakeThread), patch(
+            ), patch("launcher._log"), patch(
                 "launcher.threading.Event", FakeEvent
             ), patch("webbrowser.open") as open_browser, patch.dict(
                 "sys.modules", {"app.main": browser_app}
             ):
                 launcher.main()
 
-        self.assertEqual(len(FakeThread.instances), 1)
-        self.assertTrue(FakeThread.instances[0].started)
+        server.start.assert_called_once_with(browser_app.app)
+        server.stop.assert_called_once_with(timeout=20.0)
+        instance.start_activation_listener.assert_called_once()
+        instance.close.assert_called_once()
         open_browser.assert_called_once_with("http://127.0.0.1:9876/gui")
+
+    def test_repeated_launch_activates_existing_instance_before_port_selection(self):
+        instance = MagicMock()
+        instance.acquire.return_value = False
+        instance.activate_existing.return_value = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with patch.object(launcher.sys, "argv", ["launcher.py"]), patch(
+                "launcher._app_home", return_value=home
+            ), patch(
+                "launcher.DesktopInstanceCoordinator", return_value=instance
+            ), patch("launcher._find_free_port") as find_port, patch("launcher._log"):
+                launcher.main()
+
+        instance.activate_existing.assert_called_once_with(timeout=3.0)
+        instance.close.assert_called_once()
+        find_port.assert_not_called()
+
+    def test_native_window_close_stops_embedded_server_and_activation_restores_window(self):
+        class FakeThread:
+            def __init__(self, *, target, name=None, daemon=False):
+                self.target = target
+                self.name = name
+                self.daemon = daemon
+
+            def start(self):
+                self.target()
+
+            def is_alive(self):
+                return False
+
+            def join(self, timeout=None):
+                return None
+
+        class FakeWindow:
+            def __init__(self):
+                self.loaded_url = None
+                self.restore_count = 0
+                self.show_count = 0
+
+            def load_url(self, url):
+                self.loaded_url = url
+
+            def restore(self):
+                self.restore_count += 1
+
+            def show(self):
+                self.show_count += 1
+
+        temporary_home = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_home.cleanup)
+        home = Path(temporary_home.name)
+        instance = MagicMock()
+        instance.acquire.return_value = True
+        server = MagicMock()
+        server.start.return_value = True
+        server.stop.return_value = True
+        window = FakeWindow()
+        webview = types.ModuleType("webview")
+        webview.FileDialog = types.SimpleNamespace(FOLDER="folder")
+        webview.create_window = MagicMock(return_value=window)
+        webview.start = MagicMock()
+        browser_app = types.ModuleType("app.main")
+        browser_app.app = object()
+
+        with patch.object(launcher.sys, "argv", ["launcher.py", "--desktop"]), patch(
+            "launcher._app_home", return_value=home
+        ), patch(
+            "launcher.DesktopInstanceCoordinator", return_value=instance
+        ), patch(
+            "launcher.UvicornServerController", return_value=server
+        ), patch("launcher._find_free_port", return_value=9876), patch(
+            "launcher._prepare_environment", return_value=home
+        ), patch("launcher._wait_for_server", return_value=True), patch(
+            "launcher.threading.Thread", FakeThread
+        ), patch("launcher.time.sleep"), patch("launcher._log"), patch.dict(
+            "sys.modules", {"app.main": browser_app, "webview": webview}
+        ):
+            launcher.main()
+
+        server.start.assert_called_once_with(browser_app.app)
+        server.stop.assert_called_once_with(timeout=20.0)
+        self.assertEqual(window.loaded_url, "http://127.0.0.1:9876/gui")
+        activation_handler = instance.set_activation_handler.call_args.args[0]
+        activation_handler()
+        self.assertEqual(window.restore_count, 1)
+        self.assertEqual(window.show_count, 1)
 
     def test_staged_update_helper_replaces_old_executable_and_restarts(self):
         with tempfile.TemporaryDirectory() as temp_dir:

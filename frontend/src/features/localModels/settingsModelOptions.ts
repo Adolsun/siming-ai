@@ -159,14 +159,14 @@ export const DEFAULT_CLI_COMMANDS: Record<string, string> = {
 }
 
 export const DEFAULT_CLI_ARGS: Record<string, string> = {
-  claude_cli: '["--permission-mode","bypassPermissions","-p","{prompt}"]',
-  codex_cli: '["exec","--dangerously-bypass-approvals-and-sandbox","{prompt}"]',
-  opencode_cli: '["run","--dangerously-skip-permissions","{prompt}"]',
-  mimocode_cli: '["run","--dangerously-skip-permissions","{prompt}"]',
-  cursor_cli: '["-p","--force","--approve-mcps","--trust","--output-format","text","{prompt}"]',
-  kilocode_cli: '["run","--auto","{prompt}"]',
-  qwen_code_cli: '["--approval-mode","yolo","--output-format","text","{prompt}"]',
-  hermes_cli: '["--yolo","--oneshot","{prompt}"]',
+  claude_cli: '["-p","{prompt}"]',
+  codex_cli: '["exec","{prompt}"]',
+  opencode_cli: '["run","--pure","--format","json","--model","{model}","{prompt}"]',
+  mimocode_cli: '["run","{prompt}"]',
+  cursor_cli: '["-p","--output-format","text","{prompt}"]',
+  kilocode_cli: '["run","{prompt}"]',
+  qwen_code_cli: '["--output-format","text","{prompt}"]',
+  hermes_cli: '["--oneshot","{prompt}"]',
   openclaw_cli: '["agent","--local","--json","--session-key","agent:siming:local-cli","--message","{prompt}"]',
   custom_cli: '["{prompt}"]',
 }

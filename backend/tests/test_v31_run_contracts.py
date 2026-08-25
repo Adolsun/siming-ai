@@ -69,7 +69,10 @@ def test_creation_run_openapi_exposes_durable_result_contract() -> None:
         "attempt",
         "result_mode",
         "warning",
+        "card_presentation",
     }.issubset(properties)
+    paths = schema["paths"]
+    assert "post" in paths["/api/v1/novel-creation/runs/{run_id}/card-presentation"]
 
 
 def test_creation_artifact_openapi_exposes_query_patch_lock_and_confirm_routes() -> None:

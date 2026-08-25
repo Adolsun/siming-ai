@@ -338,7 +338,6 @@ def _detect_forbidden_sentence_violations(text: str, project: Project) -> list[d
         if generic:
             regexes = [*regexes, generic]
         if not regexes and pattern in text:
-            start = text.find(pattern)
             regexes = [re.escape(pattern)]
         for regex in regexes:
             for match in re.finditer(regex, text):

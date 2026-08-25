@@ -1,12 +1,11 @@
 """Workspace tools for RAG: search_context, preview_rag_context, explain_context_selection."""
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....services.rag.indexer import ensure_indexed, reindex_project, reindex_project_types, detect_fts5_available, project_has_chunks
+from ....services.rag.indexer import reindex_project, reindex_project_types, detect_fts5_available, project_has_chunks
 from ....services.rag.retriever import search_chunks, get_chunks_for_source
 from ....services.rag.context_packer import pack_context, ContextBudget
 from ....services.context_orchestrator import ContextOrchestrator

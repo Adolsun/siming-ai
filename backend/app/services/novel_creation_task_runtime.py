@@ -21,6 +21,7 @@ from app.services.operation_runtime import (
     update_operation,
 )
 from app.services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage
+from app.modules.model_runtime.domain.configuration import ModelProviderConfig
 
 _CREATION_TASKS: dict[str, asyncio.Task[Any]] = {}
 
@@ -48,7 +49,12 @@ async def _pause_running_task(run_id: str) -> None:
         task.cancel()
 
 
-async def _execute_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
+async def _execute_creation_stage(
+    run_id: str,
+    session_id: str,
+    request: dict[str, Any],
+    request_provider: ModelProviderConfig | None = None,
+) -> None:
     db = SessionLocal()
     heartbeat_task: asyncio.Task[Any] | None = None
     run: NovelCreationStageRun | None = None
@@ -57,12 +63,26 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
         operation_id = run.operation_id if run else None
         if operation_id:
             heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
-        with activate_operation(operation_id):
-            await generate_novel_creation_stage(
-                db,
-                "",
-                {**request, "session_id": session_id, "_run_id": run_id},
-            )
+        if request_provider is None:
+            with activate_operation(operation_id):
+                await generate_novel_creation_stage(
+                    db,
+                    "",
+                    {**request, "session_id": session_id, "_run_id": run_id},
+                )
+        else:
+            # Mobile credentials are retained only by this in-memory task. The
+            # run request stored in SQLite contains the selected model but no
+            # encrypted envelope or plaintext key.
+            from app.modules.model_runtime.application.request_override import use_request_provider
+
+            with use_request_provider(request_provider), activate_operation(operation_id):
+                await generate_novel_creation_stage(
+                    db,
+                    "",
+                    {**request, "session_id": session_id, "_run_id": run_id},
+                )
+        _schedule_card_presentation(run_id, request_provider=request_provider)
     except asyncio.CancelledError:
         run = db.get(NovelCreationStageRun, run_id)
         if run and run.status in {"queued", "running"}:
@@ -75,6 +95,7 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
             commit_session(db)
             if run.operation_id:
                 finish_operation(run.operation_id, message=run.current_message, status="cancelled")
+            _schedule_card_presentation(run_id)
         raise
     finally:
         if heartbeat_task:
@@ -86,17 +107,35 @@ async def _execute_creation_stage(run_id: str, session_id: str, request: dict[st
         db.close()
 
 
+def _schedule_card_presentation(
+    run_id: str,
+    *,
+    request_provider: ModelProviderConfig | None = None,
+) -> None:
+    from app.services.novel_creation_run_presentation import schedule_run_card_presentation
+
+    schedule_run_card_presentation(run_id, request_provider=request_provider)
+
+
 def schedule_creation_stage(
     run_id: str,
     session_id: str,
     request: dict[str, Any],
     *,
     operation_id: str | None = None,
+    request_provider: ModelProviderConfig | None = None,
 ) -> asyncio.Task[Any]:
     existing = _task_for(run_id)
     if existing:
         return existing
-    task = asyncio.create_task(_execute_creation_stage(run_id, session_id, request))
+    task = asyncio.create_task(
+        _execute_creation_stage(
+            run_id,
+            session_id,
+            request,
+            request_provider=request_provider,
+        )
+    )
     _CREATION_TASKS[run_id] = task
 
     if operation_id:
@@ -134,6 +173,7 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
                 add_run_event(db, run, "cancelled", "cancelled", run.current_message)
                 complete_creation_claim(db, run.claim_id, error=run.current_message, status="cancelled")
                 commit_session(db)
+                _schedule_card_presentation(run.id)
                 return True
             task = _task_for(run.id)
             if task:
@@ -144,6 +184,9 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
         if action == "continue":
             if run.status != "paused":
                 return False
+            from app.services.novel_creation_runs import invalidate_run_card_presentation
+
+            invalidate_run_card_presentation(run)
             run.status = "running"
             run.current_message = "正在从最近检查点继续"
             run.next_action = None
@@ -158,6 +201,9 @@ async def invoke_durable_creation_action(operation_id: str, action: str) -> bool
         if action == "retry_current_unit":
             if run.status not in {"failed", "cancelled", "interrupted"}:
                 return False
+            from app.services.novel_creation_runs import invalidate_run_card_presentation
+
+            invalidate_run_card_presentation(run)
             claim = db.get(NovelCreationRunClaim, run.claim_id) if run.claim_id else None
             if claim:
                 claim.status = "running"

@@ -26,18 +26,18 @@ from app.services.novel_creation_contract import (
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
     attach_concepts,
-    build_stage_flow,
     build_apply_blueprint,
+    build_stage_flow,
     creation_artifact_dependencies,
     derive_stage,
     generation_blockers,
     get_presets,
     initialize_session_draft,
-    patch_session,
     patch_creation_artifact,
+    patch_session,
     save_stage,
-    serialize_session,
     serialize_creation_artifact,
+    serialize_session,
     set_creation_artifact_locks,
     undo_creation_artifact,
 )
@@ -46,6 +46,7 @@ from app.services.workspace.tools.novel_creation import apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import (
     _normalize_stage_data,
     _validate_stage,
+    generate_creation_artifact,
     generate_novel_creation_stage,
     get_creation_snapshot,
     patch_creation_session_tool,
@@ -200,6 +201,39 @@ def test_final_review_uses_actual_chapter_ids_and_self_heals_stale_contract_resu
     assert build_apply_blueprint(session)["outline"]
 
 
+def test_core_project_can_be_written_before_opening_outline_is_generated():
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    draft["stages"]["opening_outline"] = {
+        "status": "pending",
+        "data": None,
+        "source": "unknown",
+    }
+    session.draft_json = draft
+
+    final = derive_stage(session, "final_review", draft)
+    blueprint = build_apply_blueprint(session)
+
+    assert final["ready"] is True
+    assert final["counts"]["chapters"] == 0
+    assert any("正式作品" in warning for warning in final["warnings"])
+    assert blueprint["outline"] == []
+    assert any("正式作品" in warning for warning in blueprint["apply_warnings"])
+
+
+def test_unconfirmed_opening_outline_is_not_silently_applied():
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    draft["stages"]["opening_outline"]["status"] = "generated"
+    session.draft_json = draft
+
+    blueprint = build_apply_blueprint(session)
+
+    assert blueprint["outline"] == []
+
+
 def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
     db = _db()
     session = _ready_session(db)
@@ -250,6 +284,21 @@ def test_artifact_patch_accepts_standard_json_patch_add_to_array():
     assert result["artifact"]["data"]["special_requirements"][-1] == "MCP write probe"
     assert result["changes"] == [{"path": "/special_requirements", "action": "append"}]
     assert int(session.revision or 0) == before_revision + 1
+
+
+def test_author_patch_keeps_confirmed_facts_confirmed_but_assistant_patch_requires_review():
+    db = _db()
+    session = _ready_session(db)
+
+    author_result = patch_creation_artifact(session, "constraints", [
+        {"path": "/genre", "action": "replace", "value": "记忆悬疑"},
+    ], source="author")
+    assert author_result["artifact"]["status"] == "confirmed"
+
+    assistant_result = patch_creation_artifact(session, "constraints", [
+        {"path": "/genre", "action": "replace", "value": "记忆悬疑与都市奇谈"},
+    ], source="assistant")
+    assert assistant_result["artifact"]["status"] == "generated"
 
 
 def test_artifact_locks_block_parent_and_child_patch_paths():
@@ -656,6 +705,23 @@ def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
     final = result["data"]["session"]["draft"]["stages"]["final_review"]
     assert final["status"] == "generated"
     assert final["data"]["ready"] is True
+
+
+def test_agent_artifact_generation_returns_a_structured_error_for_an_invalid_entity_target():
+    db = _db()
+    session = _ready_session(db)
+
+    result = asyncio.run(generate_creation_artifact(db, "", {
+        "session_id": session.id,
+        "artifact": "world_style",
+        "entity_type": "character",
+        "use_model": False,
+    }))
+
+    assert result["tool"] == "generate_creation_artifact"
+    assert result["status"] == "error"
+    assert "目标实体类型" in result["detail"]
+    assert result["data"] is None
 
 
 def test_quick_run_uses_an_explicit_safe_fallback_for_empty_model_events():

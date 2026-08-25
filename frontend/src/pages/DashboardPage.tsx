@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type KeyboardEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
@@ -361,6 +361,13 @@ function DashboardPage() {
     )
   }
 
+  const openFromKeyboard = (event: KeyboardEvent<HTMLElement>, action: () => void) => {
+    if (event.target !== event.currentTarget) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    action()
+  }
+
   return (
     <PageWrapper maxWidth={1280} className="dashboard-page">
       <SystemNav current="dashboard" />
@@ -377,15 +384,9 @@ function DashboardPage() {
           <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>
             直接创建或导入
           </Button>
-          {needsModelSetup ? (
-            <Button type="primary" icon={<RocketOutlined />} size="large" onClick={() => navigate('/getting-started')}>
-              免费准备 AI
-            </Button>
-          ) : (
-            <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
-              创建新作品
-            </Button>
-          )}
+          <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
+            创建新作品
+          </Button>
         </Space>
       </header>
 
@@ -393,11 +394,11 @@ function DashboardPage() {
         <section className="dashboard-setup-banner" aria-label="首次使用设置">
           <div className="dashboard-setup-icon" aria-hidden="true"><RocketOutlined /></div>
           <div className="dashboard-setup-copy">
-            <Text strong>第一次使用？先免费把 AI 接上</Text>
-            <Text type="secondary">不用 API Key，不用打开命令行。司命可以自动安装 OpenCode，并帮你选择当前可用的免费模型。</Text>
+            <Text strong>想让 AI 一起创作？先完成一次免费准备</Text>
+            <Text type="secondary">不用 API Key，也不用打开命令行。准备完成后，新书立项和项目助手都会自动使用可用模型。</Text>
           </div>
-          <Button size="large" onClick={openNovelCreation}>
-            先写立项草稿 <ArrowRightOutlined />
+          <Button icon={<RocketOutlined />} onClick={() => navigate('/getting-started')}>
+            免费准备 AI <ArrowRightOutlined />
           </Button>
         </section>
       )}
@@ -438,7 +439,11 @@ function DashboardPage() {
                 key={draft.id}
                 size="small"
                 hoverable
+                role="link"
+                tabIndex={0}
+                aria-label={`继续立项：${draft.draft?.concepts?.[0]?.title || draft.draft?.form?.brief?.slice(0, 28) || '未命名立项'}`}
                 onClick={() => navigate(`/novel-creation?session=${draft.id}`)}
+                onKeyDown={(event) => openFromKeyboard(event, () => navigate(`/novel-creation?session=${draft.id}`))}
                 title={draft.draft?.concepts?.[0]?.title || draft.draft?.form?.brief?.slice(0, 28) || '未命名立项'}
                 extra={(
                   <Button
@@ -481,9 +486,7 @@ function DashboardPage() {
         <div className="dashboard-empty siming-surface">
           <AuthorEmptyState
             image={<FolderOpenOutlined className="dashboard-empty-icon" />}
-            description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 3 章细纲。'}
-            actionLabel={searchKeyword ? undefined : '开始新书立项'}
-            onAction={searchKeyword ? undefined : openNovelCreation}
+            description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。使用上方“创建新作品”开始立项，或直接导入已有小说。'}
           />
         </div>
       ) : (
@@ -492,7 +495,11 @@ function DashboardPage() {
             <div key={project.id} className="dashboard-card-wrap">
               <Card
                 className="dashboard-card"
+                role="link"
+                tabIndex={0}
+                aria-label={`打开作品：${project.title}`}
                 onClick={() => navigate(`/project/${project.id}`)}
+                onKeyDown={(event) => openFromKeyboard(event, () => navigate(`/project/${project.id}`))}
                 title={(
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
                     <span className="dashboard-card-title">{project.title}</span>

@@ -77,6 +77,7 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
   const [logsModalOpen, setLogsModalOpen] = useState(false)
   const [selectedTask, setSelectedTask] = useState<ScheduledTask | null>(null)
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null)
   const [form] = Form.useForm()
 
   const fetchTasks = useCallback(async () => {
@@ -142,13 +143,16 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
     }
   }
 
-  const handleDelete = async (taskId: string) => {
+  const handleDelete = async (task: ScheduledTask) => {
+    setDeletingTaskId(task.id)
     try {
-      await apiClient.delete(`/projects/${projectId}/scheduled-tasks/${taskId}`)
-      message.success('任务已删除')
-      fetchTasks()
+      await apiClient.delete(`/projects/${projectId}/scheduled-tasks/${task.id}`)
+      setTasks((current) => current.filter((item) => item.id !== task.id))
+      message.success(`任务“${task.name}”已删除`)
     } catch (err: any) {
       message.error(err.message || '删除失败')
+    } finally {
+      setDeletingTaskId(null)
     }
   }
 
@@ -278,15 +282,29 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
             type="link"
             size="small"
             icon={<EditOutlined />}
+            aria-label={`编辑任务${record.name}`}
             onClick={() => handleEdit(record)}
-          />
+          >
+            编辑
+          </Button>
           <Popconfirm
-            title="确定删除此任务？"
-            onConfirm={() => handleDelete(record.id)}
-            okText="删除"
+            title={`删除任务“${record.name}”？`}
+            description="删除后不会再自动运行；已有运行日志不会被用于恢复任务。"
+            onConfirm={() => handleDelete(record)}
+            okText="确认删除"
             cancelText="取消"
           >
-            <Button type="link" size="small" danger icon={<DeleteOutlined />} />
+            <Button
+              type="link"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              aria-label={`删除任务${record.name}`}
+              loading={deletingTaskId === record.id}
+              disabled={Boolean(deletingTaskId && deletingTaskId !== record.id)}
+            >
+              删除
+            </Button>
           </Popconfirm>
         </Space>
       ),
@@ -309,6 +327,7 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
           rowKey="id"
           loading={loading}
           pagination={false}
+          scroll={{ x: 1040 }}
           locale={{ emptyText: <Empty description={'还没有自动任务。点击"创建任务"开始。'} /> }}
         />
       </Card>

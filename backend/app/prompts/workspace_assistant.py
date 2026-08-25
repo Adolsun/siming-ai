@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json as _json
 
-from .workspace_contract import AVAILABLE_WORKSPACE_TOOLS, SCOPE_LABELS
 
 MAX_ITERATIONS = 30
 

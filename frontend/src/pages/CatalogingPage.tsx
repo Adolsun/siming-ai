@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Col, Row, message } from 'antd'
 import { apiClient } from '../api/client'
+import { useAutoResumeCataloging } from '../features/cataloging/useAutoResumeCataloging'
 import { useModelOptions } from '../hooks/useModelOptions'
 import CatalogingCandidatesPanel from './CatalogingCandidatesPanel'
 import CatalogingHeader from './CatalogingHeader'
@@ -326,11 +327,13 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     if (!job) return
     setLoading(true)
     try {
-      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/recover-current`)
+      const recovery = await apiClient.post<ApiResponse<unknown>>(
+        `/projects/${projectId}/cataloging/${job.id}/recover-current`,
+      )
       const data = await fetchJob(job.id)
       const runId = candidateRunId(data.job, data.runs)
       await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
-      message.success('当前章节已转入人工确认')
+      message.success(recovery.data.message || '当前章节已转入人工确认')
     } catch (err: any) {
       message.error(err.message || '转入人工确认失败')
     } finally {
@@ -403,6 +406,13 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const updateCandidateDraft = (candidateId: string, value: string) => {
     setCandidateDrafts((current) => ({ ...current, [candidateId]: value }))
   }
+
+  useAutoResumeCataloging({
+    job,
+    streaming,
+    onLog: appendLog,
+    onResume: streamJob,
+  })
 
   useEffect(() => {
     fetchChapters().catch((err) => message.error(err.message || '获取章节失败'))

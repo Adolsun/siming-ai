@@ -1,7 +1,16 @@
 """Pydantic schemas for AI writing engine endpoints."""
 from datetime import datetime
 from typing import Any, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class MobileProviderEnvelope(BaseModel):
+    """End-to-end encrypted Android-owned provider configuration."""
+
+    version: Literal[1] = 1
+    ephemeral_public_key: str = Field(min_length=40, max_length=64)
+    nonce: str = Field(min_length=16, max_length=32)
+    ciphertext: str = Field(min_length=32, max_length=100_000)
 
 
 class WorkspaceAssistantRequest(BaseModel):
@@ -28,7 +37,37 @@ class WorkspaceAssistantRequest(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=1)
     outline_batch_count: int = Field(3, ge=1, le=12, description="Preferred number of consecutive outline chapters to plan")
     auto_apply: bool = Field(True, description="Apply tool actions proposed by the model")
+    local_cli_permission_grant: Literal["chat_only", "project_agent_once"] = Field(
+        "chat_only",
+        description=(
+            "One-turn user grant for a local CLI to use the scoped Siming MCP tools"
+        ),
+    )
+    local_cli_read_permission_grant: Literal["none", "read_once"] = Field(
+        "none",
+        description="One-turn consent to snapshot explicitly named local paths for OpenCode",
+    )
+    local_cli_read_paths: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Absolute files/directories explicitly confirmed by the user for this turn",
+    )
     history: list[dict] = Field(default_factory=list)
+    model_route: Literal["pc", "mobile"] = "pc"
+    mobile_provider: Optional[MobileProviderEnvelope] = Field(
+        None,
+        repr=False,
+        exclude=True,
+        description="Encrypted, request-only provider credentials from a paired Android device",
+    )
+
+    @model_validator(mode="after")
+    def require_mobile_provider_envelope(self):
+        if self.model_route == "mobile" and self.mobile_provider is None:
+            raise ValueError("选择手机模型线路时必须提供加密凭据")
+        if self.model_route == "pc" and self.mobile_provider is not None:
+            raise ValueError("PC 模型线路不能携带手机模型凭据")
+        return self
 
 
 class WorkspaceAssistantRunResponse(BaseModel):

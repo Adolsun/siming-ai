@@ -165,9 +165,19 @@ data class RemoteConflict(
 data class ConflictResolutionRequest(val choice: String)
 
 @Serializable
+data class MobileProviderEnvelope(
+    val version: Int = 1,
+    @SerialName("ephemeral_public_key") val ephemeralPublicKey: String,
+    val nonce: String,
+    val ciphertext: String,
+)
+
+@Serializable
 data class WorkspaceAssistantRequest(
     val scope: String,
     val message: String,
     @SerialName("assistant_mode") val assistantMode: String = "quality",
     @SerialName("auto_apply") val autoApply: Boolean = true,
+    @SerialName("model_route") val modelRoute: String = "pc",
+    @SerialName("mobile_provider") val mobileProvider: MobileProviderEnvelope? = null,
 )

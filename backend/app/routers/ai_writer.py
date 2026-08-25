@@ -6,41 +6,35 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
-from ..core.db_helpers import get_character_or_404, get_project_or_404
+from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
+from ..core.utils import utc_isoformat
 from ..database.session import get_db
 from ..modules.assistant.application.system_conversations import SystemConversationStore
 from ..modules.assistant.interfaces.system_conversation_dependencies import (
     get_system_conversation_store,
 )
 from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
-from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
+from ..services.project_creation_context import (
+    get_project_creation_context,
+    resolve_project_creation_session,
+)
 from ..services.context_builders import (
-    _build_chapter_detail_context,
     _build_character_ai_context,
-    _build_character_catalog,
     _build_character_context,
     _build_character_relationships,
     _build_character_timeline,
-    _build_outline_context,
-    _build_outline_overview,
-    _build_recent_chapter_details,
-    _build_recent_summaries,
-    _build_relationship_context,
-    _build_scene_characters_context,
-    _build_world_context,
     _count_words,
     _get_outline_node_or_404,
 )
 from ..services.content_store import ensure_project_folder
 from ..prompts.workspace_assistant import (
-    build_workspace_assistant_system_prompt,
     build_workspace_assistant_initial_user_message,
     format_tool_result_message,
     format_previous_search_context,
@@ -50,14 +44,12 @@ from ..prompts.workspace_assistant import (
     MAX_ITERATIONS,
 )
 from ..services.agent.prompt_builder import build_system_prompt, get_workspace_pack, inject_assistant_mode
-from ..ai.local_cli_adapter import is_local_cli_provider
+from ..ai.local_cli_adapter import CLIPermissionRequiredError, is_local_cli_provider
 from ..services.skills.service import select_relevant_skills, build_skill_prompt_section
 from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
-    STYLE_OPTIONS,
     _detect_forbidden_sentence_violations,
-    _mechanical_repair_forbidden_sentences,
-    _repair_assistant_parsed_style,
+    _mechanical_repair_forbidden_sentences,  # noqa: F401 - compatibility export
     _repair_forbidden_sentence_text,
 )
 from ..services.workspace.tool_schemas import (
@@ -515,6 +507,27 @@ def _workspace_action_summary(action: dict) -> str:
     return f"{tool}：{_compact_workspace_detail(label, 80)}" if label else tool
 
 
+def _workspace_local_cli_bridge_prompt(*, allow_writes: bool) -> str:
+    permission = (
+        "本轮已获得一次性项目写入授权；可在最终轮次提出写入 actions。"
+        if allow_writes
+        else (
+            "本轮尚未获得项目写入授权；仍应提出完成请求所需的写入 actions，"
+            "司命会暂停并向用户申请一次性授权，绝不能声称已经保存。"
+        )
+    )
+    return f"""【本机 CLI 受控工具桥】
+当前 CLI 不通过原生 function calling 接收工具。不要因此声称本轮工具缺失，也不要要求用户改用命令行。
+你必须只输出一个 JSON 对象，禁止 Markdown 或额外文本：
+{{"reply":"给用户的简洁中文说明","done":true,"actions":[{{"tool":"工具名","arguments":{{}}}}],"needs_confirmation":false}}
+- 需要先读取资料时：done=false，actions 只放本轮需要的读取工具；司命会返回真实结果供下一轮继续。
+- 信息充分且需要写入时：done=true，actions 放最终写入工具；
+  工具名必须来自系统提示中的“本轮可用工具”。
+- 只需聊天回答时：done=true，actions=[]，把回复放入 reply。
+- 不得把工具调用写进 reply，也不得用“工具列表里没有 create_character”等未经核对的说法代替 actions。
+{permission}"""
+
+
 def _build_workspace_final_reply(
     final_reply: str,
     *,
@@ -620,8 +633,8 @@ def _assistant_conversation_to_dict(conversation: Any, message_count: Optional[i
         "current_outline_node_id": conversation.current_outline_node_id,
         "model": conversation.model,
         "message_count": message_count,
-        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "created_at": utc_isoformat(conversation.created_at),
+        "updated_at": utc_isoformat(conversation.updated_at),
     }
 
 
@@ -639,8 +652,8 @@ def _assistant_message_to_dict(message: Any) -> dict:
         "content": message.content,
         "payload": payload,
         "status": message.status,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+        "created_at": utc_isoformat(message.created_at),
+        "updated_at": utc_isoformat(message.updated_at),
     }
 
 
@@ -1128,11 +1141,29 @@ def _trim_context_if_needed(messages: list[dict], max_chars: int = 800_000) -> l
 async def workspace_assistant_stream(
     project_id: str,
     payload: WorkspaceAssistantRequest,
+    request: Request,
     db: Session = Depends(get_db),
     system_conversations: SystemConversationStore = Depends(get_system_conversation_store),
 ):
     """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     get_project_or_404(db, project_id)
+    request_provider = None
+    if payload.model_route == "mobile":
+        if (
+            getattr(request.state, "gateway_device_platform", None) != "android"
+            or not getattr(request.state, "gateway_device_id", None)
+        ):
+            raise ValidationError("手机模型线路只允许已配对的 Android 设备使用")
+        from ..services.mobile_provider_envelope import decrypt_mobile_provider
+
+        request_provider = decrypt_mobile_provider(
+            db,
+            payload.mobile_provider,
+            device_id=request.state.gateway_device_id,
+            project_id=project_id,
+        )
+        payload.mobile_provider = None
+        payload.model = f"{request_provider.provider}:{request_provider.default_model}"
     if payload.canonical_conversation_id:
         try:
             canonical = system_conversations.get(payload.canonical_conversation_id)["conversation"]
@@ -1185,7 +1216,6 @@ async def workspace_assistant_stream(
         searched_context: list[dict] = []
         final_model = ""
         final_usage = None
-        parsed_fallback: dict = {}
         last_operation_report_at = 0.0
 
         def report_model_activity(text: str, *, signal: str = "output", message: str = "模型正在生成回复") -> None:
@@ -1274,28 +1304,62 @@ async def workspace_assistant_stream(
                 payload.model,
                 cwd=project_folder,
             )
-            local_cli_mcp_enabled = local_cli_extra_body is not None
-            if local_cli_mcp_enabled:
+            local_cli_selected = is_local_cli_provider(selected_provider)
+            local_cli_permission_granted = (
+                local_cli_selected
+                and payload.local_cli_permission_grant == "project_agent_once"
+            )
+            local_cli_mcp_enabled = (
+                selected_provider == "opencode_cli" and local_cli_permission_granted
+            )
+            local_cli_bridge_mode = local_cli_selected and not local_cli_mcp_enabled
+            if local_cli_selected:
+                local_cli_read_permission_granted = (
+                    selected_provider == "opencode_cli"
+                    and payload.local_cli_read_permission_grant == "read_once"
+                    and bool(payload.local_cli_read_paths)
+                )
                 local_cli_extra_body = dict(local_cli_extra_body)
-                local_cli_extra_body["local_cli_allow_mcp"] = True
+                local_cli_extra_body.update(
+                    {
+                        "local_cli_permission_granted": local_cli_permission_granted,
+                        "local_cli_allow_mcp": local_cli_mcp_enabled,
+                        "local_cli_read_permission_granted": local_cli_read_permission_granted,
+                        "local_cli_read_paths": (
+                            list(payload.local_cli_read_paths)
+                            if local_cli_read_permission_granted else []
+                        ),
+                        # OpenCode receives an inline one-process MCP config and
+                        # therefore never needs the real project directory.
+                        # Other CLIs use the validated JSON bridge in the same
+                        # isolated mode, even after one-turn write authorization.
+                        "local_cli_isolated": True,
+                        "local_cli_mcp_permission_pack": "project_management",
+                        "local_cli_mcp_project_id": project_id,
+                    }
+                )
             if assistant_run.operation_id:
                 local_cli_extra_body = dict(local_cli_extra_body or {})
                 local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = [f"当前作品 project_id：{project_id}"]
-            if payload.creation_session_id:
-                creation_session = novel_creation_session_store(db).session(
-                    payload.creation_session_id
+            creation_session = resolve_project_creation_session(
+                db,
+                project_id,
+                payload.creation_session_id,
+            )
+            creation_context = get_project_creation_context(
+                db,
+                project_id,
+                creation_session.id if creation_session else None,
+            )
+            if creation_session and creation_context:
+                selected_context.append(
+                    "当前作品关联的权威立项数据（不得把 confirmed 误报为待确认）：\n"
+                    f"{json.dumps(creation_context, ensure_ascii=False)}\n"
+                    "需要更多立项细节时，先调用 get_project_info；它会返回 creation_session_id、"
+                    "目标字数、目标章节和各工件状态，再按该 session_id 使用立项读取工具。"
                 )
-                if creation_session and project_id in {
-                    creation_session.created_project_id,
-                    creation_session.source_project_id,
-                }:
-                    selected_context.append(
-                        "当前作品关联的立项数据："
-                        f"creation_session_id={creation_session.id}，revision={int(creation_session.revision or 0)}。"
-                        "当用户询问、补充或修改作品设定时，先读取这份立项数据，再使用立项工具做局部更新。"
-                    )
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
             if selected_character:
@@ -1376,6 +1440,11 @@ async def workspace_assistant_stream(
                     "type": "skills_matched",
                     "skills": skill_info,
                 })
+            if local_cli_bridge_mode:
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    f"{_workspace_local_cli_bridge_prompt(allow_writes=local_cli_permission_granted)}"
+                )
             initial_user = build_workspace_assistant_initial_user_message(
                 project_title=project.title,
                 project_description=project.description,
@@ -1397,22 +1466,40 @@ async def workspace_assistant_stream(
             yield _sse_event({"type": "status", "message": "AI 助手开始分析和检索资料...", "tool": "agent_loop"})
 
             searched_queries: set[tuple] = set()
-            parsed_fallback = {}
             try:
                 supports_function_calling = LLMGateway.supports_tool_calling(payload.model)
             except Exception:
                 supports_function_calling = True
             use_function_calling = supports_function_calling
-            allow_plain_text_fallback = not supports_function_calling
+            allow_plain_text_fallback = (
+                not supports_function_calling and not local_cli_bridge_mode
+            )
             if not supports_function_calling:
+                if local_cli_mcp_enabled:
+                    mode_message = (
+                        "OpenCode 已连接当前作品范围的临时 Siming MCP，"
+                        "可自行选择项目读写工具。"
+                    )
+                    mode_tool = "local_cli_mcp_mode"
+                elif local_cli_bridge_mode and local_cli_permission_granted:
+                    mode_message = (
+                        "本机 CLI 已启用受控工具桥；"
+                        "本轮可由司命校验并执行项目读写工具。"
+                    )
+                    mode_tool = "local_cli_bridge_mode"
+                elif local_cli_bridge_mode:
+                    mode_message = (
+                        "本机 CLI 已进入安全工具桥；"
+                        "读取可直接执行，写入会先请求一次性授权。"
+                    )
+                    mode_tool = "local_cli_bridge_mode"
+                else:
+                    mode_message = "当前模型不支持稳定工具调用，已切换为文本模式。"
+                    mode_tool = "local_cli_mode"
                 yield _sse_event({
                     "type": "status",
-                    "message": (
-                        "本机 CLI 已连接 Siming MCP，可自行选择项目读写工具。"
-                        if local_cli_mcp_enabled
-                        else "当前模型不支持稳定工具调用，已切换为文本/计划编排模式。"
-                    ),
-                    "tool": "local_cli_mcp_mode" if local_cli_mcp_enabled else "local_cli_mode",
+                    "message": mode_message,
+                    "tool": mode_tool,
                 })
 
             for iteration in range(1, MAX_ITERATIONS + 1):
@@ -1472,6 +1559,8 @@ async def workspace_assistant_stream(
                                 if not reasoning_buffer:
                                     reasoning_buffer = chunk.get("reasoning_content", "")
                                 provider_state = chunk.get("provider_state") or []
+                    except CLIPermissionRequiredError:
+                        raise
                     except LLMError as e:
                         fc_error = e
                         if "API Key" in str(e) or "提供商" in str(e):
@@ -1507,6 +1596,8 @@ async def workspace_assistant_stream(
                             raw_buffer.append(chunk)
                             report_model_activity(chunk)
                             yield _sse_event({"type": "thinking_delta", "delta": chunk})
+                    except CLIPermissionRequiredError:
+                        raise
                     except Exception as stream_err:
                         stream_error = stream_err
                         yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
@@ -1566,7 +1657,6 @@ async def workspace_assistant_stream(
                         "actions": [],
                         "needs_confirmation": False,
                     }
-                    parsed_fallback = parsed
                     final_model = payload.model or ""
                     final_usage = None
 
@@ -1579,6 +1669,14 @@ async def workspace_assistant_stream(
 
                     search_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in SEARCH_TOOL_NAMES]
                     write_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in WRITE_TOOL_NAMES]
+
+                    if write_actions and local_cli_selected and not local_cli_permission_granted:
+                        requested_tools = ", ".join(
+                            sorted({str(action.get("tool") or "") for action in write_actions})
+                        )
+                        raise CLIPermissionRequiredError(
+                            f"项目写入工具需要一次性授权：{requested_tools or 'write'}"
+                        )
 
                     if not is_done and write_actions:
                         yield _sse_event({
@@ -1727,6 +1825,17 @@ async def workspace_assistant_stream(
 
                 se_names = SEARCH_TOOL_NAMES
                 wr_names = WRITE_TOOL_NAMES
+                if local_cli_selected and not local_cli_permission_granted:
+                    requested_writes = [
+                        tc["function"]["name"]
+                        for tc in tool_calls
+                        if tc["function"]["name"] in wr_names
+                    ]
+                    if requested_writes:
+                        raise CLIPermissionRequiredError(
+                            "项目写入工具需要一次性授权："
+                            + ", ".join(sorted(set(requested_writes)))
+                        )
 
                 yield _sse_event({
                     "type": "tool",
@@ -2095,11 +2204,11 @@ async def workspace_assistant_stream(
                         _resp = await LLMGateway.chat_completion(
                             messages=[{"role": "system", "content": _MP.build_system_prompt()},
                                       {"role": "user", "content": _conv}],
-                            model=None,
+                            model=payload.model if request_provider is not None else None,
                             temperature=0.2,
                             max_tokens=2000,
                             extra_body=LLMGateway.local_cli_extra_body(
-                                None,
+                                payload.model if request_provider is not None else None,
                                 cwd=project_folder,
                             ),
                         )
@@ -2137,7 +2246,14 @@ async def workspace_assistant_stream(
                     finally:
                         _db.close()
 
-                asyncio.create_task(_extract_and_save_memories())
+                if request_provider is not None:
+                    # A phone-owned credential may not escape the request task
+                    # through a copied ContextVar in a fire-and-forget task.
+                    # Run the same memory extraction before completing the
+                    # stream, then release the ephemeral provider context.
+                    await _extract_and_save_memories()
+                else:
+                    asyncio.create_task(_extract_and_save_memories())
 
             if assistant_run:
                 db.refresh(assistant_run)
@@ -2171,6 +2287,51 @@ async def workspace_assistant_stream(
                 final_reply="任务已取消，本轮不会再写入章节。",
             )
             raise
+        except CLIPermissionRequiredError as exc:
+            permission_message = (
+                "本机 CLI 需要额外权限才能继续。本轮没有访问项目目录、调用 MCP "
+                "或执行写入；你可以在聊天窗口选择“仅本次允许并重试”。"
+            )
+            permission_payload = {
+                "tool_logs": tool_logs,
+                "outcome": "waiting_user",
+                "permission_required": {
+                    "kind": "local_cli_project_agent",
+                    "scope": "project_agent_once",
+                    "provider": selected_provider,
+                    "detail": str(exc),
+                },
+            }
+            if assistant_msg_db:
+                assistant_msg_db.content = permission_message
+                assistant_msg_db.status = "completed"
+                assistant_msg_db.payload_json = json.dumps(
+                    permission_payload,
+                    ensure_ascii=False,
+                )
+                commit_session(db)
+            mark_assistant_run(
+                db,
+                assistant_run,
+                status="completed",
+                phase="cli_permission_required",
+                final_reply=permission_message,
+                outcome="waiting_user",
+            )
+            if assistant_run:
+                db.refresh(assistant_run)
+            yield _sse_event(
+                {
+                    "type": "permission_required",
+                    "message": permission_message,
+                    "detail": str(exc),
+                    "permission_scope": "project_agent_once",
+                    "provider": selected_provider,
+                    "original_message": payload.message,
+                    "run": run_payload(assistant_run) if assistant_run else None,
+                }
+            )
+            yield _sse_event("[DONE]")
         except LLMError as exc:
             if assistant_msg_db:
                 assistant_msg_db.content = str(exc)
@@ -2268,6 +2429,18 @@ async def workspace_assistant_stream(
                 yield event
 
         stream_factory = cli_routed_event_generator
+
+    if request_provider is not None:
+        provider_stream_factory = stream_factory
+
+        async def mobile_provider_event_generator(source_db: Session):
+            from ..modules.model_runtime.application.request_override import use_request_provider
+
+            with use_request_provider(request_provider):
+                async for event in provider_stream_factory(source_db):
+                    yield event
+
+        stream_factory = mobile_provider_event_generator
 
     return StreamingResponse(
         detached_assistant_stream(stream_factory),

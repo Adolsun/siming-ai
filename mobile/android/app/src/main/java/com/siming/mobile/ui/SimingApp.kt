@@ -2,8 +2,8 @@ package com.siming.mobile.ui
 
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -68,7 +67,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -96,9 +94,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,15 +108,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.AssistantModelRoute
+import com.siming.mobile.data.MobileExportFile
+import com.siming.mobile.data.MobileNovelImportFile
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
-import com.siming.mobile.BuildConfig
-import java.text.DateFormat
-import java.util.Date
-import kotlinx.serialization.json.JsonObject
+import com.siming.mobile.data.network.PcAuthoringContract
+import com.siming.mobile.data.network.PcFieldKind
+import com.siming.mobile.R
 
 private enum class RootTab(val label: String, val icon: ImageVector) {
     Library("作品", Icons.AutoMirrored.Outlined.LibraryBooks),
+    Create("立项", Icons.Outlined.AutoAwesome),
     Sync("同步", Icons.Outlined.Sync),
     Settings("设置", Icons.Outlined.Settings),
 }
@@ -132,27 +134,31 @@ private data class EntitySection(
 )
 
 private val entitySections = listOf(
-    EntitySection("chapter", "正文", Icons.AutoMirrored.Outlined.MenuBook, "还没有章节，可离线新建正文"),
+    EntitySection("chapter", "正文", Icons.AutoMirrored.Outlined.MenuBook, "还没有章节，可以新建正文"),
     EntitySection("outline", "大纲", Icons.Outlined.MoreHoriz, "还没有大纲节点"),
     EntitySection("character", "角色", Icons.Outlined.Person, "还没有角色资料"),
     EntitySection("world", "世界", Icons.Outlined.Hub, "还没有世界观设定"),
     EntitySection("foreshadowing", "伏笔", Icons.Outlined.Link, "还没有伏笔记录"),
     EntitySection("governance", "治理", Icons.Outlined.WarningAmber, "还没有叙事承诺或治理记录"),
+    EntitySection("tools", "工具", Icons.Outlined.Settings, ""),
 )
 
 @Composable
 fun SimingApp(
     viewModel: MainViewModel,
     onScanQr: () -> Unit,
-    onPickText: (((String, String) -> Unit) -> Unit),
+    onPickText: (((MobileNovelImportFile) -> Unit) -> Unit),
+    onSaveExport: (MobileExportFile) -> Unit,
 ) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val projects by viewModel.projects.collectAsStateWithLifecycle()
+    val creationDrafts by viewModel.creationDrafts.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
     val snackbar = remember { SnackbarHostState() }
     var rootTab by rememberSaveable { mutableStateOf(RootTab.Library) }
     var selectedProjectId by rememberSaveable { mutableStateOf<String?>(null) }
     var showDirectApiSetup by rememberSaveable { mutableStateOf(false) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(ui.notice, ui.error) {
         val message = ui.error ?: ui.notice ?: return@LaunchedEffect
@@ -171,7 +177,12 @@ fun SimingApp(
         return
     }
 
-    val pairingRequired = connection == null && projects.isEmpty() && ui.directApi == null
+    if (showAbout) {
+        MobileAboutWorkspace(onBack = { showAbout = false })
+        return
+    }
+
+    val pairingRequired = connection == null && projects.isEmpty() && creationDrafts.isEmpty() && ui.directApi == null
     if (pairingRequired || ui.pairing != null) {
         PairingScreen(
             viewModel = viewModel,
@@ -191,6 +202,7 @@ fun SimingApp(
             project = selectedProject,
             onBack = { selectedProjectId = null },
             snackbar = snackbar,
+            onSaveExport = onSaveExport,
         )
         return
     }
@@ -222,6 +234,17 @@ fun SimingApp(
         },
     ) { padding ->
         when (rootTab) {
+            RootTab.Create -> CreationScreen(
+                modifier = Modifier.padding(padding),
+                viewModel = viewModel,
+                connection = connection,
+                directApi = ui.directApi,
+                onConfigureApi = { showDirectApiSetup = true },
+                onOpenProject = { projectId ->
+                    rootTab = RootTab.Library
+                    selectedProjectId = projectId
+                },
+            )
             RootTab.Library -> LibraryScreen(
                 modifier = Modifier.padding(padding),
                 projects = projects,
@@ -231,19 +254,22 @@ fun SimingApp(
                 onOpenProject = { selectedProjectId = it },
                 onScanQr = onScanQr,
                 onPickText = onPickText,
+                onStartAiCreation = { rootTab = RootTab.Create },
             )
-            RootTab.Sync -> SyncScreen(
+            RootTab.Sync -> MobileSyncWorkspace(
                 modifier = Modifier.padding(padding),
                 viewModel = viewModel,
                 connection = connection,
                 onScanQr = onScanQr,
             )
-            RootTab.Settings -> AboutScreen(
+            RootTab.Settings -> MobileSettingsWorkspace(
                 modifier = Modifier.padding(padding),
                 connection = connection,
                 directApi = ui.directApi,
                 viewModel = viewModel,
                 onConfigureApi = { showDirectApiSetup = true },
+                onOpenSync = { rootTab = RootTab.Sync },
+                onOpenAbout = { showAbout = true },
             )
         }
     }
@@ -268,15 +294,14 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
             }
         },
         navigationIcon = {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = CircleShape,
-                modifier = Modifier.padding(start = 12.dp).size(34.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("命", color = SimingCinnabar, fontWeight = FontWeight.Bold)
-                }
-            }
+            Image(
+                painter = painterResource(R.drawable.ic_siming_pc),
+                contentDescription = "司命应用图标",
+                modifier = Modifier
+                    .padding(start = 12.dp)
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(9.dp)),
+            )
         },
         actions = {
             Icon(
@@ -307,9 +332,11 @@ private fun LibraryScreen(
     viewModel: MainViewModel,
     onOpenProject: (String) -> Unit,
     onScanQr: () -> Unit,
-    onPickText: (((String, String) -> Unit) -> Unit),
+    onPickText: (((MobileNovelImportFile) -> Unit) -> Unit),
+    onStartAiCreation: () -> Unit,
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<ReplicaEntity?>(null) }
     Column(modifier.fillMaxSize()) {
         if (connection == null) {
             StatusBanner(
@@ -331,31 +358,25 @@ private fun LibraryScreen(
             modifier = Modifier.fillMaxSize(),
         ) {
             item {
-                ScreenHeading(
-                    kicker = "LOCAL-FIRST LIBRARY",
-                    title = "作品库",
-                    detail = "创建新小说，或导入已有正文继续二创；资料先落手机，联网后按修订号同步。",
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("作品", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        if (projects.isEmpty()) "创建或导入你的第一部小说" else "${projects.size} 部作品 · 继续上次的创作",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             item {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { showCreate = true }) {
-                        Icon(Icons.Outlined.Add, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("创作新小说")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            onPickText { name, text ->
-                                viewModel.importNovel(name, text, onOpenProject)
-                            }
-                        },
-                    ) {
-                        Icon(Icons.Outlined.FileOpen, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("导入已有小说")
-                    }
-                }
+                LibraryActionPanel(
+                    onStartAiCreation = onStartAiCreation,
+                    onCreateBlank = { showCreate = true },
+                    onImportNovel = {
+                        onPickText { file ->
+                            viewModel.importNovel(file, onOpenProject)
+                        }
+                    },
+                )
             }
             if (projects.isEmpty()) {
                 item {
@@ -367,10 +388,11 @@ private fun LibraryScreen(
                 }
             } else {
                 items(projects, key = { it.key }) { project ->
-                    ProjectCard(
-                        project,
+                    MobileProjectCard(
+                        project = project,
                         localOnly = connection == null,
                         onClick = { onOpenProject(project.projectId) },
+                        onDelete = { deleteTarget = project },
                     )
                 }
             }
@@ -385,10 +407,45 @@ private fun LibraryScreen(
             },
         )
     }
+    deleteTarget?.let { target ->
+        val title = target.text("title").ifBlank { "未命名作品" }
+        val canAttemptDelete = connection != null || (target.dirty && target.revision == 0L)
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除《$title》？") },
+            text = {
+                Text(
+                    when {
+                        connection != null -> "删除后会从 PC 权威作品库移除，并清理这台手机的离线副本。此操作不可撤销。"
+                        canAttemptDelete -> "这部作品尚未同步到 PC，将只从当前手机移除。此操作不可撤销。"
+                        else -> "这部作品已经与 PC 同步。为避免下次同步重新出现，请先连接 PC Gateway，再执行删除。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = canAttemptDelete,
+                    onClick = {
+                        viewModel.deleteProject(target.projectId) { deleteTarget = null }
+                    },
+                ) {
+                    Text(if (canAttemptDelete) "确认删除" else "删除需联网")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
-private fun ProjectCard(project: ReplicaEntity, localOnly: Boolean, onClick: () -> Unit) {
+private fun ProjectCard(
+    project: ReplicaEntity,
+    localOnly: Boolean,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val title = project.text("title").ifBlank { "未命名作品" }
     val description = project.text("description")
     OutlinedCard(
@@ -433,6 +490,14 @@ private fun ProjectCard(project: ReplicaEntity, localOnly: Boolean, onClick: () 
                     if (!project.dirty && !project.conflicted) MicroTag("已落库", SimingGreen)
                 }
             }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    "删除作品",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
             Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp))
         }
     }
@@ -445,14 +510,122 @@ private fun ProjectScreen(
     project: ReplicaEntity,
     onBack: () -> Unit,
     snackbar: SnackbarHostState,
+    onSaveExport: (MobileExportFile) -> Unit,
 ) {
-    var section by rememberSaveable(project.projectId) { mutableStateOf(entitySections.first().type) }
+    var section by rememberSaveable(project.projectId) { mutableStateOf("chapter") }
+    var lastReferenceSection by rememberSaveable(project.projectId) { mutableStateOf("outline") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
+    var advanced by remember { mutableStateOf<EditorTarget?>(null) }
+    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+    var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }
+    var outlineTarget by remember { mutableStateOf<OutlineEditorTarget?>(null) }
+    var narrativeTarget by remember { mutableStateOf<EditorTarget?>(null) }
+    var creatingChapter by remember { mutableStateOf(false) }
+    var showChapterOrder by remember { mutableStateOf(false) }
     val currentSection = entitySections.firstOrNull { it.type == section }
     val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
+    val outlineRecords by viewModel.entities(project.projectId, "outline").collectAsStateWithLifecycle(initialValue = emptyList())
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
 
-    if (editor != null) {
+    if (creatingChapter || chapterEditor != null) {
+        val activeChapter = chapterEditor
+        ChapterEditorScreen(
+            projectId = project.projectId,
+            chapter = activeChapter,
+            suggestedTitle = "第 ${records.size + 1} 章",
+            viewModel = viewModel,
+            onBack = {
+                creatingChapter = false
+                chapterEditor = null
+            },
+            onOpenAi = {
+                creatingChapter = false
+                chapterEditor = null
+                section = "assistant"
+            },
+            onOpenHistory = activeChapter?.let { record ->
+                {
+                    chapterEditor = null
+                    advanced = EditorTarget("chapter", record)
+                }
+            },
+        )
+        return
+    }
+
+    if (outlineTarget != null) {
+    val activeOutlineTarget = requireNotNull(outlineTarget)
+    OutlineDetailScreen(
+        projectId = project.projectId,
+        target = activeOutlineTarget,
+        records = outlineRecords,
+        viewModel = viewModel,
+        onBack = { outlineTarget = null },
+        onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
+    )
+    return
+}
+
+if (narrativeTarget != null) {
+    val activeNarrativeTarget = requireNotNull(narrativeTarget)
+    NarrativeDetailScreen(
+        projectId = project.projectId,
+        entityType = activeNarrativeTarget.entityType,
+        record = activeNarrativeTarget.record,
+        viewModel = viewModel,
+        onBack = { narrativeTarget = null },
+    )
+    return
+}
+
+if (referenceTarget != null) {
+    val target = requireNotNull(referenceTarget)
+    when (target.entityType) {
+        "character" -> CharacterDetailScreen(
+            projectId = project.projectId,
+            character = target.record,
+            viewModel = viewModel,
+            onBack = { referenceTarget = null },
+            onAdvanced = target.record?.let { record ->
+                { advanced = EditorTarget("character", record) }
+            },
+        )
+        "world" -> WorldDetailScreen(
+            projectId = project.projectId,
+            entry = target.record,
+            viewModel = viewModel,
+            onBack = { referenceTarget = null },
+            onAdvanced = target.record?.let { record ->
+                { advanced = EditorTarget("world", record) }
+            },
+        )
+    }
+    advanced?.let { extra ->
+        val record = extra.record
+        if (record != null) {
+            when (extra.entityType) {
+                "character" -> CharacterAdvancedDialog(
+                    projectId = project.projectId,
+                    character = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "world" -> WorldAdvancedDialog(
+                    projectId = project.projectId,
+                    entry = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+            }
+        }
+    }
+    return
+}
+
+if (editor != null) {
         RecordEditorScreen(
             projectId = project.projectId,
             target = requireNotNull(editor),
@@ -471,7 +644,10 @@ private fun ProjectScreen(
                     title = {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(project.text("title").ifBlank { "未命名作品" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("离线资料工作台", style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                if (connection != null) "PC API 一致模式" else "离线资料工作台",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     },
                     navigationIcon = {
@@ -488,54 +664,158 @@ private fun ProjectScreen(
                 if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
+        bottomBar = {
+            ProjectPrimaryNavigation(
+                selected = section,
+                preferredReferenceSection = lastReferenceSection,
+                onSelected = { section = it },
+            )
+        },
         floatingActionButton = {
-            if (section != "assistant") {
-                FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
+            if (section !in setOf("assistant", "tools")) {
+                FloatingActionButton(
+            onClick = {
+                if (section == "chapter") creatingChapter = true
+                else if (section == "outline") outlineTarget = OutlineEditorTarget(null)
+                else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)
+                else if (section in setOf("foreshadowing", "governance")) narrativeTarget = EditorTarget(section, null)
+                else editor = EditorTarget(section, null)
+            },
+        ) {
                     Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
                 }
             }
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .background(SimingPaperWarm)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                entitySections.forEach { item ->
-                    AssistChip(
-                        onClick = { section = item.type },
-                        label = { Text(item.label) },
-                        leadingIcon = { Icon(item.icon, null, Modifier.size(17.dp)) },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (section == item.type) MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            labelColor = if (section == item.type) SimingCinnabar else MaterialTheme.colorScheme.onSurface,
-                        ),
-                        border = AssistChipDefaults.assistChipBorder(
-                            enabled = true,
-                            borderColor = if (section == item.type) SimingCinnabar else MaterialTheme.colorScheme.outlineVariant,
-                        ),
-                    )
-                }
-                AssistChip(
-                    onClick = { section = "assistant" },
-                    label = { Text("AI") },
-                    leadingIcon = { Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(17.dp)) },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (section == "assistant") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                        labelColor = if (section == "assistant") SimingCinnabar else MaterialTheme.colorScheme.onSurface,
-                    ),
+            if (section in projectReferenceSections.map { it.first }) {
+                ProjectReferenceNavigation(
+                    selected = section,
+                    onSelected = {
+                        section = it
+                        lastReferenceSection = it
+                    },
                 )
             }
-            if (section == "assistant") {
-                AssistantScreen(project.projectId, viewModel)
-            } else {
-                RecordList(
+            when (section) {
+                "chapter" -> ChapterWorkspace(
+                    chapters = records,
+                    outlines = outlineRecords,
+                    online = connection != null,
+                    onOpen = { chapterEditor = it },
+                    onManageOrder = { showChapterOrder = true },
+                )
+                "assistant" -> AssistantScreen(project.projectId, viewModel)
+                "tools" -> ProjectToolsPanel(
+                    project = project,
+                    online = connection != null,
+                    ui = ui,
+                    viewModel = viewModel,
+                    onExportReady = onSaveExport,
+                )
+                "outline" -> MobileOutlineWorkspace(
+                    projectId = project.projectId,
+                    records = records,
+                    online = connection != null,
+                    onOpen = { outlineTarget = OutlineEditorTarget(it) },
+                    onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
+                    onReorder = { parentId, nodeIds ->
+                        viewModel.reorderOutline(project.projectId, parentId, nodeIds)
+                    },
+                )
+                "foreshadowing", "governance" -> NarrativeWorkspace(
+                    entityType = section,
+                    records = records,
+                    onOpen = { narrativeTarget = EditorTarget(section, it) },
+                )
+                "character" -> CharacterWorkspace(
+                    records = records,
+                    onOpen = { referenceTarget = EditorTarget("character", it) },
+                )
+                "world" -> WorldWorkspace(
+                    records = records,
+                    onOpen = { referenceTarget = EditorTarget("world", it) },
+                )
+                else -> RecordList(
                     section = requireNotNull(currentSection),
                     records = records,
+                    online = connection != null,
                     onOpen = { editor = EditorTarget(section, it) },
+                    onAdvanced = if (section in setOf("character", "world")) {
+                        { record -> advanced = EditorTarget(section, record) }
+                    } else {
+                        null
+                    },
+                    onManageChapterOrder = null,
+                )
+            }
+        }
+    }
+
+
+if (ui.pendingCatalogingProjectId == project.projectId) {
+    AlertDialog(
+        onDismissRequest = viewModel::dismissImportCatalogingPrompt,
+        title = { Text("导入完成 · ${ui.importedChapterCount} 章") },
+        text = {
+            Text(
+                if (connection != null) {
+                    "正文已经导入作品库。现在可以启动与 PC 相同的作品建档流程，让司命从现有章节整理摘要、角色变化和世界观资料。"
+                } else {
+                    "正文已经保存在手机。完整作品建档需要连接 PC Gateway；你可以先阅读、编辑或导出 TXT，连接后再到“工具”启动建档。"
+                },
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (connection != null) viewModel.startCataloging(project.projectId)
+                    section = "tools"
+                    viewModel.dismissImportCatalogingPrompt()
+                },
+            ) {
+                Text(if (connection != null) "开始建档" else "打开作品工具")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = viewModel::dismissImportCatalogingPrompt) { Text("稍后") }
+        },
+    )
+}
+
+    if (showChapterOrder) {
+        ChapterOrderDialog(
+            projectId = project.projectId,
+            chapters = records,
+            online = connection != null,
+            viewModel = viewModel,
+            onDismiss = { showChapterOrder = false },
+        )
+    }
+    advanced?.let { target ->
+        val record = target.record
+        if (record != null) {
+            when (target.entityType) {
+                "chapter" -> ChapterHistoryDialog(
+                    projectId = project.projectId,
+                    chapter = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "character" -> CharacterAdvancedDialog(
+                    projectId = project.projectId,
+                    character = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "world" -> WorldAdvancedDialog(
+                    projectId = project.projectId,
+                    entry = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
                 )
             }
         }
@@ -546,7 +826,10 @@ private fun ProjectScreen(
 private fun RecordList(
     section: EntitySection,
     records: List<ReplicaEntity>,
+    online: Boolean,
     onOpen: (ReplicaEntity) -> Unit,
+    onAdvanced: ((ReplicaEntity) -> Unit)?,
+    onManageChapterOrder: (() -> Unit)?,
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 96.dp),
@@ -554,29 +837,59 @@ private fun RecordList(
         modifier = Modifier.fillMaxSize(),
     ) {
         item {
-            ScreenHeading(
-                kicker = section.type.uppercase(),
-                title = section.label,
-                detail = when (section.type) {
-                    "chapter" -> "正文保存在本机 Room 数据库；每次保存都进入可靠同步队列。"
-                    "character" -> "角色动机、状态与冲突会随正文一起同步，帮助 AI 减少 OOC。"
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScreenHeading(
+                    kicker = section.type.uppercase(),
+                    title = section.label,
+                    detail = when (section.type) {
+                    "chapter" -> if (online) {
+                        "在线保存调用 PC 端同一章节 API，快照、目录与校验逻辑完全复用。"
+                    } else {
+                        "当前离线；正文先保存在手机，恢复连接后进入可靠同步队列。"
+                    }
+                    "character" -> "字段直接对应 PC 角色卡：别名、外貌、能力、位置、境界、身心状态、目标与冲突共享同一份数据。"
                     "world" -> "规则与设定作为独立实体维护，避免二创时漂移。"
-                    else -> "这里的修改支持离线保存与版本分岔保护。"
-                },
-            )
+                    else -> if (online) {
+                        "在线修改调用 PC 端规范 API，同时维护手机离线副本。"
+                    } else {
+                        "这里的修改支持离线保存与版本分岔保护。"
+                    }
+                    },
+                )
+                if (onManageChapterOrder != null) {
+                    OutlinedButton(
+                        onClick = onManageChapterOrder,
+                        enabled = online && records.size > 1,
+                    ) {
+                        Text(if (online) "管理章节顺序" else "章节排序需要 PC Gateway")
+                    }
+                }
+            }
         }
         if (records.isEmpty()) {
             item { EmptyPanel(section.icon, section.emptyText, "点击右下角“＋”开始。") }
         } else {
             items(records, key = { it.key }) { record ->
-                RecordCard(section.type, record, onClick = { onOpen(record) })
+                RecordCard(
+                    section.type,
+                    record,
+                    onClick = { onOpen(record) },
+                    onAdvanced = onAdvanced?.let { callback -> { callback(record) } },
+                    advancedEnabled = online,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () -> Unit) {
+private fun RecordCard(
+    entityType: String,
+    record: ReplicaEntity,
+    onClick: () -> Unit,
+    onAdvanced: (() -> Unit)? = null,
+    advancedEnabled: Boolean = false,
+) {
     val titleKey = if (entityType == "character") "name" else "title"
     val summaryKey = when (entityType) {
         "chapter" -> "content"
@@ -611,7 +924,7 @@ private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () ->
                 else if (record.dirty) Icon(Icons.Outlined.CloudQueue, "等待同步", tint = SimingBlue)
                 else Icon(Icons.Outlined.CheckCircle, "已同步", tint = SimingGreen)
             }
-            val summary = record.text(summaryKey)
+            val summary = if (entityType == "character") canonicalCharacterSummary(record) else record.text(summaryKey)
             if (summary.isNotBlank()) {
                 Text(
                     summary,
@@ -626,6 +939,26 @@ private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () ->
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (onAdvanced != null) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = onAdvanced,
+                        enabled = advancedEnabled,
+                    ) {
+                        Text(
+                            when (entityType) {
+                                "chapter" -> if (advancedEnabled) "版本历史" else "版本需连接 PC"
+                                "character" -> if (advancedEnabled) "关系 / AI / 版本" else "高级资料需连接 PC"
+                                "world" -> if (advancedEnabled) "版本 / 时间线" else "历史需连接 PC"
+                                else -> "高级资料"
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -634,54 +967,153 @@ private data class FormField(
     val key: String,
     val label: String,
     val placeholder: String = "",
-    val multiline: Boolean = false,
-    val numeric: Boolean = false,
-)
-
-private fun fieldsFor(type: String): List<FormField> = when (type) {
-    "project" -> listOf(
-        FormField("title", "作品名"),
-        FormField("description", "作品简介", "题材、主线与二创目标", true),
-        FormField("custom_style_prompt", "自定义文风约束", "可填写角色口吻与禁忌，帮助减少 OOC", true),
-    )
-    "chapter" -> listOf(
-        FormField("title", "章节名"),
-        FormField("content", "正文", "在手机上继续写作…", true),
-    )
-    "outline" -> listOf(
-        FormField("title", "节点标题"),
-        FormField("summary", "计划内容", "本章目标、转折与章末钩子", true),
-        FormField("sort_order", "顺序", numeric = true),
-    )
-    "character" -> listOf(
-        FormField("name", "角色名"),
-        FormField("role_type", "角色定位", "protagonist / supporting / antagonist"),
-        FormField("personality", "性格与口吻", "稳定行为方式、表达习惯与禁区", true),
-        FormField("background", "背景", multiline = true),
-        FormField("current_goal", "当前目标", multiline = true),
-        FormField("active_conflict", "当前冲突", multiline = true),
-    )
-    "world" -> listOf(
-        FormField("title", "设定标题"),
-        FormField("dimension", "维度", "geography / history / factions / other"),
-        FormField("content", "规则与内容", multiline = true),
-        FormField("sort_order", "顺序", numeric = true),
-    )
-    "foreshadowing" -> listOf(
-        FormField("title", "伏笔标题"),
-        FormField("description", "埋设与回收计划", multiline = true),
-        FormField("status", "状态", "open / fulfilled / deferred / abandoned"),
-        FormField("importance", "重要度", "low / medium / high"),
-        FormField("storyline", "故事线"),
-    )
-    "governance" -> listOf(
-        FormField("title", "叙事承诺"),
-        FormField("description", "读者期待与兑现条件", multiline = true),
-        FormField("status", "状态", "open / fulfilled / deferred / abandoned"),
-        FormField("priority", "优先级", "low / medium / high"),
-    )
-    else -> emptyList()
+    val kind: PcFieldKind,
+) {
+    val multiline: Boolean
+        get() = kind in setOf(
+            PcFieldKind.Multiline,
+            PcFieldKind.StringArray,
+            PcFieldKind.JsonObject,
+            PcFieldKind.JsonArray,
+        )
 }
+
+private fun fieldsFor(type: String): List<FormField> =
+    PcAuthoringContract.mobileFields(type).map { spec ->
+        FormField(
+            key = spec.key,
+            label = fieldLabel(type, spec.key),
+            placeholder = fieldPlaceholder(type, spec.key),
+            kind = spec.kind,
+        )
+    }
+
+private fun fieldLabel(type: String, key: String): String = when (type) {
+    "project" -> when (key) {
+        "title" -> "作品名"
+        "description" -> "作品简介"
+        "tags" -> "标签"
+        "narrative_perspective" -> "叙事视角"
+        "writing_style" -> "写作文风"
+        "forbidden_sentence_patterns" -> "禁用句式"
+        "rhetoric_guidelines" -> "修辞规则"
+        "short_sentences" -> "短句模式"
+        "custom_style_prompt" -> "自定义文风约束"
+        "daily_word_goal" -> "每日字数目标"
+        else -> key
+    }
+    "chapter" -> when (key) {
+        "title" -> "章节名"
+        "outline_node_id" -> "关联大纲节点 ID"
+        "content" -> "正文"
+        else -> key
+    }
+    "outline" -> when (key) {
+        "title" -> "节点标题"
+        "node_type" -> "节点类型"
+        "parent_id" -> "父节点 ID"
+        "summary" -> "计划内容"
+        "status" -> "状态"
+        "sort_order" -> "同级顺序"
+        "characters" -> "角色与场景职责"
+        "metadata" -> "大纲元数据"
+        else -> key
+    }
+    "character" -> when (key) {
+        "name" -> "角色名"
+        "aliases" -> "别名"
+        "role_type" -> "角色定位"
+        "age" -> "年龄"
+        "appearance" -> "外貌"
+        "personality" -> "性格"
+        "background" -> "背景"
+        "abilities" -> "能力"
+        "life_status" -> "生命状态"
+        "current_location" -> "当前位置"
+        "realm_or_level" -> "境界 / 等级"
+        "physical_state" -> "身体状态"
+        "mental_state" -> "心理状态"
+        "current_goal" -> "当前目标"
+        "active_conflict" -> "当前冲突"
+        "abilities_state" -> "能力状态"
+        "items_or_assets" -> "持有物 / 资产"
+        "profile" -> "稳定写作锁"
+        "is_evolution_tracked" -> "持续追踪角色变化"
+        "change_summary" -> "本次变更摘要"
+        else -> key
+    }
+    "world" -> when (key) {
+        "title" -> "设定标题"
+        "dimension" -> "维度"
+        "content" -> "规则与内容"
+        "sort_order" -> "顺序"
+        else -> key
+    }
+    "foreshadowing" -> when (key) {
+        "title" -> "伏笔标题"
+        "description" -> "埋设与回收计划"
+        "status" -> "生命周期状态"
+        "importance" -> "重要度"
+        "storyline" -> "故事线"
+        "source_chapter_id" -> "来源章节 ID"
+        "target_chapter_id" -> "计划处理章节 ID"
+        "target_chapter_number" -> "计划处理章节号"
+        "resolved_chapter_id" -> "实际解决章节 ID"
+        "evidence" -> "发现证据"
+        "resolution_note" -> "解决说明"
+        "resolution_evidence" -> "解决证据"
+        "verification_note" -> "复检结论"
+        "closed_by" -> "关闭者"
+        else -> key
+    }
+    "governance" -> when (key) {
+        "title" -> "叙事债务标题"
+        "debt_type" -> "债务类型"
+        "description" -> "读者期待与兑现条件"
+        "status" -> "生命周期状态"
+        "priority" -> "优先级"
+        "source_chapter_id" -> "来源章节 ID"
+        "target_chapter_id" -> "计划处理章节 ID"
+        "target_chapter_number" -> "计划处理章节号"
+        "resolved_chapter_id" -> "实际解决章节 ID"
+        "linked_foreshadowing_id" -> "关联伏笔 ID"
+        "linked_causal_edge_id" -> "关联因果项 ID"
+        "evidence" -> "发现证据"
+        "resolution_note" -> "解决说明"
+        "resolution_evidence" -> "解决证据"
+        "verification_note" -> "复检结论"
+        "closed_by" -> "关闭者"
+        else -> key
+    }
+    else -> key
+}
+
+private fun fieldPlaceholder(type: String, key: String): String = when (type to key) {
+    "project" to "tags" -> "一行一个；保存为 PC tags 数组"
+    "project" to "narrative_perspective" -> "third_person / first_person"
+    "project" to "writing_style" -> "与 PC 项目设置一致"
+    "project" to "short_sentences" -> "true / false"
+    "chapter" to "outline_node_id" -> "留空表示不关联大纲节点"
+    "outline" to "node_type" -> "volume / chapter / section"
+    "outline" to "parent_id" -> "留空表示根节点"
+    "outline" to "status" -> "pending / in_progress / completed"
+    "outline" to "characters" -> "JSON 数组，例如 [{\"character_id\":\"...\",\"role_in_scene\":\"protagonist\"}]"
+    "outline" to "metadata" -> "JSON 对象，例如 {\"hook\":\"章末钩子\"}"
+    "character" to "aliases" -> "一行一个"
+    "character" to "role_type" -> "protagonist / supporting / antagonist / mentor / other"
+    "character" to "abilities" -> "一行一个"
+    "character" to "life_status" -> "active / deceased / unknown"
+    "character" to "profile" -> "JSON 对象；与 PC 稳定写作锁完全同步"
+    "character" to "is_evolution_tracked" -> "true / false"
+    "world" to "dimension" -> "geography / history / factions / power_system / races / culture"
+    "foreshadowing" to "status", "governance" to "status" -> "open / pending_review / deferred / fulfilled / abandoned"
+    "foreshadowing" to "importance" -> "low / medium / high / critical"
+    "governance" to "priority" -> "low / medium / high / critical"
+    "governance" to "debt_type" -> "promise / setup / obligation / question"
+    else -> ""
+}
+
+private fun requiredIdentityField(type: String): String = if (type == "character") "name" else "title"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -694,27 +1126,48 @@ private fun RecordEditorScreen(
     val fields = remember(target.entityType) { fieldsFor(target.entityType) }
     val values = remember(target.record?.key, target.entityType) {
         mutableStateMapOf<String, String>().apply {
-            fields.forEach { field -> put(field.key, target.record?.text(field.key).orEmpty()) }
+            fields.forEach { field -> put(field.key, target.record?.formText(field.key).orEmpty()) }
+            fun setDefault(key: String, value: String) {
+                if (this[key].isNullOrBlank()) this[key] = value
+            }
             when (target.entityType) {
+                "project" -> {
+                    setDefault("narrative_perspective", "third_person")
+                    setDefault("writing_style", "natural")
+                    setDefault("short_sentences", "false")
+                    setDefault("daily_word_goal", "6000")
+                }
                 "outline" -> {
-                    putIfAbsent("sort_order", "0")
+                    setDefault("node_type", "chapter")
+                    setDefault("status", "pending")
+                    setDefault("sort_order", "0")
+                    setDefault("characters", "[]")
+                    setDefault("metadata", "{}")
                 }
                 "world" -> {
-                    putIfAbsent("dimension", "other")
-                    putIfAbsent("sort_order", "0")
+                    setDefault("dimension", "culture")
+                    setDefault("sort_order", "0")
+                }
+                "character" -> {
+                    setDefault("role_type", "supporting")
+                    setDefault("life_status", "active")
+                    setDefault("profile", "{}")
+                    setDefault("is_evolution_tracked", "true")
                 }
                 "foreshadowing" -> {
-                    putIfAbsent("status", "open")
-                    putIfAbsent("importance", "medium")
+                    setDefault("status", "open")
+                    setDefault("importance", "medium")
                 }
                 "governance" -> {
-                    putIfAbsent("status", "open")
-                    putIfAbsent("priority", "medium")
+                    setDefault("status", "open")
+                    setDefault("priority", "medium")
+                    setDefault("debt_type", "promise")
                 }
             }
         }
     }
     var showDelete by remember { mutableStateOf(false) }
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
     val title = if (target.record == null) "新建${entityLabel(target.entityType)}" else "编辑${entityLabel(target.entityType)}"
     Scaffold(
         containerColor = SimingPaper,
@@ -723,7 +1176,10 @@ private fun RecordEditorScreen(
                 title = { Text(title) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
                 actions = {
-                    if (target.record != null && target.entityType != "project") {
+                    if (
+                        target.record != null &&
+                        target.entityType !in setOf("project", "foreshadowing", "governance")
+                    ) {
                         IconButton(onClick = { showDelete = true }) {
                             Icon(Icons.Outlined.DeleteOutline, "删除", tint = MaterialTheme.colorScheme.error)
                         }
@@ -735,21 +1191,7 @@ private fun RecordEditorScreen(
             Surface(tonalElevation = 3.dp, color = SimingPaperWarm) {
                 Button(
                     onClick = {
-                        val mapped = values.mapValues { (key, value) ->
-                            if (fields.firstOrNull { it.key == key }?.numeric == true) value.toIntOrNull() ?: 0 else value
-                        }.toMutableMap<String, Any?>()
-                        when (target.entityType) {
-                            "chapter" -> {
-                                mapped["word_count"] = values["content"].orEmpty().count { !it.isWhitespace() }
-                                mapped["current_version"] = target.record?.number("current_version")?.takeIf { it > 0 } ?: 1
-                            }
-                            "outline" -> {
-                                mapped["node_type"] = target.record?.text("node_type").orEmpty().ifBlank { "chapter" }
-                                mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "pending" }
-                            }
-                            "character" -> mapped["is_evolution_tracked"] = true
-                            "world" -> mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "active" }
-                        }
+                        val mapped = canonicalFormValues(target.entityType, values)
                         viewModel.saveRecord(
                             projectId,
                             target.entityType,
@@ -759,12 +1201,12 @@ private fun RecordEditorScreen(
                             onBack,
                         )
                     },
-                    enabled = fields.firstOrNull()?.let { values[it.key].orEmpty().isNotBlank() } ?: false,
+                    enabled = values[requiredIdentityField(target.entityType)].orEmpty().isNotBlank(),
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(14.dp),
                 ) {
                     Icon(Icons.Outlined.Save, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("保存到离线库")
+                    Text("保存")
                 }
             }
         },
@@ -782,7 +1224,7 @@ private fun RecordEditorScreen(
                 StatusBanner(
                     Icons.Outlined.Person,
                     "先写清动机，再让 AI 接着写",
-                    "角色目标、冲突、性格与口吻会作为独立资料同步，降低跨章节 OOC。",
+                    "当前表单直接编辑 PC Character 字段；能力/别名保持数组结构，profile 保持 JSON 对象结构，与 PC Character 契约一致。",
                 )
             }
             fields.forEach { field ->
@@ -804,7 +1246,11 @@ private fun RecordEditorScreen(
                 }
             }
             Text(
-                "本页不调用本地模型或 CLI。保存立即写入手机数据库；网络不可用时不会丢失。",
+                if (connection != null) {
+                    "在线保存直接调用 PC 端同一路径与业务逻辑，并同步更新手机副本；不会退化为简化版写入。"
+                } else {
+                    "当前离线，保存会先写入手机数据库；连接 Gateway 后自动同步。"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -832,124 +1278,7 @@ private fun RecordEditorScreen(
 
 @Composable
 private fun AssistantScreen(projectId: String, viewModel: MainViewModel) {
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var scope by rememberSaveable { mutableStateOf("project") }
-    val ui by viewModel.uiState
-    val connection by viewModel.connection.collectAsStateWithLifecycle()
-    val directApi = ui.directApi
-    val usesDirectApi = directApi != null
-    val canUseAi = connection != null || directApi != null
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            ScreenHeading(
-                kicker = if (usesDirectApi) "DIRECT CLOUD API" else "CLOUD AI VIA YOUR GATEWAY",
-                title = "项目助手",
-                detail = if (usesDirectApi) {
-                    "手机直接调用你配置的 OpenAI 兼容 API；不需要电脑开机，API Key 只在本机加密保存。"
-                } else {
-                    "请求发给你自己的 Gateway，并使用 Gateway 已配置的模型与项目工具。"
-                },
-            )
-        }
-        if (!canUseAi) {
-            item {
-                StatusBanner(
-                    Icons.Outlined.CloudOff,
-                    "尚未配置 AI",
-                    "项目资料仍可离线编辑；请在“设置”中配置手机直连 API，或连接自己的 Gateway。",
-                    warning = true,
-                )
-            }
-        } else if (usesDirectApi) {
-            item {
-                StatusBanner(
-                    Icons.Outlined.PhoneAndroid,
-                    "手机独立调用 ${directApi?.model.orEmpty()}",
-                    "会发送当前任务和必要的本地项目资料；返回内容不会自动覆盖正文。",
-                )
-            }
-        }
-        item {
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf("project" to "全书", "outline" to "大纲", "characters" to "角色", "worldbuilding" to "世界观").forEach { (value, label) ->
-                    AssistChip(
-                        onClick = { scope = value },
-                        label = { Text(label) },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (scope == value) MaterialTheme.colorScheme.primaryContainer else Color.White,
-                        ),
-                    )
-                }
-            }
-        }
-        item {
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                label = { Text("告诉项目助手要做什么") },
-                placeholder = { Text("例如：用质量模式续写下一章，保持周遥的求证动机与温室管理规则，并留下章末钩子") },
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            Button(
-                onClick = { viewModel.runAssistant(projectId, scope, prompt) },
-                enabled = canUseAi && prompt.isNotBlank() && !ui.assistantRunning,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (ui.assistantRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Icon(Icons.Outlined.AutoAwesome, null)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        ui.assistantRunning -> "正在生成…"
-                        usesDirectApi -> "手机直接调用 API"
-                        else -> "交给自己的 Gateway"
-                    },
-                )
-            }
-        }
-        if (usesDirectApi && ui.assistantOutput.isNotBlank() && !ui.assistantRunning) {
-            item {
-                OutlinedButton(
-                    onClick = { viewModel.saveAssistantAsChapter(projectId) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Outlined.Save, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("保存为本机新章节")
-                }
-            }
-        }
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                modifier = Modifier.fillMaxWidth().height(240.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        ui.assistantOutput.ifBlank {
-                            if (usesDirectApi) {
-                                "AI 生成内容会显示在这里。完成后可复制，或保存为本机新章节。"
-                            } else {
-                                "AI 回复与工具执行过程会显示在这里。"
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
-                        color = if (ui.assistantOutput.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-        }
-    }
+    AssistantWorkspace(projectId, viewModel)
 }
 
 @Composable
@@ -1132,124 +1461,6 @@ private fun SnapshotBox(label: String, raw: String?) {
 }
 
 @Composable
-private fun AboutScreen(
-    modifier: Modifier,
-    connection: GatewayConnection?,
-    directApi: DirectApiSummary?,
-    viewModel: MainViewModel,
-    onConfigureApi: () -> Unit,
-) {
-    val uriHandler = LocalUriHandler.current
-    var clearApiDialog by remember { mutableStateOf(false) }
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 96.dp),
-        verticalArrangement = Arrangement.spacedBy(13.dp),
-    ) {
-        item {
-            ScreenHeading(
-                kicker = "OPEN SOURCE · FREE",
-                title = "设置与数据边界",
-                detail = "手机可以直接连接云端 API，也可以连接自己的 Gateway；作品正文始终保存在你的设备。",
-            )
-        }
-        item {
-            Text("手机直连 API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-        item {
-            OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = Color.White)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    if (directApi == null) {
-                        Text("尚未配置", fontWeight = FontWeight.SemiBold)
-                        Text("配置后无需电脑开机即可使用项目助手。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Button(onClick = onConfigureApi, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Outlined.Key, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("配置云端 API")
-                        }
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.CheckCircle, null, tint = SimingGreen)
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(directApi.displayName, fontWeight = FontWeight.SemiBold)
-                                Text(directApi.model, style = MaterialTheme.typography.bodySmall)
-                            }
-                            MicroTag("可用", SimingGreen)
-                        }
-                        Text(directApi.baseUrl, maxLines = 2, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = viewModel::testDirectApi, modifier = Modifier.weight(1f)) { Text("重新测试") }
-                            OutlinedButton(onClick = onConfigureApi, modifier = Modifier.weight(1f)) { Text("编辑") }
-                        }
-                        TextButton(onClick = { clearApiDialog = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text("清除本机 API 配置", color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Card(colors = CardDefaults.cardColors(containerColor = SimingPaperWarm)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
-                    AboutRow(Icons.Outlined.Lock, "官方不转接正文", "设备只连接你配置的 API 或 Gateway")
-                    AboutRow(Icons.AutoMirrored.Outlined.LibraryBooks, "新作与二创", "从零建书，或导入已有 TXT 继续创作")
-                    AboutRow(Icons.Outlined.Person, "连续性资料", "角色目标、冲突和世界规则独立同步，帮助减少 OOC")
-                    AboutRow(Icons.Outlined.CloudOff, "离线仍可写", "Room 本地库 + WorkManager 可靠队列")
-                }
-            }
-        }
-        item {
-            OutlinedButton(
-                onClick = { uriHandler.openUri("https://github.com/teangtang1122/siming-ai") },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Outlined.Info, null)
-                Spacer(Modifier.width(8.dp))
-                Text("查看开源代码与许可证")
-            }
-        }
-        item {
-            Text("版本 ${BuildConfig.VERSION_NAME} · 同步协议 v${BuildConfig.SYNC_PROTOCOL_VERSION}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                when {
-                    connection != null -> "当前连接：${connection.gatewayName}"
-                    directApi != null -> "当前模式：手机独立 API"
-                    else -> "当前为纯离线模式"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-    if (clearApiDialog) {
-        AlertDialog(
-            onDismissRequest = { clearApiDialog = false },
-            title = { Text("清除手机直连 API？") },
-            text = { Text("将删除 Android Keystore 加密的 API 配置；本机作品和 Gateway 配对不会受影响。") },
-            confirmButton = {
-                TextButton(onClick = { clearApiDialog = false; viewModel.clearDirectApi() }) {
-                    Text("确认清除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { clearApiDialog = false }) { Text("取消") } },
-        )
-    }
-}
-
-@Composable
-private fun AboutRow(icon: ImageVector, title: String, detail: String) {
-    Row(verticalAlignment = Alignment.Top) {
-        Icon(icon, null, tint = SimingCinnabar, modifier = Modifier.size(21.dp))
-        Spacer(Modifier.width(11.dp))
-        Column {
-            Text(title, fontWeight = FontWeight.SemiBold)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
 private fun PairingScreen(
     viewModel: MainViewModel,
     allowBack: Boolean,
@@ -1290,7 +1501,7 @@ private fun PairingScreen(
             Spacer(Modifier.height(18.dp))
             Text("让手机独立工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "直接配置云端 API 后，无需连接电脑即可建书、编辑和使用 AI。需要跨设备同步时，再连接自己的 Gateway。",
+                "直接配置云端 API 后，无需连接电脑即可让 AI 完成立项采访、结构生成、正式建档和后续共创。需要跨设备同步时，再连接自己的 Gateway。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
@@ -1300,10 +1511,10 @@ private fun PairingScreen(
                 Button(onClick = onConfigureApi, modifier = Modifier.fillMaxWidth().height(50.dp)) {
                     Icon(Icons.Outlined.Key, null)
                     Spacer(Modifier.width(9.dp))
-                    Text("配置云端 API（推荐）")
+                    Text("配置云端 API，开启 AI 立项")
                 }
                 Text(
-                    "API Key 仅由 Android Keystore 加密保存在本机，不会同步到 Gateway。",
+                    "API Key 仅由 Android Keystore 持久化。选择手机 Key + Gateway 时，只发送端到端加密的一次性请求凭据，PC 不保存。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
@@ -1383,7 +1594,7 @@ private fun PairingScreen(
             StatusBanner(
                 Icons.Outlined.Info,
                 "开源免费，不托管正文",
-                "直连模式只把当前请求所需资料发给你选择的 API；配对令牌和 API Key 均由 Android Keystore 加密。",
+                "无 Gateway 时由手机内置 PC 同源提示词直接调用 API；配对令牌和 API Key 均由 Android Keystore 加密。",
             )
         }
     }
@@ -1405,7 +1616,8 @@ private fun DirectApiSetupScreen(
     var baseUrl by rememberSaveable(existing?.baseUrl) {
         mutableStateOf(existing?.baseUrl ?: "https://api.openai.com/v1")
     }
-    var apiKey by rememberSaveable(existing?.baseUrl) { mutableStateOf("") }
+    // Never place credentials in Android's save-instance-state Bundle.
+    var apiKey by remember(existing?.baseUrl) { mutableStateOf("") }
     var model by rememberSaveable(existing?.baseUrl) { mutableStateOf(existing?.model.orEmpty()) }
     var protocol by rememberSaveable(existing?.baseUrl) {
         mutableStateOf(existing?.protocol ?: DirectApiConfig.PROTOCOL_AUTO)
@@ -1595,17 +1807,23 @@ private fun CreateProjectDialog(onDismiss: () -> Unit, onCreate: (String, String
     )
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
-private fun ScreenHeading(kicker: String, title: String, detail: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(kicker, color = SimingCinnabar, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+internal fun ScreenHeading(kicker: String, title: String, detail: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        if (detail.isNotBlank()) {
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
 @Composable
-private fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
+internal fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -1619,7 +1837,7 @@ private fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
 }
 
 @Composable
-private fun StatusBanner(
+internal fun StatusBanner(
     icon: ImageVector,
     title: String,
     detail: String,
@@ -1659,7 +1877,7 @@ private fun MetricCard(label: String, value: String, detail: String, modifier: M
 }
 
 @Composable
-private fun MicroTag(text: String, color: Color) {
+internal fun MicroTag(text: String, color: Color) {
     Text(
         text,
         color = color,

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import tarfile
 import threading
 import zipfile
 from pathlib import Path
@@ -14,9 +16,12 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.exceptions import ValidationError
 from app.database.models import APIConfig, Base, OpenCodeActivationJob
 from app.routers.getting_started import (
+    OpenCodeActivateRequest,
     OpenCodeConfigureRequest,
+    activate_opencode,
     configure_opencode,
     get_getting_started_status,
 )
@@ -78,6 +83,26 @@ def test_extract_opencode_uses_only_expected_executable():
         assert not (root / "unrelated.exe").exists()
 
 
+def test_extract_opencode_supports_verified_official_npm_package():
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        archive = root / "opencode.tgz"
+        destination = root / "managed" / "opencode.exe"
+        content = b"official-npm-binary"
+        with tarfile.open(archive, "w:gz") as output:
+            member = tarfile.TarInfo("package/bin/opencode.exe")
+            member.size = len(content)
+            output.addfile(member, io.BytesIO(content))
+            unrelated = tarfile.TarInfo("../unrelated.exe")
+            unrelated.size = 4
+            output.addfile(unrelated, io.BytesIO(b"nope"))
+
+        opencode_onboarding._extract_opencode(archive, destination, archive_format="tgz")
+
+        assert destination.read_bytes() == content
+        assert not (root / "unrelated.exe").exists()
+
+
 def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -92,7 +117,7 @@ def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     }
     with Session() as db, patch("app.routers.getting_started.resolve_opencode_command", return_value=inspected["command"]), patch(
         "app.routers.getting_started.inspect_opencode", return_value=inspected
-    ), patch("app.routers.getting_started.auto_configure_mcp_for_provider", return_value={"status": "configured"}):
+    ), patch("app.services.external_agent.mcp_auto_config.auto_configure_mcp_for_provider") as auto_configure:
         result = configure_opencode(
             OpenCodeConfigureRequest(model="opencode/deepseek-v4-flash-free"),
             db,
@@ -104,6 +129,8 @@ def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     assert saved.is_global_default is False
     assert saved.readiness_status == "unverified"
     assert saved.cli_command == inspected["command"]
+    assert "mcp_auto_setup" not in result.data
+    auto_configure.assert_not_called()
 
 
 def test_summary_status_does_not_launch_cli_probes():
@@ -118,6 +145,94 @@ def test_summary_status_does_not_launch_cli_probes():
     assert result.data["has_usable_models"] is False
     assert result.data["recommended_action"] == "activate_opencode"
     assert result.data["free_models"] == []
+
+
+def test_usable_model_is_a_stable_quick_start_completion_without_cli_probe():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+            is_global_default=False,
+        ))
+        db.add(OpenCodeActivationJob(
+            status="running",
+            phase="testing",
+            message="stale activation",
+        ))
+        db.commit()
+        with patch("app.routers.getting_started.inspect_opencode") as inspect_probe:
+            result = get_getting_started_status(summary=False, db=db)
+
+    inspect_probe.assert_not_called()
+    assert result.data["needs_setup"] is False
+    assert result.data["has_usable_models"] is True
+    assert result.data["available_model"] == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+    }
+    assert result.data["activation_job"] is None
+
+
+def test_quick_start_activation_is_rejected_when_a_model_is_already_usable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+        ))
+        db.commit()
+        with pytest.raises(ValidationError, match="已有通过验证的可用模型"):
+            activate_opencode(OpenCodeActivateRequest(), db)
+
+
+def test_startup_does_not_resume_activation_when_a_model_is_already_usable():
+    class UnexpectedWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("a completed onboarding state must not start a worker")
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="deepseek",
+            api_key_encrypted="test",
+            default_model="deepseek-v4-flash",
+            readiness_status="ready",
+        ))
+        job = OpenCodeActivationJob(
+            status="running",
+            phase="testing",
+            message="stale activation",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    with patch("app.database.session.SessionLocal", Session), patch.object(
+        opencode_onboarding.threading, "Thread", UnexpectedWorker
+    ):
+        resumed = opencode_onboarding.resume_incomplete_opencode_activations()
+
+    with Session() as db:
+        saved = db.query(OpenCodeActivationJob).filter(
+            OpenCodeActivationJob.id == job_id
+        ).one()
+        assert saved.status == "ready"
+        assert saved.phase == "ready"
+        assert saved.percent == 100
+        assert saved.completed_at is not None
+        assert "停止重复检测" in saved.message
+    assert resumed == 0
 
 
 def test_onboarding_connection_test_can_request_a_shorter_timeout():
@@ -188,6 +303,132 @@ def test_managed_release_catalog_selects_verified_windows_binary():
         assert f"/releases/download/{version}/{asset['name']}" in asset["browser_download_url"]
         assert asset["digest"].startswith("sha256:")
         assert len(asset["digest"].removeprefix("sha256:")) == 64
+        assert [source["label"] for source in asset["download_sources"]] == [
+            "GitHub 官方源",
+            "npm 官方源",
+            "国内加速源",
+        ]
+        assert all(source["url"].startswith("https://") for source in asset["download_sources"])
+        assert asset["download_sources"][1]["digest"].startswith("sha512:")
+        assert asset["download_sources"][1]["digest"] == asset["download_sources"][2]["digest"]
+
+
+def test_download_sources_include_configured_verified_mirror(monkeypatch):
+    monkeypatch.setenv("SIMING_OPENCODE_MIRROR_URLS", "https://mirror.example/{asset}")
+    _version, asset = opencode_release_catalog.managed_windows_release(
+        machine="AMD64",
+        avx2_supported=True,
+    )
+
+    sources = opencode_onboarding._download_sources(asset)
+
+    assert [source.label for source in sources] == [
+        "GitHub 官方源",
+        "npm 官方源",
+        "国内加速源",
+        "自定义加速源 1",
+    ]
+    custom = sources[-1]
+    assert custom.archive_format == "zip"
+    assert custom.expected_digest == asset["digest"].removeprefix("sha256:")
+
+
+def test_download_source_ranking_prefers_measured_throughput():
+    sources = [
+        opencode_onboarding._DownloadSource(
+            label=label,
+            url=f"https://{label}.example/opencode.zip",
+            archive_format="zip",
+            digest_algorithm="sha256",
+            expected_digest="a" * 64,
+            expected_size=100,
+        )
+        for label in ("slow", "fast", "offline")
+    ]
+
+    def probe(source):
+        rates = {"slow": 100, "fast": 500, "offline": 0}
+        return opencode_onboarding._DownloadProbe(
+            source=source,
+            available=source.label != "offline",
+            bytes_per_second=rates[source.label],
+            latency_seconds=0.1,
+        )
+
+    with patch.object(opencode_onboarding, "_probe_download_source", side_effect=probe):
+        ranked = opencode_onboarding._rank_download_sources(sources)
+
+    assert [item.source.label for item in ranked] == ["fast", "slow", "offline"]
+
+
+def test_slow_download_automatically_switches_to_next_verified_source():
+    content = b"verified archive"
+    digest = hashlib.sha256(content).hexdigest()
+    asset = {
+        "name": "opencode.zip",
+        "download_sources": [
+            {
+                "label": "慢速源",
+                "url": "https://slow.example/opencode.zip",
+                "archive_format": "zip",
+                "size": len(content),
+                "digest": f"sha256:{digest}",
+            },
+            {
+                "label": "快速源",
+                "url": "https://fast.example/opencode.zip",
+                "archive_format": "zip",
+                "size": len(content),
+                "digest": f"sha256:{digest}",
+            },
+        ],
+    }
+    sources = opencode_onboarding._download_sources(asset)
+    probes = [
+        opencode_onboarding._DownloadProbe(
+            source=sources[0], available=True, bytes_per_second=200
+        ),
+        opencode_onboarding._DownloadProbe(
+            source=sources[1], available=True, bytes_per_second=100
+        ),
+    ]
+    events = []
+
+    def download(url, destination, *, progress, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if "slow.example" in url:
+            destination.write_bytes(b"x")
+            progress(1, len(content))
+            return
+        destination.write_bytes(content)
+        progress(len(content), len(content))
+
+    with TemporaryDirectory() as temporary, patch.object(
+        opencode_onboarding,
+        "_rank_download_sources",
+        return_value=probes,
+    ), patch.object(
+        opencode_onboarding,
+        "_download_asset_resumable",
+        side_effect=download,
+    ), patch.object(
+        opencode_onboarding,
+        "DOWNLOAD_SLOW_WINDOW_SECONDS",
+        0,
+    ), patch.object(
+        opencode_onboarding,
+        "DOWNLOAD_MIN_SWITCH_RATE",
+        100,
+    ):
+        archive, source, _parts = opencode_onboarding._download_release_archive(
+            Path(temporary),
+            asset,
+            on_event=lambda event, details: events.append((event, details)),
+        )
+
+        assert source.label == "快速源"
+        assert archive.read_bytes() == content
+    assert any(event == "switching" for event, _details in events)
 
 
 def test_resumable_download_reuses_a_complete_verified_partial_file():
@@ -207,6 +448,53 @@ def test_resumable_download_reuses_a_complete_verified_partial_file():
 
     open_url.assert_not_called()
     assert progress == [(len(content), len(content))]
+
+
+def test_resumable_download_continues_partial_file_across_sources():
+    content = b"verified bytes from either source"
+    existing = 9
+    expected = hashlib.sha256(content).hexdigest()
+    progress = []
+
+    class RangeResponse:
+        status = 206
+        headers = {
+            "Content-Range": f"bytes {existing}-{len(content) - 1}/{len(content)}",
+            "Content-Length": str(len(content) - existing),
+        }
+
+        def __init__(self):
+            self.remaining = content[existing:]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read1(self, _size):
+            value, self.remaining = self.remaining, b""
+            return value
+
+    def open_url(request, timeout):
+        assert request.get_header("Range") == f"bytes={existing}-"
+        assert timeout == 60
+        return RangeResponse()
+
+    with TemporaryDirectory() as temporary_dir:
+        destination = Path(temporary_dir) / "shared-artifact.part"
+        destination.write_bytes(content[:existing])
+        with patch.object(opencode_onboarding, "urlopen", side_effect=open_url):
+            opencode_onboarding._download_asset_resumable(
+                "https://next-source.example/opencode.zip",
+                destination,
+                expected_digest=expected,
+                expected_size=len(content),
+                progress=lambda downloaded, total: progress.append((downloaded, total)),
+            )
+
+        assert destination.read_bytes() == content
+    assert progress[-1] == (len(content), len(content))
 
 
 def test_download_403_is_not_misreported_as_free_model_quota():
@@ -259,6 +547,13 @@ def test_download_403_is_not_misreported_as_free_model_quota():
         opencode_onboarding,
         "_download_asset_resumable",
         side_effect=RuntimeError("HTTP Error 403: rate limit exceeded"),
+    ), patch.object(
+        opencode_onboarding,
+        "_rank_download_sources",
+        side_effect=lambda sources: [
+            opencode_onboarding._DownloadProbe(source=source, available=True)
+            for source in sources
+        ],
     ), patch.object(opencode_onboarding, "_save_activation_readiness_failure"):
         opencode_onboarding._activation_worker(state["id"])
 
@@ -347,7 +642,7 @@ def test_activation_falls_back_to_next_free_model_before_saving_config():
         new=AsyncMock(side_effect=[RuntimeError("free usage quota exceeded"), None]),
     ) as test_model, patch.object(opencode_onboarding, "_save_activated_config") as save_config, patch(
         "app.services.external_agent.mcp_auto_config.auto_configure_mcp_for_provider"
-    ):
+    ) as auto_configure:
         opencode_onboarding._activation_worker("job-1")
 
     assert test_model.await_args_list == [
@@ -355,6 +650,7 @@ def test_activation_falls_back_to_next_free_model_before_saving_config():
         call(job["command"], "opencode/second-free"),
     ]
     save_config.assert_called_once_with(job["command"], "opencode/second-free")
+    auto_configure.assert_not_called()
     assert any(item.kwargs.get("status") == "ready" for item in update.call_args_list)
 
 
@@ -467,3 +763,35 @@ def test_one_time_auth_credential_is_written_without_returning_or_logging_it():
 
     process.write.assert_called_once_with("secret-token-value\r")
     assert "secret-token-value" not in str(result)
+
+def test_quick_start_can_explicitly_configure_and_preflight_opencode_mcp():
+    from app.routers.getting_started import configure_getting_started_opencode_mcp
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="opencode_cli",
+            provider_type="local_cli",
+            api_key_encrypted="test",
+            default_model="opencode/big-pickle",
+            cli_command=r"C:\\managed\\opencode.exe",
+            readiness_status="ready",
+        ))
+        db.commit()
+        with patch(
+            "app.routers.getting_started.resolve_opencode_command",
+            return_value=r"C:\\managed\\opencode.exe",
+        ), patch(
+            "app.routers.getting_started.configure_cli_integration",
+            return_value={"status": "configured", "configured": True, "detail": "configured"},
+        ) as configure, patch(
+            "app.routers.getting_started.preflight_cli_integration",
+            return_value={"ready": True, "detail": "ready", "missing_tools": []},
+        ) as preflight:
+            result = configure_getting_started_opencode_mcp(db)
+
+    assert result.data["ready"] is True
+    configure.assert_called_once()
+    preflight.assert_called_once()

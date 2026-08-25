@@ -55,6 +55,7 @@ from app.services.gateway_legacy_replication import (
     project_snapshots,
 )
 
+from .mobile_provider_crypto import gateway_encryption_public_key
 from .mutation_service import GatewayMutationApplier
 from .support import (
     MAX_ENTITY_PAYLOAD_BYTES,
@@ -147,6 +148,7 @@ class GatewayService(GatewayTokenMixin):
             "gateway_url": gateway_url.rstrip("/"),
             "gateway_name": identity.display_name,
             "gateway_public_key": identity.public_key,
+            "gateway_encryption_public_key": gateway_encryption_public_key(identity),
             "gateway_fingerprint": identity.fingerprint,
             "pairing_id": session.id,
             "pairing_secret": raw_secret,
@@ -163,6 +165,7 @@ class GatewayService(GatewayTokenMixin):
             gateway_url=gateway_url.rstrip("/"),
             gateway_name=identity.display_name,
             gateway_public_key=identity.public_key,
+            gateway_encryption_public_key=gateway_encryption_public_key(identity),
             gateway_fingerprint=identity.fingerprint,
             expires_at=session.expires_at,
             qr_payload=qr_payload,
@@ -398,6 +401,16 @@ class GatewayService(GatewayTokenMixin):
         projects = self.db.query(Project).order_by(Project.updated_at.desc()).all()
         configs = {config.project_id: config for config in self.db.query(SyncProject).all()}
         return [self._project_view(project, configs.get(project.id)) for project in projects]
+
+    def enabled_project_ids(self) -> set[str]:
+        """Return projects explicitly enabled for Gateway synchronization."""
+
+        return {
+            row.project_id
+            for row in self.db.query(SyncProject.project_id)
+            .filter(SyncProject.status == "enabled")
+            .all()
+        }
 
     def _refresh_project_manifest(self, project_id: str) -> None:
         """Keep public verification counts and hashes aligned with live sync state."""
@@ -703,6 +716,20 @@ class GatewayService(GatewayTokenMixin):
             results.append(self._apply_mutation(mutation, device_id=device_id))
         commit_session(self.db)
         return SyncPushResponse(cursor=self._current_cursor(), results=results)
+
+    def take_deferred_chapter_cataloging(self) -> list[tuple[str, str, str]]:
+        """Return and clear post-commit chapter cataloging requests.
+
+        Each tuple is ``(mutation_id, project_id, chapter_id)``.  Multiple
+        writes to the same chapter within one push collapse to the latest
+        mutation because only the final canonical chapter state needs a job.
+        """
+
+        pending = self.db.info.pop("siming_deferred_chapter_cataloging", {})
+        return [
+            (mutation_id, project_id, chapter_id)
+            for (project_id, chapter_id), mutation_id in pending.items()
+        ]
 
     def _apply_mutation(
         self,

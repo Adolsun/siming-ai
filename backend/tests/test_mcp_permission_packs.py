@@ -83,6 +83,17 @@ class ProjectWritingPackTest(unittest.TestCase):
             pack = registry._derive_mcp_pack(td)
             self.assertEqual(pack, "project_writing", f"{name}: pack is {pack}")
 
+    def test_narrative_governance_writes_are_not_classified_as_readonly(self):
+        for name in [
+            "apply_narrative_governance_candidates",
+            "update_narrative_ledger_entry",
+        ]:
+            td = registry.get(name)
+            self.assertIsNotNone(td)
+            self.assertEqual(registry._derive_mcp_pack(td), "project_writing")
+            self.assertTrue(td.writes_project_data)
+            self.assertEqual(td.risk_level, "medium")
+
 
 class TrustedLocalMaintenancePackTest(unittest.TestCase):
     """Verify trusted_local_maintenance pack contains destructive tools."""
@@ -110,6 +121,14 @@ class ProjectManagementPackTest(unittest.TestCase):
             self.assertIsNotNone(td, f"Tool not found: {name}")
             pack = registry._derive_mcp_pack(td)
             self.assertEqual(pack, "project_management", f"{name}: pack is {pack}")
+
+    def test_governance_restore_is_high_risk_and_requires_confirmation(self):
+        td = registry.get("restore_narrative_governance_checkpoint")
+        self.assertIsNotNone(td)
+        self.assertEqual(registry._derive_mcp_pack(td), "project_management")
+        self.assertTrue(td.writes_project_data)
+        self.assertEqual(td.risk_level, "high")
+        self.assertTrue(td.requires_confirmation)
 
 
 class NoSecretToolsExposedTest(unittest.TestCase):

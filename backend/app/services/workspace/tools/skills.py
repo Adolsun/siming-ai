@@ -17,7 +17,6 @@ from ...skills.service import (
     list_skills as list_skill_records,
     preview_skill_match,
     reset_skill_to_builtin,
-    skill_to_dict,
     update_skill as update_skill_record,
 )
 

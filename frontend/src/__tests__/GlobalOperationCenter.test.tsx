@@ -1,10 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createSimingQueryClient } from '../shared/query/client'
 
-const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
+const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), delete: vi.fn() }))
 vi.mock('../api/client', () => ({ apiClient: api }))
 
 import GlobalOperationCenter from '../features/operations/components/GlobalOperationCenter'
@@ -65,6 +65,7 @@ describe('GlobalOperationCenter', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     api.get.mockResolvedValue({ data: { data: { items: [operation] } } })
     api.post.mockResolvedValue({ data: { data: operation } })
+    api.delete.mockResolvedValue({ data: { data: {} } })
   })
 
   afterEach(() => vi.unstubAllGlobals())
@@ -164,5 +165,30 @@ describe('GlobalOperationCenter', () => {
 
     expect(await screen.findAllByText('作品建档 · 第151章')).toHaveLength(1)
     expect(screen.getByText('历史尝试 1')).toBeInTheDocument()
+  })
+
+  it('deletes a finished task and its grouped history only after confirmation', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        data: {
+          items: [
+            { ...operation, id: 'operation-new', source_id: 'chapter-151', status: 'completed', can_retry: false, updated_at: '2026-07-27T12:00:00Z' },
+            { ...operation, id: 'operation-old', source_id: 'chapter-151', status: 'failed', can_retry: false, updated_at: '2026-07-27T10:00:00Z' },
+          ],
+        },
+      },
+    })
+
+    renderCenter()
+    fireEvent.click(await screen.findByRole('button', { name: /全局任务中心/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '删除任务记录：作品建档 · 第151章' }))
+
+    expect(await screen.findByText('会删除当前记录及 1 次历史尝试，且无法撤销。')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('tooltip')).getByRole('button', { name: /删\s*除/ }))
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenNthCalledWith(1, '/operations/operation-new')
+      expect(api.delete).toHaveBeenNthCalledWith(2, '/operations/operation-old')
+    })
   })
 })

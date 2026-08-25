@@ -16,6 +16,8 @@ from ...database.models import (
     CharacterTimeline,
     CharacterVersion,
 )
+from ..story_granularity import CHARACTER_PROFILE_FIELDS, CHARACTER_STATE_FIELDS
+from ..character_role_types import normalize_character_role_type
 from .alias_ops import ensure_character_alias
 from .background_compactor import merge_background
 from .links import link_chapter_character
@@ -26,19 +28,6 @@ from .snapshots import character_snapshot, chapter_change_title
 
 
 CHARACTER_TEXT_FIELDS = ["personality", "background", "role_type"]
-CHARACTER_STATE_FIELDS = [
-    "appearance",
-    "age",
-    "life_status",
-    "current_location",
-    "realm_or_level",
-    "physical_state",
-    "mental_state",
-    "current_goal",
-    "active_conflict",
-    "abilities_state",
-    "items_or_assets",
-]
 
 STATE_FIELD_LIMITS = {
     "appearance": 8000,
@@ -78,6 +67,7 @@ CHARACTER_CHANGE_LABELS = {
     "active_conflict": "当前冲突",
     "abilities_state": "能力状态",
     "items_or_assets": "持有物/资源",
+    "profile": "稳定写作锁",
 }
 
 
@@ -123,11 +113,7 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
     name, aliases = _identity_from_payload(payload)
     character = _find_character_by_identity(db, chapter.project_id, [payload.get("id"), name, *aliases])
     if not character:
-        if not name or _is_placeholder_character_name(name):
-            raise ValueError("角色状态更新缺少可识别角色名或ID")
-        character = Character(project_id=chapter.project_id, name=name[:100], current_version=1)
-        db.add(character)
-        db.flush()
+        raise ValueError("角色状态更新引用的角色不存在；必须先生成 character_create 或 character_update")
     old = character_snapshot(character)
     changed = False
     for field in CHARACTER_STATE_FIELDS:
@@ -180,14 +166,10 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
         raise ValueError("角色关系不能指向同一角色")
     source = find_character_by_name_or_id(db, chapter.project_id, source_name)
     if not source:
-        source = Character(project_id=chapter.project_id, name=source_name[:100], current_version=1)
-        db.add(source)
-        db.flush()
+        raise ValueError(f"角色关系来源角色不存在：{source_name}；必须先生成角色档案候选")
     target = find_character_by_name_or_id(db, chapter.project_id, target_name)
     if not target:
-        target = Character(project_id=chapter.project_id, name=target_name[:100], current_version=1)
-        db.add(target)
-        db.flush()
+        raise ValueError(f"角色关系目标角色不存在：{target_name}；必须先生成角色档案候选")
 
     relationship_type = str(payload.get("relationship_type") or "关联")[:100]
     description = str(payload.get("description") or payload.get("evidence") or candidate.evidence or "")[:4000]
@@ -241,7 +223,7 @@ def fill_character_fields(db: Session, character: Character, chapter: Chapter, p
         if field in payload and payload.get(field) not in (None, ""):
             if field == "role_type":
                 if not character.role_type or character.role_type == "other":
-                    character.role_type = str(payload.get(field))[:100]
+                    character.role_type = normalize_character_role_type(payload.get(field))
             elif field == "background":
                 character.background = merge_background(character.background, payload.get(field), chapter)
             else:
@@ -255,6 +237,7 @@ def fill_character_fields(db: Session, character: Character, chapter: Chapter, p
     character.last_seen_chapter_id = chapter.id
     character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
+    _update_character_profile(character, payload)
     _update_ai_config(db, character, payload)
 
 
@@ -280,8 +263,13 @@ def ensure_character_version(
 
 
 def _update_ai_config(db: Session, character: Character, payload: dict[str, Any]) -> None:
+    config_payload = dict(payload)
+    nested_config = payload.get("ai_config")
+    if isinstance(nested_config, dict):
+        for key, value in nested_config.items():
+            config_payload.setdefault(key, value)
     has_config_fields = any(
-        field in payload and payload.get(field) not in (None, "")
+        field in config_payload and config_payload.get(field) not in (None, "")
         for field in ["custom_system_prompt", "tone_style", "catchphrases", "verbosity", "emotion_tendency"]
     )
     if not has_config_fields:
@@ -291,17 +279,49 @@ def _update_ai_config(db: Session, character: Character, payload: dict[str, Any]
         config = CharacterAIConfig(character_id=character.id)
         db.add(config)
     character.ai_config = config
-    prompt = str(payload.get("custom_system_prompt") or "").strip()
+    prompt = str(config_payload.get("custom_system_prompt") or "").strip()
     if prompt:
         config.custom_system_prompt = prompt[:12000]
-    if payload.get("tone_style"):
-        config.tone_style = str(payload.get("tone_style"))[:100]
-    if payload.get("verbosity"):
-        config.verbosity = str(payload.get("verbosity"))[:50]
-    if payload.get("emotion_tendency"):
-        config.emotion_tendency = str(payload.get("emotion_tendency"))[:100]
-    if isinstance(payload.get("catchphrases"), list):
-        config.catchphrases = json.dumps([str(item) for item in payload["catchphrases"]], ensure_ascii=False)
+    if config_payload.get("tone_style"):
+        config.tone_style = str(config_payload.get("tone_style"))[:100]
+    if config_payload.get("verbosity"):
+        config.verbosity = str(config_payload.get("verbosity"))[:50]
+    if config_payload.get("emotion_tendency"):
+        config.emotion_tendency = str(config_payload.get("emotion_tendency"))[:100]
+    if isinstance(config_payload.get("catchphrases"), list):
+        config.catchphrases = json.dumps([str(item) for item in config_payload["catchphrases"]], ensure_ascii=False)
+
+
+def _update_character_profile(character: Character, payload: dict[str, Any]) -> None:
+    raw_profile = payload.get("profile")
+    if not isinstance(raw_profile, dict):
+        raw_profile = payload.get("profile_json")
+    raw_profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
+    # Tolerate models that flatten stable writing-lock fields while keeping the
+    # canonical persisted shape nested under profile_json.
+    for field in CHARACTER_PROFILE_FIELDS:
+        if field in payload and field not in raw_profile:
+            raw_profile[field] = payload.get(field)
+    if not raw_profile:
+        return
+    profile = dict(character.profile_json or {})
+    changed = False
+    for field in CHARACTER_PROFILE_FIELDS:
+        value = raw_profile.get(field)
+        if value in (None, "", [], {}):
+            continue
+        if field == "reveal_chapter":
+            try:
+                normalized: Any = max(1, int(value))
+            except (TypeError, ValueError):
+                continue
+        else:
+            normalized = str(value).strip()[:4000]
+        if profile.get(field) != normalized:
+            profile[field] = normalized
+            changed = True
+    if changed:
+        character.profile_json = profile
 
 
 def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:

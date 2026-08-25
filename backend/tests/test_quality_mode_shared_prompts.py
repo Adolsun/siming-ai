@@ -71,8 +71,8 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
         result = inject_public_prompt_pack_section("原始提示词", db, "chapter_writing", "quality")
         self.assertIn("质量模式章节写作", result)
         self.assertIn("1.0.0", result)
-        self.assertIn("opening_hook", result)
-        self.assertIn("仿佛", result)
+        self.assertNotIn("opening_hook", result)
+        self.assertNotIn("仿佛", result)
 
     def test_returns_original_on_no_pack(self):
         db = MagicMock()
@@ -96,7 +96,7 @@ class PublicChapterPromptUnificationTest(unittest.TestCase):
         self.assertLess(len(fast), len(quality))
         self.assertIn("快速模式定位", fast)
         self.assertIn("API-free 模式", fast)
-        self.assertIn("archive_chapter_after_write", fast)
+        self.assertIn("统一建档", fast)
 
 
 if __name__ == "__main__":

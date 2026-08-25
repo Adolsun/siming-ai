@@ -7,12 +7,21 @@ single-file service.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingApplyLog, CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter
+from ...database.models import (
+    CatalogingApplyLog,
+    CatalogingCandidate,
+    CatalogingChapterRun,
+    CatalogingJob,
+    Chapter,
+)
+from ..narrative_governance import record_chapter_governance_review
+from ..story_granularity import inspect_candidate_coverage_items
 from .candidate_io import candidate_payload, candidate_to_dict
 from .chapter_link_ops import apply_chapter_link
 from .chapter_ops import apply_chapter_summary
@@ -39,7 +48,7 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
         .filter(CatalogingCandidate.status.notin_(["rejected", "applied"]))
         .all()
     )
-    candidates.sort(key=lambda item: (APPLY_ORDER.get(item.item_type, 999), item.sort_order or 0, item.created_at))
+    candidates.sort(key=_candidate_apply_sort_key)
 
     events: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -66,7 +75,42 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
         finally:
             candidate.updated_at = datetime.utcnow()
             db.flush()
+    applied_candidates = [candidate for candidate in candidates if candidate.status == "applied"]
+    coverage = inspect_candidate_coverage_items(applied_candidates)
+    if coverage.narrative_assessed:
+        source = coverage.governance_review_source or "provided"
+        confidence = {
+            "llm": 0.8,
+            "provided": 0.7,
+            "fallback": 0.55,
+        }.get(source, 0.6)
+        record_chapter_governance_review(
+            db,
+            job.project_id,
+            run.chapter,
+            source=source,
+            findings_count=coverage.governance_findings_count,
+            confidence=confidence,
+            evidence=(
+                f"作品建档已汇总检查本章叙事状态；发现 {coverage.governance_findings_count} 条治理线索。"
+                if coverage.governance_findings_count
+                else "作品建档已显式检查本章叙事状态，本版本未产生结构化治理线索。"
+            ),
+        )
     return events
+
+
+def _candidate_apply_sort_key(candidate: CatalogingCandidate) -> tuple[Any, ...]:
+    outline_rank = 0
+    if candidate.item_type in {"outline_create", "outline_update"}:
+        node_type = str(candidate_payload(candidate).get("node_type") or "chapter").strip().lower()
+        outline_rank = {"volume": 0, "chapter": 1, "section": 2, "scene": 2}.get(node_type, 1)
+    return (
+        APPLY_ORDER.get(candidate.item_type, 999),
+        outline_rank,
+        candidate.sort_order or 0,
+        candidate.created_at,
+    )
 
 
 def apply_candidate(db: Session, candidate: CatalogingCandidate) -> dict[str, Any]:

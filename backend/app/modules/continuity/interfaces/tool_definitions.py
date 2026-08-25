@@ -466,73 +466,6 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         handler_name="record_external_quality_review",
     ),
     ToolDef(
-        name="apply_external_story_updates",
-        description="Apply character/worldbuilding/outline updates after external writing. Supports manual (preview) and auto (apply) modes.",
-        input_schema={
-            "chapter_id": {"type": "string", "description": "Chapter ID for context"},
-            "updates": {
-                "type": "object",
-                "description": "Updates grouped by characters, worldbuilding, outline, chapter_summary",
-            },
-            "mode": {
-                "type": "string",
-                "description": "manual|auto. Manual returns candidates, auto applies them.",
-            },
-            "context_manifest_id": {
-                "type": "string",
-                "description": "Governed task manifest for external writing updates",
-            },
-        },
-        tool_type="write",
-        writes_project_data=True,
-        risk_level="medium",
-        estimated_cost="free",
-        handler_name="apply_external_story_updates",
-    ),
-    ToolDef(
-        name="archive_chapter_after_write",
-        description="Create and optionally apply standard cataloging candidates after a chapter is written. Unifies chapter summary, chapter/section outline, section scene state, narrative_state, character state, worldbuilding, and links.",
-        input_schema={
-            "chapter_id": {"type": "string", "description": "Saved chapter ID"},
-            "draft_id": {
-                "type": "string",
-                "description": "Optional draft ID/content_ref used to generate the chapter",
-            },
-            "content_ref": {"type": "string", "description": "Alias for draft_id"},
-            "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
-            "candidates": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Optional standard cataloging candidates. chapter_summary may include narrative_state; section outlines may include scene state fields.",
-            },
-            "mode": {
-                "type": "string",
-                "description": "auto|manual. Auto applies candidates; manual stores them for review.",
-            },
-            "source": {
-                "type": "string",
-                "description": "internal_writer|local_cli|external_agent|repair",
-            },
-            "generate_if_missing": {
-                "type": "boolean",
-                "description": "Generate fallback candidates when none or required candidates are missing. Default true.",
-            },
-            "model": {
-                "type": "string",
-                "description": "Optional model for post-write archive candidate generation",
-            },
-            "context_manifest_id": {
-                "type": "string",
-                "description": "Governed task manifest required for MCP formal writes",
-            },
-        },
-        tool_type="write",
-        writes_project_data=True,
-        risk_level="medium",
-        estimated_cost="model_or_free",
-        handler_name="archive_chapter_after_write",
-    ),
-    ToolDef(
         name="update_narrative_ledger_entry",
         description="Manually revise or invalidate one narrative ledger entry while preserving its prior fact version.",
         input_schema={
@@ -638,6 +571,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         tool_type="write",
         writes_project_data=True,
         risk_level="high",
+        requires_confirmation=True,
         estimated_cost="free",
         handler_name="restore_narrative_governance_checkpoint",
     ),
@@ -744,7 +678,11 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="save_external_cataloging_candidates",
-        description="Save candidates proposed by the external model. API-free.",
+        description=(
+            "Save one chapter's complete candidate batch proposed by the external model. "
+            "The same call must include both chapter_summary and chapter-level outline; "
+            "empty entity lists are valid when the chapter contains no such information. API-free."
+        ),
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "chapter_id": {"type": "string", "description": "Chapter ID"},
@@ -755,7 +693,10 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "candidates": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Proposed candidates",
+                "description": (
+                    "Complete candidates for one chapter. Put chapter_summary and the "
+                    "chapter-level outline first in the same call; do not save only a summary."
+                ),
             },
         },
         required=["job_id", "chapter_id"],

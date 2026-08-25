@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { useDownloadRate } from '../hooks/useDownloadRate'
 import {
   Alert,
   Button,
@@ -37,7 +38,7 @@ import {
   startNovelCreationConceptRun,
   startNovelCreationSession,
   workbenchUrl,
-} from '../hooks/useNovelCreationInterviewController'
+} from '../services/novelCreationAgent'
 import './GettingStartedPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -52,7 +53,7 @@ interface FreeModelOption {
 }
 
 type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
-type ActivationPhase = 'checking' | 'checking_release' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
+type ActivationPhase = 'checking' | 'checking_release' | 'selecting_source' | 'switching_source' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
 
 interface ActivationJob {
   id: string
@@ -66,6 +67,7 @@ interface ActivationJob {
   selected_model?: string | null
   preferred_model?: string | null
   free_models: FreeModelOption[]
+  download_source?: string | null
   bytes_downloaded?: number
   bytes_total?: number
   estimated_seconds_remaining?: number | null
@@ -87,8 +89,16 @@ interface GettingStartedStatus {
   has_usable_models: boolean
   recommended_action?: string
   global_model?: { provider: string; model: string } | null
+  available_model?: { provider: string; model: string } | null
   activation_job?: ActivationJob | null
+  opencode_mcp_configured?: boolean
   official_links?: { model_docs?: string }
+}
+
+interface McpSetupResult {
+  ready: boolean
+  detail?: string
+  preflight?: { ready?: boolean; detail?: string; missing_tools?: string[] }
 }
 
 interface ApiEnvelope<T> {
@@ -100,6 +110,12 @@ interface ApiEnvelope<T> {
 const formatBytes = (bytes?: number) => {
   if (!bytes) return '0 MB'
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const formatRate = (bytesPerSecond?: number | null) => {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return null
+  if (bytesPerSecond >= 1024 * 1024) return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
+  return `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`
 }
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作没有完成，请重试'
@@ -165,13 +181,25 @@ export function GettingStartedPanel() {
   const [selectedModel, setSelectedModel] = useState<string>()
   const [setupError, setSetupError] = useState('')
   const [authCredential, setAuthCredential] = useState('')
+  const [mcpSetupRunning, setMcpSetupRunning] = useState(false)
+  const [mcpSetupError, setMcpSetupError] = useState('')
+  const [mcpConfigured, setMcpConfigured] = useState(false)
+  const [mcpDeferred, setMcpDeferred] = useState(
+    () => localStorage.getItem('siming_getting_started_mcp_deferred') === '1',
+  )
+  const downloadRate = useDownloadRate({
+    active: job?.phase === 'downloading',
+    bytes: job?.bytes_downloaded,
+    source: job?.download_source,
+  })
 
   const fetchStatus = useCallback(async (refresh = false) => {
     try {
       const next = await getGettingStartedStatus(false, refresh) as GettingStartedStatus
       queryClient.setQueryData(onboardingKeys.detail(), next)
       void queryClient.invalidateQueries({ queryKey: onboardingKeys.summary() })
-      if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
+      if (next.has_usable_models) setJob(null)
+      else if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
       setSelectedModel((current) => current || next.recommended_model || next.free_models?.[0]?.id)
     } catch (error) {
       setSetupError(errorText(error))
@@ -179,13 +207,26 @@ export function GettingStartedPanel() {
   }, [queryClient])
 
   useEffect(() => {
+    if (status?.opencode_mcp_configured) {
+      setMcpConfigured(true)
+      setMcpDeferred(false)
+      localStorage.removeItem('siming_getting_started_mcp_deferred')
+    }
+  }, [status?.opencode_mcp_configured])
+
+  useEffect(() => {
     if (!status) return
+    if (status.has_usable_models) {
+      setJob(null)
+      return
+    }
     const activationJob = status.activation_job || null
     if (activationJob && activationJob.status !== 'ready') setJob(activationJob)
     setSelectedModel((current) => current || status.recommended_model || status.free_models?.[0]?.id)
   }, [status])
 
   useEffect(() => {
+    if (status?.has_usable_models) return
     const authRunning = ['running', 'submitted'].includes(job?.auth_status || '')
     if (!job || (!['pending', 'running'].includes(job.status) && !authRunning)) return
     const timer = window.setTimeout(async () => {
@@ -202,7 +243,7 @@ export function GettingStartedPanel() {
       }
     }, 1000)
     return () => window.clearTimeout(timer)
-  }, [fetchStatus, job])
+  }, [fetchStatus, job, status?.has_usable_models])
 
   const startActivation = async () => {
     setSetupError('')
@@ -252,8 +293,37 @@ export function GettingStartedPanel() {
     }
   }
 
+  const configureMcp = async () => {
+    setMcpSetupRunning(true)
+    setMcpSetupError('')
+    try {
+      const response = await apiClient.post<ApiEnvelope<McpSetupResult>>(
+        '/config/getting-started/opencode/mcp/configure',
+      )
+      const result = response.data.data
+      if (!result.ready) {
+        setMcpSetupError(result.preflight?.detail || result.detail || 'MCP 配置检查未通过')
+        return
+      }
+      setMcpConfigured(true)
+      setMcpDeferred(false)
+      localStorage.removeItem('siming_getting_started_mcp_deferred')
+      message.success('OpenCode 与 Siming MCP 已配置并验证')
+      await fetchStatus(false)
+    } catch (error) {
+      setMcpSetupError(errorText(error))
+    } finally {
+      setMcpSetupRunning(false)
+    }
+  }
+
+  const deferMcpSetup = () => {
+    localStorage.setItem('siming_getting_started_mcp_deferred', '1')
+    setMcpDeferred(true)
+  }
+
   const currentStep = useMemo(() => {
-    if (job?.status === 'ready' || status?.is_global_default) return 2
+    if (job?.status === 'ready' || status?.has_usable_models) return 2
     if (job && ['discovering_models', 'testing', 'auth_required', 'authenticating', 'credential_required'].includes(job.phase)) return 1
     return 0
   }, [job, status])
@@ -263,12 +333,49 @@ export function GettingStartedPanel() {
     return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || (statusQuery.error instanceof Error ? statusQuery.error.message : '请确认司命仍在运行。')} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
   }
 
-  const ready = job?.status === 'ready' || (status.is_global_default && status.has_usable_models !== false)
-  const activeModel = status.global_model
-    ? `${status.global_model.provider}:${status.global_model.model}`
+  const ready = job?.status === 'ready' || status.has_usable_models
+  const availableModel = status.global_model || status.available_model
+  const activeModel = availableModel
+    ? `${availableModel.provider}:${availableModel.model}`
     : job?.selected_model
       ? `opencode_cli:${job.selected_model}`
       : undefined
+  const shouldOfferMcp = Boolean(
+    ready
+      && activeModel?.startsWith('opencode_cli:')
+      && !status.opencode_mcp_configured
+      && !mcpConfigured
+      && !mcpDeferred,
+  )
+  if (shouldOfferMcp) {
+    return (
+      <div className="getting-started-panel">
+        <div className="getting-started-layout">
+          <section className="getting-started-work" aria-live="polite">
+            <CheckCircleOutlined className="getting-started-ready-icon" />
+            <Title level={3}>OpenCode 已可用，再完成一步即可启用完整 Agent</Title>
+            <Paragraph>
+              配置 Siming MCP 后，OpenCode 才能在作品建档等任务中把结构化结果正式写回司命。
+              司命只为托管建档回合开放读取作品镜像和专用建档工具，不会给 OpenCode 任意文件写入或命令执行权限。
+            </Paragraph>
+            <Alert
+              type="info"
+              showIcon
+              message="推荐完成配置"
+              description="司命会先写入 OpenCode 的 siming MCP 配置，再实际检查 MCP 连接和建档工具列表。你也可以暂时跳过，之后在系统设置中补配。"
+            />
+            {mcpSetupError && <Alert type="error" showIcon message="MCP 配置未完成" description={mcpSetupError} />}
+            <Space wrap>
+              <Button type="primary" loading={mcpSetupRunning} onClick={() => void configureMcp()}>
+                推荐：配置并验证 MCP
+              </Button>
+              <Button disabled={mcpSetupRunning} onClick={deferMcpSetup}>暂时跳过</Button>
+            </Space>
+          </section>
+        </div>
+      </div>
+    )
+  }
   if (ready) return <FirstIdea modelReady model={activeModel} />
 
   const running = Boolean(job && ['pending', 'running'].includes(job.status))
@@ -277,6 +384,7 @@ export function GettingStartedPanel() {
   const remainingMinutes = job?.estimated_seconds_remaining
     ? Math.max(1, Math.ceil(job.estimated_seconds_remaining / 60))
     : null
+  const downloadRateText = formatRate(downloadRate)
   const retryLabel = job?.failure_kind === 'network'
     ? '继续下载'
     : job?.failure_kind === 'download_rate_limit'
@@ -331,7 +439,9 @@ export function GettingStartedPanel() {
                 : <div className="getting-started-indeterminate"><Spin /><Text>正在执行当前步骤，不估算虚假百分比</Text></div>}
               <div className="getting-started-progress-meta">
                 <Text>{job?.message || '正在准备...'}</Text>
+                {job?.download_source && <Tag color="processing">当前线路：{job.download_source}</Tag>}
                 {Boolean(job?.bytes_total) && <Text type="secondary">{downloaded} / {total}</Text>}
+                {downloadRateText && <Text type="secondary">实时速度 {downloadRateText}</Text>}
                 {remainingMinutes && <Text type="secondary">预计还需约 {remainingMinutes} 分钟</Text>}
               </div>
             </div>

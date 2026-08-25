@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import AsyncGenerator, Optional
 
-from .openai_adapter import OpenAIAdapter
 from ..services.local_runtime import get_runtime_manager
+from .openai_adapter import OpenAIAdapter
 
 
 def is_local_runtime_provider(provider: str | None) -> bool:
@@ -24,13 +24,18 @@ class LocalRuntimeAdapter(OpenAIAdapter):
         project_id = payload.pop("moshu_project_id", None)
         context_length = payload.pop("moshu_context_length", None)
         adapter_ids = payload.pop("moshu_adapter_ids", None)
-        base_url = get_runtime_manager().ensure_running(
+        manager = get_runtime_manager()
+        base_url = manager.ensure_running(
             model,
             task_type=task_type,
             project_id=project_id,
             context_length=context_length,
             adapter_ids=adapter_ids,
         )
+        runtime_api_key = manager.api_key
+        if not runtime_api_key:
+            raise RuntimeError("本地模型运行时鉴权未就绪，请停止后重新启动")
+        self.api_key = runtime_api_key
         self.base_url = base_url
         payload.setdefault("chat_template_kwargs", {"enable_thinking": False})
         return base_url, payload

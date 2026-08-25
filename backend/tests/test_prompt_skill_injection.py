@@ -6,7 +6,7 @@ import unittest
 os.environ["DATABASE_URL"] = "sqlite:///./test_skill_injection.db"
 
 from app.prompts.packs import PromptPack
-from app.services.agent.prompt_builder import build_system_prompt, build_tool_policy_section
+from app.services.agent.prompt_builder import build_system_prompt
 
 
 class SkillPromptInjectionTestCase(unittest.TestCase):

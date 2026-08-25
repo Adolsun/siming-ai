@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ....core.exceptions import NotFoundError
+from ....core.utils import utc_isoformat
 from .models import SystemAssistantConversation, SystemAssistantMessage
 
 
@@ -33,8 +34,8 @@ def _conversation_data(
         "creation_session_id": conversation.creation_session_id,
         "user_brief": conversation.user_brief,
         "blueprints": conversation.blueprint_json or [],
-        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "created_at": utc_isoformat(conversation.created_at),
+        "updated_at": utc_isoformat(conversation.updated_at),
     }
 
 
@@ -49,8 +50,8 @@ def _message_data(message: SystemAssistantMessage) -> dict[str, Any]:
         "message_type": message.message_type,
         "payload": message.payload_json,
         "status": message.status,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+        "created_at": utc_isoformat(message.created_at),
+        "updated_at": utc_isoformat(message.updated_at),
     }
 
 
@@ -76,6 +77,8 @@ class SqlAlchemySystemConversationStore:
         identifier = (scope_id or "").strip() or None
         if normalized != "system" and not identifier:
             raise ValueError(f"{normalized} scope requires scope_id")
+        if normalized == "system":
+            identifier = None
         return normalized, identifier
 
     def _apply_scope(
@@ -87,6 +90,8 @@ class SqlAlchemySystemConversationStore:
             if payload.get("creation_session_id"):
                 conversation.scope_type = "creation"
                 conversation.scope_id = payload["creation_session_id"]
+                conversation.creation_session_id = payload["creation_session_id"]
+                conversation.project_id = None
             return
         scope_type, scope_id = self._normalize_scope(
             str(payload.get("scope_type") or conversation.scope_type or "system"),
@@ -94,9 +99,8 @@ class SqlAlchemySystemConversationStore:
         )
         conversation.scope_type = scope_type
         conversation.scope_id = scope_id
-        conversation.project_id = scope_id if scope_type == "project" else payload.get("project_id")
-        if scope_type == "creation":
-            conversation.creation_session_id = scope_id
+        conversation.project_id = scope_id if scope_type == "project" else None
+        conversation.creation_session_id = scope_id if scope_type == "creation" else None
 
     def list(self, *, scope_type: str | None = None, scope_id: str | None = None) -> dict[str, Any]:
         query = self._session.query(SystemAssistantConversation)

@@ -23,6 +23,7 @@ from ...database.models import (
     RagDocument,
     WorldbuildingEntry,
 )
+from ..character_archive import character_archive_payload, character_archive_text
 
 # ---------------------------------------------------------------------------
 # FTS5 detection
@@ -336,44 +337,60 @@ def _index_character(db: Session, project_id: str, character_id: str) -> int:
     if not char:
         return 0
 
+    payload = character_archive_payload(char, db=db)
     chunks: list[str] = []
     metadata_list: list[dict[str, Any]] = []
 
-    identity_parts = [f"角色名称：{char.name}"]
-    if char.role_type:
-        identity_parts.append(f"角色类型：{char.role_type}")
-    if char.appearance:
-        identity_parts.append(f"外貌：{char.appearance}")
-    if identity_parts:
-        chunks.append("\n".join(identity_parts))
-        metadata_list.append({"section": "identity", "role_type": char.role_type or ""})
+    identity = {
+        key: payload.get(key)
+        for key in (
+            "name",
+            "aliases",
+            "role_type",
+            "age",
+            "appearance",
+            "personality",
+            "background",
+            "abilities",
+        )
+        if payload.get(key)
+    }
+    chunks.append(json.dumps(identity, ensure_ascii=False, sort_keys=True))
+    metadata_list.append({"section": "identity", "role_type": char.role_type or ""})
 
-    bg_parts = []
-    if char.personality:
-        bg_parts.append(f"性格：{char.personality}")
-    if char.background:
-        bg_parts.append(f"背景：{char.background}")
-    if bg_parts:
-        chunks.append("\n".join(bg_parts))
-        metadata_list.append({"section": "personality_background"})
+    state = {key: value for key, value in payload["state"].items() if value}
+    if state:
+        chunks.append(json.dumps({"state": state}, ensure_ascii=False, sort_keys=True))
+        metadata_list.append({"section": "current_state"})
 
-    state_parts = []
-    if char.life_status:
-        state_parts.append(f"生命状态：{char.life_status}")
-    if char.current_location:
-        state_parts.append(f"当前位置：{char.current_location}")
-    if char.current_goal:
-        state_parts.append(f"当前目标：{char.current_goal}")
-    if char.abilities:
-        state_parts.append(f"能力：{char.abilities}")
-    if state_parts:
-        chunks.append("\n".join(state_parts))
-        metadata_list.append({"section": "state_abilities"})
+    profile = {key: value for key, value in payload["profile"].items() if value}
+    ai_config = {
+        key: value
+        for key, value in (payload.get("ai_config") or {}).items()
+        if value
+    }
+    if profile or ai_config:
+        chunks.append(
+            json.dumps(
+                {"profile": profile, "ai_config": ai_config},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        metadata_list.append({"section": "profile_voice"})
 
-    if not chunks:
-        return 0
+    relationships = payload.get("relationships") or []
+    if relationships:
+        chunks.append(
+            json.dumps(
+                {"relationships": relationships},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        metadata_list.append({"section": "relationships"})
 
-    all_text = "\n---\n".join(chunks)
+    all_text = character_archive_text(char, db=db)
     c_hash = _content_hash(all_text)
     doc = _get_or_create_document(db, project_id, "character", character_id, c_hash)
     _delete_chunks_for_source(db, project_id, "character", character_id)
@@ -722,10 +739,7 @@ def _get_source_content_hash(db: Session, source_type: str, source_id: str) -> s
         return _content_hash("\n".join(p for p in parts if p))
     elif source_type == "character":
         obj = db.query(Character).filter(Character.id == source_id).first()
-        if not obj:
-            return ""
-        parts = [obj.name or "", obj.personality or "", obj.background or "", obj.appearance or "", obj.abilities or ""]
-        return _content_hash("\n".join(p for p in parts if p))
+        return _content_hash(character_archive_text(obj, db=db)) if obj else ""
     elif source_type == "character_timeline":
         events = (
             db.query(CharacterTimeline)

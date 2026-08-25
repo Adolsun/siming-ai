@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.agent.planner import detect_intent, build_plan_from_intent
+from app.services.agent.planner import detect_intent
 
 
 class CatalogingIntentTest(unittest.TestCase):

@@ -166,7 +166,7 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('作品库还是空的。建议先立项，让司命一起建立角色、世界和前 3 章细纲。')).toBeInTheDocument()
+      expect(screen.getByText('作品库还是空的。使用上方“创建新作品”开始立项，或直接导入已有小说。')).toBeInTheDocument()
     })
   })
 
@@ -373,9 +373,9 @@ describe('DashboardPage', () => {
 
     renderDashboard()
 
-    expect(await screen.findByText('第一次使用？先免费把 AI 接上')).toBeInTheDocument()
+    expect(await screen.findByText('想让 AI 一起创作？先完成一次免费准备')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /免费准备 AI/ })).toHaveLength(1)
-    expect(screen.getAllByRole('button', { name: /先写立项草稿/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /创建新作品/ })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: /免费准备 AI/ }))
     expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })

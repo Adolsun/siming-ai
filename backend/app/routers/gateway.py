@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import socket
 from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -38,6 +39,10 @@ from ..modules.gateway.interfaces.contracts import (
     SyncPushResponse,
     SyncStatusResponse,
     TokenPair,
+)
+from ..services.cataloging.launcher import (
+    AUTO_CHAPTER_WRITE_SOURCE,
+    create_and_queue_cataloging_job,
 )
 
 router = APIRouter(tags=["gateway"])
@@ -149,6 +154,112 @@ def _require_admin(
     raise UnauthorizedError("公网首次配对需要 Gateway 启动密钥")
 
 
+_VIRTUAL_INTERFACE_MARKERS = (
+    "bluetooth",
+    "docker",
+    "hyper-v",
+    "loopback",
+    "podman",
+    "radmin",
+    "tap",
+    "tun",
+    "vbox",
+    "virtual",
+    "vmnet",
+    "vmware",
+    "vpn",
+    "wsl",
+)
+_PHYSICAL_INTERFACE_MARKERS = (
+    "ethernet",
+    "wi-fi",
+    "wifi",
+    "wlan",
+    "wireless",
+    "以太网",
+    "无线",
+)
+_RFC1918_NETWORKS = tuple(
+    ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _usable_ipv4(value: str) -> ipaddress.IPv4Address | None:
+    try:
+        address = ipaddress.ip_address(str(value).split("%", 1)[0])
+    except ValueError:
+        return None
+    if (
+        address.version != 4
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        return None
+    return address
+
+
+def _default_route_ipv4() -> ipaddress.IPv4Address | None:
+    """Return the source address selected by the OS default IPv4 route.
+
+    Connecting a UDP socket does not send traffic. It only asks the routing
+    table which local interface would be used, avoiding WSL/VMware adapters
+    that often sort ahead of the Wi-Fi or Ethernet address.
+    """
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            return _usable_ipv4(probe.getsockname()[0])
+    except OSError:
+        return None
+
+
+def _interface_priority(
+    candidate: tuple[str, ipaddress.IPv4Address],
+) -> tuple[int, int, int, int]:
+    interface_name, address = candidate
+    normalized_name = interface_name.casefold()
+    virtual = any(marker in normalized_name for marker in _VIRTUAL_INTERFACE_MARKERS)
+    physical = any(marker in normalized_name for marker in _PHYSICAL_INTERFACE_MARKERS)
+    if any(address in network for network in _RFC1918_NETWORKS):
+        address_scope = 0
+    elif address in _CGNAT_NETWORK:
+        address_scope = 1
+    else:
+        address_scope = 2
+    return (int(virtual), int(not physical), address_scope, int(address))
+
+
+def _discover_local_gateway_ipv4() -> ipaddress.IPv4Address | None:
+    candidates: list[tuple[str, ipaddress.IPv4Address]] = []
+    try:
+        import psutil
+
+        interface_stats = psutil.net_if_stats()
+        for interface_name, addresses in psutil.net_if_addrs().items():
+            stats = interface_stats.get(interface_name)
+            if stats is not None and not stats.isup:
+                continue
+            for item in addresses:
+                address = _usable_ipv4(str(item.address))
+                if address is not None:
+                    candidates.append((interface_name, address))
+    except Exception:
+        # The default-route probe below still works in slim builds without
+        # psutil. If that also fails, the caller retains the loopback URL.
+        pass
+
+    default_route = _default_route_ipv4()
+    if default_route is not None:
+        return default_route
+    if not candidates:
+        return None
+    return min(candidates, key=_interface_priority)[1]
+
+
 def _discover_gateway_url(request: Request, settings: Settings) -> str:
     if settings.gateway_advertised_url:
         parsed = urlsplit(settings.gateway_advertised_url)
@@ -165,32 +276,9 @@ def _discover_gateway_url(request: Request, settings: Settings) -> str:
     if not is_loopback:
         return str(request.base_url).rstrip("/")
 
-    candidates: list[ipaddress._BaseAddress] = []
-    try:
-        import psutil
-
-        for addresses in psutil.net_if_addrs().values():
-            for address in addresses:
-                raw = str(address.address).split("%", 1)[0]
-                try:
-                    ip = ipaddress.ip_address(raw)
-                except ValueError:
-                    continue
-                if ip.version == 4 and not ip.is_loopback and not ip.is_link_local:
-                    candidates.append(ip)
-    except Exception:
-        pass
-    if not candidates:
+    selected = _discover_local_gateway_ipv4()
+    if selected is None:
         return str(request.base_url).rstrip("/")
-
-    def priority(value: ipaddress._BaseAddress) -> tuple[int, str]:
-        if value.is_private:
-            return (0, str(value))
-        if value in ipaddress.ip_network("100.64.0.0/10"):
-            return (1, str(value))
-        return (2, str(value))
-
-    selected = sorted(candidates, key=priority)[0]
     port = parsed.port
     netloc = str(selected) if port is None else f"{selected}:{port}"
     return urlunsplit((parsed.scheme, netloc, "", "", "")).rstrip("/")
@@ -470,8 +558,42 @@ def sync_bootstrap(
     )
 
 
+def _launch_deferred_chapter_cataloging(
+    service: GatewayService,
+) -> dict[str, tuple[bool, str]]:
+    """Start canonical post-write cataloging after the sync transaction commits."""
+
+    outcomes: dict[str, tuple[bool, str]] = {}
+    for mutation_id, project_id, chapter_id in service.take_deferred_chapter_cataloging():
+        try:
+            _job, launch = create_and_queue_cataloging_job(
+                service.db,
+                project_id,
+                [chapter_id],
+                execution_mode="auto",
+                trigger_source=AUTO_CHAPTER_WRITE_SOURCE,
+                run_now=True,
+            )
+            message = (
+                "章节已按 PC 领域语义同步，并启动正式建档"
+                if launch.get("worker_queued")
+                else "章节已按 PC 领域语义同步，正式建档任务已创建"
+            )
+            outcomes[mutation_id] = (True, message)
+        except Exception as exc:
+            # The chapter and sync revision are already committed.  Preserve an
+            # accurate retryable outcome instead of rolling back or claiming the
+            # post-write lifecycle completed.
+            outcomes[mutation_id] = (
+                False,
+                "章节已同步；正式建档启动失败，可在任务列表重试："
+                f"{str(exc)[:500]}",
+            )
+    return outcomes
+
+
 @router.post("/sync/push", response_model=ApiResponse[SyncPushResponse])
-def sync_push(
+async def sync_push(
     payload: SyncPushRequest,
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -479,13 +601,17 @@ def sync_push(
 ):
     _require_gateway(settings)
     context = _request_auth(request, service, allow_local=True)
-    return ApiResponse.success(
-        data=service.push(
-            payload.mutations,
-            protocol_version=payload.protocol_version,
-            device_id=context.device_id,
-        )
+    data = service.push(
+        payload.mutations,
+        protocol_version=payload.protocol_version,
+        device_id=context.device_id,
     )
+    results_by_mutation = {item.mutation_id: item for item in data.results}
+    for mutation_id, (_started, message) in _launch_deferred_chapter_cataloging(service).items():
+        result = results_by_mutation.get(mutation_id)
+        if result is not None:
+            result.message = message
+    return ApiResponse.success(data=data)
 
 
 @router.get("/sync/pull", response_model=ApiResponse[SyncPullResponse])
@@ -545,7 +671,7 @@ def list_sync_conflicts(
     "/sync/conflicts/{conflict_id}/resolve",
     response_model=ApiResponse[SyncConflictView],
 )
-def resolve_sync_conflict(
+async def resolve_sync_conflict(
     conflict_id: str,
     payload: SyncConflictResolutionRequest,
     request: Request,
@@ -554,14 +680,17 @@ def resolve_sync_conflict(
 ):
     _require_gateway(settings)
     context = _request_auth(request, service, allow_local=True)
-    return ApiResponse.success(
-        data=service.resolve_conflict(
-            conflict_id,
-            payload,
-            device_id=context.device_id,
-        ),
-        message="同步冲突已处理，双方原始版本仍保留在记录中",
+    data = service.resolve_conflict(
+        conflict_id,
+        payload,
+        device_id=context.device_id,
     )
+    outcomes = _launch_deferred_chapter_cataloging(service)
+    failed = [message for started, message in outcomes.values() if not started]
+    message = "同步冲突已处理，双方原始版本仍保留在记录中"
+    if failed:
+        message += "；章节已写入，但正式建档需要在任务列表重试"
+    return ApiResponse.success(data=data, message=message)
 
 
 __all__ = ["router"]

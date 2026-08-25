@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import shutil
 import zipfile
-from pathlib import Path
 from urllib.request import Request, urlopen
 
 from .downloads import download_with_fallback

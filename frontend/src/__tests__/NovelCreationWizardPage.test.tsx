@@ -303,7 +303,7 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.getByText('文风与世界观已生成')).toBeInTheDocument()
     expect(screen.getByText('openai:gpt-test')).toBeInTheDocument()
     expect(screen.getByText('2 次')).toBeInTheDocument()
-    expect(screen.getAllByText('阶段结果已保存到立项草稿').length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('阶段结果已保存到立项草稿')).length).toBeGreaterThan(0)
     expect(screen.getByText('模型结构已自动修复')).toBeInTheDocument()
     expect(screen.getByText('审阅并确认文风与世界观')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /取消任务/ })).not.toBeInTheDocument()
@@ -555,7 +555,7 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.queryByRole('textbox', { name: '阶段 JSON 原文' })).not.toBeInTheDocument()
     await user.clear(toneInput)
     await user.type(toneInput, '记忆有明确代价')
-    await user.click(screen.getByRole('button', { name: '保存修改' }))
+    await user.click(screen.getByRole('button', { name: '保存并同步' }))
 
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style', expect.objectContaining({

@@ -30,7 +30,15 @@ from app.ai.local_cli_adapter import (
     parse_cli_launch,
     terminate_cli_process_tree,
 )
-from app.database.models import APIConfig, AgentRun, Chapter, ContextManifest, Project
+from app.database.models import (
+    APIConfig,
+    AgentRun,
+    CatalogingChapterRun,
+    CatalogingJob,
+    Chapter,
+    ContextManifest,
+    Project,
+)
 from app.database.session import SessionLocal
 from app.services.content_store import ensure_project_folder
 from app.services.external_agent.run_service import add_event, cancel_run, create_run, update_run_status
@@ -48,20 +56,22 @@ _OPENCODE_WRITING_RECOVERY_PROMPT = (
     "session, reuse it; otherwise generate it now directly as the content argument of "
     "save_external_chapter_draft. Continue until it is stored in Siming: call "
     "prepare_external_writing_context if needed, "
-    "save_external_chapter_draft, record_external_quality_review, create_chapter, "
-    "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
+    "save_external_chapter_draft, create_chapter with skip_style_repair=true, "
+    "verify that create_chapter returned cataloging_job.job_id, and finish_agent_run. "
     "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
-    "attached task. Do not stop before create_chapter succeeds."
+    "attached task. Do not generate or submit cataloging candidates in this writing turn. "
+    "Do not stop before create_chapter succeeds and starts canonical cataloging."
 )
 _OPENCODE_REWRITE_RECOVERY_PROMPT = (
     "Your previous response produced replacement chapter prose but did not finish the "
     "required Siming MCP rewrite workflow. Do not print or rewrite the chapter again. "
     "Reuse the complete replacement text from your immediately preceding response, call "
-    "save_external_chapter_draft and record_external_quality_review, then call "
-    "update_chapter with rewrite=true for the exact outline_node_id, followed by "
-    "archive_chapter_after_write, get_project_archive_status, and finish_agent_run. "
+    "save_external_chapter_draft, then call update_chapter with rewrite=true and "
+    "skip_style_repair=true for the exact outline_node_id, followed by "
+    "verification that update_chapter returned cataloging_job.job_id, then finish_agent_run. "
     "Use the same project_id, outline_node_id, context_manifest_id, and run_id from the "
-    "attached task. Never call create_chapter for this rewrite."
+    "attached task. Never call create_chapter for this rewrite and do not submit "
+    "cataloging candidates in the writing turn."
 )
 
 
@@ -113,18 +123,28 @@ def _has_fresh_writing_chapter(db: Session, run_id: str, project_id: str) -> boo
     return query.first() is not None
 
 
-def _has_completed_writing_archive(db: Session, run_id: str, project_id: str) -> bool:
-    """Return true once the formal chapter and post-write archive both exist."""
-    if not _has_fresh_writing_chapter(db, run_id, project_id):
+def _has_started_writing_cataloging(db: Session, run_id: str, project_id: str) -> bool:
+    """Return true once a fresh chapter has entered canonical cataloging."""
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if not run:
         return False
-    from app.database.models import AgentRunEvent
-
-    return db.query(AgentRunEvent).filter(
-        AgentRunEvent.run_id == run_id,
-        AgentRunEvent.event_type == "tool_result",
-        AgentRunEvent.status == "ok",
-        AgentRunEvent.message.like("archive_chapter_after_write:%"),
-    ).first() is not None
+    fresh_chapters = db.query(Chapter.id).filter(Chapter.project_id == project_id)
+    if run.created_at is not None:
+        fresh_chapters = fresh_chapters.filter(
+            (Chapter.created_at >= run.created_at) | (Chapter.updated_at >= run.created_at)
+        )
+    return (
+        db.query(CatalogingChapterRun)
+        .join(CatalogingJob, CatalogingJob.id == CatalogingChapterRun.job_id)
+        .filter(
+            CatalogingChapterRun.project_id == project_id,
+            CatalogingChapterRun.chapter_id.in_(fresh_chapters),
+            CatalogingJob.model_source.like("chapter_write:%"),
+            CatalogingJob.status.notin_(["failed", "cancelled"]),
+        )
+        .first()
+        is not None
+    )
 
 
 async def _continue_opencode_writing_session(
@@ -303,11 +323,11 @@ def _workflow_section(task_type: str, *, rewrite: bool = False) -> str:
 """
     if task_type == "writing":
         formal_write = (
-            "8. Call `record_external_quality_review`, then `update_chapter` with "
-            "`rewrite=true`, the exact `outline_node_id`, and `draft_id/content_ref`. "
+            "8. Call `update_chapter` with `rewrite=true`, `skip_style_repair=true`, "
+            "the exact `outline_node_id`, and `draft_id/content_ref`. "
             "Never call `create_chapter` for this task."
             if rewrite
-            else "8. Call `record_external_quality_review`, then `create_chapter` with "
+            else "8. Call `create_chapter` with `skip_style_repair=true`, "
             "`draft_id/content_ref` and `context_manifest_id`. Never call "
             "`update_chapter` for this new-chapter task."
         )
@@ -319,15 +339,19 @@ def _workflow_section(task_type: str, *, rewrite: bool = False) -> str:
    project searches: the governed writing context is the primary context source. Use
    `search_task_context` only for one concrete missing fact.
 4. Call `submit_context_evidence` with every selected required source before a formal write.
-5. Call `prepare_external_writing_context` with `context_manifest_id` to get the compatible quality prompt wrapper.
+5. Call `prepare_external_writing_context` with `context_manifest_id` to get the focused base-writing prompt and context.
 6. Generate the complete chapter directly inside the `content` argument of
    `save_external_chapter_draft`; do not first print it, save it to a local file, or spend
    another model turn explaining your plan.
+   This task produces the base draft only; do not run a de-AI rewrite or
+   quality-review pass.
 7. Call `save_external_chapter_draft` with `context_manifest_id`; after it succeeds,
    prioritize the formal database write over optional additional analysis.
 {formal_write}
-9. Call `archive_chapter_after_write` with the same manifest and standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
-10. Call `get_project_archive_status` before reporting completion.
+9. Read the formal write result and verify that `cataloging_job.job_id` is present.
+   The write has already started Siming's canonical single-chapter cataloging pipeline;
+   do not generate or submit cataloging candidates in this writing turn.
+10. Call `finish_agent_run` after the formal write and cataloging launch succeed.
 """.format(formal_write=formal_write)
     return """
 ## Required Workflow: General Project Work
@@ -412,7 +436,7 @@ def write_task_file(
 - Use Siming prompt packs and workflow guides instead of guessing tool contracts.
 - For chapter writing, use the unified quality prompt returned by Siming.
 - For cataloging, section-level outline nodes are required when the chapter contains distinct scenes/beats.
-- Post-write archive candidates should include chapter_summary.narrative_state and section outline scene fields when the text contains events, foreshadowing, storyline progress, location/time changes, or unresolved actions.
+- Chapter writes automatically start the same canonical cataloging pipeline used by the cataloging page. Writing agents must not duplicate that pipeline or create side-channel archive candidates.
 """
     task_file.write_text(text, encoding="utf-8", newline="\n")
     return task_file
@@ -472,7 +496,7 @@ async def _run_cli_process(
                 if task_type != "writing":
                     continue
                 db.expire_all()
-                if not _has_completed_writing_archive(db, run_id, project_id):
+                if not _has_started_writing_cataloging(db, run_id, project_id):
                     continue
                 completed_by_database = True
                 add_event(
@@ -480,7 +504,7 @@ async def _run_cli_process(
                     run_id,
                     "workflow_completed",
                     status="ok",
-                    message="章节已正式入库并完成写后归档；正在结束本机 CLI 进程",
+                    message="章节已正式入库并启动统一建档任务；正在结束本机 CLI 进程",
                     model_source=f"{provider}:local_cli",
                     tool_mode="siming_mcp_database_completion",
                     storage_target="database_authoritative",

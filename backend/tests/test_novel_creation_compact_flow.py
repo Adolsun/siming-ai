@@ -14,10 +14,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import NovelCreationSession, NovelCreationStageRun, OperationRun
 from app.database.session import Base
+from app.modules.model_runtime.domain.configuration import ModelProviderConfig
+from app.schemas.ai_writer import MobileProviderEnvelope
 from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from app.routers.novel_creation import (
+    NovelCreationApplyRequest,
     NovelCreationSessionPatchRequest,
     NovelCreationStageRunRequest,
+    apply_blueprint,
     start_creation_stage_run,
     update_creation_session,
 )
@@ -32,13 +36,12 @@ from app.services.novel_creation_workspace import (
     save_stage,
     serialize_creation_artifact,
 )
-from app.services.workspace.tools.novel_creation import advance_novel_creation_interview, apply_novel_blueprint
+from app.services.workspace.tools.novel_creation import apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import (
     AuthorLockViolation,
     _validate_author_requirements,
     generate_novel_creation_stage,
 )
-from app.services.novel_creation_interview import INTERVIEW_CLI_TIMEOUT_SECONDS
 from app.services.operation_runtime import input_snapshot_hash
 
 
@@ -100,116 +103,6 @@ def _concepts():
     ]
 
 
-def test_interview_ready_state_never_calls_full_blueprint_generation():
-    db = _db()
-    session = _session(db)
-    with patch(
-        "app.services.workspace.tools.novel_creation._evaluate_answers",
-        new=AsyncMock(return_value={"action": "generate", "reason": "enough context"}),
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "user_brief": session.user_brief,
-            "qa_history": [{"question": "What should shock readers?", "answer": "A devastating reversal."}],
-            "model": "openai:test",
-        }))
-
-    assert result["status"] == "ok"
-    assert result["data"]["state"] == "ready"
-    assert session.blueprint_json is None
-    assert session.draft_json["interview"]["status"] == "completed"
-
-
-def test_skip_interview_preserves_history_without_model_call():
-    db = _db()
-    session = _session(db)
-    with patch("app.services.workspace.tools.novel_creation._evaluate_answers", new=AsyncMock()) as evaluate:
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "qa_history": [{"question": "What should shock readers?", "answer": "A devastating reversal."}],
-            "skip_questions": True,
-        }))
-
-    assert result["data"]["state"] == "ready"
-    assert result["data"]["skipped"] is True
-    assert session.draft_json["interview"]["history"]
-    evaluate.assert_not_awaited()
-
-
-def test_interview_runtime_reports_the_selected_model_and_cli_timeout():
-    db = _db()
-    session = _session(db)
-    selection = SimpleNamespace(
-        model="codex_cli:codex-cli",
-        provider="codex_cli",
-        source="explicit",
-    )
-    with patch(
-        "app.services.workspace.tools.novel_creation._run_dynamic_interview",
-        new=AsyncMock(return_value=(None, "", False)),
-    ), patch(
-        "app.services.workspace.tools.novel_creation.LLMGateway.select_model_for_task",
-        return_value=selection,
-    ), patch(
-        "app.services.workspace.tools.novel_creation.is_local_cli_provider",
-        return_value=True,
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "model": "codex_cli:codex-cli",
-        }))
-
-    runtime = result["data"]["runtime"]
-    assert result["status"] == "ok"
-    assert runtime == {
-        "effective_model": "codex_cli:codex-cli",
-        "provider": "codex_cli",
-        "model_source": "conversation_override",
-        "tool_mode": "local_cli_text_json",
-        "timeout_seconds": INTERVIEW_CLI_TIMEOUT_SECONDS,
-        "quota_status": "unknown",
-    }
-
-
-def test_interview_runtime_marks_quota_failure_without_losing_recovery_guidance():
-    db = _db()
-    session = _session(db)
-    selection = SimpleNamespace(
-        model="opencode_cli:free-model",
-        provider="opencode_cli",
-        source="explicit",
-    )
-    failed_interview = {
-        "status": "interview_failed",
-        "detail": "Free usage exceeded, retrying in 9h",
-        "data": {
-            "failure_class": "quota_or_rate_limit",
-            "next_action": "切换有额度的模型后重试。",
-        },
-    }
-    with patch(
-        "app.services.workspace.tools.novel_creation._run_dynamic_interview",
-        new=AsyncMock(return_value=(failed_interview, "", False)),
-    ), patch(
-        "app.services.workspace.tools.novel_creation.LLMGateway.select_model_for_task",
-        return_value=selection,
-    ), patch(
-        "app.services.workspace.tools.novel_creation.is_local_cli_provider",
-        return_value=True,
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "model": "opencode_cli:free-model",
-        }))
-
-    runtime = result["data"]["runtime"]
-    assert result["status"] == "error"
-    assert runtime["effective_model"] == "opencode_cli:free-model"
-    assert runtime["failure_class"] == "quota_or_rate_limit"
-    assert runtime["quota_status"] == "exhausted_or_limited"
-    assert runtime["next_action"] == "切换有额度的模型后重试。"
-
-
 def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
     db = _db()
     session = _session(db)
@@ -238,7 +131,6 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
 def test_compact_concepts_never_switch_models_on_quota_failure():
     db = _db()
     session = _session(db)
-    content = json.dumps({"concepts": _concepts()})
     completion = _streaming_completion(RuntimeError("free usage quota exceeded"))
     with patch(
         "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
@@ -690,8 +582,8 @@ def test_duplicate_running_concept_request_reuses_existing_run():
         return MagicMock()
 
     with patch("app.routers.novel_creation.asyncio.create_task", side_effect=capture_task) as create_task:
-        first = asyncio.run(start_creation_stage_run(session.id, payload, db))
-        second = asyncio.run(start_creation_stage_run(session.id, payload, db))
+        first = asyncio.run(start_creation_stage_run(session.id, payload, MagicMock(), db))
+        second = asyncio.run(start_creation_stage_run(session.id, payload, MagicMock(), db))
 
     assert first.data["run"]["id"] == second.data["run"]["id"]
     assert create_task.call_count == 1
@@ -702,3 +594,83 @@ def test_refine_run_request_requires_a_bounded_instruction():
         NovelCreationStageRunRequest(stage="concepts", operation="refine")
     payload = NovelCreationStageRunRequest(stage="concepts", operation="refine", instruction="  保留角色姓名  ")
     assert payload.instruction == "保留角色姓名"
+
+
+def test_mobile_key_creation_run_never_persists_the_credential_envelope():
+    db = _db()
+    session = _session(db)
+    envelope = MobileProviderEnvelope(
+        ephemeral_public_key="e" * 43,
+        nonce="n" * 16,
+        ciphertext="ciphertext-must-stay-request-only-123456",
+    )
+    payload = NovelCreationStageRunRequest(
+        stage="concepts",
+        model_route="mobile",
+        mobile_provider=envelope,
+    )
+    provider = ModelProviderConfig(
+        provider="mobile_openai",
+        default_model="phone-model",
+        api_key="phone-secret-key",
+        base_url="https://8.8.8.8/v1",
+    )
+
+    def resolve_provider(_db, resolved_payload, _request, *, binding_id):
+        assert binding_id == session.id
+        resolved_payload.mobile_provider = None
+        resolved_payload.model = "mobile_openai:phone-model"
+        return provider
+
+    with (
+        patch(
+            "app.routers.novel_creation._resolve_mobile_creation_provider",
+            side_effect=resolve_provider,
+        ),
+        patch("app.routers.novel_creation.schedule_creation_stage") as schedule,
+    ):
+        response = asyncio.run(
+            start_creation_stage_run(session.id, payload, MagicMock(), db)
+        )
+
+    run = db.get(NovelCreationStageRun, response.data["run"]["id"])
+    serialized_request = json.dumps(run.request_json)
+    assert "phone-secret-key" not in serialized_request
+    assert envelope.ciphertext not in serialized_request
+    assert run.request_json["model"] == "mobile_openai:phone-model"
+    assert schedule.call_args.kwargs["request_provider"] is provider
+
+
+def test_android_creation_apply_immediately_enables_the_formal_project_for_sync():
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            gateway_device_id="android-device",
+            gateway_device_platform="android",
+        )
+    )
+    tool_result = {
+        "status": "ok",
+        "detail": "created",
+        "data": {"project_id": "project-from-creation"},
+    }
+    with (
+        patch(
+            "app.routers.novel_creation.apply_novel_blueprint",
+            new=AsyncMock(return_value=tool_result),
+        ),
+        patch(
+            "app.modules.gateway.infrastructure.service.GatewayService"
+        ) as gateway_service,
+    ):
+        response = asyncio.run(
+            apply_blueprint(
+                NovelCreationApplyRequest(session_id="creation-session"),
+                request,
+                MagicMock(),
+            )
+        )
+
+    assert response.data["project_id"] == "project-from-creation"
+    gateway_service.return_value.enable_project.assert_called_once_with(
+        "project-from-creation"
+    )

@@ -25,6 +25,7 @@ const baseStatus = {
   configured: false,
   configured_model: null,
   is_global_default: false,
+  has_usable_models: false,
   needs_setup: true,
   global_model: null,
   activation_job: null,
@@ -32,7 +33,10 @@ const baseStatus = {
 }
 
 describe('GettingStartedPanel', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
 
   it('offers one plain-language activation action', async () => {
     api.get.mockResolvedValue({ data: { data: baseStatus } })
@@ -53,26 +57,63 @@ describe('GettingStartedPanel', () => {
     expect(screen.queryByText(/先安装 Node.js/)).not.toBeInTheDocument()
   })
 
-  it('shows the first-idea prompt as soon as a model is ready', async () => {
+  it('offers MCP setup for ready OpenCode and shows the first-idea prompt after verification', async () => {
     api.get.mockResolvedValue({ data: { data: {
       ...baseStatus,
       needs_setup: false,
       configured: true,
       is_global_default: true,
+      has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+      opencode_mcp_configured: false,
+    } } })
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/getting-started/opencode/mcp/configure') {
+        return Promise.resolve({ data: { data: {
+          ready: true,
+          detail: 'OpenCode 与 Siming MCP 已就绪',
+          preflight: { ready: true, detail: '建档工具已加载', missing_tools: [] },
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText('OpenCode 已可用，再完成一步即可启用完整 Agent')).toBeInTheDocument()
+    expect(screen.queryByLabelText('你想写什么故事？')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /配置并验证 MCP/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/mcp/configure'))
+    expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
+    expect(screen.getByLabelText('你想写什么故事？')).toBeInTheDocument()
+  })
+
+  it('does not resume or poll a stale activation job after any model is usable', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      needs_setup: false,
+      has_usable_models: true,
+      available_model: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      activation_job: {
+        id: 'stale-job', status: 'running', phase: 'testing', percent: 95,
+        message: '旧任务仍在检查', free_models: [],
+      },
     } } })
 
     renderPanel()
 
     expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
-    expect(screen.getByLabelText('你想写什么故事？')).toBeInTheDocument()
+    await new Promise((resolve) => window.setTimeout(resolve, 1100))
     expect(api.get).toHaveBeenCalledTimes(1)
+    expect(api.get).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/stale-job')
   })
 
   it('creates a session and starts one adjustable concept direction from one idea', async () => {
     api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus, needs_setup: false, is_global_default: true,
+      ...baseStatus, needs_setup: false, is_global_default: true, has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+      opencode_mcp_configured: true,
     } } })
     api.post.mockImplementation((url: string) => {
       if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
@@ -191,5 +232,24 @@ describe('GettingStartedPanel', () => {
     expect(screen.getByRole('button', { name: /稍后继续下载/ })).toBeInTheDocument()
     expect(screen.queryByText('OpenCode 免费服务已限流（不是网络故障）')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '登录后验证个人免费额度' })).not.toBeInTheDocument()
+  })
+
+  it('shows the source selected by smart download routing', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      activation_job: {
+        id: 'job-download', status: 'running', phase: 'downloading', percent: 35,
+        message: '已选择国内加速源，正在下载 v1.18.4',
+        download_source: '国内加速源',
+        bytes_downloaded: 20 * 1024 * 1024,
+        bytes_total: 60 * 1024 * 1024,
+        free_models: [],
+      },
+    } } })
+
+    renderPanel()
+
+    expect(await screen.findByText('当前线路：国内加速源')).toBeInTheDocument()
+    expect(screen.getByText('20.0 MB / 60.0 MB')).toBeInTheDocument()
   })
 })

@@ -1,7 +1,6 @@
 """Character roleplay and dialogue battle workspace tools."""
 from __future__ import annotations
 
-import json as _json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,10 +17,9 @@ from ....services.context_builders import (
     _build_recent_summaries,
     _build_scene_characters_context,
     _build_world_context,
-    _get_outline_node_or_404,
 )
 from ....prompts.style_prompts import build_style_context
-from ..utils import find_character_by_name_or_id, find_outline_by_title_or_id
+from ..utils import find_character_by_name_or_id
 
 
 async def roleplay_character(

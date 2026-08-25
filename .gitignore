@@ -12,6 +12,7 @@ AGENTS.md
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+*.siming-write.lock
 
 # Build outputs
 .build/
@@ -73,6 +74,7 @@ Thumbs.db
 .playwright-cli/
 output/
 *.rp
+.tmp/
 
 # Local-only Axure reconstruction workspace and analysis evidence
 local-prototype/

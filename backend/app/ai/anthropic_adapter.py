@@ -235,7 +235,6 @@ class AnthropicAdapter(BaseAdapter):
         Uses Anthropic's streaming events: text_delta, content_block_start (tool_use),
         content_block_delta (input_json_delta).
         """
-        import json as _json
         client = self._get_client()
         system, anthropic_messages = _convert_messages_for_anthropic(messages)
         try:

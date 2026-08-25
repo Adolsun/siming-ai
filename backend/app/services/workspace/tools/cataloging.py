@@ -1,13 +1,12 @@
 """Cataloging workspace tools for project bootstrapping jobs."""
 from __future__ import annotations
 
-import asyncio
 import os
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.local_cli_adapter import is_local_cli_provider
 from ....core.legacy_env import compatible_env_prefixes
 from ....database.models import (
     CatalogingCandidate,
@@ -32,20 +31,15 @@ from ....services.cataloging.job_control import (
 )
 from ....services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
-    ensure_local_cli_cataloging_worker,
 )
-from ....services.cataloging.model_selection import cataloging_model_selection
+from ....services.cataloging.launcher import (
+    create_and_queue_cataloging_job,
+    queue_cataloging_job,
+)
 from ....services.cataloging.orchestrator import (
-    create_cataloging_job,
     job_to_dict,
     run_to_dict,
-    stream_cataloging_job,
 )
-
-
-async def _consume_cataloging_stream(project_id: str, job_id: str) -> None:
-    async for _event in stream_cataloging_job(project_id, job_id):
-        pass
 
 
 def _get_job(db: Session, project_id: str, args: dict[str, Any]) -> CatalogingJob | None:
@@ -91,29 +85,20 @@ async def start_cataloging_job(db: Session, project_id: str, args: dict[str, Any
     if mode not in {"auto", "manual"}:
         mode = "auto"
     chapter_ids = args.get("chapter_ids") if isinstance(args.get("chapter_ids"), list) else []
-    selection = cataloging_model_selection(args.get("model"))
-    model = selection.model
-    provider = (selection.provider or (model or "").split(":", 1)[0]).lower()
-    local_cli = is_local_cli_provider(provider)
-    job = create_cataloging_job(
+    job, data = create_and_queue_cataloging_job(
         db,
         project_id,
-        mode,
-        model,
         [str(item) for item in chapter_ids],
-        execution_backend="local_cli_agent" if local_cli else "internal_llm",
-        model_source=selection.source,
-        provider=provider or None,
+        execution_mode=mode,
+        model_override=str(args.get("model") or "").strip() or None,
+        trigger_source="manual",
+        run_now=bool(args.get("run_now", True)),
     )
-    if bool(args.get("run_now", True)) and local_cli:
-        ensure_local_cli_cataloging_worker(db, job, provider=provider)
-    elif bool(args.get("run_now", True)):
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
     return {
         "tool": "start_cataloging_job",
         "status": "ok",
         "detail": f"已创建作品建档任务，共 {job.total_chapters or 0} 章",
-        "data": job_to_dict(job),
+        "data": data,
     }
 
 
@@ -183,8 +168,7 @@ async def set_cataloging_mode(db: Session, project_id: str, args: dict[str, Any]
     if job.status == "waiting_confirmation" and mode == "auto":
         job.status = "running"
         job.blocked_chapter_id = None
-        if job.execution_backend != "local_cli_agent":
-            asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
+        queue_cataloging_job(job.id)
     return {"tool": "set_cataloging_mode", "status": "ok", "detail": f"建档模式已切换为 {mode}", "data": job_to_dict(job)}
 
 
@@ -252,9 +236,14 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
         .filter(CatalogingCandidate.chapter_run_id == run.id)
         .all()
     )
-    coverage = inspect_candidate_coverage(candidates)
-    if not coverage.is_complete:
-        run.status = "facts_saved"
+    coverage = inspect_candidate_coverage(
+        candidates,
+        db=db,
+        project_id=project_id,
+    )
+    missing_required_items = coverage.cli_parity_missing
+    if missing_required_items:
+        run.status = "in_progress" if job.execution_backend == "local_cli_agent" else "facts_saved"
         job.status = "running"
         job.blocked_chapter_id = run.chapter_id
         db.flush()
@@ -266,15 +255,26 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
                 "job_id": job.id,
                 "chapter_id": run.chapter_id,
                 "candidate_count": coverage.total,
-                "missing_required_items": coverage.missing,
+                "missing_required_items": missing_required_items,
+                "coverage": coverage.to_dict(),
                 "next_tool": "save_external_cataloging_candidates",
             },
         }
     events = apply_candidates_for_run(db, job, run)
     has_failed = any(event.get("type") == "candidate_apply_failed" for event in events)
     run.status = "completed_with_warnings" if has_failed else "completed"
-    job.status = "running"
     job.blocked_chapter_id = None
+    remaining_runs = (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == job.id)
+        .filter(CatalogingChapterRun.status.notin_(["completed", "completed_with_warnings", "skipped_by_user"]))
+        .count()
+    )
+    if remaining_runs == 0:
+        job.status = "completed"
+        job.completed_at = datetime.utcnow()
+    else:
+        job.status = "running"
     refresh_job_progress(db, job)
     queue_content_sync(
         db,
@@ -284,10 +284,10 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
             source="cataloging_workspace_tool",
         ),
     )
-    if job.execution_mode == "auto" and job.execution_backend != "local_cli_agent":
-        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
+    if job.execution_mode == "auto" and job.execution_backend != "external_agent":
+        queue_cataloging_job(job.id)
     data: dict[str, Any] = {"job": job_to_dict(job), "run": run_to_dict(run), "events": events}
-    if job.execution_mode == "external_agent":
+    if job.execution_backend == "external_agent":
         data["next_tool"] = "verify_external_cataloging_progress"
         data["workflow_reminder"] = {
             "mode": "external_cataloging_no_api",
@@ -318,8 +318,8 @@ async def retry_current_cataloging_chapter(db: Session, project_id: str, args: d
         return {"tool": "retry_current_cataloging_chapter", "status": "skipped", "detail": "当前没有可重试章节"}
     reset_run_for_retry(db, job, run)
     db.flush()
-    if bool(args.get("run_now", True)) and job.execution_backend != "local_cli_agent":
-        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
+    if bool(args.get("run_now", True)):
+        queue_cataloging_job(job.id)
     return {"tool": "retry_current_cataloging_chapter", "status": "ok", "detail": "当前章节已重置并开始重试", "data": {"job": job_to_dict(job), "run": run_to_dict(run)}}
 
 
@@ -340,8 +340,8 @@ async def rerun_cataloging_resolution_current(db: Session, project_id: str, args
         return {"tool": "rerun_cataloging_resolution_current", "status": "skipped", "detail": "当前章节没有可复用事实，无法只重跑第二阶段"}
     reset_run_for_resolution_retry(db, job, run)
     db.flush()
-    if bool(args.get("run_now", True)) and job.execution_backend != "local_cli_agent":
-        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
+    if bool(args.get("run_now", True)):
+        queue_cataloging_job(job.id)
     return {"tool": "rerun_cataloging_resolution_current", "status": "ok", "detail": "已保留事实并重跑第二阶段", "data": {"job": job_to_dict(job), "run": run_to_dict(run)}}
 
 
@@ -362,8 +362,8 @@ async def resume_cataloging_job(db: Session, project_id: str, args: dict[str, An
         return {"tool": "resume_cataloging_job", "status": "skipped", "detail": "未找到建档任务"}
     resume_job(job)
     db.flush()
-    if bool(args.get("run_now", True)) and job.execution_backend != "local_cli_agent":
-        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
+    if bool(args.get("run_now", True)):
+        queue_cataloging_job(job.id)
     return {"tool": "resume_cataloging_job", "status": "ok", "detail": "建档任务已继续", "data": job_to_dict(job)}
 
 

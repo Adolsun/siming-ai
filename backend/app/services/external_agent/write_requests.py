@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.database.models import AgentRun, AgentRunEvent
+from app.database.models import AgentRunEvent
 from app.services.external_agent.run_service import add_event, get_run, update_run_status
 from app.mcp.permissions import issue_confirmation_token
 

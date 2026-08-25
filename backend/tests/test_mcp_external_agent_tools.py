@@ -1,10 +1,7 @@
 """Tests for external Agent reporting MCP tools."""
-import asyncio
-import json
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

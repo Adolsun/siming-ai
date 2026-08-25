@@ -143,6 +143,20 @@ class UpdaterVersionTestCase(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "SHA-256"):
                     updater.download_and_stage_update(Path(temp_dir))
 
+    def test_unsigned_update_reports_actionable_release_error(self):
+        signature = {
+            "valid": False,
+            "status": "no_signature",
+            "subject": "",
+            "thumbprint": "",
+        }
+        with patch("app.updater._verify_authenticode_signature", return_value=signature):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "没有 Windows 代码签名.*重新签名.*no_signature",
+            ):
+                updater._require_valid_signature(Path("Siming.exe"))
+
     def test_download_stages_only_after_hash_and_signature_checks(self):
         content = b"signed test executable"
         checksum = hashlib.sha256(content).hexdigest()

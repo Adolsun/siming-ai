@@ -8,7 +8,6 @@ import logging
 import re
 from types import SimpleNamespace
 from typing import Any
-from typing import Optional
 
 from sqlalchemy.orm import Session
 

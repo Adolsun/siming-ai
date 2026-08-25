@@ -14,6 +14,7 @@ SYNC_ENTITY_TYPES = (
     "chapter_version",
     "outline",
     "character",
+    "character_ai_config",
     "character_alias",
     "character_relation",
     "world",
@@ -30,6 +31,7 @@ EntityType = Literal[
     "chapter_version",
     "outline",
     "character",
+    "character_ai_config",
     "character_alias",
     "character_relation",
     "world",
@@ -86,6 +88,7 @@ class PairingStartResponse(StrictContract):
     gateway_url: str
     gateway_name: str
     gateway_public_key: str
+    gateway_encryption_public_key: str
     gateway_fingerprint: str
     expires_at: datetime
     qr_payload: dict[str, Any]

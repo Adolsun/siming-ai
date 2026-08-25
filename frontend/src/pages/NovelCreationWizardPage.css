@@ -630,10 +630,11 @@
 }
 
 .creation-structured-editor {
-  max-height: 58vh;
+  max-height: min(64vh, 760px);
   margin-top: 18px;
   overflow: auto;
-  padding-right: 6px;
+  padding: 2px 8px 18px 2px;
+  overscroll-behavior: contain;
 }
 
 .creation-structured-fields {
@@ -657,6 +658,24 @@
 
 .creation-structured-collection .ant-collapse-content-box {
   padding: 12px;
+}
+
+.creation-editor-modal {
+  max-width: calc(100vw - 32px);
+}
+
+.creation-editor-modal .ant-modal-content {
+  overflow: hidden;
+}
+
+.creation-editor-modal .ant-modal-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.creation-editor-modal .ant-modal-footer {
+  padding-top: 14px;
+  border-top: 1px solid var(--ant-color-border-secondary);
 }
 
 .creation-advanced-editor {
@@ -719,6 +738,17 @@
 }
 
 @media (max-width: 760px) {
+  .creation-editor-modal {
+    top: 12px;
+    max-width: calc(100vw - 16px);
+    margin: 0 auto;
+    padding-bottom: 12px;
+  }
+
+  .creation-structured-editor {
+    max-height: calc(100vh - 250px);
+  }
+
   .creation-page-inner {
     width: min(100% - 24px, 1500px);
     padding-top: 12px;

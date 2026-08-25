@@ -32,6 +32,7 @@ class SqlAlchemyGettingStartedConfiguration:
             and not local_runtime_disabled(global_config.provider)
             else None
         )
+        preferred_usable = usable_global or (ready[0] if ready else None)
         return GettingStartedModelState(
             opencode_command=opencode.cli_command if opencode else None,
             configured_model=opencode.default_model if opencode else None,
@@ -44,6 +45,8 @@ class SqlAlchemyGettingStartedConfiguration:
             has_usable_models=bool(ready),
             global_provider=usable_global.provider if usable_global else None,
             global_model=usable_global.default_model if usable_global else None,
+            usable_provider=preferred_usable.provider if preferred_usable else None,
+            usable_model=preferred_usable.default_model if preferred_usable else None,
         )
 
     def configure_opencode(

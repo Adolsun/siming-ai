@@ -7,6 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ...character_role_types import append_character_role_description, normalize_character_role_type
+
 from ....database.models import Character, CharacterAIConfig, CharacterVersion, Project
 from ....modules.story.application.content_sync import queue_content_sync
 from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
@@ -34,6 +36,7 @@ async def create_character(
         if value:
             background_parts.append(f"{label}：{value}")
     background = "\n".join(part for part in background_parts if part)
+    background = append_character_role_description(background, args.get("role_type")) or ""
     character = Character(
         project_id=project_id,
         name=name[:100],
@@ -44,7 +47,7 @@ async def create_character(
             args.get("abilities") if isinstance(args.get("abilities"), list) else [],
             ensure_ascii=False,
         ),
-        role_type=str(args.get("role_type") or "supporting"),
+        role_type=normalize_character_role_type(args.get("role_type"), default="supporting"),
         age=str(args.get("age") or "")[:100] or None,
         is_evolution_tracked=True,
         # Current-state fields
@@ -104,10 +107,18 @@ async def update_character(
     if not character:
         return {"tool": "update_character", "status": "skipped", "detail": "未找到角色"}
     changed = False
-    for field, limit in [("personality", 4000), ("background", 8000), ("role_type", 100)]:
+    for field, limit in [("personality", 4000), ("background", 8000)]:
         if field in args:
-            setattr(character, field, str(args.get(field) or "")[:limit])
+            value = str(args.get(field) or "")[:limit]
+            setattr(character, field, value)
             changed = True
+    if "role_type" in args:
+        character.background = append_character_role_description(character.background, args.get("role_type"))
+        character.role_type = normalize_character_role_type(
+            args.get("role_type"),
+            default=character.role_type or "other",
+        )
+        changed = True
     # Current-state fields (updated per chapter, overwrite old state)
     for field, limit in [
         ("appearance", 4000), ("age", 100),
