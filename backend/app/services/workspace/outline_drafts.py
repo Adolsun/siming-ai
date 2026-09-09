@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 
 from app.architecture.uow import commit_session
+from app.core.exceptions import ValidationError
 from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 
 
@@ -20,6 +21,19 @@ class PendingOutlineDraftConflict(RuntimeError):
     def __init__(self, draft: Any):
         super().__init__("a pending outline draft already exists")
         self.draft = draft
+
+
+class OutlineProposalCountError(ValidationError):
+    """Structured count mismatch without reflecting model-generated content."""
+
+    def __init__(self, expected: int, actual: int):
+        super().__init__(f"本次规划要求 {expected} 个节点，实际提交 {actual} 个；请按精确数量提交")
+        self.expected = expected
+        self.actual = actual
+
+    def result_data(self) -> dict[str, Any]:
+        return {"reason": "outline_node_count_mismatch",
+                "expected_count": self.expected, "actual_count": self.actual}
 
 
 def _project_lock(db: Any, project_id: str) -> Any | None:
@@ -333,7 +347,7 @@ def validate_generated_outline_proposal(
     if not isinstance(nodes, list):
         raise ValidationError("大纲草稿 nodes 必须是原生数组，不能编码成 JSON 字符串")
     if len(nodes) != count:
-        raise ValidationError(f"本次规划要求 {count} 个节点，实际提交 {len(nodes)} 个；请完整提交，不能缩减批次")
+        raise OutlineProposalCountError(count, len(nodes))
     resolved_parent_id, _ = _resolve_position(db, project_id, parent_id, insert_after_id)
     return resolved_parent_id, _validated_nodes(db, project_id, resolved_parent_id, nodes)
 
@@ -354,7 +368,11 @@ def store_outline_draft(
 
     commit_session(db)
     _project_lock(db, project_id)
-    manifest = db.query(ContextManifest).filter_by(id=context_manifest_id, project_id=project_id).first()
+    manifest = (
+        db.query(ContextManifest)
+        .filter_by(id=context_manifest_id, project_id=project_id)
+        .first()
+    )
     resolved_parent_id, validated_nodes = validate_generated_outline_proposal(
         db, project_id=project_id, manifest=manifest, parent_id=parent_id,
         insert_after_id=insert_after_id, nodes=nodes,

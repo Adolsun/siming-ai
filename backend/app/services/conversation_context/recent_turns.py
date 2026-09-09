@@ -31,6 +31,7 @@ def select_recent_turns(
     count_turn_tokens: Callable[[ConversationTurn], int],
     checkpoint_source_last_sequence: int | None = None,
     covered_sequence_ranges: Sequence[tuple[int, int]] = (),
+    growth_reserve_tokens: int = 0,
 ) -> RecentTurnSelection:
     """Keep the largest newest exact history that fits ``available_tokens``.
 
@@ -48,6 +49,8 @@ def select_recent_turns(
 
     if available_tokens < 0:
         raise ValueError("available_tokens must not be negative")
+    if growth_reserve_tokens < 0:
+        raise ValueError("growth_reserve_tokens must not be negative")
     ordered = list(turns)
     first_sequences = [turn.messages[0].sequence_no for turn in ordered]
     if first_sequences != sorted(first_sequences) or len(first_sequences) != len(
@@ -106,6 +109,9 @@ def select_recent_turns(
         raise MandatoryExactTurnsOverCapacity(
             "mandatory exact turns exceed available_tokens"
         )
+    # Future tool results are a planning estimate. They cannot displace exact
+    # required history or prevent the model from reading a rejected batch.
+    tail_limit = max(mandatory_cost, available_tokens - growth_reserve_tokens)
     exact_ids = {turn.turn_id for turn in mandatory}
     used = mandatory_cost
     completed_tail_closed = False
@@ -116,7 +122,7 @@ def select_recent_turns(
         if completed_tail_closed:
             continue
         cost = costs[turn.turn_id]
-        if used + cost > available_tokens:
+        if used + cost > tail_limit:
             completed_tail_closed = True
             continue
         exact_ids.add(turn.turn_id)

@@ -2,6 +2,7 @@
 import { Button, Space, Tag, Typography } from 'antd'
 import { InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { WorkspaceAssistantRun, WorkspaceRunLog } from './types'
+import { toolStatusColor } from './constants'
 
 const { Text } = Typography
 
@@ -43,15 +44,9 @@ export function ToolLogPanel({
             color={
               log.status === 'ok' && log.resolvedStepId
                 ? 'blue'
-                : log.status === 'ok'
+                : log.status === 'error' && log.resolvedStepId
                   ? 'green'
-                  : log.status === 'error' && log.resolvedStepId
-                    ? 'green'
-                    : log.status === 'error'
-                      ? 'red'
-                      : log.status === 'skipped'
-                        ? 'orange'
-                        : 'blue'
+                  : toolStatusColor(log.status)
             }
           >
             {log.status === 'error' && log.resolvedStepId

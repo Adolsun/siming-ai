@@ -26,6 +26,8 @@ async def collect_tool_turn(gateway: Any, **kwargs: Any) -> dict[str, Any]:
             content.append(str(event.get("delta") or ""))
         elif event_type == "reasoning_delta":
             reasoning_content.append(str(event.get("delta") or ""))
+        elif event_type == "done" and isinstance(event.get("reasoning_content"), str):
+            reasoning_content = [event["reasoning_content"]]
         elif event_type == "tool_call_delta":
             index = int(event.get("index") or 0)
             call = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})

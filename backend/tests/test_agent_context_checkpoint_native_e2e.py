@@ -270,8 +270,10 @@ def test_creation_long_history_checkpoint_then_native_category_and_read() -> Non
         for message in first_messages
     )
     delivered = model_requests[2]["messages"]
-    native_call = next(message for message in delivered if message.get("tool_calls"))
-    assert native_call["tool_calls"][0]["function"]["name"] == "get_creation_snapshot"
+    native_calls = [message for message in delivered if message.get("tool_calls")]
+    assert [item["tool_calls"][0]["function"]["name"] for item in native_calls] == [
+        "set_tool_categories", "get_creation_snapshot",
+    ]
     assert any(message.get("tool_call_id") == "creation-read" for message in delivered)
     db.expire_all()
     checkpoints = (

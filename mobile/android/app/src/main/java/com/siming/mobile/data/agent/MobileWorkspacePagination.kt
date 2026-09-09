@@ -47,18 +47,19 @@ internal fun mobilePageMetadata(page: MobilePage<*>): JsonObject = buildJsonObje
 
 internal fun mobileTextRange(value: String, offset: Int, maxChars: Int): MobileTextRange {
     val safeOffset = offset.coerceAtLeast(0)
-    val start = safeOffset.coerceAtMost(value.length)
+    val totalChars = value.codePointCount(0, value.length)
+    val start = safeOffset.coerceAtMost(totalChars)
     val end = (safeOffset.toLong() + maxChars.coerceAtLeast(1))
-        .coerceAtMost(value.length.toLong())
+        .coerceAtMost(totalChars.toLong())
         .toInt()
     return MobileTextRange(
-        text = value.substring(start, end),
+        text = value.substring(value.offsetByCodePoints(0, start), value.offsetByCodePoints(0, end)),
         metadata = buildJsonObject {
             put("offset_chars", safeOffset)
             put("returned_chars", (end - safeOffset).coerceAtLeast(0))
-            if (end < value.length) put("next_offset_chars", end) else put("next_offset_chars", JsonNull)
-            put("has_more", end < value.length)
-            put("total_chars", value.length)
+            if (end < totalChars) put("next_offset_chars", end) else put("next_offset_chars", JsonNull)
+            put("has_more", end < totalChars)
+            put("total_chars", totalChars)
         },
     )
 }

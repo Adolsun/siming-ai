@@ -32,7 +32,7 @@ describe('projectCatalogingMessages', () => {
     expect(messages[0].content).toContain('下一章写作已锁定')
     expect(messages[0].navigation_action).toEqual({
       label: '查看建档进度',
-      to: '/project/project-1?view=cataloging',
+      to: '/project/project-1?view=cataloging&job=job-1',
     })
   })
 

@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 vi.mock('../features/projects', () => ({
   useProject: () => ({
@@ -17,7 +17,8 @@ vi.mock('../components/AiSidePanel', () => ({
   ),
 }))
 
-vi.mock('../components/TabCache', () => ({ default: () => null }))
+vi.mock('../pages/WriterPage', () => ({ default: () => <input aria-label="未保存正文" defaultValue="原始草稿" /> }))
+vi.mock('../pages/CatalogingPage', () => ({ default: ({ focusJobId, active }: { focusJobId?: string; active: boolean }) => <output data-testid="cataloging-target">{focusJobId}:{String(active)}</output> }))
 vi.mock('../components/WorkspaceAssistantChat', () => ({ default: () => <div>项目助手内容</div> }))
 vi.mock('../themes/ThemeSwitcher', () => ({ default: () => null }))
 vi.mock('../contexts/AiPanelContext', () => ({
@@ -42,10 +43,31 @@ function LocationProbe() {
   return <output data-testid="location">{location.pathname}{location.search}</output>
 }
 
+function TaskLinks() {
+  const navigate = useNavigate()
+  return <><button onClick={() => navigate('/project/project-1?view=cataloging&job=job-a')}>打开任务A</button>
+    <button onClick={() => navigate('/project/project-1?view=cataloging&job=job-b')}>打开任务B</button>
+    <button onClick={() => navigate('/project/project-1?view=writer')}>返回正文</button></>
+}
+
 describe('ProjectWorkspace formal-project handoff', () => {
   beforeEach(() => {
     localStorage.clear()
     localStorage.setItem('siming_ai_panel_collapsed', 'true')
+  })
+
+  it('forwards a new linked job through cached tabs while preserving the writer draft', async () => {
+    render(<MemoryRouter initialEntries={['/project/project-1?view=writer']}><TaskLinks /><Routes>
+      <Route path="/project/:projectId" element={<ProjectWorkspace />} />
+    </Routes></MemoryRouter>)
+    fireEvent.change(await screen.findByRole('textbox', { name: '未保存正文' }), { target: { value: '作者修改尚未保存' } })
+    fireEvent.click(screen.getByRole('button', { name: '打开任务A' }))
+    expect(await screen.findByTestId('cataloging-target')).toHaveTextContent('job-a:true')
+    fireEvent.click(screen.getByRole('button', { name: '返回正文' }))
+    expect(screen.getByTestId('cataloging-target')).toHaveTextContent(':false')
+    expect(screen.getByRole('textbox', { name: '未保存正文' })).toHaveValue('作者修改尚未保存')
+    fireEvent.click(screen.getByRole('button', { name: '打开任务B' }))
+    expect(screen.getByTestId('cataloging-target')).toHaveTextContent('job-b:true')
   })
 
   it('opens the project assistant and consumes the one-shot handoff query', async () => {

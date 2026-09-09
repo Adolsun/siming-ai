@@ -1108,7 +1108,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
-    def test_hidden_reasoning_is_only_kept_for_provider_continuation(
+    def test_model_api_reasoning_streams_and_is_persisted_for_the_author(
         self,
         mock_stream,
         _mock_supports,
@@ -1148,11 +1148,19 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             if line.startswith("data: {")
         ]
         reasoning_events = [event for event in events if event.get("type") == "reasoning_delta"]
-        self.assertEqual(reasoning_events, [])
+        self.assertEqual(''.join(event['delta'] for event in reasoning_events), '先核对作品资料')
         complete = next(event for event in events if event.get("type") == "complete")
         self.assertEqual(complete["data"]["reply"], "资料检查完成。")
-        self.assertNotIn("reasoning_content", complete["data"])
-        self.assertNotIn("先核对作品资料", response.text)
+        self.assertEqual(complete["data"]["reasoning_content"], "先核对作品资料")
+        self.assertEqual(complete["data"]["reasoning_source"], "model_api")
+        conversation = next(event for event in events if event.get("type") == "conversation")
+        db = SessionLocal()
+        try:
+            saved = db.get(AssistantMessage, conversation["assistant_message"]["id"])
+            restored = public_message_payload(json.loads(saved.payload_json))
+            self.assertEqual(restored["reasoning_content"], "先核对作品资料")
+        finally:
+            db.close()
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
@@ -1704,6 +1712,15 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         _mock_supports,
     ):
         project_id = self.create_project("Tool result batch admission")
+        db = SessionLocal()
+        try:
+            profile = db.query(ModelContextProfile).filter_by(provider="openai", model_name="gpt-test").one()
+            # One default page fits, but all three declared results do not.
+            profile.context_window_tokens = 128000
+            profile.max_output_tokens = 4096
+            db.commit()
+        finally:
+            db.close()
         mock_stream.side_effect = [
             async_dict_chunks(
                 {
@@ -1764,17 +1781,9 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             [event["tool"] for event in rejected],
             ["search_chapters", "search_outline", "search_characters"],
         )
-        self.assertTrue(
-            all(
-                event["result"]
-                == {
-                    "tool": event["tool"],
-                    "status": "error",
-                    "detail": f"{event['tool']} 执行失败",
-                }
-                for event in rejected
-            )
-        )
+        self.assertTrue(all(e["result"]["status"] == "error" for e in rejected))
+        self.assertTrue(all("剩余" in e["result"]["detail"] for e in rejected))
+        self.assertTrue(all(e["result"]["remediation"]["retryable"] for e in rejected))
         self.assertFalse(any(event.get("type") == "error" for event in events))
         self.assertTrue(any(event.get("type") == "complete" for event in events))
         mock_execute.assert_not_awaited()
@@ -1787,6 +1796,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(
             result_call_ids,
             {
+                "category-call",
                 "search-chapters-call",
                 "search-outline-call",
                 "search-characters-call",
@@ -1895,7 +1905,8 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(mock_execute.await_count, 2)
         delivered_messages = mock_stream.call_args_list[2].kwargs["messages"]
         native_assistant = next(
-            message for message in delivered_messages if message.get("tool_calls")
+            message for message in delivered_messages
+            if any(call["id"] == "two-search-chapters" for call in message.get("tool_calls", []))
         )
         self.assertEqual(
             native_assistant["tool_calls"][0]["function"]["arguments"],
@@ -1907,7 +1918,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 for message in delivered_messages
                 if message.get("role") == "tool"
             },
-            {"two-search-chapters", "two-search-outline"},
+            {"two-search-categories", "two-search-chapters", "two-search-outline"},
         )
         db = SessionLocal()
         try:
@@ -2268,7 +2279,8 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 for item in first_messages)
         )
         delivered = mock_stream.call_args_list[2].kwargs["messages"]
-        native_call = next(item for item in delivered if item.get("tool_calls"))
+        native_call = next(item for item in delivered
+                           if any(call["id"] == "checkpoint-read" for call in item.get("tool_calls", [])))
         self.assertEqual(
             native_call["tool_calls"][0]["function"]["name"],
             "search_outline",
@@ -2301,6 +2313,14 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         _mock_supports,
     ):
         project_id = self.create_project("Native assistant transaction capacity")
+        db = SessionLocal()
+        try:
+            profile = db.query(ModelContextProfile).filter_by(provider="openai", model_name="gpt-test").one()
+            profile.context_window_tokens = 180000
+            profile.max_output_tokens = 4096
+            db.commit()
+        finally:
+            db.close()
         mock_stream.side_effect = [
             async_dict_chunks(
                 {
@@ -2313,12 +2333,13 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
             async_dict_chunks(
+                {"type": "reasoning_delta", "delta": "思" * 200_000},
                 {
                     "type": "tool_call_delta",
                     "index": 0,
                     "id": "oversized-search-call",
                     "name": "search_outline",
-                    "arguments_delta": json.dumps({"query": "山" * 20_000}),
+                    "arguments_delta": json.dumps({"query": "山"}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -2341,18 +2362,14 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         rejected = next(
             event for event in events if event.get("type") == "tool_result_batch_rejected"
         )
-        self.assertEqual(
-            rejected["result"],
-            {
-                "tool": "search_outline",
-                "status": "error",
-                "detail": "search_outline 执行失败",
-            },
-        )
+        self.assertEqual(rejected["result"]["tool"], "search_outline")
+        self.assertEqual(rejected["result"]["status"], "error")
+        self.assertIn("剩余", rejected["result"]["detail"])
+        self.assertFalse(rejected["result"]["remediation"]["retryable"])
         error = next(event for event in events if event.get("type") == "error")
         self.assertEqual(
             error["code"],
-            ConversationContextErrorCode.PROTOCOL_INVALID.value,
+            ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY.value,
         )
         self.assertEqual(
             error["details"]["reason"],
@@ -2377,6 +2394,10 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             self.assertEqual([step.step_type for step in steps], ["control", "search"])
             denied_request = json.loads(steps[1].request_json)
             self.assertEqual(
+                denied_request["native_assistant_transaction"]["assistant_reasoning_content"],
+                "思" * 200_000,
+            )
+            self.assertEqual(
                 denied_request["native_call_id"],
                 "oversized-search-call",
             )
@@ -2385,7 +2406,128 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
-    def test_native_transactions_preserve_provider_continuation_then_compact_to_receipt(
+    def test_workspace_incident_batch_runs_real_queries_with_complete_reasoning(self, stream, _supports):
+        project_id = self.create_project("Capacity incident replay")
+        db = SessionLocal()
+        try:
+            db.add(ModelContextProfile(provider="openai", model_name="capacity-replay",
+                                       context_window_tokens=1_000_000, max_output_tokens=4096,
+                                       safety_margin_tokens=512))
+            db.commit()
+        finally:
+            db.close()
+        reasoning = "完整思考" * 2000
+
+        def batch(tool, count, *, reasoning_text="", arguments=None):
+            return async_dict_chunks(
+                {"type": "reasoning_delta", "delta": reasoning_text},
+                *({"type": "tool_call_delta", "index": index, "id": f"{tool}-{index}",
+                   "name": tool, "arguments_delta": json.dumps(arguments or {"cursor": index * 2})}
+                  for index in range(count)),
+                {"type": "done", "finish_reason": "tool_calls"},
+            )
+
+        stream.side_effect = [
+            batch("set_tool_categories", 1, arguments={"enabled_categories": ["story_knowledge"]}),
+            batch("search_outline", 3),
+            batch("list_chapters", 4, reasoning_text=reasoning),
+            async_dict_chunks({"type": "content_delta", "delta": "资料核对完成。"},
+                              {"type": "done", "finish_reason": "stop"}),
+        ]
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={"scope": "project", "message": "只查询，不写入。", "model": "openai:capacity-replay"},
+        )
+        events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                  if line.startswith("data: {")]
+        self.assertFalse(any(e.get("type") in {"error", "tool_result_batch_rejected"} for e in events), events)
+        self.assertTrue(any(e.get("type") == "complete" for e in events))
+        self.assertEqual(stream.call_count, 4)
+        delivered = stream.call_args_list[-1].kwargs["messages"]
+        assistant = next(m for m in delivered
+                         if any(c["id"] == "list_chapters-0" for c in m.get("tool_calls", [])))
+        self.assertEqual(assistant["reasoning_content"], reasoning)
+        self.assertEqual([c["id"] for c in assistant["tool_calls"]], [f"list_chapters-{i}" for i in range(4)])
+        self.assertEqual({m["tool_call_id"] for m in delivered if m.get("role") == "tool"},
+                         {"set_tool_categories-0", *[f"search_outline-{i}" for i in range(3)],
+                          *[f"list_chapters-{i}" for i in range(4)]})
+        db = SessionLocal()
+        try:
+            steps = db.query(AssistantRunStep).filter(AssistantRunStep.project_id == project_id).all()
+            self.assertEqual(len(steps), 8)
+            self.assertTrue(all(s.status == "ok" for s in steps))
+            self.assertEqual(db.query(Chapter).filter(Chapter.project_id == project_id).count(), 0)
+            self.assertEqual(db.query(OutlineNode).filter(OutlineNode.project_id == project_id).count(), 0)
+        finally:
+            db.close()
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_capacity_recovery_adjusts_page_or_stops_without_partial_writes(self, execute, stream, _supports):
+        from unittest.mock import PropertyMock
+
+        from app.architecture.tool_categories import tool_category_for_name
+        from app.services.conversation_context import RequestBudgetEnvelope
+
+        batch_index = 0
+
+        def batch(calls):
+            nonlocal batch_index
+            batch_index += 1
+            return async_dict_chunks(
+                *({"type": "tool_call_delta", "index": index, "id": f"call-{batch_index}-{index}",
+                   "name": tool, "arguments_delta": json.dumps(args)}
+                  for index, (tool, args) in enumerate(calls)),
+                {"type": "done", "finish_reason": "tool_calls"},
+            )
+
+        for recover in (True, False):
+            with self.subTest(recover=recover):
+                project_id = self.create_project(f"Capacity recovery {recover}")
+                execute.reset_mock()
+                execute.return_value = {"tool": "list_chapters", "status": "ok", "data": []}
+                stream.reset_mock()
+                categories = list({tool_category_for_name(n) for n in ("list_chapters", "update_project_info")})
+                mixed = [("list_chapters", {"limit": 1}), ("update_project_info", {"title": "Must not write"})]
+                turns = [batch([("set_tool_categories", {"enabled_categories": categories})]), batch(mixed)]
+                if recover:
+                    turns += [batch([("list_chapters", {"limit": 1})]),
+                              async_dict_chunks({"type": "content_delta", "delta": "查询结束"},
+                                                {"type": "done", "finish_reason": "stop"})]
+                else:
+                    turns += [batch(mixed), batch(mixed)]
+                stream.side_effect = turns
+                with patch.object(RequestBudgetEnvelope, "tool_transaction_budget_tokens",
+                                  new_callable=PropertyMock, return_value=10_000):
+                    response = self.client.post(
+                        f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+                        json={"scope": "project", "message": "核对项目", "model": "openai:gpt-test"},
+                    )
+                events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                          if line.startswith("data: {")]
+                self.assertEqual(stream.call_count, 4)
+                self.assertEqual(execute.await_count, 1 if recover else 0)
+                if recover:
+                    self.assertEqual(execute.call_args.args[2]["tool"], "list_chapters")
+                    self.assertTrue(any(e.get("type") == "complete" for e in events), events)
+                else:
+                    error = next(e for e in events if e.get("type") == "error")
+                    self.assertEqual(error["code"], "tool_transaction_over_capacity")
+                    self.assertEqual(error["details"]["consecutive_rejections"], 3)
+                denied = [e for e in events if e.get("type") == "tool_result_batch_rejected"]
+                self.assertEqual(len(denied), 2 if recover else 6)
+                self.assertIn("10000", denied[0]["result"]["detail"])
+                db = SessionLocal()
+                try:
+                    from app.database.models import Project
+                    self.assertNotEqual(db.get(Project, project_id).title, "Must not write")
+                finally:
+                    db.close()
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    def test_native_transactions_preserve_all_current_turn_results_and_provider_continuation(
         self,
         mock_stream,
         _mock_supports,
@@ -2467,18 +2609,26 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(first_native_assistant["reasoning_content"], "先选择资料能力")
         self.assertEqual(first_native_assistant["provider_state"], [first_provider_state])
 
-        self.assertFalse(
+        self.assertTrue(
             any(
                 (message.get("tool_calls") or [{}])[0].get("id") == "call-categories-1"
                 for message in third_messages
             )
         )
-        receipt = next(
+        retained_first = next(
             message
             for message in third_messages
-            if "[SERVER_VERIFIED_EXECUTION_RECEIPTS]" in message.get("content", "")
+            if (message.get("tool_calls") or [{}])[0].get("id") == "call-categories-1"
         )
-        self.assertIn("set_tool_categories", receipt["content"])
+        self.assertEqual(retained_first, first_native_assistant)
+        self.assertFalse(any(
+            "[SERVER_VERIFIED_EXECUTION_RECEIPTS]" in message.get("content", "")
+            for message in third_messages
+        ))
+        self.assertEqual(
+            [message["tool_call_id"] for message in third_messages if message["role"] == "tool"],
+            ["call-categories-1", "call-categories-2"],
+        )
         second_native_assistant = next(
             message
             for message in third_messages

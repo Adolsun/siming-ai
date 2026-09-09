@@ -1,0 +1,125 @@
+{
+  "backend_tests": 322,
+  "final_targeted_tests": 51,
+  "frontend_tests": 7,
+  "parity_capabilities": 27,
+  "checkpoint": {
+    "status": "passed",
+    "mode": "resume_saved_checkpoint",
+    "source_access": "SQLite mode=ro + query_only; never mutated",
+    "isolated_home": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\.build\\cataloging-scenes-20260908\\model-66df9569",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "0867c852-4633-4033-af9b-6c4f9192232a",
+    "chapter_id": "56e3c348-b303-4d3f-9a34-a67550bc8b70",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 92086,
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "candidate_statuses": {
+      "applied": 19,
+      "rejected": 5
+    },
+    "candidate_count": 24,
+    "complete_coverage": true,
+    "prior_candidates_retained": true,
+    "saved_fact_ids_retained": true,
+    "source_fact_count": 18,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "staging_comparison_exclusions": [
+      "chapters.content_file_path",
+      "chapters.content_hash",
+      "chapters.updated_at"
+    ],
+    "apply_scope": "Private copy only; author database and installed application untouched."
+  },
+  "full_retry": {
+    "status": "passed",
+    "mode": "public_retry_current_endpoint",
+    "source_access": "SQLite mode=ro + query_only; never mutated",
+    "isolated_home": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\.build\\cataloging-scenes-20260908\\model-97915975",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "0867c852-4633-4033-af9b-6c4f9192232a",
+    "chapter_id": "56e3c348-b303-4d3f-9a34-a67550bc8b70",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 7251,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 2,
+        "request_characters": 65856,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 3,
+        "request_characters": 87845,
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed_with_warnings",
+    "error": null,
+    "review_warning": "候选已保留，需要核对模型抽取的原文线索：原文设定未进入章节覆盖清单：版本链",
+    "candidate_statuses": {
+      "applied": 19
+    },
+    "candidate_count": 19,
+    "complete_coverage": true,
+    "prior_candidates_retained": true,
+    "saved_fact_ids_retained": true,
+    "source_fact_count": 17,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "staging_comparison_exclusions": [
+      "chapters.content_file_path",
+      "chapters.content_hash",
+      "chapters.updated_at"
+    ],
+    "apply_scope": "Private copy only; author database and installed application untouched."
+  },
+  "rejected_intermediate_results": [
+    {
+      "artifact": "rejected-partial-repair-result.json",
+      "accepted": false
+    },
+    {
+      "artifact": "rejected-id-omission-result.json",
+      "accepted": false
+    },
+    {
+      "artifact": "rejected-repair-scope-result.json",
+      "accepted": false
+    }
+  ],
+  "source_database_mutated": false,
+  "installed_app_updated": false,
+  "installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-08T15:55:32.3064347+08:00",
+    "version": "3.3.13",
+    "installer": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\release\\local-cataloging-scene-fix-20260908\\Siming-Setup.exe",
+    "bytes": 42542332,
+    "sha256": "831dcc98f7da95a98e636ac82105035bd6f3993623efefc2803d450942d02b34",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with explicit scene ordinals, atomic complete scene repair, scoped retry feedback, and previous fixes. Not published."
+  },
+  "frontend_typecheck": "passed",
+  "payload_verification": {
+    "status": "passed",
+    "backend_modules": 626,
+    "frontend_files": 136,
+    "prompt_files": 8,
+    "packaged_mcp_tools": 153
+  }
+}

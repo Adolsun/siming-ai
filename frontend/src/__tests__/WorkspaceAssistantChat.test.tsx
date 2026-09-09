@@ -183,7 +183,7 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(within(screen.getByTestId('project-ai-chat')).getByRole('status')).toHaveTextContent('已停止后续执行')
   })
 
-  it('reveals reasoning deltas character by character before the final answer arrives', async () => {
+  it('shows each reasoning chunk immediately and accepts a provider replacement before the final answer', async () => {
     const stream = createControlledResponse([
       conversationEvent
       + runEvent
@@ -204,13 +204,21 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     })
 
     await act(async () => {
+      stream.push(sse({ type: 'reasoning_delta', delta: '已核对作品资料', replace: true, iteration: 1 }))
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.assistant-reasoning-text')).toHaveTextContent('已核对作品资料')
+      expect(document.querySelector('.assistant-reasoning-text')).not.toHaveTextContent('先核对作品资料')
+    })
+
+    await act(async () => {
       stream.push(
         sse({ type: 'content_delta', delta: '资料检查完成。' })
         + sse({
           type: 'complete',
           data: {
             reply: '资料检查完成。',
-            reasoning_content: '先核对作品资料',
+            reasoning_content: '已核对作品资料',
             outcome: 'completed_with_reply',
             actions: [],
             applied_actions: [],
@@ -1179,7 +1187,7 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     renderChat()
 
     expect(await screen.findByText('较早上下文整理失败')).toBeInTheDocument()
-    expect(screen.getByText(/当前任务尚未执行，完整聊天仍然保留/)).toBeInTheDocument()
+    expect(screen.getByText(/后续步骤已暂停，完整聊天和已有处理记录仍然保留/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /发送新消息重试/ }))
 
     expect(mockPost).not.toHaveBeenCalled()

@@ -143,7 +143,7 @@ Task Context / ContextManifest
 1. 删除固定最近 8/12 条和立项最近 6 回合作为容量控制的权威语义。
 2. 根据最终模型、提供商协议、系统提示、工具 Schema、消息和输出预留计算真实请求预算。
 3. 未接近真实容量时完整保留历史，不为“看起来更短”而主动损失信息。
-4. 接近容量时先回收已经被模型消费、可重新读取的旧工具结果。
+4. 当前用户回合内已投递的完整工具事务持续保留；消费一次不代表可以遗忘。仅在回合关闭后归档为执行回执。
 5. 仍不足时将较早的完整回合整理为结构化 checkpoint，并保留最近完整原文。
 6. 当前用户消息必须始终逐字保留并作为当前任务唯一意图来源。
 7. 工具调用协议、待处理工具结果、一次性令牌和回合状态机不得被模型摘要或转写成自然语言。
@@ -222,7 +222,7 @@ flowchart TD
     A["完整会话与运行步骤"] --> B["ConversationContextAssembler"]
     B --> C["全请求 Token 预检"]
     C -->|可容纳| D["最近原文 + 当前任务"]
-    C -->|接近容量| E["回收已消费工具结果"]
+    C -->|接近容量| E["保留当前回合，检查已关闭历史"]
     E --> F{仍超预算?}
     F -->|否| D
     F -->|是| G["生成或复用结构化 checkpoint"]
@@ -285,7 +285,7 @@ flowchart TD
 ### 6.1 提供商映射原则
 
 - OpenAI/Anthropic 原生 API：系统契约走提供商原生 system/developer 能力；checkpoint 作为独立历史参考内容，不与最新 user 合并。
-- 仅支持传统 Chat Completions 的兼容模型：由适配器生成经过测试的历史参考 user/assistant 对，再追加最近原文与最新 user；不得打乱工具调用对。
+- 仅支持传统 Chat Completions 的兼容模型：历史参考和服务器回执作为标明 `data_only` 的 user 数据消息，放在作者最新原文之前；不得凭空生成 assistant 回复，也不得打乱原生工具调用对。
 - 本机 Agent CLI：checkpoint 放入独立、明确标记为只读历史数据的区块；实际项目能力仍通过本轮临时 MCP 暴露；不得在历史区块中放工具 JSON。
 - 使用本机 Agent CLI 生成 checkpoint 时，必须启动独立压缩进程：空临时工作目录、无 Siming MCP、无作者文件读取授权、无写入权限，只允许返回待校验的结构化 stdout；无法证明隔离能力的 CLI 不承担模型摘要。
 - Android DirectApi：使用与 PC 相同的逻辑帧和协议校验器，由 Kotlin 适配到现有 SSE/Chat Completions 请求。
@@ -341,7 +341,7 @@ projected_next_step_tokens =
 规则：
 
 1. `current_input_tokens <= request_input_limit` 是发送硬门槛。
-2. `projected_next_step_tokens` 超限时，应在执行可能返回大结果的工具前要求分页、缩小范围或整理已消费上下文。
+2. `projected_next_step_tokens` 是历史整理的增长预估，不是当前请求的发送门槛。预估超限时仍可发送满足真实输入上限的完整请求，让模型读取拒绝结果、选择更小的工具调用或结束回合。已完成且可整理的历史继续按增长预估提前整理；必须逐字保留的历史只按真实输入上限校验。每个实际原生工具批次仍须在执行任何处理器前通过完整事务准入；不得删除当前回合结果或挤占输出预留和安全余量。
 3. 32K 只属于任务资料压缩的产品软目标，不作为聊天历史的固定触发值。
 4. 历史是否整理完全由绑定模型的实际容量决定。
 5. 工具类别切换后 Schema 改变，下一步必须重新计数。
@@ -352,7 +352,7 @@ projected_next_step_tokens =
 不设置固定“最近 8/12 条”。算法以完整回合为单位从新到旧装入：
 
 1. 当前用户消息始终 exact；
-2. 当前回合未消费工具事务始终 exact；
+2. 当前回合已投递及已消费工具事务始终 exact，连同原生调用、推理及提供商状态一起计入预算；
 3. 从最近一个已关闭回合开始倒序加入完整 user/assistant；
 4. 一个回合要么完整加入，要么整体进入 checkpoint，不能只截 assistant 前 600 字符；
 5. 在预算允许时尽可能多保留原文；
@@ -489,20 +489,23 @@ checkpoint 也不能无限累积。活动渲染采用以下确定性收敛规则
 pending     # assistant 已发出调用，结果尚未齐全
 delivered   # 结果已加入 messages，模型尚未消费
 consumed    # 后续模型步骤已成功返回，证明结果已被模型看过
-compactable # 已有持久 RunStep 和确定性回执，可从活动 messages 移除
+compactable # 回合已关闭，且已有持久 RunStep 和确定性回执，才可归档
 ```
 
 硬规则：
 
-- pending/delivered 必须完整保留；
-- 只有 consumed 才能进入 compactable；
+- pending/delivered/consumed 在当前回合内都必须完整保留；
+- 只有回合关闭后的 consumed 才能进入 compactable，状态转换必须显式校验回合关闭；
 - 一个批次的 assistant tool_calls 和对应 tool messages 原子移除；
-- 失败结果也必须先让模型看到一次，不能因为失败就提前删除；
+- 失败结果也保留到回合关闭，不能因为失败或已经消费一次就提前删除；
 - 终止型草稿工具成功后本轮结束，不再为继续推理压缩结果。
+- 当前回合全部原生事务必须保留模型实际返回的 `reasoning_content` 和提供商协议状态；不能为服务器生成的记录编造这些字段。断流续传后，事务只使用最终成功响应的原生思考字段，不能拼接失败尝试的思考内容。
 
 ### 9.2 确定性回执
 
 compactable 事务替换为服务端生成的 `CurrentTurnLedger`：
+
+PC 与手机独立模式均将历史回执渲染为最新作者消息之前的独立 user 参考数据，标明 `data_only: true`。失败或取消回合的服务器状态回执也使用该规则。最新作者消息保持原文且仍是最后一条 user 消息；之后保留当前回合全部已投递的原生 assistant/tool 事务，包括已经消费的批次。同一步骤已经存在完整事务时不重复注入回执。
 
 ```json
 {
@@ -773,7 +776,7 @@ _trim_context_if_needed(max_chars=800_000)
 load transcript/run steps
 → assemble ContextFrame
 → token preflight
-→ compact consumed tool transactions if needed
+→ retain all delivered/consumed transactions in the active turn
 → ensure checkpoint if needed
 → render provider messages
 → ToolProtocolValidator
@@ -817,7 +820,7 @@ load transcript/run steps
 - 本地 ConversationContextAssembler 与 PC 使用同一 JSON fixture；
 - 不再 `takeLast(12)`；
 - DirectApi 每个模型步骤前执行 token preflight 和协议校验；
-- 工具结果 consumed 后按统一 ledger 回收；
+- 工具结果 consumed 后仍完整保留，回合关闭后才按统一 ledger 归档；
 - checkpoint 模型调用使用当前 Android 作者配置的 Agent 模型；
 - 无可验证模型容量时明确提示配置，不继续按字符猜测；
 - UI 中的完整聊天列表不因 active checkpoint 改变。
@@ -1101,7 +1104,7 @@ Android 单元与集成测试
 门槛：
 
 - 未消费结果逐字保留；
-- 已消费事务原子回收；
+- 当前回合已消费事务逐字保留；只有回合关闭后才原子归档；
 - 工具调用成功率不下降；
 - 超大单次结果在工具边界被安全处理。
 
@@ -1202,13 +1205,13 @@ Android 单元与集成测试
 7. system 顺序兼容 Jinja 模板。
 8. assistant/tool 对被故意拆开时 ProtocolValidator 阻断。
 9. 工具结果未消费前不能回收。
-10. 工具结果消费后回收不改变下一步选择和完成结果。
+10. 工具结果消费后仍可供后续步骤使用，回合关闭后的归档不改变持久化证据。
 
 ### 18.5 同回合工具结果
 
-1. 多轮搜索不会让旧结果无限累积。
-2. 模型下一步能看到刚返回的完整结果。
-3. 回收后需要再次读取时允许安全只读重读。
+1. 多轮搜索在当前回合内保留全部完整结果，真实容量不足时明确停止，不静默丢弃。
+2. 模型每一步都能看到当前回合此前返回的完整结果。
+3. 跨回合或发现版本变化时允许安全只读重读；不能因为系统过早清除结果而强迫模型反复从头查询。
 4. 写入工具不能因重读机制被重复执行。
 5. 超大读取要求分页或范围，不做任意字符截断。
 6. terminal draft 结果结束模型回合。
@@ -1266,7 +1269,7 @@ Android Gateway PC route
 - 未触发压缩的额外 CPU/延迟；
 - 触发 checkpoint 的模型调用次数和费用；
 - 压缩前后 prompt tokens；
-- 同回合工具结果回收比例；
+- 当前回合结果完整保留比例与关闭后归档情况；
 - cache hit；
 - 任务完成率；
 - 真实 tool_calls 比例；
@@ -1296,7 +1299,7 @@ Android Gateway PC route
 ### C. 大量搜索工具结果
 
 - 同一回合多次搜索章节、角色和大纲。
-- 预期：刚返回结果完整可见；消费后的旧批次变为 ledger；协议仍合法。
+- 预期：当前回合全部已投递结果完整可见，消费后的旧批次仍保留原生事务；回合关闭后才归档为 ledger；协议仍合法。
 
 ### D. 工具样式文本干扰
 
@@ -1337,7 +1340,7 @@ Android Gateway PC route
 | 摘要遗漏作者关键决定 | 后续行为偏离 | exact author quotes、最近原文、segment 化、失败不发布 |
 | 摘要把旧决定当当前任务 | 重复或错误写入 | 最新 user 独立、superseded 字段、历史仅参考 |
 | 工具协议被压成文字 | 工具调用退化 | 原子事务、ProtocolValidator、禁止文本 fallback |
-| 工具结果回收太早 | 模型没看见结果 | delivered→consumed 状态，至少成功消费一次 |
+| 工具结果回收太早 | 模型丢失 ID 和上下文，反复查询 | delivered→consumed 后仍保留完整事务，回合关闭后才能归档 |
 | 单个工具结果过大 | 第一次返回即超限 | ToolSpec 分页/范围/引用策略，执行前预算 |
 | 递归摘要逐步失真 | 长会话累积误差 | 不重写 segment；权威 quote/ledger 确定性合并 |
 | 项目事实过期 | 用旧角色/大纲继续 | checkpoint 只存 ID，使用前重新读取当前 revision |
@@ -1366,7 +1369,7 @@ Android Gateway PC route
 - [x] semantic navigation 明确非权威。
 - [x] 项目事实使用前重新读取。
 - [x] pending/delivered 工具事务不被压缩。
-- [x] consumed 工具事务原子回收。
+- [x] 当前回合 consumed 工具事务完整保留，回合关闭后才原子归档。
 - [x] 不存在孤立 tool call/result。
 - [x] 不存在文本工具 fallback。
 - [x] 不支持工具的模型明确失败。

@@ -410,6 +410,72 @@ def test_ready_direct_mcp_receipt_replays_as_usable_without_handler() -> None:
         db.close()
 
 
+def test_workspace_direct_mcp_accepts_reply_after_initial_empty_category_choice() -> None:
+    from app.services.workspace.assistant_turn_support import workspace_category_instruction
+
+    db = _db()
+    project, conversation, run = _workspace_run(db, "Empty category greeting")
+    state_file = create_tool_category_state()
+    executor = AsyncMock()
+    state = WorkspaceAssistantTurnState(
+        db=db, project_id=project.id,
+        payload=SimpleNamespace(model="opencode_cli:test", temperature=0.3, max_tokens=1_024),
+        selected_provider="opencode_cli", supports_function_calling=False,
+        local_cli_selected=True, local_cli_mcp_enabled=True,
+        encode_event=lambda event: json.dumps(event, ensure_ascii=False),
+        execute_action=executor, prepare_context=AsyncMock(),
+    )
+    state.workspace = SqlAlchemyAssistantWorkspace(db)
+    state.conversation = conversation
+    state.assistant_run = run
+    state.tool_category_state_file = state_file
+    requests = 0
+
+    class Gateway:
+        @staticmethod
+        async def stream_chat_completion(**kwargs):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                response = json.loads(handle_message(
+                    _tool_call("set_tool_categories", {"enabled_categories": []}, call_id=1),
+                    db=db, project_id=project.id, permission_pack="project_management",
+                    tool_category_state_file=state_file,
+                    direct_mcp_lease_token=kwargs["extra_body"]["local_cli_mcp_lease_token"],
+                ))
+                assert response["result"]["isError"] is False
+                yield "控制步骤尾随文字不应成为最终回复。"
+            else:
+                assert requests == 2
+                yield "你好！我们可以先聊聊故事。"
+
+    async def collect():
+        turn = WorkspaceDirectMcpTurn(state, Gateway())
+        async for _event in turn.run(messages=[], iteration=1):
+            pass
+        assert state.loop_action == "continue"
+        assert state.category_selected is True
+        assert state.active_categories == ()
+        assert state.final_reply == ""
+        assert "现在可以直接完成不需要业务工具的回复" in workspace_category_instruction(
+            state.active_categories, category_selected=state.category_selected,
+        )
+        async for _event in turn.run(messages=[], iteration=2):
+            pass
+
+    try:
+        asyncio.run(collect())
+        assert state.loop_action == "break"
+        assert state.final_reply == "你好！我们可以先聊聊故事。"
+        assert state.observed_category_version == 1
+        assert db.query(Character).filter(Character.project_id == project.id).count() == 0
+        assert all(item["status"] == "ok" for item in state.tool_logs)
+        executor.assert_not_awaited()
+    finally:
+        remove_tool_category_state(state_file)
+        db.close()
+
+
 @pytest.mark.parametrize("persisted_status", [
     None, "error", "failed", "denied", "blocked_rebuild", "skipped", "needs_confirmation",
 ])

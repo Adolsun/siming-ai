@@ -725,10 +725,10 @@ function GuiAssistantChat() {
   }, [saveExpandedArtifact])
 
   useEffect(() => {
-    if (!artifactEditorDirty) return
+    if (!artifactEditorDirty || artifactEditorSaving || artifactEditorError) return
     const timer = window.setTimeout(() => void saveExpandedArtifact(), 5000)
     return () => window.clearTimeout(timer)
-  }, [artifactEditorData, artifactEditorDirty, saveExpandedArtifact])
+  }, [artifactEditorData, artifactEditorDirty, artifactEditorSaving, artifactEditorError, saveExpandedArtifact])
 
   const closeArtifactEditor = useCallback(async (): Promise<boolean> => {
     if (artifactEditorDirty && !await saveExpandedArtifact()) return false
@@ -1460,13 +1460,13 @@ function GuiAssistantChat() {
     })
   }
 
-  const appendAssistantReasoning = (text: string) => {
-    if (!text) return
+  const appendAssistantReasoning = (text: string, replace = false) => {
+    if (!text && !replace) return
     setMessages((prev) => {
       const next = [...prev]
       const last = next[next.length - 1]
       if (last?.role === 'assistant') {
-        last.reasoning_content = `${last.reasoning_content || ''}${text}`
+        last.reasoning_content = replace ? text : `${last.reasoning_content || ''}${text}`
         last.status = 'running'
       }
       return [...next]
@@ -1497,7 +1497,7 @@ function GuiAssistantChat() {
       return
     }
     if (event.type === 'reasoning_delta') {
-      appendAssistantReasoning(event.delta || '')
+      appendAssistantReasoning(event.delta || '', event.replace === true)
       return
     }
     if (event.type === 'tool') {
@@ -3272,12 +3272,16 @@ function GuiAssistantChat() {
                 <Tag color={creationStatusColor[expandedArtifact.status]}>{creationStatusLabel[expandedArtifact.status]}</Tag>
                 <span className={`gui-chat-creation-save-state${artifactEditorSaving ? ' is-saving' : artifactEditorDirty ? ' is-dirty' : ' is-saved'}`}>
                   <span className="gui-chat-creation-save-dot" />
-                  {artifactEditorSaving ? '正在保存' : artifactEditorDirty ? '5 秒后自动保存' : artifactEditorSavedAt ? `已保存 ${artifactEditorSavedAt}` : '修改后自动保存'}
+                  {artifactEditorSaving ? '正在保存' : artifactEditorDirty && artifactEditorError ? '保存失败，内容仍保留' : artifactEditorDirty ? '5 秒后自动保存' : artifactEditorSavedAt ? `已保存 ${artifactEditorSavedAt}` : '修改后自动保存'}
                 </span>
               </Space>
             </div>
             {expandedArtifact.flow?.soft_dependencies?.length ? <Alert type="info" showIcon message={`可先编辑；补充 ${expandedArtifact.flow.soft_dependencies.map((item) => item.label).join('、')} 后质量会更稳定`} /> : null}
-            {artifactEditorError ? <Alert type="error" showIcon message="自动保存失败" description={artifactEditorError} /> : null}
+            {artifactEditorError ? (
+              <Alert type="error" showIcon message={artifactEditorDirty ? '自动保存失败' : '资料读取失败'} description={artifactEditorError}
+                action={artifactEditorDirty ? <Button size="small" onClick={() => void saveExpandedArtifact()}>重试保存</Button> : undefined}
+              />
+            ) : null}
             <div className="gui-chat-creation-form">
               <StructuredStageEditor
                 data={artifactEditorData}

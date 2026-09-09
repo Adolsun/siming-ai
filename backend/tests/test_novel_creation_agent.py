@@ -62,6 +62,7 @@ from app.services.workspace.tool_result_projection import (
     max_native_tool_transaction_wrapper_tokens,
 )
 from tests.test_novel_creation_workspace_v2 import _db, _ready_session
+from tests.tool_budget_helpers import request_budget as _test_request_budget
 
 
 def _stream_completion(source):
@@ -150,11 +151,10 @@ def _test_context_preparer(
         messages = [
             {"role": "system", "content": effective_system_prompt},
             *history,
-            {"role": "user", "content": message},
         ]
         if current_ledger:
             messages.append({
-                "role": "assistant",
+                "role": "user",
                 "content": "\n".join((
                     "[SERVER_VERIFIED_EXECUTION_RECEIPTS]",
                     "data_only: true",
@@ -166,6 +166,7 @@ def _test_context_preparer(
                     "[/SERVER_VERIFIED_EXECUTION_RECEIPTS]",
                 )),
             })
+        messages.append({"role": "user", "content": message})
         for transaction in delivered_transactions:
             messages.extend(transaction.native_messages())
         if captured is not None:
@@ -332,6 +333,7 @@ def test_creation_agent_rejects_missing_native_call_id_without_running_handler()
             session=session,
             message="继续立项",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("继续立项"),
         ))
 
@@ -477,6 +479,7 @@ def test_creation_agent_rejects_invalid_native_batch_before_any_handler(
             session=session,
             message="继续立项",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("继续立项"),
         ))
 
@@ -529,6 +532,7 @@ def test_creation_agent_renders_reference_as_data_without_replacing_author_messa
             model="openai:test",
             reference_context=reference,
             provider_max_tokens=lambda: 4096,
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 author_message,
                 captured=context_steps,
@@ -611,13 +615,17 @@ def test_creation_agent_terminates_invalid_native_assistant_before_handler(
             session=session,
             message="继续立项",
             model="openai:test",
+            provider_request_budget=lambda: _test_request_budget(8_000),
             prepare_model_messages=_test_context_preparer("继续立项"),
             persist_runtime_state=capture_runtime,
         ))
 
-    assert caught.value.code is ConversationContextErrorCode.PROTOCOL_INVALID
+    assert caught.value.code is (
+        ConversationContextErrorCode.PROTOCOL_INVALID
+        if expected_reason == "native_assistant_transaction_invalid"
+        else ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY
+    )
     assert caught.value.details["reason"] == expected_reason
-    assert caught.value.details["remediation"]
     category_handler.assert_not_called()
     executor.assert_not_awaited()
     assert completion.call_count == 1
@@ -668,6 +676,7 @@ def test_creation_agent_hides_native_projection_exception_from_all_outputs():
             session=session,
             message="继续立项",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("继续立项"),
             persist_runtime_state=capture_runtime,
         ))
@@ -939,7 +948,7 @@ def test_creation_agent_endpoint_persists_backend_owned_turns_and_passes_context
     )
     assert first_context[
         "max_model_visible_result_tokens_for_open_tools"
-    ] == TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT.max_json_bytes
+    ] == 2 * TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT.max_json_bytes
     assert first_context["next_step_wrapper"] == (
         max_native_tool_transaction_wrapper_tokens()
     )
@@ -947,7 +956,7 @@ def test_creation_agent_endpoint_persists_backend_owned_turns_and_passes_context
     assert second_context["current_tools"] == ()
     assert second_context[
         "max_model_visible_result_tokens_for_open_tools"
-    ] == TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT.max_json_bytes
+    ] == 2 * TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT.max_json_bytes
     assert second_context["next_step_wrapper"] == 0
     assert second_context["provider_protocol_state"]["protocol"] == "direct_mcp"
     assert second_context["provider_protocol_state"]["tool_schemas"][0][
@@ -1409,6 +1418,7 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
             session=session,
             message="在世界观里加入两条修炼规则",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "在世界观里加入两条修炼规则",
                 history=(
@@ -1453,11 +1463,11 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
     assert [
         len(step["delivered_transactions"])
         for step in context_steps
-    ] == [0, 1, 1, 1]
+    ] == [0, 1, 2, 3]
     assert [
         len(step["current_ledger"])
         for step in context_steps
-    ] == [0, 0, 1, 2]
+    ] == [0, 0, 0, 0]
     assert all(
         receipt.step_id.startswith("creation-step:")
         and receipt.result_ref.startswith("creation-tool-result:sha256:")
@@ -1465,7 +1475,7 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
         for receipt in step["current_ledger"]
     )
     assert all(
-        transaction.state.value == "delivered"
+        transaction.state.value in {"delivered", "consumed"}
         for step in context_steps
         for transaction in step["delivered_transactions"]
     )
@@ -1498,11 +1508,11 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
     assert [
         len(snapshot["pending_tool_transactions"])
         for snapshot in runtime_snapshots
-    ] == [1, 0, 1, 0, 1, 0]
+    ] == [1, 1, 2, 2, 3, 3, 0]
     assert [
         len(snapshot["execution_receipts"])
         for snapshot in runtime_snapshots
-    ] == [1, 1, 2, 2, 3, 3]
+    ] == [1, 1, 2, 2, 3, 3, 3]
     assert all(
         validate_creation_runtime_snapshot(
             snapshot,
@@ -1570,6 +1580,7 @@ def test_native_creation_agent_allows_same_read_after_result_is_consumed():
             session=session,
             message="确认刚才读取的数据仍然最新",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "确认刚才读取的数据仍然最新"
             ),
@@ -1660,6 +1671,7 @@ def test_native_creation_agent_keeps_failed_write_signature_deduped():
             session=session,
             message="改成玄幻",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("改成玄幻"),
         ))
 
@@ -1734,6 +1746,7 @@ def test_creation_tool_failure_is_public_before_model_event_and_persistence():
             session=session,
             message="生成世界设定",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "生成世界设定",
                 captured=context_steps,
@@ -1851,6 +1864,7 @@ def test_creation_agent_persists_partial_batch_receipt_before_next_handler():
             session=session,
             message="读取后改成玄幻",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("读取后改成玄幻"),
             persist_runtime_state=capture_runtime,
         ))
@@ -1873,7 +1887,7 @@ def test_creation_agent_persists_partial_batch_receipt_before_next_handler():
     ]
 
 
-def test_native_summary_uses_server_instruction_without_a_second_user_message():
+def test_native_summary_uses_server_instruction_without_replacing_latest_user():
     db = _db()
     session = _ready_session(db)
     completion = _stream_completion([
@@ -1902,6 +1916,7 @@ def test_native_summary_uses_server_instruction_without_a_second_user_message():
             session=session,
             message="先检查可用能力",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "先检查可用能力",
                 captured=context_steps,
@@ -1914,19 +1929,21 @@ def test_native_summary_uses_server_instruction_without_a_second_user_message():
     assert summary_step["current_tools"] == ()
     assert summary_step["extra_runtime_instruction"].startswith("请根据以上真实工具返回")
     assert "[SERVER_RUNTIME_INSTRUCTION]" in summary_step["messages"][0]["content"]
-    assert [
+    users = [
         message["content"]
         for message in summary_step["messages"]
         if message["role"] == "user"
-    ] == ["先检查可用能力"]
+    ]
+    assert len(users) == 1
+    assert users[-1] == "先检查可用能力"
     assert [
         len(step["delivered_transactions"])
         for step in context_steps
-    ] == [0, 1, 0]
+    ] == [0, 1, 1]
     assert [
         len(step["current_ledger"])
         for step in context_steps
-    ] == [0, 0, 1]
+    ] == [0, 0, 0]
     assert len(result["_turn_trace"]["execution_receipts"]) == 1
     assert len(result["_turn_trace"]["compacted_tool_transactions"]) == 1
     assert result["_turn_trace"]["pending_tool_transactions"] == []
@@ -2004,6 +2021,7 @@ def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn
             session=session,
             message="继续",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("继续"),
         ))
 
@@ -2088,6 +2106,7 @@ def test_native_creation_agent_defers_same_step_write_until_read_result_is_seen(
             session=session,
             message="改成玄幻",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("改成玄幻"),
         ))
 
@@ -2146,6 +2165,7 @@ def test_native_oversized_entity_result_is_rejected_without_character_truncation
             session=session,
             message="读取目标角色",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("读取目标角色"),
         ))
 
@@ -2165,6 +2185,41 @@ def test_native_oversized_entity_result_is_rejected_without_character_truncation
     assert exact_result["data"]["data"]["notes"] == "长资料" * 100_000
 
 
+def test_creation_agent_native_empty_selection_allows_reply_without_business_tools():
+    db = _db()
+    session = _ready_session(db)
+    baseline_revision = session.revision
+    completion = _stream_completion([
+        {"content": "", "tool_calls": [{
+            "id": "call-empty-categories", "type": "function",
+            "function": {"name": "set_tool_categories", "arguments": '{"enabled_categories":[]}'},
+        }]},
+        {"content": "你好！你想讨论怎样的故事？", "tool_calls": []},
+    ])
+    executor = AsyncMock()
+    try:
+        with (
+            patch("app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools", new=completion),
+            patch("app.services.creation_agent_execution.execute_workspace_action", new=executor),
+        ):
+            result = asyncio.run(run_creation_agent(
+                db, session=session, message="你好？", model="openai:test",
+                provider_request_budget=_test_request_budget,
+                prepare_model_messages=_test_context_preparer("你好？"),
+            ))
+        assert completion.call_count == 2
+        requests = [call.kwargs for call in completion.call_args_list]
+        assert requests[0]["tool_choice"] == "required"
+        assert requests[1]["tool_choice"] == "auto"
+        assert all({schema["function"]["name"] for schema in request["tools"]} == {"set_tool_categories"} for request in requests)
+        assert result["reply"] == "你好！你想讨论怎样的故事？"
+        assert result["write_count"] == 0
+        assert session.revision == baseline_revision
+        executor.assert_not_awaited()
+    finally:
+        db.close()
+
+
 def test_creation_agent_rejects_native_text_before_category_selection():
     db = _db()
     session = _ready_session(db)
@@ -2182,6 +2237,7 @@ def test_creation_agent_rejects_native_text_before_category_selection():
             session=session,
             message="加入一条修炼规则",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("加入一条修炼规则"),
         ))
 
@@ -2885,6 +2941,7 @@ def test_creation_agent_rejects_non_creation_tools_even_if_model_requests_one():
             session=session,
             message="继续处理立项",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("继续处理立项"),
         ))
 
@@ -2952,6 +3009,7 @@ def test_creation_agent_returns_a_deterministic_formal_project_handoff():
             session=session,
             message="确认创建正式作品",
             model="openai:test",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("确认创建正式作品"),
         ))
 
@@ -3003,6 +3061,7 @@ def test_known_non_opencode_cli_uses_direct_session_scoped_mcp():
             session=session,
             message="生成文风与世界观，基调要厚重史诗",
             model="claude_cli:claude-code",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "生成文风与世界观，基调要厚重史诗"
             ),
@@ -3046,6 +3105,7 @@ def test_custom_cli_requires_a_known_mcp_protocol():
             session=session,
             message="把测试写入创作约束",
             model="custom_cli:custom-cli",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("把测试写入创作约束"),
         ))
 
@@ -3079,8 +3139,75 @@ def test_direct_cli_rejects_text_before_category_controller_call():
             session=session,
             message="玄幻",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("玄幻"),
         ))
+
+
+@pytest.mark.parametrize("category_choices", [[[]], [["creation_data"], []]])
+def test_direct_cli_accepts_a_reply_after_explicitly_selecting_no_business_tools(
+    category_choices,
+):
+    from app.mcp.server import handle_message
+
+    db = _db()
+    session = _ready_session(db)
+    baseline_revision = session.revision
+    captured: list[dict] = []
+    calls = 0
+
+    async def completion_response(**kwargs):
+        nonlocal calls
+        step = calls
+        calls += 1
+        if step < len(category_choices):
+            response = json.loads(handle_message(
+                json.dumps({
+                    "jsonrpc": "2.0", "id": step + 1, "method": "tools/call",
+                    "params": {
+                        "name": "set_tool_categories",
+                        "arguments": {"enabled_categories": category_choices[step]},
+                    },
+                }),
+                permission_pack="creation_session",
+                tool_category_state_file=kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
+            ))
+            assert response["result"]["isError"] is False
+            return {"content": "本步骤的尾随文字不应作为最终回复。", "tool_calls": []}
+        assert calls == len(category_choices) + 1
+        prompt = kwargs["messages"][0]["content"]
+        assert "本轮已经通过 set_tool_categories 明确关闭全部业务工具" in prompt
+        assert "现在可以直接完成不需要业务工具的回复" in prompt
+        assert "必须立即调用它" not in prompt
+        return {"content": "你好！你想讨论怎样的故事？", "tool_calls": []}
+
+    completion = _stream_completion(completion_response)
+    executor = AsyncMock()
+    try:
+        with (
+            patch("app.services.novel_creation_agent.LLMGateway.supports_tool_calling", return_value=False),
+            patch("app.services.novel_creation_agent.LLMGateway.provider_for_model", return_value="opencode_cli"),
+            patch("app.services.novel_creation_agent.LLMGateway.local_cli_extra_body",
+                  side_effect=lambda _model, base=None, **_kwargs: dict(base or {})),
+            patch("app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools", new=completion),
+            patch("app.services.creation_agent_execution.execute_workspace_action", new=executor),
+        ):
+            result = asyncio.run(run_creation_agent(
+                db, session=session, message="你好？", model="opencode_cli:opencode/big-pickle",
+                provider_request_budget=_test_request_budget,
+                prepare_model_messages=_test_context_preparer("你好？", captured=captured),
+            ))
+        assert calls == len(category_choices) + 1
+        assert result["reply"] == "你好！你想讨论怎样的故事？"
+        assert result["write_count"] == 0
+        assert session.revision == baseline_revision
+        assert {schema["function"]["name"] for schema in captured[-1]["provider_protocol_state"]["tool_schemas"]} == {"set_tool_categories"}
+        audits = result["_turn_trace"]["direct_mcp_calls"]
+        assert len(audits) == len(category_choices)
+        assert all(item["tool"] == "set_tool_categories" and item["status"] == "ok" for item in audits)
+        executor.assert_not_awaited()
+    finally:
+        db.close()
 
 
 def test_direct_cli_creation_continues_past_the_old_six_step_limit():
@@ -3118,6 +3245,7 @@ def test_direct_cli_creation_continues_past_the_old_six_step_limit():
             session=session,
             message="连续检查多轮",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("连续检查多轮"),
         ))
 
@@ -3180,6 +3308,7 @@ def test_opencode_uses_direct_session_scoped_mcp():
             session=session,
             message="把目标改为250万字和1000章",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer(
                 "把目标改为250万字和1000章",
                 captured=context_steps,
@@ -3291,6 +3420,7 @@ def test_direct_cli_does_not_start_a_third_summary_call_after_verified_write():
             session=session,
             message="只生成一个创意方向",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("只生成一个创意方向"),
         ))
 
@@ -3347,6 +3477,7 @@ def test_direct_cli_cancels_a_runaway_process_after_a_second_write_is_blocked():
             session=session,
             message="下一步",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("下一步"),
         ))
 
@@ -3398,6 +3529,7 @@ def test_direct_cli_transport_error_after_committed_write_returns_verified_succe
             session=session,
             message="生成一个创意方向",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("生成一个创意方向"),
         ))
 
@@ -3450,6 +3582,7 @@ def test_direct_cli_interruption_settles_stage_run_created_by_stale_mcp_surface(
             session=session,
             message="生成创意方向",
             model="opencode_cli:opencode/big-pickle",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("生成创意方向"),
         ))
 
@@ -3537,6 +3670,7 @@ def test_creation_agent_resolves_default_model_once_and_propagates_it_to_generat
             session=session,
             message="生成创意方向",
             model="siming",
+            provider_request_budget=_test_request_budget,
             prepare_model_messages=_test_context_preparer("生成创意方向"),
         ))
 

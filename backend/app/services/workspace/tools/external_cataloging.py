@@ -6,6 +6,14 @@ and chapter summaries from imported text.
 """
 from __future__ import annotations
 
+from app.services.cataloging.scene_contract import (
+    is_scene_replacement,
+    scene_repair_context,
+    validate_scene_replacement,
+    source_overview_scene_count as _source_overview_scene_count,
+    validate_scene_candidate,
+)
+
 import json
 import logging
 import os
@@ -125,27 +133,6 @@ def _candidate_payload(candidate: CatalogingCandidate) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _source_overview_scene_count(
-    db: Session,
-    chapter_run: CatalogingChapterRun,
-) -> int | None:
-    counts: list[int] = []
-    overview_rows = db.query(CatalogingFact).filter(
-        CatalogingFact.chapter_run_id == chapter_run.id,
-        CatalogingFact.fact_type == "chapter_overview",
-        CatalogingFact.status == "active",
-    ).all()
-    for overview in overview_rows:
-        try:
-            overview_payload = json.loads(overview.raw_payload or "{}")
-        except (TypeError, ValueError):
-            continue
-        scenes = overview_payload.get("scenes") if isinstance(overview_payload, dict) else None
-        if isinstance(scenes, list):
-            counts.append(len(scenes))
-    return max(counts) if counts else None
 
 
 def _managed_cataloging_bindings() -> list[dict[str, str]]:
@@ -1178,6 +1165,10 @@ async def save_external_cataloging_candidates(
 
     API-free: stores candidates in CatalogingCandidate table.
     """
+    from app.services.cataloging.candidate_retry import (
+        candidate_issue,
+        declared_worldbuilding_reference_repairs,
+    )
     from app.services.cataloging.candidate_store import (
         create_candidate_from_raw,
     )
@@ -1287,6 +1278,7 @@ async def save_external_cataloging_candidates(
               for index, item in enumerate(candidates) if not isinstance(item, dict)]
     )
     expanded_candidates: list[dict[str, Any]] = []
+    candidate_errors: list[dict[str, Any]] = []
     if not validation_errors:
         from app.modules.continuity.domain.cataloging_contract import (
             validate_coverage_manifest_relationships,
@@ -1304,7 +1296,13 @@ async def save_external_cataloging_candidates(
             for record in expand_candidate_records(item):
                 expanded_candidates.append(record)
                 try:
+                    if is_scene_replacement(record):
+                        if len(candidates) != 1:
+                            raise ValueError("scene_outline_replace 必须单独提交，不与其他候选同批")
+                        validate_scene_replacement(db, chapter_run, record)
+                        continue
                     normalized = normalize_candidate(record)
+                    validate_scene_candidate(db, chapter_run, normalized)
                     validate_coverage_manifest_relationships(normalized["payload"])
                     validate_character_profile_target(
                         db, effective_project_id, normalized["item_type"], normalized["payload"],
@@ -1326,6 +1324,12 @@ async def save_external_cataloging_candidates(
                     )
                 except ValueError as exc:
                     validation_errors.append(f"candidates[{index}]: {exc}")
+                    candidate_errors.append({"index": index, **candidate_issue({
+                        "bad_line": json.dumps(record, ensure_ascii=False),
+                        "error": str(exc),
+                        "repair_context": getattr(exc, "repair_context", None),
+                        "scene_repair": scene_repair_context(db, chapter_run),
+                    })})
     managed_cli_job = bool(
         managed_binding and job.execution_backend == "local_cli_agent"
     )
@@ -1500,7 +1504,8 @@ async def save_external_cataloging_candidates(
                     validation_errors.append(
                         "coverage_manifest replacement requires an already accepted chapter_summary"
                     )
-                elif replacement_scene_count != existing_scene_count:
+                elif (replacement_scene_count != existing_scene_count
+                      and replacement_scene_count != source_scene_count):
                     validation_errors.append(
                         "coverage_manifest replacement cannot change scene_count: "
                         f"existing={existing_scene_count}, replacement={replacement_scene_count}"
@@ -1591,6 +1596,8 @@ async def save_external_cataloging_candidates(
                 "validation_error_count": len(validation_errors),
                 "validation_errors_has_more": len(validation_errors) > 12,
                 "next_tool": "save_external_cataloging_candidates",
+                "candidate_errors": candidate_errors[:12],
+                "scene_repair": scene_repair_context(db, chapter_run),
             },
         }
 
@@ -1621,7 +1628,9 @@ async def save_external_cataloging_candidates(
             if created.get("duplicate"):
                 duplicates += 1
                 continue
-            if created.get("candidate"):
+            if created.get("scene_plan_replaced"):
+                saved += len(created["candidates"])
+            elif created.get("candidate"):
                 saved += 1
 
     db.flush()
@@ -1744,6 +1753,8 @@ async def save_external_cataloging_candidates(
             "candidates_total": coverage.total,
             "candidate_set_complete": candidate_set_complete,
             "missing_required_items": missing_required_items,
+            "coverage_repairs": declared_worldbuilding_reference_repairs(stored_candidates),
+            "scene_repair": scene_repair_context(db, chapter_run),
             "chapter_run_status": chapter_run.status,
             "auto_applied": auto_applied,
             "apply_status": apply_status or None,

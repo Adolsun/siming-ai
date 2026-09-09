@@ -288,6 +288,7 @@ def _build_error_payload(
 def _project_tool_execution(
     td: ToolDef,
     raw: Mapping[str, Any],
+    arguments: Mapping[str, Any] | None = None,
 ) -> tuple[McpToolResult, dict[str, Any]]:
     """Return the model projection and the authoritative persistence result.
 
@@ -296,7 +297,7 @@ def _project_tool_execution(
     an oversized or non-JSON source becomes a small, valid JSON error receipt.
     """
     try:
-        projected = model_tool_result_projector.project(td, raw)
+        projected = model_tool_result_projector.project(td, raw, arguments=arguments)
         status_value = projected.payload.get("status")
         if not isinstance(status_value, str) or not status_value.strip():
             raise ToolResultProjectionError(td.name, "工具结果缺少有效的 status")
@@ -766,7 +767,7 @@ async def _execute_prepared_tool(
         prepared.project_id,
         {"tool": tool_name, "arguments": arguments},
     )
-    return _project_tool_execution(prepared.definition, raw_result)
+    return _project_tool_execution(prepared.definition, raw_result, arguments)
 
 
 def _log_execution_result(

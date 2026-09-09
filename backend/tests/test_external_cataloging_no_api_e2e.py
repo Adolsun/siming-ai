@@ -1226,18 +1226,10 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                 },
             ))
 
-        self.assertEqual(saved["status"], "ok", saved)
-        self.assertFalse(saved["data"]["candidate_set_complete"], saved)
-        self.assertEqual(saved["data"]["chapter_run_status"], "facts_saved")
-        self.assertIn(
-            "chapter summary has fewer than 40 non-whitespace characters",
-            saved["data"]["missing_required_items"],
-        )
-        self.assertIn(
-            "chapter_overview scenes disagree with coverage_manifest.scene_count: facts=4, manifest=1",
-            saved["data"]["missing_required_items"],
-        )
-        self.assertFalse(saved["data"]["auto_applied"])
+        self.assertEqual(saved["status"], "skipped", saved)
+        self.assertTrue(any("scene_count" in error for error in saved["data"]["validation_errors"]))
+        self.assertEqual(saved["data"]["scene_repair"]["source_scene_count"], 4)
+        self.assertEqual(self.db.query(CatalogingCandidate).filter_by(chapter_run_id=run.id).count(), 0)
         self.assertEqual(
             self.db.query(ChapterSummary).filter_by(chapter_id=run.chapter_id).count(),
             0,

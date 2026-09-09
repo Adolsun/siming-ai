@@ -20,7 +20,7 @@ describe('MessageList cataloging navigation action', () => {
       created_at: '2026-08-14T15:30:00',
       navigation_action: {
         label: '查看建档进度',
-        to: '/project/project-1?view=cataloging',
+        to: '/project/project-1?view=cataloging&job=job-1',
       },
     }]
 
@@ -41,7 +41,7 @@ describe('MessageList cataloging navigation action', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /查看建档进度/ }))
 
-    expect(screen.getByTestId('location')).toHaveTextContent('/project/project-1?view=cataloging')
+    expect(screen.getByTestId('location')).toHaveTextContent('/project/project-1?view=cataloging&job=job-1')
     expect(document.querySelector('time')).toHaveAttribute('datetime', '2026-08-14T15:30:00.000Z')
   })
 })

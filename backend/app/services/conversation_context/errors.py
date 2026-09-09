@@ -20,6 +20,7 @@ class ConversationContextErrorCode(StrEnum):
     INCOMPLETE_TOOL_TRANSACTION = "incomplete_tool_transaction"
     TOOL_CAPABILITY_UNAVAILABLE = "tool_capability_unavailable"
     TOOL_RESULT_OVER_CAPACITY = "tool_result_over_capacity"
+    TOOL_TRANSACTION_OVER_CAPACITY = "tool_transaction_over_capacity"
     PROVIDER_MAPPING_FAILED = "provider_message_mapping_failed"
     FINAL_REQUEST_OVER_CAPACITY = "final_agent_request_over_capacity"
 

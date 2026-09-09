@@ -183,6 +183,12 @@ internal data class MobileRequestBudgetEnvelope(
         require(capacityAssurance in MobileCapacityAssurance.ALL) { "请求预算 assurance 无效" }
     }
 
+    val toolTransactionBudgetTokens: Int
+        get() {
+            requireSendable()
+            return (requestInputLimit - currentInputTokens).coerceAtLeast(0)
+        }
+
     fun requireSendable() {
         if (!verified && !boundedFallback) throw MobileConversationContextException(
             MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
@@ -231,11 +237,8 @@ internal data class MobileRequestBudgetEnvelope(
         requestInputLimitTokens = requestInputLimit,
         systemAndToolsTokens = systemPromptTokens + generatorTemplateTokens + toolSchemaTokens +
             extraRuntimeInstructionTokens,
-        // Selection reserves the complete admissible native transaction for
-        // the *next* model step.  It is not part of current_input_tokens, but
-        // history cannot consume the space promised by fits_projected.
-        providerWrapperTokens = messageWrapperTokens + providerProtocolTokens +
-            maxModelVisibleResultTokensForOpenTools + nextStepWrapperTokens,
+        providerWrapperTokens = messageWrapperTokens + providerProtocolTokens,
+        growthReserveTokens = maxModelVisibleResultTokensForOpenTools + nextStepWrapperTokens,
         checkpointTokens = checkpointTokens,
         currentUserTokens = currentUserTokens,
         currentTurnLedgerTokens = currentTurnLedgerTokens,

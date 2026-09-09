@@ -170,7 +170,7 @@ function CatalogingJobControlCard({
             {streaming ? (
               <Button onClick={onPauseCurrentJob}>暂停任务</Button>
             ) : (
-              <Button type="primary" onClick={() => onStreamJob(job.id)}>继续运行</Button>
+              <Button type="primary" onClick={() => onStreamJob(job.id)}>查看实时进度</Button>
             )}
           </PersistentActionBar>
         )}

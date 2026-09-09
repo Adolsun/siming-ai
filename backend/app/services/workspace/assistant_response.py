@@ -11,6 +11,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.architecture.tool_result_policy import ModelResultPolicy
+from app.architecture.tool_status import TOOL_COMPLETED_STATUSES, TOOL_ERROR_STATUSES
 from app.architecture.uow import commit_session
 from app.core.utils import utc_isoformat
 from app.services.operation_runtime import record_operation_signal
@@ -21,11 +23,6 @@ from app.services.workspace.assistant_public_projection import (
 )
 from app.services.workspace.run_log import mark_assistant_run, run_payload
 
-_SUCCESS_TOOL_STATUSES = frozenset({"ok", "completed", "success", "succeeded"})
-_TERMINAL_DRAFT_TOOLS = frozenset({
-    "save_external_chapter_draft",
-    "save_external_outline_draft",
-})
 _TERMINAL_CONTEXT_PREREQUISITES = frozenset({
     "prepare_task_context",
     "search_task_context",
@@ -38,22 +35,40 @@ class WorkspaceFailureResolution:
     unresolved: list[dict]
     recovered: list[dict]
     terminal_draft_tool: str | None = None
+    terminal_draft_label: str | None = None
 
 
-def _durable_terminal_draft_tool(applied_actions: list[dict]) -> str | None:
-    """Return the terminal tool only when its durable draft receipt is present."""
+def _terminal_draft_label(tool: str) -> str | None:
+    """Use the authoritative registry for both API and CLI draft producers."""
+    from app.services.workspace.registry import registry
+
+    definition = registry.get(tool)
+    if definition is None or not definition.ends_agent_turn:
+        return None
+    contract = definition.model_result_contract
+    if (
+        contract.policy is not ModelResultPolicy.ARTIFACT_REFERENCE
+        or "draft_id" not in contract.reference_fields
+        or contract.preview is None
+    ):
+        return None
+    return {"content": "章节草稿", "nodes": "大纲草稿"}.get(contract.preview.source_field)
+
+
+def _durable_terminal_draft_action(applied_actions: list[dict]) -> dict | None:
+    """A ready/blocked result or success text alone is not a stored draft."""
     for action in reversed(applied_actions):
         tool = str(action.get("tool") or "")
         status = str(action.get("status") or "").lower()
         data = action.get("data")
         if (
-            tool in _TERMINAL_DRAFT_TOOLS
-            and status in _SUCCESS_TOOL_STATUSES
+            _terminal_draft_label(tool) is not None
+            and status in TOOL_COMPLETED_STATUSES
             and isinstance(data, dict)
             and str(data.get("draft_id") or "").strip()
             and str(data.get("draft_status") or "").lower() == "pending"
         ):
-            return tool
+            return action
     return None
 
 
@@ -70,21 +85,13 @@ def _resolve_workspace_failures(
     """
     failed = [
         log for log in tool_logs
-        if str(log.get("status") or "").lower() in {"error", "needs_confirmation"}
+        if str(log.get("status") or "").lower() in TOOL_ERROR_STATUSES | {"needs_confirmation"}
     ]
-    terminal_tool = _durable_terminal_draft_tool(applied_actions)
-    if not terminal_tool:
+    terminal_action = _durable_terminal_draft_action(applied_actions)
+    if terminal_action is None:
         return WorkspaceFailureResolution(unresolved=failed, recovered=[])
 
-    terminal_action = next(
-        action
-        for action in reversed(applied_actions)
-        if str(action.get("tool") or "") == terminal_tool
-        and str(action.get("status") or "").lower() in _SUCCESS_TOOL_STATUSES
-        and isinstance(action.get("data"), dict)
-        and str(action["data"].get("draft_id") or "").strip()
-        and str(action["data"].get("draft_status") or "").lower() == "pending"
-    )
+    terminal_tool = str(terminal_action["tool"])
     has_context_receipt = bool(
         str(terminal_action["data"].get("context_manifest_id") or "").strip()
     )
@@ -97,6 +104,7 @@ def _resolve_workspace_failures(
         unresolved=unresolved,
         recovered=recovered,
         terminal_draft_tool=terminal_tool,
+        terminal_draft_label=_terminal_draft_label(terminal_tool),
     )
 
 
@@ -105,11 +113,7 @@ def _append_workspace_failure_notice(
     resolution: WorkspaceFailureResolution,
 ) -> str:
     notices: list[str] = []
-    terminal_label = (
-        "章节草稿"
-        if resolution.terminal_draft_tool == "save_external_chapter_draft"
-        else "大纲草稿"
-    )
+    terminal_label = resolution.terminal_draft_label
     recovered_length_checks = [
         log
         for log in resolution.recovered
@@ -131,11 +135,17 @@ def _append_workspace_failure_notice(
             f"补充：本轮有 {len(other_recovered)} 次前序工具调用未通过，"
             f"后续流程已纠正；{terminal_label}已成功生成并暂存。"
         )
-    if resolution.unresolved:
+    errors = [
+        log for log in resolution.unresolved
+        if str(log.get("status") or "").lower() in TOOL_ERROR_STATUSES
+    ]
+    confirmations = [
+        log for log in resolution.unresolved
+        if str(log.get("status") or "").lower() == "needs_confirmation"
+    ]
+    if errors:
         failed_text = "；".join(
-            f"{projected['tool']}: {projected['detail']}"
-            for log in resolution.unresolved[:3]
-            if (projected := public_tool_log(log))
+            public_tool_log(log)["detail"] for log in errors[:3]
         )
         if resolution.terminal_draft_tool:
             notices.append(
@@ -146,6 +156,11 @@ def _append_workspace_failure_notice(
             notices.append(
                 f"注意：本轮有工具执行失败，相关数据可能未保存：{failed_text}"
             )
+    if confirmations:
+        confirmation_text = "；".join(
+            public_tool_log(log)["detail"] for log in confirmations[:3]
+        )
+        notices.append(f"尚有步骤需要确认或调整，未完成：{confirmation_text}")
     if not notices:
         return reply
     notice_text = "\n\n".join(notices)
@@ -228,8 +243,12 @@ def _workspace_outcome(
     failed_logs: list[dict] | None = None,
 ) -> str:
     """Return a stable user-facing outcome for an assistant turn."""
-    if failed_logs:
+    if any(
+        str(log.get("status") or "").lower() in TOOL_ERROR_STATUSES for log in failed_logs or []
+    ):
         return "partial_success" if applied_actions else "failed"
+    if failed_logs:
+        return "waiting_user"
     if str(raw_reply or "").strip():
         return "completed_with_reply"
     if applied_actions or tool_logs or searched_context:
@@ -322,6 +341,7 @@ def finalize_workspace_assistant_turn(
     searched_context: list[dict],
     final_model: str,
     final_usage: Any,
+    visible_reasoning: str = "",
 ) -> dict[str, Any]:
     existing_payload: dict[str, Any] = {}
     if assistant_message.payload_json:
@@ -372,6 +392,9 @@ def finalize_workspace_assistant_turn(
         "model": final_model,
         "usage": final_usage,
     }
+    if visible_reasoning:
+        private_result["reasoning_content"] = visible_reasoning
+        private_result["reasoning_source"] = "model_api"
     if isinstance(reference_context_audit, dict):
         private_result["reference_context_audit"] = reference_context_audit
     if assistant_run:

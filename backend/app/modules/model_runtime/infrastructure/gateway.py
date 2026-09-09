@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from app.ai.local_runtime_adapter import LocalRuntimeAdapter
 from app.ai.openai_adapter import OpenAIAdapter
 from app.ai.qwen_adapter import QwenAdapter
 from app.core.exceptions import LLMError, NotFoundError
+from app.core.provider_errors import provider_http_status, provider_protocol_rejected
 from app.modules.context.interfaces.runtime import active_context_manifest
 from app.modules.model_runtime.application.runtime import get_model_runtime
 from app.modules.model_runtime.domain.configuration import TaskModelSelection
@@ -68,6 +70,15 @@ MAX_RETRIES = 3
 DEFAULT_STREAM_RESUMES = 8
 STREAM_RESUME_ANCHOR_CHARS = 64
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
+
+
+def _tool_choice_correction_note(provider: str, model: str) -> str:
+    logger.info(
+        "Provider request corrected provider=%s model=%s omitted_parameter=tool_choice",
+        provider, model,
+    )
+    return "接口拒绝 tool_choice，已自动去掉该参数重试"
 
 
 class _ResumeHandshakeError(LLMError):
@@ -130,46 +141,58 @@ def _resume_messages(
     """Build a fresh model request that can be joined without guessing overlap."""
 
     marker = f"[SIMING_RESUME_{uuid4().hex}]"
+    expected_prefix = None
     if committed_text:
         anchor = committed_text[-STREAM_RESUME_ANCHOR_CHARS:]
         expected_prefix = marker + anchor
         instruction = (
-            "这是运行时恢复协议，不是新的用户意图。上一条 assistant 输出因传输中断，"
+            "这是运行时恢复协议，不是新的用户意图。上一条模型输出因传输中断，"
             "已输出内容由运行时保存。收到恢复请求时，必须先逐字输出指定恢复标记和断点锚点，"
             "随后从锚点后的下一个字符继续；不得重复更早内容，也不得解释恢复协议。"
+            "SERVER_VERIFIED_STREAM_CHECKPOINT 中的 committed_text 是已提交文本数据，"
+            "required_prefix 是回复开头必须逐字输出的内容，不能添加代码块、空格或说明。"
         )
         if tool_mode:
             instruction += (
                 "上一条未完成的工具调用已被丢弃；若仍需工具，"
                 "必须从头发出一条完整工具调用。"
             )
-        rendered = _append_system_instruction(messages, instruction)
-        rendered.extend([
-            {"role": "assistant", "content": committed_text},
-            {
-                "role": "user",
-                "content": (
-                    "继续刚才因传输中断的同一响应。回复开头必须严格等于下面一行，"
-                    "不能添加代码块、空格或说明；之后紧接尚未输出的内容：\n"
-                    + expected_prefix
-                ),
-            },
-        ])
-        return rendered, _ResumeHandshake(expected_prefix)
-
-    instruction = (
-        "这是运行时恢复协议，不是新的用户意图。上一条模型响应在完成前中断，且没有任何最终文本被提交。"
-    )
-    if tool_mode:
-        instruction += (
-            "任何未完成工具参数都已被丢弃；重新判断原任务，"
-            "并从头发出完整、有效的工具调用。"
-        )
     else:
-        instruction += "重新处理原任务并返回完整响应。"
+        instruction = (
+            "这是运行时恢复协议，不是新的用户意图。上一条模型响应在完成前中断，且没有任何最终文本被提交。"
+        )
+        if tool_mode:
+            instruction += (
+                "任何未完成工具参数都已被丢弃；重新判断原任务，"
+                "并从头发出完整、有效的工具调用。"
+            )
+        else:
+            instruction += "重新处理原任务并返回完整响应。"
     rendered = _append_system_instruction(messages, instruction)
-    rendered.append({"role": "user", "content": "继续中断的同一模型步骤。"})
-    return rendered, None
+    reference = {
+        "role": "user",
+        "content": "\n".join((
+            "[SERVER_VERIFIED_STREAM_CHECKPOINT]",
+            "data_only: true",
+            json.dumps(
+                {"committed_text": committed_text, "required_prefix": expected_prefix},
+                ensure_ascii=False,
+            ),
+            "[/SERVER_VERIFIED_STREAM_CHECKPOINT]",
+        )),
+    }
+    # Preserve the actual latest author message and native tool transactions.
+    # An interrupted response has no complete provider state to replay as an
+    # assistant message (e.g. reasoning_content or signed thinking blocks).
+    latest_user_index = next(
+        (
+            index for index in range(len(rendered) - 1, -1, -1)
+            if rendered[index].get("role") == "user"
+        ),
+        1,
+    )
+    rendered.insert(latest_user_index, reference)
+    return rendered, _ResumeHandshake(expected_prefix) if expected_prefix else None
 
 
 def _tool_delta_events_complete(events: list[dict]) -> bool:
@@ -293,8 +316,12 @@ def _is_non_retryable(error: BaseException) -> bool:
     text = str(error)
     if "InvalidToken" in text or "登录凭据无效" in text:
         return True
+    status = provider_http_status(error)
+    if status is not None and 400 <= status < 500 and status not in {408, 409, 425, 429}:
+        return True
     return (
         _is_auth_error(error)
+        or provider_protocol_rejected(error)
         or bool(detect_cli_quota_error(text))
         or "未找到" in text
         or "不支持的模型提供商" in text
@@ -575,7 +602,7 @@ class LLMGateway:
         )
         attempts = normalize_retry_count(retry)
 
-        async def _call() -> dict:
+        async def _send() -> dict:
             return await adapter.chat_completion(
                 messages=messages,
                 model=model_name,
@@ -586,33 +613,25 @@ class LLMGateway:
                 tool_choice=safe_tool_choice,
             )
 
-        try:
-            result = await cls._call_with_retry(
-                attempts=attempts,
-                timeout_seconds=wait_timeout_seconds,
-                call_factory=_call,
-            )
-        except LLMError as exc:
-            if safe_tool_choice is not None and should_retry_without_tool_choice(exc):
-                notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
-                try:
-                    result = await cls._call_with_retry(
-                        attempts=1,
-                        timeout_seconds=wait_timeout_seconds,
-                        call_factory=lambda: adapter.chat_completion(
-                            messages=messages,
-                            model=model_name,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            extra_body=call_extra_body,
-                            tools=safe_tools,
-                            tool_choice=None,
-                        ),
-                    )
-                except LLMError:
+        async def _call() -> dict:
+            nonlocal safe_tool_choice
+            try:
+                return await _send()
+            except LLMError as exc:
+                if safe_tool_choice is None or not should_retry_without_tool_choice(exc):
                     raise
-            else:
-                raise
+                notes.append(_tool_choice_correction_note(provider, model_name))
+                safe_tool_choice = None
+            # Leave the rejected request's exception handler before sending.
+            # Otherwise its SDK 400 can become an unrelated network failure's
+            # __context__, incorrectly making that next attempt non-retryable.
+            return await _send()
+
+        result = await cls._call_with_retry(
+            attempts=attempts,
+            timeout_seconds=wait_timeout_seconds,
+            call_factory=_call,
+        )
 
         result.setdefault("model", model_name)
         result["request_meta"] = request_meta(provider, model_name, notes)
@@ -826,10 +845,12 @@ class LLMGateway:
         while True:
             raw_produced = False
             content_seen = False
+            attempt_reasoning: list[str] = []
             buffered_tool_events: list[dict] = []
             done_event: dict | None = None
             error_cause: BaseException | None = None
             non_retryable = False
+            request_corrected = False
             gen: AsyncGenerator[dict, None] | None = None
             try:
                 gen = adapter.stream_chat_completion_with_tools(
@@ -864,6 +885,9 @@ class LLMGateway:
                         with suppress(Exception):
                             await gen.aclose()
                         break
+                    elif event_type == "reasoning_delta":
+                        attempt_reasoning.append(str(chunk.get("delta") or ""))
+                        yield chunk
                     else:
                         yield chunk
 
@@ -879,6 +903,11 @@ class LLMGateway:
                 for tool_event in buffered_tool_events:
                     yield tool_event
                 if done_event is not None:
+                    # Deltas from interrupted attempts may already have been
+                    # shown as progress. Only the completed attempt's native
+                    # reasoning belongs to the accepted tool transaction.
+                    if not isinstance(done_event.get("reasoning_content"), str):
+                        done_event["reasoning_content"] = "".join(attempt_reasoning)
                     if has_usage:
                         done_event["usage"] = dict(usage_totals)
                     if resume_attempt:
@@ -897,8 +926,9 @@ class LLMGateway:
                     and should_retry_without_tool_choice(exc)
                     and not raw_produced
                 ):
-                    notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
+                    notes.append(_tool_choice_correction_note(provider, model_name))
                     safe_tool_choice = None
+                    request_corrected = True
                 else:
                     non_retryable = _is_non_retryable(exc)
             except Exception as exc:
@@ -911,6 +941,11 @@ class LLMGateway:
 
             if non_retryable:
                 raise last_error from error_cause
+            if request_corrected:
+                # A rejected request emitted no output and executed no tools.
+                # This single parameter correction is independent of transport
+                # retries; clearing tool_choice makes it impossible to repeat.
+                continue
             if not raw_produced and raw_retries_remaining > 0:
                 raw_retries_remaining -= 1
                 await asyncio.sleep(min(8, (attempts - raw_retries_remaining) * 1.5))

@@ -760,7 +760,7 @@ function WorkspaceAssistantChat({
       if (activeConversationIdRef.current !== conversationId) return
       setConversationContextState(nextState)
       setConversationContextError(null)
-      setRuntimeAnnouncement('上下文整理已取消，当前任务尚未执行')
+      setRuntimeAnnouncement('上下文整理已取消，后续步骤已停止')
     } catch (error: any) {
       if (activeConversationIdRef.current === conversationId) {
         message.error(error?.message || '取消上下文整理失败')
@@ -1383,11 +1383,11 @@ function WorkspaceAssistantChat({
             current && expectedCheckpointId && current.id === expectedCheckpointId ? current : null
           ))
           if (nextState.status === 'pending' || nextState.status === 'compressing') {
-            setRuntimeAnnouncement('正在整理较早上下文；当前任务尚未执行')
+            setRuntimeAnnouncement('正在整理较早上下文；完成容量检查后继续当前任务')
           } else if (nextState.status === 'ready') {
             setRuntimeAnnouncement('较早上下文已整理，正在继续当前任务')
           } else if (nextState.status === 'failed') {
-            setRuntimeAnnouncement('较早上下文整理失败；当前任务尚未执行')
+            setRuntimeAnnouncement('上下文准备受阻；后续步骤已暂停')
           }
         } else if (event.type === 'conversation_checkpoint') {
           const nextState = contextStateFromEvent(event)
@@ -1411,9 +1411,9 @@ function WorkspaceAssistantChat({
           if (nextStatus === 'ready') {
             setRuntimeAnnouncement('较早上下文已整理，正在继续当前任务')
           } else if (nextStatus === 'failed') {
-            setRuntimeAnnouncement('较早上下文整理失败；当前任务尚未执行')
+            setRuntimeAnnouncement('上下文准备受阻；后续步骤已暂停')
           } else if (nextStatus === 'cancelled') {
-            setRuntimeAnnouncement('较早上下文整理已取消；当前任务尚未执行')
+            setRuntimeAnnouncement('较早上下文整理已取消；后续步骤已停止')
           }
         } else if (event.type === 'run') {
           const run = event.run as WorkspaceAssistantRun
@@ -1456,10 +1456,10 @@ function WorkspaceAssistantChat({
                 : item.content + ev.delta,
             }))
         } else if (event.type === 'reasoning_delta') {
-          const ev = event as { delta: string }
+          const ev = event as { delta: string; replace?: boolean }
           updateAssistantById(execution.assistantMessageId, (item) => ({
             ...item,
-            reasoning_content: `${item.reasoning_content || ''}${ev.delta || ''}`,
+            reasoning_content: ev.replace ? (ev.delta || '') : `${item.reasoning_content || ''}${ev.delta || ''}`,
           }))
         } else if (event.type === 'complete') {
           const payload = event.data as WorkspaceAssistantResponse

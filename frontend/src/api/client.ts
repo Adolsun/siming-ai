@@ -1,16 +1,15 @@
-import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, CanceledError } from 'axios'
+import { confirmChapterSave } from '../components/interaction/confirmChapterSave'
 
 const API_BASE_URL = '/api/v1'
 const API_TIMEOUT_MS = 600000
 const CHAPTER_SAVE_PATH = /^\/projects\/[^/]+\/chapters\/[^/]+$/
 
-type CatalogingImpact = 'semantic' | 'style_only'
-
-function chapterSaveConfig(
+async function chapterSaveConfig(
   url: string,
   data: unknown,
   config?: AxiosRequestConfig,
-): AxiosRequestConfig | undefined {
+): Promise<AxiosRequestConfig | undefined> {
   if (!CHAPTER_SAVE_PATH.test(url) || !data || typeof data !== 'object') {
     return config
   }
@@ -23,20 +22,8 @@ function chapterSaveConfig(
     return config
   }
 
-  let impact: CatalogingImpact = 'semantic'
-  if (typeof window !== 'undefined') {
-    try {
-      const styleOnly = window.confirm(
-        '本次是否只调整措辞、句式或标点，完全不改变剧情事实、角色状态、设定、事件顺序或章节结构？\n\n'
-        + '确定：仅润色，保留现有建档状态。\n'
-        + '取消：存在剧情或事实变化，回退本章及后续章节的旧建档状态。',
-      )
-      impact = styleOnly ? 'style_only' : 'semantic'
-    } catch {
-      // Non-browser test/runtime environments may not implement confirm.
-      impact = 'semantic'
-    }
-  }
+  const impact = await confirmChapterSave()
+  if (!impact) throw new CanceledError('已返回编辑，正文未保存')
 
   return {
     ...config,
@@ -85,8 +72,8 @@ class ApiClient {
     )
   }
 
-  get<T>(url: string, params?: Record<string, unknown>) {
-    return this.client.get<T>(url, { params })
+  get<T>(url: string, params?: Record<string, unknown>, config?: AxiosRequestConfig) {
+    return this.client.get<T>(url, { ...config, params })
   }
 
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
@@ -97,8 +84,8 @@ class ApiClient {
     return this.client.postForm<T>(url, data, config)
   }
 
-  put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
-    return this.client.put<T>(url, data, chapterSaveConfig(url, data, config))
+  async put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+    return this.client.put<T>(url, data, await chapterSaveConfig(url, data, config))
   }
 
   patch<T>(url: string, data?: unknown) {
@@ -111,10 +98,12 @@ class ApiClient {
 
   stream(url: string, data: unknown, onMessage: (chunk: string) => void, onError?: (err: Error) => void) {
     const fullUrl = `${API_BASE_URL}${url}`
+    const controller = new AbortController()
     fetch(fullUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+      signal: controller.signal,
     })
       .then((response) => {
         if (!response.ok || !response.body) {
@@ -150,14 +139,15 @@ class ApiClient {
             }
             read()
           }).catch((err) => {
-            onError?.(err)
+            if (!controller.signal.aborted) onError?.(err)
           })
         }
         read()
       })
       .catch((err) => {
-        onError?.(err)
+        if (!controller.signal.aborted) onError?.(err)
       })
+    return () => controller.abort()
   }
 }
 

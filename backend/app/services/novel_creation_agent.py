@@ -157,6 +157,7 @@ def _cli_mcp_system_prompt(
     *,
     model: str | None = None,
     active_categories: tuple[str, ...] = (),
+    category_selected: bool = False,
 ) -> str:
     model_label = str(model or "").strip() or "未显式解析"
     if active_categories:
@@ -164,6 +165,12 @@ def _cli_mcp_system_prompt(
             "当前已开放工具类别："
             + "、".join(TOOL_CATEGORY_METADATA[category]["label"] for category in active_categories)
             + "。直接完成原始用户任务；需要其他类别时调用 set_tool_categories，调用后立即结束本次响应，等待司命按新类别重启临时 MCP。"
+        )
+    elif category_selected:
+        category_instruction = (
+            "本轮已经通过 set_tool_categories 明确关闭全部业务工具。"
+            "现在可以直接完成不需要业务工具的回复；如需业务能力，重新调用 set_tool_categories，"
+            "调用后立即结束本次响应，等待司命按所选类别重启临时 MCP。"
         )
     else:
         category_instruction = (
@@ -475,6 +482,7 @@ async def _run_direct_mcp_steps(
                 str(session.id),
                 model=model,
                 active_categories=active_categories,
+                category_selected=observed_version > 0,
             )
             if reference_system_segment:
                 prompt = "\n\n".join((prompt, reference_system_segment))
@@ -484,8 +492,11 @@ async def _run_direct_mcp_steps(
                 "model_step_started",
                 (
                     "正在判断需要哪些立项能力…"
-                    if not active_categories
-                    else "正在使用已准备的能力处理立项资料…"
+                    if observed_version == 0
+                    else (
+                        "正在使用已准备的能力处理立项资料…"
+                        if active_categories else "正在整理回复…"
+                    )
                 ),
                 {"iteration": iteration + 1, "active_categories": list(active_categories)},
             )
@@ -606,6 +617,7 @@ async def run_creation_agent(
     reference_context: ReferenceContext | None = None,
     turn_execution_id: str | None = None,
     provider_max_tokens: Callable[[], int | None] | None = None,
+    provider_request_budget: Callable[[], Any] | None = None,
     on_event: CreationProgressCallback | None = None,
     direct_mcp_turn_guard: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -644,6 +656,7 @@ async def run_creation_agent(
         system_prompt=prompt,
         prepare_model_messages=prepare_bound_context,
         provider_max_tokens=provider_max_tokens or (lambda: None),
+        provider_request_budget=provider_request_budget or (lambda: None),
         persist_runtime_state=persist_bound_runtime_state,
         messages=[],
         schemas=schemas,

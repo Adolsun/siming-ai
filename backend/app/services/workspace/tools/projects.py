@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ....database.models import Project
 from ....modules.story.application.content_sync import queue_content_sync
 from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ....modules.story.domain.project_read_contract import creation_document_page, project_info_page
 from ...project_creation_context import (
     ensure_project_creation_session,
     get_project_creation_context,
@@ -74,15 +75,11 @@ async def get_project_info(db: Session, project_id: str, args: dict[str, Any]) -
     project = db.query(Project).filter(Project.id == target_id).first()
     if not project:
         return {"tool": "get_project_info", "status": "skipped", "detail": "未找到作品"}
-    data = _project_payload(project)
-    creation = get_project_creation_context(db, target_id)
-    if creation:
-        data["creation"] = creation
     return {
         "tool": "get_project_info",
         "status": "ok",
-        "detail": f"已读取作品：{project.title}",
-        "data": data,
+        "detail": "已读取作品设置字段" if args.get("field") else "已读取作品设置概览",
+        **project_info_page(_project_payload(project), args),
     }
 
 
@@ -94,14 +91,20 @@ async def get_project_creation_brief(db: Session, project_id: str, args: dict[st
         return {"tool": "get_project_creation_brief", "status": "skipped", "detail": "未找到作品"}
     session = resolve_project_creation_session(db, target_id)
     context = get_project_creation_context(db, target_id)
+    page = creation_document_page(context, args)
+    if "next_arguments" in page:
+        page["next_arguments"]["project_id"] = target_id
     return {
         "tool": "get_project_creation_brief",
         "status": "ok",
-        "detail": "已读取作品立项资料" if session else "作品尚未建立立项资料，可在用户要求修改或回填时创建",
+        "detail": (
+            "已读取作品立项资料" if session
+            else "作品尚未建立立项资料，可在用户要求修改或回填时创建"
+        ),
         "data": {
             "project_id": target_id,
             "creation_session_id": session.id if session else None,
-            "creation": context,
+            **page,
         },
     }
 
@@ -116,7 +119,9 @@ async def update_project_creation_brief(db: Session, project_id: str, args: dict
     target_id = str(args.get("project_id") or args.get("id") or project_id).strip()
     project = db.get(Project, target_id)
     if project is None:
-        return {"tool": "update_project_creation_brief", "status": "skipped", "detail": "未找到作品"}
+        return {
+            "tool": "update_project_creation_brief", "status": "skipped", "detail": "未找到作品",
+        }
     session = ensure_project_creation_session(db, target_id)
     expected_revision = args.get("expected_revision")
     if expected_revision is not None and int(expected_revision) != int(session.revision or 0):
@@ -143,7 +148,9 @@ async def update_project_creation_brief(db: Session, project_id: str, args: dict
             writing_style = str(constraints.get("writing_style") or "").strip()
             project.custom_style_prompt = writing_style or None
 
-    creative = args.get("creative_direction") if isinstance(args.get("creative_direction"), dict) else {}
+    creative = (
+        args.get("creative_direction") if isinstance(args.get("creative_direction"), dict) else {}
+    )
     if creative:
         current = serialize_creation_artifact(session, "concepts").get("data") or {}
         options = [dict(item) for item in current.get("options", []) if isinstance(item, dict)]
@@ -152,11 +159,13 @@ async def update_project_creation_brief(db: Session, project_id: str, args: dict
             or current.get("selected_concept_id")
             or (options[0].get("id") if options else "project-concept-1")
         )
-        selected_patch = creative.get("selected") if isinstance(creative.get("selected"), dict) else {
-            key: value
-            for key, value in creative.items()
-            if key not in {"selected_concept_id", "options"}
-        }
+        selected_patch = (
+            creative.get("selected") if isinstance(creative.get("selected"), dict) else {
+                key: value
+                for key, value in creative.items()
+                if key not in {"selected_concept_id", "options"}
+            }
+        )
         supplied_options = creative.get("options")
         if isinstance(supplied_options, list):
             options = [dict(item) for item in supplied_options if isinstance(item, dict)]
@@ -341,4 +350,7 @@ async def delete_project(db: Session, project_id: str, args: dict[str, Any]) -> 
             source="workspace_tool",
         ),
     )
-    return {"tool": "delete_project", "status": "ok", "detail": f"已删除作品：{title}", "data": {"id": target_id}}
+    return {
+        "tool": "delete_project", "status": "ok", "detail": f"已删除作品：{title}",
+        "data": {"id": target_id},
+    }

@@ -30,6 +30,7 @@ from app.services.workspace.native_tool_batch import (
 from app.services.workspace.run_log import finish_run_step, start_run_step
 from app.services.workspace.run_recovery import generate_idempotency_key
 from app.services.workspace.tool_result_projection import (
+    MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS,
     ToolResultBatchOverCapacity,
     ToolResultProjectionError,
     admit_native_assistant_transaction,
@@ -162,6 +163,9 @@ class WorkspaceNativeTurn:
             events.append(state.event({"type": "content_delta", "delta": chunk["delta"]}))
         elif kind == "reasoning_delta":
             capture.reasoning += chunk["delta"]
+            visible = state.reasoning_event(iteration, capture.reasoning)
+            if visible:
+                events.append(visible)
             state.turn_telemetry.report_model_activity(
                 state.assistant_run, chunk["delta"], message="模型正在思考"
             )
@@ -204,12 +208,11 @@ class WorkspaceNativeTurn:
         chunk: dict[str, Any],
         iteration: int,
     ) -> list[str]:
-        if capture.reasoning:
-            capture.provider_state = chunk.get("provider_state") or []
-            return []
-        capture.reasoning = str(chunk.get("reasoning_content") or "")
+        if isinstance(chunk.get("reasoning_content"), str) and chunk["reasoning_content"]:
+            capture.reasoning = chunk["reasoning_content"]
         capture.provider_state = chunk.get("provider_state") or []
-        return []
+        visible = self.state.reasoning_event(iteration, capture.reasoning)
+        return [visible] if visible else []
 
     def _validated_tool_calls(
         self,
@@ -250,6 +253,8 @@ class WorkspaceNativeTurn:
         calls: list[dict[str, Any]],
         iteration: int,
     ) -> tuple[ToolTransaction | None, ToolResultBatchOverCapacity | None]:
+        if not calls:
+            return None, None
         names = [str(call["function"]["name"]) for call in calls]
         provider_state = tuple(
             dict(item) for item in capture.provider_state if isinstance(item, dict)
@@ -266,7 +271,10 @@ class WorkspaceNativeTurn:
         error: ToolResultBatchOverCapacity | None = None
         try:
             declared = declared_model_results_for_tool_names(names, resolve_tool=self.registry.get)
-            admit_native_assistant_transaction(payload, declared)
+            admit_native_assistant_transaction(
+                payload, declared, request_budget=self.state.request_budget,
+            )
+            self.state.consecutive_capacity_rejections = 0
         except ToolResultBatchOverCapacity as exc:
             error = exc
         except ValueError as exc:
@@ -276,8 +284,6 @@ class WorkspaceNativeTurn:
                 tools=names,
                 reason="native_tool_contract_invalid",
             ) from exc
-        if not calls:
-            return None, error
         state = self.state
         return ToolTransaction(
             transaction_id=f"{state.assistant_run.id}:transaction:{iteration}",
@@ -306,8 +312,14 @@ class WorkspaceNativeTurn:
         if transaction is None:
             raise AssertionError("rejected tool batch must not be empty")
         state = self.state
+        state.consecutive_capacity_rejections += 1
+        can_continue = (
+            error.recovery_fits
+            and state.consecutive_capacity_rejections < MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS
+        )
+        error.recovery_fits = can_continue
         self._mark_delivered_transactions_consumed()
-        for call in calls:
+        for call_index, call in enumerate(calls):
             name = str(call["function"]["name"])
             denied = error.model_error_result(name)
             definition = self.registry.get(name)
@@ -329,6 +341,8 @@ class WorkspaceNativeTurn:
                 request={
                     "native_call_id": str(call["id"]),
                     "arguments": json.loads(call["function"]["arguments"]),
+                    **({"native_assistant_transaction": transaction.to_dict()}
+                       if call_index == 0 else {}),
                 },
                 detail="工具结果批次容量校验未通过，业务处理器未执行",
             )
@@ -353,7 +367,7 @@ class WorkspaceNativeTurn:
                 )
             )
             state.tool_logs.append(
-                {"tool": name, "status": "error", "detail": str(denied["detail"])}
+                public_tool_log(denied)
             )
             yield state.event(
                 {
@@ -364,15 +378,15 @@ class WorkspaceNativeTurn:
                     "step_id": step.id,
                 }
             )
-        if error.reason != "tool_result_batch_over_capacity":
-            raise self._protocol_error(
-                "模型返回的原生 assistant 工具事务不符合容量协议；"
-                "整批业务处理器未执行，本轮已终止。",
-                iteration,
-                tools=[call["function"]["name"] for call in calls],
-                reason=error.reason,
-                actual_bytes=error.declared_json_bytes,
-                max_bytes=error.max_json_bytes,
+        if not can_continue:
+            raise ConversationContextError(
+                (ConversationContextErrorCode.PROTOCOL_INVALID
+                 if error.reason == "native_assistant_transaction_invalid"
+                 else ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY),
+                "工具批次无法在当前模型预算内恢复，已保留查询进度；本批次未执行。",
+                details={**error.model_error_result("tool_batch")["data"],
+                         "iteration": iteration,
+                         "consecutive_rejections": state.consecutive_capacity_rejections},
             )
         state.tool_transactions.append(transaction.mark_delivered())
         state.loop_action = "continue"
@@ -380,7 +394,7 @@ class WorkspaceNativeTurn:
             {
                 "type": "iteration_end",
                 "iteration": iteration,
-                "message": "工具结果批次超过容量，整批未执行；模型将收到逐调用拒绝结果",
+                "message": "本批工具超过剩余容量，尚未执行；正在让模型调整调用数量或读取范围",
             }
         )
 
@@ -529,17 +543,20 @@ class WorkspaceNativeTurn:
                     "tool": name,
                     **safe_tool_execution_failure(error_id),
                 }
+        if step is None:
+            raise LLMError("工具结果未能写入持久 RunStep，本轮已停止")
+        projected_content, delivery_error = self._project_result(name, result, step.id, arguments)
+        persisted_result = (
+            {**result, "model_delivery": delivery_error} if delivery_error else result
+        )
         finish_run_step(
             state.db,
             step,
             status=str(result.get("status") or "ok"),
-            result=result,
+            result=persisted_result,
             detail=str(result.get("detail") or ""),
             error=str(result.get("detail") or "") if result.get("status") == "error" else None,
         )
-        if step is None:
-            raise LLMError("工具结果未能写入持久 RunStep，本轮已停止")
-        projected_content, projection_event = self._project_result(name, result, step.id)
         transaction = transaction.add_result(
             NativeToolResult(
                 call_id=str(call["id"]),
@@ -553,19 +570,19 @@ class WorkspaceNativeTurn:
             "status": result.get("status") or "ok",
             "detail": result.get("detail") or "",
         }
-        state.tool_logs.append(
-            public_tool_log(log) if str(log["status"]).lower() == "error" else log
-        )
+        state.tool_logs.append(public_tool_log(persisted_result) if delivery_error else (
+            public_tool_log(result) if str(log["status"]).lower() == "error" else log
+        ))
         result_event = state.event(
             {
                 "type": f"{step_type}_result",
                 "tool": name,
-                "result": public_tool_log(result),
+                "result": public_tool_log(persisted_result),
                 "iteration": iteration,
                 "step_id": step.id,
             }
         )
-        state.pending_native_events = [*projection_event, result_event]
+        state.pending_native_events = [result_event]
         stop_reason = self._record_terminal(name, result, is_write)
         return transaction, stop_reason, category_changed
 
@@ -599,28 +616,22 @@ class WorkspaceNativeTurn:
         return step_type, is_write, step
 
     def _project_result(
-        self, name: str, result: dict[str, Any], step_id: str
-    ) -> tuple[str, list[str]]:
+        self, name: str, result: dict[str, Any], step_id: str, arguments: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
         definition = (
             _CATEGORY_DEFINITION if name == TOOL_CATEGORY_CONTROLLER else self.registry.get(name)
         )
         if definition is None:
             raise LLMError(f"工具 {name} 缺少模型结果投影契约")
         try:
-            return model_tool_result_projector.project(definition, result).content, []
+            return model_tool_result_projector.project(
+                definition, result, arguments=arguments,
+            ).content, None
         except ToolResultProjectionError as exc:
+            failure = exc.model_error_result()
             return json.dumps(
-                exc.model_error_result(), ensure_ascii=False, allow_nan=False, separators=(",", ":")
-            ), [
-                self.state.event(
-                    {
-                        "type": "status",
-                        "message": "工具结果无法安全投递给模型；已返回结构化拒绝结果。",
-                        "tool": "tool_result_projection",
-                        "step_id": step_id,
-                    }
-                )
-            ]
+                failure, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ), failure
 
     def _record_terminal(self, name: str, result: dict[str, Any], is_write: bool) -> str:
         del is_write
@@ -662,7 +673,9 @@ class WorkspaceNativeTurn:
     def _mark_delivered_transactions_consumed(self) -> None:
         for index, transaction in enumerate(self.state.tool_transactions):
             if transaction.state.value == "delivered":
-                self.state.tool_transactions[index] = transaction.mark_consumed().mark_compactable()
+                # Read once does not mean obsolete: later steps still need these
+                # exact IDs, pages, selections and provider continuation state.
+                self.state.tool_transactions[index] = transaction.mark_consumed()
 
     @staticmethod
     def _batch_detail(

@@ -210,6 +210,16 @@ class RequestBudgetEnvelope:
     def to_dict(self) -> dict[str, Any]:
         return canonical_value(self)
 
+    @property
+    def tool_transaction_budget_tokens(self) -> int:
+        """Remaining next-request input after the already rendered request.
+
+        The input limit already subtracts the bound model's output reserve and
+        safety margin. Pre-step estimates are not subtracted a second time.
+        """
+        self.require_sendable()
+        return max(0, self.request_input_limit - self.current_input_tokens)
+
     def require_sendable(self) -> None:
         if not self.verified and not self.bounded_fallback:
             raise ConversationContextError(

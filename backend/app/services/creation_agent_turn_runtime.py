@@ -23,6 +23,7 @@ from app.modules.creation.interfaces.session_dependencies import novel_creation_
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.conversation_context import (
     ConversationContextError,
+    ConversationContextErrorCode,
     ConversationIdentity,
     ConversationKind,
     ModelToolCapability,
@@ -191,6 +192,16 @@ def _persist_creation_agent_turn(
 
 def safe_creation_agent_error(exc: Exception) -> tuple[str, dict[str, Any]]:
     if isinstance(exc, ConversationContextError):
+        if exc.code is ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY:
+            from .workspace.assistant_public_errors import public_context_failure
+
+            failure = public_context_failure(exc)
+            return failure.message, {
+                "error_type": "conversation_context",
+                "failure_class": failure.failure_class,
+                **failure.to_dict(),
+                "next_action": failure.details["remediation"],
+            }
         code = exc.code.value
         message = safe_public_error_detail(exc.code) or (
             "对话上下文处理失败，本次任务未执行。"
@@ -218,6 +229,10 @@ def safe_creation_agent_error(exc: Exception) -> tuple[str, dict[str, Any]]:
         "network": ("模型网络连接中断", "请检查网络或本机模型进程后重试。"),
         "empty_response": ("模型没有返回有效内容", "请重试本轮或切换模型。"),
         "invalid_response": ("模型返回格式无法解析", "请重试本轮或切换模型。"),
+        "provider_protocol": (
+            "模型接口拒绝了工具或思考协议",
+            "请检查模型设置中的接口协议，或切换模型后重试；仍失败时请提供错误编号和诊断日志。",
+        ),
     }.get(failure_class, ("立项助手处理失败", "请检查模型状态后重试本轮。"))
     return message, {
         "error_type": type(exc).__name__,
@@ -434,6 +449,7 @@ class _CreationModelContextRuntime:
     context: _TurnContext
     publish: TurnPublisher
     output_reserve_tokens: int | None = None
+    request_budget: Any = None
 
     def require_current_turn(self) -> None:
         context = self.context
@@ -607,6 +623,7 @@ class _CreationModelContextRuntime:
         ):
             raise CreationTurnScopeError("共享上下文未返回可验证的模型输出预算")
         self.output_reserve_tokens = output_reserve
+        self.request_budget = prepared.budget
         return prepared.provider_messages
 
     async def persist_runtime_state(self, snapshot: dict[str, Any]) -> None:
@@ -674,6 +691,7 @@ async def _execute_agent(
             reference_context=request.reference_context,
             turn_execution_id=request.client_turn_id,
             provider_max_tokens=lambda: model_context.output_reserve_tokens,
+            provider_request_budget=lambda: model_context.request_budget,
             on_event=lambda event: _emit(context, publish, event),
             direct_mcp_turn_guard={
                 "kind": "creation",
@@ -737,7 +755,7 @@ async def _persist_turn_error(
     safe_message, safe_error_data = safe_creation_agent_error(exc)
     error_id = uuid4().hex
     safe_error_data["error_id"] = error_id
-    if safe_error_data.get("failure_class") == "unknown":
+    if safe_error_data.get("failure_class") in {"unknown", "provider_protocol"}:
         safe_message = f"{safe_message}；错误编号：{error_id}"
     logger.error(
         "Creation turn failed error_id=%s error_type=%s detail=%s",

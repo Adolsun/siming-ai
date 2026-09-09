@@ -37,6 +37,7 @@ internal object MobileConversationContextErrorCode {
     const val INCOMPLETE_TOOL_TRANSACTION = "incomplete_tool_transaction"
     const val TOOL_CAPABILITY_UNAVAILABLE = "tool_capability_unavailable"
     const val TOOL_RESULT_OVER_CAPACITY = "tool_result_over_capacity"
+    const val TOOL_TRANSACTION_OVER_CAPACITY = "tool_transaction_over_capacity"
     const val PROVIDER_MAPPING_FAILED = "provider_message_mapping_failed"
     const val FINAL_REQUEST_OVER_CAPACITY = "final_agent_request_over_capacity"
     val ALL = setOf(
@@ -53,6 +54,7 @@ internal object MobileConversationContextErrorCode {
         INCOMPLETE_TOOL_TRANSACTION,
         TOOL_CAPABILITY_UNAVAILABLE,
         TOOL_RESULT_OVER_CAPACITY,
+        TOOL_TRANSACTION_OVER_CAPACITY,
         PROVIDER_MAPPING_FAILED,
         FINAL_REQUEST_OVER_CAPACITY,
     )
@@ -644,6 +646,7 @@ internal data class MobileRecentTurnBudget(
     val currentTurnLedgerTokens: Int,
     val pendingToolTransactionTokens: Int,
     val providerStateTokens: Int = 0,
+    val growthReserveTokens: Int = 0,
 ) {
     val fixedInputTokens: Int
         get() = systemAndToolsTokens + providerWrapperTokens + checkpointTokens + currentUserTokens +
@@ -763,10 +766,12 @@ internal object MobileRecentTurnPlanner {
             )
         }
 
+        val tailLimit = maxOf(used, budget.requestInputLimitTokens - budget.growthReserveTokens)
+
         val selectedCompleted = mutableListOf<MobileConversationTurn>()
         for (turn in uncovered.filter(MobileConversationTurn::isCheckpointEligible).asReversed()) {
             val cost = tokens(turn)
-            if (used + cost <= budget.requestInputLimitTokens) {
+            if (used + cost <= tailLimit) {
                 selectedCompleted += turn
                 used += cost
             } else {
@@ -815,10 +820,31 @@ internal object MobileToolTransactionState {
 internal data class MobileNativeToolBatchAdmission(
     val accepted: Boolean,
     val reason: String? = null,
-    val declaredJsonBytes: Int,
-    val maxJsonBytes: Int,
+    val requiredTokens: Int,
+    val availableTokens: Int,
     val callCount: Int,
-)
+    val assistantJsonBytes: Int = 0,
+    val declaredResultJsonBytes: Int = 0,
+    val recoveryFits: Boolean = false,
+) {
+    fun errorResult(tool: String): JsonObject = buildJsonObject {
+        put("tool", tool)
+        put("status", "error")
+        put("detail", "本批工具消息与结果预计需要 $requiredTokens Token 安全预算，" +
+            "当前模型还可容纳 $availableTokens Token；整批未执行。" +
+            "请减少同一步查询数量，或缩小工具声明的分页、读取范围；" +
+            "不要重复提交相同批次，也不要删减供应商要求回传的思考或状态字段。")
+        put("data", buildJsonObject {
+            put("reason", reason)
+            put("batch_call_count", callCount)
+            put("required_tokens", requiredTokens)
+            put("available_tokens", availableTokens)
+            put("assistant_json_bytes", assistantJsonBytes)
+            put("declared_result_json_bytes", declaredResultJsonBytes)
+            put("retryable", recoveryFits)
+        })
+    }
+}
 
 /**
  * Cross-runtime hard boundary for one exact native assistant/tool transaction.
@@ -828,11 +854,9 @@ internal data class MobileNativeToolBatchAdmission(
  * of an over-capacity batch.
  */
 internal object MobileNativeToolBudgetContract {
-    const val SCHEMA = "native_tool_transaction_budget.v2"
-    const val MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES = 16 * 1024
-    const val MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES = 32 * 1024
-    const val NEXT_STEP_WRAPPER_TOKENS =
-        2 * MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES
+    const val SCHEMA = "native_tool_transaction_budget.v3"
+    const val NEXT_STEP_WRAPPER_TOKENS = 1024
+    const val MAX_CONSECUTIVE_CAPACITY_REJECTIONS = 3
     const val NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY =
         "native_assistant_transaction_over_capacity"
     const val NATIVE_ASSISTANT_TRANSACTION_INVALID = "native_assistant_transaction_invalid"
@@ -856,9 +880,9 @@ internal object MobileNativeToolBudgetContract {
         "list_chapters" to STANDARD_RESULT_BYTES,
         "list_worldbuilding" to STANDARD_RESULT_BYTES,
         "search_characters" to STANDARD_RESULT_BYTES,
-        "search_chapters" to STANDARD_RESULT_BYTES,
-        "search_outline" to STANDARD_RESULT_BYTES,
-        "search_outline_tree" to STANDARD_RESULT_BYTES,
+        "search_chapters" to 55_168,
+        "search_outline" to 52_384,
+        "search_outline_tree" to 17 * 1024,
         "search_worldbuilding" to STANDARD_RESULT_BYTES,
         "prepare_task_context" to LARGE_READ_RESULT_BYTES,
         "search_task_context" to LARGE_READ_RESULT_BYTES,
@@ -873,22 +897,48 @@ internal object MobileNativeToolBudgetContract {
         "update_worldbuilding_entry" to STATUS_ONLY_RESULT_BYTES,
     )
 
-    fun declaredResultJsonBytes(toolName: String): Int = resultBytesByTool[toolName]
-        ?: throw MobileConversationContextException(
+    fun declaredResultJsonBytes(toolName: String, arguments: JsonObject = JsonObject(emptyMap())): Int {
+        val maximum = resultBytesByTool[toolName] ?: throw MobileConversationContextException(
             MobileConversationContextErrorCode.PROTOCOL_INVALID,
             "工具 $toolName 没有声明模型可见结果契约",
         )
+        val page = when (toolName) {
+            "search_chapters" -> Triple(4096, 1536, 2)
+            "list_chapters" -> Triple(1024, 1536, 10)
+            "search_outline_tree" -> Triple(2048, 1536, 10)
+            "search_outline" -> Triple(4096, 6144, 2)
+            else -> return maximum
+        }
+        val requested = (arguments["limit"] as? JsonPrimitive)?.content?.toIntOrNull()
+        val count = if (requested == null || requested == 0) page.third else requested.coerceIn(1, page.third)
+        val textBytes = if (toolName == "search_outline") {
+            val requestedChars = (arguments["summary_chars"] as? JsonPrimitive)?.content?.toIntOrNull()
+            val chars = if (requestedChars == null || requestedChars == 0) 500 else requestedChars.coerceIn(1, 1000)
+            6 * chars * maxOf(4, 3 * count)
+        } else if (toolName == "search_chapters") {
+            val requestedChars = (arguments["content_chars"] as? JsonPrimitive)?.content?.toIntOrNull()
+            val chars = if (requestedChars == null || requestedChars == 0) 2000 else requestedChars.coerceIn(1, 4000)
+            6 * chars * count
+        } else 0
+        return page.first + page.second * count + textBytes
+    }
 
     fun nextStepWrapperTokens(toolsOffered: Boolean): Int =
         if (toolsOffered) NEXT_STEP_WRAPPER_TOKENS else 0
 
-    fun maxModelVisibleResultTokens(toolsOffered: Boolean): Int =
-        if (toolsOffered) MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES else 0
+    fun maxModelVisibleResultTokens(
+        scopedTools: JsonArray,
+        resultJsonBytes: (String, JsonObject) -> Int = ::declaredResultJsonBytes,
+    ): Int = 2 * (scopedTools.maxOfOrNull { schema ->
+        val function = (schema as JsonObject)["function"] as JsonObject
+        resultJsonBytes(function.string("name"), JsonObject(emptyMap()))
+    } ?: 0)
 
     fun admitExactAssistantTransaction(
         assistantPayload: JsonObject,
         orderedToolNames: List<String>,
-        resultJsonBytes: (String) -> Int = ::declaredResultJsonBytes,
+        requestBudget: MobileRequestBudgetEnvelope,
+        resultJsonBytes: (String, JsonObject) -> Int = ::declaredResultJsonBytes,
     ): MobileNativeToolBatchAdmission {
         val rawCalls = assistantPayload.array("tool_calls").objects("tool_calls")
         val payloadCalls = rawCalls.map { rawCall ->
@@ -897,8 +947,8 @@ internal object MobileNativeToolBudgetContract {
                     MobileConversationContextErrorCode.PROTOCOL_INVALID,
                     "原生 tool_call 缺少 function 对象",
                 )
-            val id = rawCall.string("id").ifBlank { rawCall.string("call_id") }
-            val name = function.string("name").ifBlank { rawCall.string("name") }
+            val id = rawCall.string("id")
+            val name = function.string("name")
             if (id.isBlank() || name.isBlank()) {
                 throw MobileConversationContextException(
                     MobileConversationContextErrorCode.PROTOCOL_INVALID,
@@ -922,36 +972,50 @@ internal object MobileNativeToolBudgetContract {
             )
         }
         val assistantBytes = mobileCanonicalJson(assistantPayload).toByteArray(Charsets.UTF_8).size
-        if (assistantBytes > MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES) {
-            return MobileNativeToolBatchAdmission(
-                accepted = false,
-                reason = NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY,
-                declaredJsonBytes = assistantBytes,
-                maxJsonBytes = MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
-                callCount = orderedToolNames.size,
-            )
+        val available = requestBudget.toolTransactionBudgetTokens
+        val declared = rawCalls.zip(orderedToolNames).sumOf { (call, tool) ->
+            val function = call.getValue("function") as JsonObject
+            val arguments = Json.parseToJsonElement(function.string("arguments")) as JsonObject
+            resultJsonBytes(tool, arguments).toLong()
         }
-        val declaredResultBytes = orderedToolNames.sumOf(resultJsonBytes)
-        if (declaredResultBytes > MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES) {
-            return MobileNativeToolBatchAdmission(
-                accepted = false,
-                reason = TOOL_RESULT_BATCH_OVER_CAPACITY,
-                declaredJsonBytes = declaredResultBytes,
-                maxJsonBytes = MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
-                callCount = orderedToolNames.size,
-            )
+        val wrappers = 2L + rawCalls.sumOf { call ->
+            1L + mobileCanonicalJson(buildJsonObject {
+                put("role", "tool")
+                put("tool_call_id", call.string("id"))
+                put("content", "")
+            }).toByteArray(Charsets.UTF_8).size
         }
-        return MobileNativeToolBatchAdmission(
-            accepted = true,
-            declaredJsonBytes = declaredResultBytes,
-            maxJsonBytes = MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
-            callCount = orderedToolNames.size,
+        val required = assistantBytes + wrappers + 2L * declared
+        val admission = MobileNativeToolBatchAdmission(
+            accepted = required <= available,
+            reason = if (required <= available) null else if (assistantBytes + wrappers > available) {
+                NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY
+            } else TOOL_RESULT_BATCH_OVER_CAPACITY,
+            requiredTokens = required.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            availableTokens = available, callCount = orderedToolNames.size,
+            assistantJsonBytes = assistantBytes,
+            declaredResultJsonBytes = declared.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            recoveryFits = true,
         )
+        if (admission.accepted) return admission
+        val denialMessages = buildJsonArray {
+            add(assistantPayload)
+            rawCalls.zip(orderedToolNames).forEach { (call, tool) ->
+                add(buildJsonObject {
+                    put("role", "tool")
+                    put("tool_call_id", call.string("id"))
+                    put("content", mobileCanonicalJson(admission.errorResult(tool)))
+                })
+            }
+        }
+        return admission.copy(recoveryFits =
+            mobileCanonicalJson(denialMessages).toByteArray(Charsets.UTF_8).size <= available)
     }
 
-    fun actualResultFits(toolName: String, result: JsonObject): Boolean =
+    fun actualResultFits(toolName: String, result: JsonObject, arguments: JsonObject): Boolean =
         mobileCanonicalJson(result).toByteArray(Charsets.UTF_8).size <=
-            declaredResultJsonBytes(toolName)
+            declaredResultJsonBytes(toolName, arguments)
+
 }
 
 internal data class MobileToolCallRecord(
@@ -1101,10 +1165,10 @@ internal data class MobileToolTransaction(
         MobileToolTransactionState.CONSUMED,
     )
 
-    fun markCompactable(): MobileToolTransaction = transition(
-        MobileToolTransactionState.CONSUMED,
-        MobileToolTransactionState.COMPACTABLE,
-    )
+    fun markCompactable(turnClosed: Boolean): MobileToolTransaction {
+        require(turnClosed) { "当前回合的工具结果必须保持原文" }
+        return transition(MobileToolTransactionState.CONSUMED, MobileToolTransactionState.COMPACTABLE)
+    }
 
     fun toFrameJson(): JsonObject = buildJsonObject {
         put("transaction_id", transactionId)
@@ -1174,7 +1238,7 @@ internal data class MobileToolTransaction(
     }
 }
 
-/** Durable audit for one local assistant turn; compactable payloads stay on disk, not in prompts. */
+/** Active turns retain exact results; closed turns keep audit records on disk. */
 internal data class MobileTurnToolRuntimeState(
     val turnId: String,
     val transactions: List<MobileToolTransaction> = emptyList(),
@@ -1190,8 +1254,10 @@ internal data class MobileTurnToolRuntimeState(
         }
     }
 
-    val deliveredTransactions: List<MobileToolTransaction>
-        get() = transactions.filter { it.state == MobileToolTransactionState.DELIVERED }
+    val activeTransactions: List<MobileToolTransaction>
+        get() = transactions.filter {
+            it.state == MobileToolTransactionState.DELIVERED || it.state == MobileToolTransactionState.CONSUMED
+        }
 
     fun recordDelivered(transaction: MobileToolTransaction): MobileTurnToolRuntimeState {
         require(transaction.state == MobileToolTransactionState.DELIVERED) {
@@ -1206,7 +1272,7 @@ internal data class MobileTurnToolRuntimeState(
 
     /** Called only after the provider accepted the request containing every delivered transaction. */
     fun markDeliveredConsumed(): MobileTurnToolRuntimeState {
-        if (deliveredTransactions.isEmpty()) return this
+        if (transactions.none { it.state == MobileToolTransactionState.DELIVERED }) return this
         val receiptsByStep = executionLedger.associateBy(MobileToolExecutionReceipt::stepId).toMutableMap()
         val updated = transactions.map { transaction ->
             if (transaction.state != MobileToolTransactionState.DELIVERED) return@map transaction
@@ -1227,7 +1293,7 @@ internal data class MobileTurnToolRuntimeState(
                         persistedStepId = receipt.stepId,
                     )
                 },
-            ).markConsumed().markCompactable()
+            ).markConsumed()
         }
         return copy(
             transactions = updated,
@@ -1240,6 +1306,12 @@ internal data class MobileTurnToolRuntimeState(
         put("transactions", buildJsonArray { transactions.forEach { add(it.toFrameJson()) } })
         put("execution_ledger", buildJsonArray { executionLedger.forEach { add(it.toFrameJson()) } })
     }
+
+    fun closeTurn(): MobileTurnToolRuntimeState = copy(
+        transactions = transactions.map {
+            if (it.state == MobileToolTransactionState.CONSUMED) it.markCompactable(turnClosed = true) else it
+        },
+    )
 
     companion object {
         fun fromJson(root: JsonObject): MobileTurnToolRuntimeState = MobileTurnToolRuntimeState(
@@ -1270,7 +1342,7 @@ private fun mobileToolExecutionReceipt(
         stepId = stepId,
         tool = call.name,
         status = parsed.string("status").ifBlank { "unknown" },
-        summary = parsed.string("detail").ifBlank { "${call.name} 已返回确定性结果" },
+        summary = mobileToolStatusDetail(call.name, parsed.string("status")),
         resourceIds = resourceIds,
         resultRef = "mobile-tool-result:$resultHash",
         reread = null,
@@ -1562,8 +1634,10 @@ internal data class MobileConversationContextFrame(
         require(transactionIds.distinct().size == transactionIds.size) {
             "ContextFrame pending_tool_transactions 标识无效"
         }
-        require(pendingToolTransactions.all { it.state == MobileToolTransactionState.DELIVERED }) {
-            "ContextFrame 只能携带完整 delivered 工具事务"
+        require(pendingToolTransactions.all {
+            it.state == MobileToolTransactionState.DELIVERED || it.state == MobileToolTransactionState.CONSUMED
+        }) {
+            "ContextFrame 只能携带完整 delivered/consumed 工具事务"
         }
     }
 

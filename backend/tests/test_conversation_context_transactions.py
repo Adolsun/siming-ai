@@ -58,7 +58,9 @@ def test_tool_transaction_only_becomes_removable_after_consumed_and_persisted() 
     assert transaction.removable is False
     transaction = transaction.mark_consumed()
     assert transaction.removable is False
-    transaction = transaction.mark_compactable()
+    with pytest.raises(ValueError, match="active turn"):
+        transaction.mark_compactable(turn_closed=False)
+    transaction = transaction.mark_compactable(turn_closed=True)
     assert transaction.removable is True
     assert [message["role"] for message in transaction.native_messages()] == [
         "assistant",

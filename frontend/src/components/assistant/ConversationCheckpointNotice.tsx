@@ -7,6 +7,7 @@ import type {
 } from '../../types/conversationContext'
 import { formatApiDateTime } from '../../utils/dateTime'
 import { checkpointIdForState } from '../../services/conversationContext'
+import { toolStatusColor } from './constants'
 
 const { Paragraph, Text } = Typography
 
@@ -197,7 +198,7 @@ function CheckpointDetailBody({
               <div className="conversation-checkpoint-ledger-entry">
                 <Space size={6} wrap>
                   <Text code>{entry.tool || 'operation'}</Text>
-                  <Tag color={entry.status === 'ok' || entry.status === 'completed' ? 'green' : 'red'}>
+                  <Tag color={toolStatusColor(entry.status)}>
                     {entry.status || 'unknown'}
                   </Tag>
                   {entry.step_id && <Text type="secondary">步骤 {entry.step_id}</Text>}
@@ -258,6 +259,11 @@ export function ConversationCheckpointNotice({
   const status = state?.status || ''
   const checkpointId = checkpointIdForState(state, detail)
   const failed = status === 'failed'
+  const capacityBlocked = failed && new Set([
+    'tool_result_over_capacity', 'tool_transaction_over_capacity',
+    'conversation_required_state_over_capacity', 'final_agent_request_over_capacity',
+    'current_user_message_over_capacity',
+  ]).has(state?.error_code || '')
   const cancelled = status === 'cancelled'
   const working = status === 'pending' || status === 'compressing'
   const ready = status === 'ready'
@@ -276,7 +282,7 @@ export function ConversationCheckpointNotice({
       : working
         ? '正在整理较早上下文'
         : failed
-          ? '较早上下文整理失败'
+          ? capacityBlocked ? '上下文容量不足' : '较早上下文整理失败'
           : cancelled
             ? '较早上下文整理已取消'
             : '上下文整理状态已更新'
@@ -284,11 +290,11 @@ export function ConversationCheckpointNotice({
     || (ready
       ? `保留最近 ${state?.recent_exact_turn_count ?? '—'} 轮原文；完整聊天记录未删除。`
       : working
-        ? '当前业务任务尚未开始；整理完成并通过容量检查后会自动继续。'
+        ? '正在整理较早的已结束回合；通过容量检查后继续当前任务。'
         : failed
-          ? `${state?.error_detail || '未能生成可用 checkpoint。'} 当前任务尚未执行，完整聊天仍然保留。`
+          ? `${state?.error_detail || '未能准备可用上下文。'} 后续步骤已暂停，完整聊天和已有处理记录仍然保留。`
           : cancelled
-            ? '当前任务尚未执行，完整聊天仍然保留。'
+            ? '后续步骤已停止，完整聊天和已有处理记录仍然保留。'
             : '当前 checkpoint 不再适用于最新会话状态。')
 
   return (

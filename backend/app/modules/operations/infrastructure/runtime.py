@@ -502,6 +502,11 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
     status = project_lifecycle_status(operation.status)
     result = _copy_dict(operation.result_json)
     attention = _copy_dict(operation.attention_json)
+    resume_url = operation.resume_url
+    if operation.source_kind == "cataloging" and operation.project_id and operation.source_id:
+        resume_url = f"/project/{operation.project_id}?view=cataloging&job={operation.source_id}"
+        if attention:
+            attention["action_url"] = resume_url
     outcome = default_outcome(status, result)
     elapsed = (
         max(0, int(((operation.completed_at or now) - operation.created_at).total_seconds()))
@@ -550,7 +555,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "tool_mode": operation.tool_mode,
         "failure_class": operation.failure_class,
         "next_action": operation.next_action,
-        "resume_url": operation.resume_url,
+        "resume_url": resume_url,
         "can_pause": bool(operation.can_pause),
         "can_cancel": bool(operation.can_cancel),
         "can_retry": bool(operation.can_retry),

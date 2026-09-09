@@ -548,7 +548,9 @@ def replace_tool_categories(path: str, value: Any) -> dict[str, Any]:
     category_change_pending = int(state.get("active_version") or 0) < int(
         state.get("version") or 0
     )
-    if categories == active_categories and not category_change_pending:
+    # The first explicit choice is a transition even when it selects no tools.
+    # Version zero means no controller decision has been accepted yet.
+    if state["version"] > 0 and categories == active_categories and not category_change_pending:
         labels = [TOOL_CATEGORY_METADATA[category]["label"] for category in categories]
         return {
             "tool": TOOL_CATEGORY_CONTROLLER,

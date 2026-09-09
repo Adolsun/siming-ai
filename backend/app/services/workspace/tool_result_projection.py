@@ -8,11 +8,14 @@ second redaction/truncation layer.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol
+
+from app.services.conversation_context.budget import RequestBudgetEnvelope
 
 from ...architecture.tool_result_policy import (
     ModelResultContract,
@@ -20,6 +23,8 @@ from ...architecture.tool_result_policy import (
     ModelResultPolicy,
     ModelResultPreview,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ToolWithModelResultContract(Protocol):
@@ -72,13 +77,10 @@ class ToolResultOverCapacity(ToolResultProjectionError):
         return payload
 
 
-# One native assistant response may contain multiple tool calls.  The context
-# runtime reserves this *whole-batch* boundary before asking the model, and the
-# executor must admit the complete batch before running any handler.  A batch
-# is never shortened after the model emitted it because that would orphan
-# native tool-call IDs and could hide already-committed side effects.
-MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES = 32 * 1024
-MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES = 16 * 1024
+# Preparation reserves are not execution ceilings. The exact response and
+# complete result batch must fit the same bound request budget.
+MIN_NATIVE_TRANSACTION_WRAPPER_TOKENS = 1024
+MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS = 3
 TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT = ModelResultContract(
     policy=ModelResultPolicy.STATUS_ONLY,
     max_json_bytes=4 * 1024,
@@ -101,11 +103,26 @@ _DIAGNOSTIC_DETAILS = {
     "canceled": "工具执行已取消。",
 }
 _DIAGNOSTIC_REASON_DETAILS = {
+    "native_assistant_transaction_invalid": (
+        "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
+    ),
+    "native_assistant_transaction_over_capacity": (
+        "完整工具消息超过当前模型剩余容量，整批未执行。请减少调用数量或分步读取；"
+        "不要删减供应商要求回传的思考或状态字段。"
+    ),
+    "tool_result_batch_over_capacity": (
+        "本批工具消息与完整结果超过当前模型剩余容量，整批未执行。"
+        "请减少同一步调用数量或分页 limit，不要原样重复提交。"
+    ),
     "native_tool_contract_invalid": (
         "工具参数不符合当前 JSON Schema，本次未执行。请核对必填字段及类型；"
         "对象和数组必须直接传入，不能编码成 JSON 字符串。修正后再调用。"
     ),
     "revision_conflict": "资料版本已经变化，本次未写入。请读取最新内容和 revision 后再决定修改。",
+    "outline_node_count_mismatch": (
+        "大纲节点数量与已审阅的规划不一致，未保存草稿。"
+        "请按 expected_count 提交精确数量，场景细节写入章纲 summary，不额外添加节点。"
+    ),
     "tool_result_over_capacity": (
         "工具结果超过当前模型可见容量。请缩小读取范围或使用分页；不要原样重复调用。"
     ),
@@ -124,6 +141,7 @@ _SAFE_DIAGNOSTIC_REASONS = frozenset({
     "native_assistant_transaction_over_capacity",
     "native_tool_contract_invalid",
     "native_tool_not_open",
+    "outline_node_count_mismatch",
     "read_required",
     "revision_conflict",
     "serialization_failed",
@@ -133,8 +151,10 @@ _SAFE_DIAGNOSTIC_REASONS = frozenset({
     "tool_result_over_capacity",
 })
 _SAFE_DIAGNOSTIC_NUMERIC_FIELDS = frozenset({
+    "required_tokens", "available_tokens", "assistant_json_bytes", "declared_result_json_bytes",
     "current_revision",
     "actual_bytes",
+    "expected_count", "actual_count",
     "batch_call_count",
     "call_count",
     "declared_batch_json_bytes",
@@ -155,70 +175,52 @@ class _DeclaredToolResult:
 
 
 class ToolResultBatchOverCapacity(ValueError):
-    """A complete native tool-call batch cannot be executed within its contract."""
+    """A whole batch exceeds the remaining bound model request budget."""
 
-    def __init__(
-        self,
-        *,
-        tool_names: tuple[str, ...],
-        declared_json_bytes: int,
-        max_json_bytes: int,
-        call_count: int,
-        reason: str = "tool_result_batch_over_capacity",
-    ) -> None:
-        if reason.startswith("native_assistant_transaction_"):
-            detail = (
-                f"当前原生工具 assistant 事务为 {declared_json_bytes} 字节，"
-                f"不符合协议边界（上限 {max_json_bytes} 字节）；整批未执行。"
-                "请减少并行调用或缩小工具参数。"
-            )
-        else:
-            detail = (
-                f"当前工具批次的声明结果上限为 {declared_json_bytes} 字节，"
-                f"超过单步 {max_json_bytes} 字节上限；整批未执行。"
-                "请减少并行调用，或使用工具的分页、范围参数。"
-            )
-        super().__init__(detail)
+    def __init__(self, *, tool_names: tuple[str, ...], required_tokens: int,
+                 available_tokens: int, call_count: int,
+                 reason: str = "tool_result_batch_over_capacity",
+                 assistant_json_bytes: int = 0, declared_result_json_bytes: int = 0) -> None:
+        self.detail = (
+            "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
+            if reason == "native_assistant_transaction_invalid" else
+            f"本批工具消息与结果预计需要 {required_tokens} Token 安全预算，"
+            f"当前模型还可容纳 {available_tokens} Token；整批未执行。"
+            "请减少同一步查询数量，或缩小工具声明的分页、读取范围；"
+            "不要重复提交相同批次，也不要删减供应商要求回传的思考或状态字段。"
+        )
+        super().__init__(self.detail)
         self.tool_names = tool_names
-        self.declared_json_bytes = declared_json_bytes
-        self.max_json_bytes = max_json_bytes
+        self.required_tokens = required_tokens
+        self.available_tokens = available_tokens
         self.call_count = call_count
-        self.detail = detail
         self.reason = reason
+        self.assistant_json_bytes = assistant_json_bytes
+        self.declared_result_json_bytes = declared_result_json_bytes
+        self.recovery_fits = False
 
     def model_error_result(self, tool_name: str) -> dict[str, Any]:
-        """Return one small native result for every rejected tool-call ID."""
-
-        return {
-            "tool": tool_name,
-            "status": "error",
-            "detail": self.detail,
-            "data": {
-                "reason": self.reason,
-                "batch_call_count": self.call_count,
-                "declared_batch_json_bytes": self.declared_json_bytes,
-                "max_batch_json_bytes": self.max_json_bytes,
-            },
-        }
+        return {"tool": tool_name, "status": "error", "detail": self.detail, "data": {
+            "reason": self.reason, "batch_call_count": self.call_count,
+            "required_tokens": self.required_tokens, "available_tokens": self.available_tokens,
+            "assistant_json_bytes": self.assistant_json_bytes,
+            "declared_result_json_bytes": self.declared_result_json_bytes,
+            "retryable": self.recovery_fits,
+        }}
 
 
 def max_model_visible_result_tokens_for_open_tools(
     tools: Iterable[ToolWithModelResultContract],
 ) -> int:
-    """Return the conservative token reserve for one *admissible* result batch.
+    """Reserve one available result, then admit the actual batch post-response.
 
-    A UTF-8 JSON payload cannot require more model tokens than its byte length.
-    The result therefore remains conservative for exact provider tokenizers and
-    for the repository's UTF-8-byte counter.  ``admit_model_tool_result_batch``
-    is the matching pre-execution gate that makes this open-tool reserve true.
+    Twice the JSON bytes covers quoting as tool-message content. This is a
+    preparation/compaction estimate, never a second execution capacity limit.
     """
-
     resolved = tuple(tools)
-    if not resolved:
-        return 0
-    if len(resolved) == 1 and resolved[0].name == "set_tool_categories":
-        return resolved[0].model_result_contract.max_json_bytes
-    return MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
+    return 2 * max(
+        (tool.model_result_contract.bytes_for_arguments({}) for tool in resolved), default=0,
+    )
 
 
 def _openai_tool_name(schema: Mapping[str, Any]) -> str:
@@ -291,22 +293,15 @@ def max_model_visible_result_tokens_for_open_tool_schemas(
 
 
 def max_native_tool_transaction_wrapper_tokens() -> int:
-    """Reserve replay growth not included in model-visible result contents.
-
-    ``admit_native_assistant_transaction`` hard-validates the exact UTF-8 JSON
-    payload before any handler runs.  Each result-message wrapper repeats only
-    metadata already present in its validated call, so a second assistant-sized
-    byte reserve bounds the wrappers without assuming a fixed call count.  The
-    context runtime treats the returned integer as an already-counted token
-    reserve.
-    """
-
-    return 2 * MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES
+    """Preparation reserve; exact wrappers are counted before execution."""
+    return MIN_NATIVE_TRANSACTION_WRAPPER_TOKENS
 
 
 def admit_native_assistant_transaction(
     assistant_payload: Mapping[str, Any],
     tools: Iterable[ToolWithModelResultContract],
+    *,
+    request_budget: RequestBudgetEnvelope,
 ) -> int:
     """Validate exact native assistant state and declared results pre-handler.
 
@@ -317,12 +312,15 @@ def admit_native_assistant_transaction(
     """
 
     resolved = tuple(tools)
+    if not isinstance(request_budget, RequestBudgetEnvelope):
+        raise ValueError("工具执行缺少已绑定模型的请求预算")
+    available = request_budget.tool_transaction_budget_tokens
 
-    def invalid(call_count: int, *, declared_json_bytes: int = 0) -> None:
+    def invalid(call_count: int, *, required_tokens: int = 0) -> None:
         raise ToolResultBatchOverCapacity(
             tool_names=tuple(tool.name for tool in resolved),
-            declared_json_bytes=declared_json_bytes,
-            max_json_bytes=MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
+            required_tokens=required_tokens,
+            available_tokens=available,
             call_count=call_count,
             reason="native_assistant_transaction_invalid",
         )
@@ -336,7 +334,7 @@ def admit_native_assistant_transaction(
     for raw_call, tool in zip(raw_calls, resolved, strict=True):
         if not isinstance(raw_call, Mapping):
             invalid(len(raw_calls))
-        call_id = str(raw_call.get("id") or raw_call.get("call_id") or "").strip()
+        call_id = str(raw_call.get("id") or "").strip()
         function = raw_call.get("function")
         if not call_id or call_id in call_ids or not isinstance(function, Mapping):
             invalid(len(raw_calls))
@@ -350,37 +348,51 @@ def admit_native_assistant_transaction(
     except ToolResultProjectionError:
         invalid(len(raw_calls))
     assistant_bytes = len(payload.encode("utf-8"))
-    if assistant_bytes > MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES:
-        raise ToolResultBatchOverCapacity(
+    declared = 0
+    wrappers = 2
+    for call, tool in zip(raw_calls, resolved, strict=True):
+        try:
+            arguments = json.loads(call["function"]["arguments"])
+            if not isinstance(arguments, dict):
+                invalid(len(raw_calls))
+            declared += tool.model_result_contract.bytes_for_arguments(arguments)
+        except (TypeError, ValueError):
+            invalid(len(raw_calls))
+        wrappers += 1 + len(_json_content(tool.name, {
+            "role": "tool", "tool_call_id": call["id"], "content": "",
+        }).encode("utf-8"))
+    # Valid result JSON at most doubles when quoted as tool-message content.
+    # UTF-8 bytes conservatively bound tokens. Reasoning/state are kept whole.
+    required = assistant_bytes + wrappers + 2 * declared
+    logger.info(
+        "Native tool budget calls=%d required=%d available=%d output_reserved=%d "
+        "safety_margin=%d wrapper_bytes=%d remaining_after_batch=%d admitted=%s",
+        len(resolved), required, available, request_budget.output_reserve_tokens,
+        request_budget.safety_margin_tokens, wrappers, available - required, required <= available,
+    )
+    if required > available:
+        error = ToolResultBatchOverCapacity(
             tool_names=tuple(tool.name for tool in resolved),
-            declared_json_bytes=assistant_bytes,
-            max_json_bytes=MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
-            call_count=len(raw_calls),
-            reason="native_assistant_transaction_over_capacity",
-        )
-    declared_result_bytes = admit_model_tool_result_batch(resolved)
-    return assistant_bytes + declared_result_bytes + assistant_bytes
-
-
-def admit_model_tool_result_batch(
-    tools: Iterable[ToolWithModelResultContract],
-) -> int:
-    """Admit a complete resolved call batch before any handler is executed.
-
-    Returns its conservative declared result bytes.  Callers must preserve call
-    order and, on failure, emit one native error result per original call ID.
-    """
-
-    resolved = tuple(tools)
-    declared = sum(tool.model_result_contract.max_json_bytes for tool in resolved)
-    if declared > MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES:
-        raise ToolResultBatchOverCapacity(
-            tool_names=tuple(tool.name for tool in resolved),
-            declared_json_bytes=declared,
-            max_json_bytes=MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
+            required_tokens=required, available_tokens=available,
             call_count=len(resolved),
+            reason=("native_assistant_transaction_over_capacity"
+                    if assistant_bytes + wrappers > available
+                    else "tool_result_batch_over_capacity"),
+            assistant_json_bytes=assistant_bytes, declared_result_json_bytes=declared,
         )
-    return declared
+        # Retry only when the unchanged assistant AND all matching denial
+        # messages fit. Never execute a prefix or discard native call IDs.
+        error.recovery_fits = True
+        denial_messages = [assistant_payload, *(
+            {"role": "tool", "tool_call_id": call["id"],
+             "content": _json_content(tool.name, error.model_error_result(tool.name))}
+            for call, tool in zip(raw_calls, resolved, strict=True)
+        )]
+        error.recovery_fits = (
+            len(_json_content("native_tool_denial", denial_messages).encode("utf-8")) <= available
+        )
+        raise error
+    return required
 
 
 @dataclass(frozen=True)
@@ -656,6 +668,7 @@ class ModelToolResultProjector:
         result: Mapping[str, Any],
         *,
         max_json_bytes: int | None = None,
+        arguments: Mapping[str, Any] | None = None,
     ) -> ProjectedToolResult:
         if not isinstance(result, Mapping):
             raise ToolResultProjectionError(tool.name, "工具结果必须是 JSON 对象")
@@ -667,7 +680,7 @@ class ModelToolResultProjector:
             )
 
         contract = tool.model_result_contract
-        limit = contract.max_json_bytes
+        limit = contract.bytes_for_arguments(arguments)
         if max_json_bytes is not None:
             if max_json_bytes <= 0:
                 raise ValueError("max_json_bytes must be positive")
@@ -757,8 +770,6 @@ model_tool_result_projector = ModelToolResultProjector()
 
 
 __all__ = [
-    "MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES",
-    "MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES",
     "TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT",
     "ModelToolResultProjector",
     "ProjectedToolResult",
@@ -766,7 +777,6 @@ __all__ = [
     "ToolResultOverCapacity",
     "ToolResultProjectionError",
     "admit_native_assistant_transaction",
-    "admit_model_tool_result_batch",
     "declared_model_results_for_openai_tools",
     "declared_model_results_for_tool_names",
     "max_model_visible_result_tokens_for_open_tool_schemas",

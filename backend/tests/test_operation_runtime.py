@@ -44,6 +44,19 @@ def _db():
     return engine, Session, Session()
 
 
+def test_cataloging_operation_links_use_the_exact_job_without_mutating_stored_records():
+    operation = OperationRun(
+        id="operation", source_kind="cataloging", source_id="job-43", project_id="project",
+        title="建档", status="waiting_user", resume_url="/project/project?view=cataloging",
+        attention_json={"kind": "confirmation", "action_url": "/project/project?view=cataloging"},
+    )
+    result = serialize_operation(operation)
+    assert result["resume_url"] == "/project/project?view=cataloging&job=job-43"
+    assert result["attention"]["action_url"] == result["resume_url"]
+    assert operation.resume_url == "/project/project?view=cataloging"
+    assert operation.attention_json["action_url"] == "/project/project?view=cataloging"
+
+
 def test_operation_service_deletes_only_terminal_records():
     _engine, Session, db = _db()
     completed = ensure_operation(

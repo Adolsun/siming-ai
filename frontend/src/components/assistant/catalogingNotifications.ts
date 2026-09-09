@@ -47,7 +47,7 @@ function assistantMessage(
       label: navigationLabel,
       to: operation.attention?.action_url
         || operation.resume_url
-        || `/project/${encodeURIComponent(projectId)}?view=cataloging`,
+        || `/project/${encodeURIComponent(projectId)}?view=cataloging${operation.source_id ? `&job=${encodeURIComponent(operation.source_id)}` : ''}`,
     },
     data: outcome
       ? {

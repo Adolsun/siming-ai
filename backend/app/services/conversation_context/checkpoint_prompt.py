@@ -222,13 +222,10 @@ def build_checkpoint_repair_messages(
             for item in original_messages
         ),
         {
-            "role": "assistant",
-            "content": "上一次输出未通过确定性校验。",
-        },
-        {
             "role": "user",
             "content": (
-                "只修复 JSON 结构或引用位置；不得添加来源中不存在的事实。\n"
+                "上一次输出未通过确定性校验。只修复 JSON 结构或引用位置；"
+                "不得添加来源中不存在的事实。\n"
                 + canonical_json(request)
             ),
         },

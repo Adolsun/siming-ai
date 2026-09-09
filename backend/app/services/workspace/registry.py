@@ -19,6 +19,7 @@ from ...architecture.tool_permissions import classify_tool_definitions
 from ...architecture.tool_result_policy import (
     ModelResultContract,
     ModelResultListProjection,
+    ModelResultPageBudget,
     ModelResultPolicy,
     ModelResultPreview,
 )
@@ -233,6 +234,7 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
     "list_chapters": ModelResultContract(
         policy=ModelResultPolicy.SUMMARY_AND_IDS,
         max_json_bytes=16 * 1024,
+        page_budget=ModelResultPageBudget(1024, 1536, 10),
         result_fields=("page",),
         list_projections=(
             ModelResultListProjection(
@@ -259,9 +261,23 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
     # Search/read tools must deliver one complete result.  Their handlers own
     # query limits/ranges; the projector never rewrites a fresh search result.
     "search_characters": ModelResultContract(max_json_bytes=16 * 1024),
-    "search_chapters": ModelResultContract(max_json_bytes=16 * 1024),
-    "search_outline": ModelResultContract(max_json_bytes=16 * 1024),
-    "search_outline_tree": ModelResultContract(max_json_bytes=16 * 1024),
+    "search_chapters": ModelResultContract(
+        max_json_bytes=55168,
+        page_budget=ModelResultPageBudget(
+            4096, 1536, 2, text_argument="content_chars", default_text_chars=2000,
+            max_text_chars=4000, text_fields_per_item=1,
+        ),
+    ),
+    "search_outline": ModelResultContract(
+        max_json_bytes=52_384,
+        page_budget=ModelResultPageBudget(
+            4096, 6144, 2, text_argument="summary_chars", default_text_chars=500,
+            max_text_chars=1000, text_fields_per_item=3, min_text_fields=4,
+        ),
+    ),
+    "search_outline_tree": ModelResultContract(
+        max_json_bytes=17 * 1024, page_budget=ModelResultPageBudget(2048, 1536, 10),
+    ),
     "search_worldbuilding": ModelResultContract(max_json_bytes=16 * 1024),
     "search_relationships": ModelResultContract(max_json_bytes=16 * 1024),
     "search_project_files": ModelResultContract(max_json_bytes=16 * 1024),
@@ -274,8 +290,7 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
     # once a real project has enough current context.
     "prepare_external_writing_context": ModelResultContract(max_json_bytes=32 * 1024),
     # Twelve 600-character evidence previews plus stable IDs/hashes fit this
-    # single-call envelope. Two maximum pages must be requested in separate
-    # model steps so the native result batch remains bounded.
+    # single-call envelope; the bound request budget admits the full batch.
     "search_task_context": ModelResultContract(max_json_bytes=32 * 1024),
     "submit_context_evidence": ModelResultContract(
         policy=ModelResultPolicy.STATUS_ONLY,
@@ -811,10 +826,28 @@ def _register_all() -> None:
     ]
     order = {name: index for index, name in enumerate(_TOOL_REGISTRATION_ORDER)}
     for definition in sorted(definitions, key=lambda item: order[item.name]):
+        contract = _model_result_contract_for(definition)
+        description = definition.description
+        if contract.page_budget is not None:
+            page = contract.page_budget
+            text_budget = (
+                f"另加 6 × {page.text_argument} × max({page.min_text_fields}, "
+                f"{page.text_fields_per_item} × 本次分页条数) 字节；"
+                f"{page.text_argument} 默认 {page.default_text_chars}、最大 {page.max_text_chars}。"
+                if page.text_argument else ""
+            )
+            description += (
+                f" 模型结果按 {page.argument} 分页：默认及上限 {page.max_items} 条，"
+                f"结果容量为 {page.base_json_bytes} + {page.item_json_bytes} × 本次分页条数 字节。"
+                f"{text_budget}"
+                "返回的 page/next_cursor 是继续读取的位置；容量不足时减少同一步调用数量或 limit，"
+                "不要原样反复查询。"
+            )
         categorized = replace(
             definition,
+            description=description,
             agent_category=tool_category_for_name(definition.name),
-            model_result_contract=_model_result_contract_for(definition),
+            model_result_contract=contract,
         )
         registry.register(categorized.bind(resolve_handler))
 

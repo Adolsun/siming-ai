@@ -52,8 +52,6 @@ from app.database.models import (
 from app.database.session import SessionLocal
 from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_external_cataloging_system_prompt
-from app.services.cataloging.candidate_io import candidate_to_dict
-from app.services.cataloging.fact_store import fact_to_dict
 from app.services.cataloging.job_control import complete_cataloging_job, refresh_job_progress
 from app.services.cataloging.local_cli_mcp import (
     opencode_cataloging_permission_env,
@@ -63,7 +61,6 @@ from app.services.cataloging.local_cli_result import (
     handle_cli_turn_exception,
     handle_cli_turn_result,
 )
-from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.tool_category_state import (
     activate_tool_categories,
@@ -327,181 +324,6 @@ def local_cli_cataloging_is_running(job_id: str) -> bool:
     return bool(task and not task.done())
 
 
-async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
-    """Stream database and AgentRun changes using the existing cataloging UI contract."""
-    from app.database.models import AgentRunEvent, CatalogingCandidate, CatalogingFact
-
-    db = SessionLocal()
-    seen_facts: set[str] = set()
-    seen_candidates: set[str] = set()
-    seen_run_states: dict[str, str] = {}
-    last_agent_sequence = 0
-    last_job_signature: tuple[Any, ...] | None = None
-    try:
-        job = db.query(CatalogingJob).filter(
-            CatalogingJob.id == job_id,
-            CatalogingJob.project_id == project_id,
-        ).first()
-        if not job:
-            yield sse_event({"type": "error", "message": "作品建档任务不存在"})
-            yield "data: [DONE]\n\n"
-            return
-        seen_facts = {
-            row.id
-            for row in db.query(CatalogingFact.id)
-            .filter(CatalogingFact.job_id == job.id)
-            .all()
-        }
-        seen_candidates = {
-            row.id
-            for row in db.query(CatalogingCandidate.id)
-            .filter(CatalogingCandidate.job_id == job.id)
-            .all()
-        }
-        if job.status not in _TERMINAL_JOBS and job.status not in {"paused", "waiting_confirmation"}:
-            ensure_local_cli_cataloging_worker(db, job)
-        yield sse_event({
-            "type": "cataloging_stage",
-            "message": "本机 CLI 建档任务状态已加载；实际工具执行进度以本轮回执为准",
-            "job": job_to_dict(job),
-        })
-
-        while True:
-            await asyncio.sleep(0.5)
-            db.expire_all()
-            job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-            if not job:
-                yield sse_event({"type": "error", "message": "作品建档任务已被删除"})
-                yield "data: [DONE]\n\n"
-                return
-
-            runs = (
-                db.query(CatalogingChapterRun)
-                .filter(CatalogingChapterRun.job_id == job.id)
-                .order_by(CatalogingChapterRun.chapter_order.asc())
-                .all()
-            )
-            for run in runs:
-                previous = seen_run_states.get(run.id)
-                if previous != run.status:
-                    seen_run_states[run.id] = run.status
-                    event_type = "chapter_started" if run.status in {"in_progress", "extracting"} else "chapter_state"
-                    if run.status in _TERMINAL_RUNS:
-                        event_type = "chapter_completed"
-                    elif run.status == "failed":
-                        event_type = "chapter_failed"
-                    yield sse_event({
-                        "type": event_type,
-                        "message": f"第 {run.chapter_order + 1} 章：{run.status}",
-                        "job": job_to_dict(job),
-                        "run": run_to_dict(run),
-                    })
-
-            facts = (
-                db.query(CatalogingFact)
-                .filter(CatalogingFact.job_id == job.id)
-                .order_by(CatalogingFact.created_at.asc())
-                .all()
-            )
-            for fact in facts:
-                if fact.id in seen_facts:
-                    continue
-                seen_facts.add(fact.id)
-                payload = fact_to_dict(fact)
-                yield sse_event({
-                    "type": "fact_extracted",
-                    "message": f"已抽取事实：{fact.fact_type}",
-                    "fact": {
-                        "fact_type": fact.fact_type,
-                        "payload": payload.get("payload") or {},
-                        "confidence": fact.confidence,
-                        "evidence": fact.evidence,
-                    },
-                    "run": run_to_dict(fact.chapter_run),
-                    "job": job_to_dict(job),
-                })
-
-            candidates = (
-                db.query(CatalogingCandidate)
-                .filter(CatalogingCandidate.job_id == job.id)
-                .order_by(CatalogingCandidate.created_at.asc())
-                .all()
-            )
-            for candidate in candidates:
-                if candidate.id in seen_candidates:
-                    continue
-                seen_candidates.add(candidate.id)
-                yield sse_event({
-                    "type": "candidate_created",
-                    "message": f"已生成候选：{candidate.item_type}",
-                    "candidate": candidate_to_dict(candidate),
-                    "run": run_to_dict(candidate.chapter_run),
-                    "job": job_to_dict(job),
-                })
-
-            if job.agent_run_id:
-                events = (
-                    db.query(AgentRunEvent)
-                    .filter(
-                        AgentRunEvent.run_id == job.agent_run_id,
-                        AgentRunEvent.sequence > last_agent_sequence,
-                    )
-                    .order_by(AgentRunEvent.sequence.asc())
-                    .all()
-                )
-                for event in events:
-                    last_agent_sequence = max(last_agent_sequence, event.sequence)
-                    yield sse_event({
-                        "type": "agent_event",
-                        "message": event.message or event.event_type,
-                        "agent_event": {
-                            "sequence": event.sequence,
-                            "event_type": event.event_type,
-                            "status": event.status,
-                            "payload_json": event.payload_json,
-                        },
-                        "job": job_to_dict(job),
-                    })
-
-            signature = (
-                job.status,
-                job.current_chapter_id,
-                job.blocked_chapter_id,
-                job.completed_chapters,
-                job.failed_chapters,
-                job.error,
-            )
-            if signature != last_job_signature:
-                last_job_signature = signature
-                yield sse_event({"type": "job", "job": job_to_dict(job)})
-
-            if job.status == "completed":
-                yield sse_event({"type": "completed", "job": job_to_dict(job)})
-                yield "data: [DONE]\n\n"
-                return
-            if job.status == "waiting_confirmation" and job.execution_mode == "manual":
-                blocking = next((run for run in runs if run.chapter_id == job.blocked_chapter_id), None)
-                yield sse_event({
-                    "type": "waiting_confirmation",
-                    "job": job_to_dict(job),
-                    "run": run_to_dict(blocking) if blocking else None,
-                })
-                yield "data: [DONE]\n\n"
-                return
-            if job.status in {"paused_on_failure", "paused", "cancelled", "failed"}:
-                blocking = next((run for run in runs if run.chapter_id == job.blocked_chapter_id), None)
-                yield sse_event({
-                    "type": job.status,
-                    "job": job_to_dict(job),
-                    "run": run_to_dict(blocking) if blocking else None,
-                    "error": job.error,
-                })
-                yield "data: [DONE]\n\n"
-                return
-    finally:
-        db.close()
-
-
 def _next_run(db: Session, job_id: str) -> CatalogingChapterRun | None:
     return (
         db.query(CatalogingChapterRun)
@@ -620,7 +442,7 @@ def _task_text(
    - 一条完整、实质性的 `chapter_summary`；
    - 一条 node_type="chapter" 的 `{chapter_outline_type}`{chapter_outline_target}。
    首次不得夹带其他候选；后续不得重复章级大纲。只有 missing_required_items 明确要求修正 coverage_manifest 时，才可单独重发一条 chapter_summary，系统会更新同一张摘要卡而不是新增重复卡。漏项直接增补；若误列别名或近义标题，设置 coverage_manifest_mode="replace" 并提交完整的 scene_count、characters、worldbuilding、relationships、character_profiles，替换操作不得与任何其他候选同批。既有聚合 chapter_link 含清单外别名、误称或错误端点时，单独提交 chapter_link_mode="replace"，并完整给出 characters、worldbuilding_titles、locations、items、events 五个数组；系统替换同一条关联候选，不新增第二条。
-2. chapter_summary.coverage_manifest.scene_count 必须逐字采用 `chapter_overview.payload.scenes` 的数组长度，不得按 outline_fact 数量、段落或主观判断重算。section 节点总数必须恰好等于这个 scene_count；多个 outline_fact 属于同一场景时合并进同一个 section。
+2. chapter_summary.coverage_manifest.scene_count 必须逐字采用 `chapter_overview.payload.scenes` 的数组长度，不得按 outline_fact 数量、段落或主观判断重算。section 节点总数必须恰好等于这个 scene_count；多个 outline_fact 属于同一场景时合并进同一个 section。每条必须明确填 scene_number。若返回 scene_repair，须按 source_scenes 完整重排全部场景，不得只改末条。单独提交一个 scene_outline_replace 对象，expected_candidate_ids 填当前全部 section 候选真实ID，sections 数组提交全部N条完整 outline_create/section 候选；所有场景修正一起通过才会替换，不得遗漏审批等中间事件。
 3. coverage_manifest.characters 只列稳定、可持续识别的人物。未具名岗位、临时称谓或泛指参与者只写进摘要、场景与章节事件，不得创建或更新角色、状态、关系、档案或角色章节关联。`栏目负责人`、`综合科记录人` 这类未具名岗位不是角色卡。
 4. 先读当前 worldbuilding 镜像。coverage_manifest.worldbuilding 只使用当前 active 设定的精确标题；UUID 只能放在 `id` 字段，不能当标题；别名、近义词和同一设定的拆分说法不能重复列入。事实中的 canonical_title_hint 是事实标签；应根据编号、正文和现有内容解析到 active 条目的精确 id/title。两者不同时，在承接该事实的世界观候选用 source_fact_titles 列出原事实标签，显式声明映射。已有设定使用精确 id 的 update/timeline，确有全新稳定规则时才 create。
 5. 全章只保存一条聚合 `chapter_link`，一次列全稳定角色、世界观标题、章级大纲、地点、物件和事件；不得按角色、设定或事件各建一条 link。characters 中每个角色只出现一次，由你选择一个 appearance_type。

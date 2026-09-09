@@ -1,4 +1,4 @@
-import { Alert, Collapse, Input, Select, Space, Typography } from 'antd'
+import { Alert, Collapse, Input, InputNumber, Select, Space, Typography } from 'antd'
 import type { ReactNode } from 'react'
 import type { CatalogingCandidate } from './catalogingTypes'
 import { safeStringify } from './catalogingTypes'
@@ -134,6 +134,7 @@ function renderEditor(
       <Space direction="vertical" style={{ width: '100%' }}>
         <Field label="标题"><Input value={str(payload.title)} disabled={disabled} onChange={(event) => updatePayload('title', event.target.value)} /></Field>
         <Field label="节点类型"><Select options={OUTLINE_TYPE_OPTIONS} value={optionalStr(payload.node_type)} disabled={disabled} onChange={(value) => updatePayload('node_type', value)} /></Field>
+        {payload.node_type === 'section' && <Field label="场景编号"><InputNumber aria-label="场景编号" min={1} precision={0} value={typeof payload.scene_number === 'number' ? payload.scene_number : null} disabled={disabled} onChange={(value) => updatePayload('scene_number', value)} /></Field>}
         <Field label="父节点标题"><Input value={str(payload.parent_title)} disabled={disabled} onChange={(event) => updatePayload('parent_title', event.target.value)} /></Field>
         <Field label="状态"><Select allowClear options={STATUS_OPTIONS} value={optionalStr(payload.status)} disabled={disabled} onChange={(value) => updatePayload('status', value)} /></Field>
         <Field label="摘要"><TextArea rows={4} value={str(payload.summary)} disabled={disabled} onChange={(event) => updatePayload('summary', event.target.value)} /></Field>

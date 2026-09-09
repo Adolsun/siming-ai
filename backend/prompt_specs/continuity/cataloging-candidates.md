@@ -69,6 +69,7 @@ golden_cases:
 
 【section 与叙事账本】
 - 每个独立场景一条 section，含 scene_number、purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions；空项写空数组或“未发生变化”。
+- scene_number 必须由模型明确填写，并逐条对应 chapter_overview.scenes；同场多个事件不能拆成更多编号。重排使用单独的 scene_outline_replace 对象，expected_candidate_ids 列出当前全部场景候选ID，sections 提交唯一覆盖1..N的完整场景候选集，保留全部源场景事件。系统原子替换或全部回滚；不接受只改最后一条的局部退役。
 - 所有叙事变化写入唯一 chapter_summary.narrative_state：事件、线索、伏笔、故事线和未完成行动不得另造顶层 type。条目记录稳定身份、状态、首次/最近章节、证据、置信度；foreshadowing_planted、storyline_progress、unresolved_actions 的 evidence 必须是本章可检索的 6-120 字原文，找不到就不生成。
 - 解决治理项必须引用已有 resolves_item_id 或 resolves_dedupe_key；找不到稳定引用就待复核，不得按标题猜测关闭。
 

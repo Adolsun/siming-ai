@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from ....prompts.outline_writer_prompts import build_outline_writer_messages
 from ....services.context_orchestrator import ContextOrchestrator
 from ....services.task_context_selection import render_generation_context
 from ..outline_drafts import (
+    OutlineProposalCountError,
     PendingOutlineDraftConflict,
     latest_pending_outline_draft,
     outline_draft_result_data,
@@ -101,7 +103,11 @@ async def _generate_outline(
     model: str | None,
     max_tokens: int,
     gateway_extra: dict[str, Any],
+    batch_count: int,
 ) -> dict[str, Any]:
+    output_tool = deepcopy(OUTLINE_PROPOSAL_TOOL)
+    nodes_schema = output_tool["function"]["parameters"]["properties"]["nodes"]
+    nodes_schema.update(minItems=batch_count, maxItems=batch_count)
     return await LLMGateway.chat_completion(
         messages=messages,
         model=model,
@@ -110,7 +116,7 @@ async def _generate_outline(
         timeout=180,
         retry=1,
         extra_body=gateway_extra,
-        tools=[OUTLINE_PROPOSAL_TOOL],
+        tools=[output_tool],
         tool_choice="required",
     )
 
@@ -225,6 +231,7 @@ async def outline_writer(
             model=model,
             max_tokens=max_tokens,
             gateway_extra=gateway_extra,
+            batch_count=batch_count,
         )
     except Exception as exc:
         return _result("error", f"大纲生成失败: {exc}")
@@ -283,7 +290,10 @@ async def outline_writer(
             conflict.draft,
         )
     except ValidationError as exc:
-        return _result("error", str(exc), {"context_manifest_id": manifest.id})
+        data = {"context_manifest_id": manifest.id}
+        if isinstance(exc, OutlineProposalCountError):
+            data.update(exc.result_data())
+        return _result("error", str(exc), data)
 
     return apply_turn_directive(
         _result(

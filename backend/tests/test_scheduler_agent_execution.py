@@ -101,9 +101,13 @@ class RunTaskPromptTest(unittest.TestCase):
     def _run_with_gateway(task: MagicMock, gateway: _StreamGateway) -> str:
         from app.services.scheduler.engine import _run_task_prompt
 
+        from tests.tool_budget_helpers import request_budget
         with patch(
             "app.services.workspace.scheduled_task_runner.LLMGateway",
             gateway,
+        ), patch(
+            "app.services.workspace.scheduled_task_runner._scheduled_request_budget",
+            return_value=("openai:test", request_budget()),
         ):
             return _run_task_prompt(MagicMock(), task)
 
@@ -456,13 +460,7 @@ class RunTaskPromptTest(unittest.TestCase):
                 [_tool_call("missing-name", "", {})],
                 "native_tool_name_missing",
             ),
-            "result_batch_over_capacity": (
-                [
-                    _tool_call(f"call-{index}", "list_characters", {})
-                    for index in range(13)
-                ],
-                "tool_result_batch_over_capacity",
-            ),
+
         }
         for calls, reason in cases.values():
             with self.subTest(reason=reason):

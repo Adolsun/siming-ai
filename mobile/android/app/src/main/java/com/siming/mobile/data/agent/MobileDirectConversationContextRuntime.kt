@@ -23,6 +23,7 @@ internal data class MobilePreparedConversationRequest(
     val conversation: MobileConversationSnapshot,
     val frame: MobileConversationContextFrame,
     val rendered: MobileRenderedContextRequest,
+    val budget: MobileRequestBudgetEnvelope,
 )
 
 /**
@@ -42,6 +43,7 @@ internal fun countMobileRenderedRequestComponents(
     temperature: Double,
     extraBody: JsonObject?,
     counter: MobileConversationTokenCounter = MobileUtf8ByteTokenCounter,
+    resultJsonBytes: (String, JsonObject) -> Int = MobileNativeToolBudgetContract::declaredResultJsonBytes,
 ): MobileRequestTokenComponents {
     val recentMessageIds = frame.recentTurns
         .flatMap(MobileConversationTurn::messages)
@@ -135,7 +137,7 @@ internal fun countMobileRenderedRequestComponents(
         pendingToolTransactionTokens = pendingToolTransactionTokens,
         providerStateTokens = providerStateTokens,
         maxModelVisibleResultTokensForOpenTools =
-            MobileNativeToolBudgetContract.maxModelVisibleResultTokens(toolsOffered),
+            MobileNativeToolBudgetContract.maxModelVisibleResultTokens(scopedTools, resultJsonBytes),
         nextStepWrapperTokens = MobileNativeToolBudgetContract.nextStepWrapperTokens(toolsOffered),
     )
     check(components.currentInputTokens >= providerPayloadTokens) {
@@ -168,6 +170,7 @@ internal class MobileDirectConversationContextRuntime(
         extraBody: JsonObject? = null,
         currentTurnLedger: List<MobileToolExecutionReceipt>,
         pendingTransactions: List<MobileToolTransaction>,
+        resultJsonBytes: (String, JsonObject) -> Int = MobileNativeToolBudgetContract::declaredResultJsonBytes,
         onStatus: suspend (MobileConversationPreparationStatus) -> Unit = {},
     ): MobilePreparedConversationRequest {
         val effectiveConfig = config.withContextWindowFallback()
@@ -256,16 +259,11 @@ internal class MobileDirectConversationContextRuntime(
                     temperature = temperature,
                     extraBody = extraBody,
                     counter = counter,
+                    resultJsonBytes = resultJsonBytes,
                 ),
                 safetyMarginTokens = effectiveConfig.safetyMarginTokens,
             )
             baseline.requireSendable()
-            if (!baseline.fitsProjected) {
-                throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY,
-                    "当前工具整批结果与原生事务回放预算无法放入下一模型步骤",
-                )
-            }
             val plan = current.planRecentTurns(turnContext, counter, baseline)
             if (!plan.requiresCheckpoint) {
                 val provisional = provisionalFrame(plan.recentExactTurns, baseline)
@@ -284,16 +282,13 @@ internal class MobileDirectConversationContextRuntime(
                         temperature = temperature,
                         extraBody = extraBody,
                         counter = counter,
+                        resultJsonBytes = resultJsonBytes,
                     ),
                     safetyMarginTokens = effectiveConfig.safetyMarginTokens,
                 )
                 finalBudget.requireSendable()
-                if (!finalBudget.fitsProjected) {
-                    throw MobileConversationContextException(
-                        MobileConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY,
-                        "下一步工具结果预算超过模型容量",
-                    )
-                }
+                // Future-result estimates guide history planning. The actual
+                // native batch is still admitted before any handler executes.
                 val frame = provisionalFrame(plan.recentExactTurns, finalBudget)
                 val rendered = renderMobileContextFrame(frame, systemPrompt)
                 check(providerMessages(rendered.messages) == providerMessages(provisionalRendered.messages)) {
@@ -342,6 +337,7 @@ internal class MobileDirectConversationContextRuntime(
                     conversation = persisted,
                     frame = frame,
                     rendered = rendered,
+                    budget = finalBudget,
                 )
             }
 
@@ -459,7 +455,7 @@ internal class MobileDirectConversationContextRuntime(
                 }
                 throw MobileConversationContextException(
                     MobileConversationContextErrorCode.CHECKPOINT_FAILED,
-                    "较早上下文整理失败，尚未执行当前业务任务：${error.message}",
+                    "上下文准备受阻，后续步骤已暂停：${error.message}",
                 )
             }
             current = conversationStore.snapshot(storageId, current.conversationId)

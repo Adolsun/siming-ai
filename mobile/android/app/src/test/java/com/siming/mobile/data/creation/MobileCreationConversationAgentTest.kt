@@ -196,6 +196,50 @@ class MobileCreationConversationAgentTest {
     }
 
     @Test
+    fun `standalone agent can select no business tools and reply without writing`() {
+        val requests = AtomicInteger()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                assertEquals(
+                    listOf("set_tool_categories"),
+                    body.getValue("tools").jsonArray.map {
+                        it.jsonObject.getValue("function").jsonObject.string("name")
+                    },
+                )
+                return when (requests.getAndIncrement()) {
+                    0 -> {
+                        assertEquals("required", body.getValue("tool_choice").jsonPrimitive.content)
+                        chatStreamResponse(
+                            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-empty-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[]}"}}]}}]}""",
+                        )
+                    }
+                    else -> {
+                        assertEquals(2, requests.get())
+                        assertEquals("auto", body.getValue("tool_choice").jsonPrimitive.content)
+                        val receipt = body.getValue("messages").jsonArray.map { it.jsonObject }.first {
+                            it.string("role") == "tool" && it.string("tool_call_id") == "call-empty-categories"
+                        }
+                        assertEquals("ok", Json.parseToJsonElement(receipt.string("content")).jsonObject.string("status"))
+                        chatStreamResponse(
+                            """{"choices":[{"message":{"role":"assistant","content":"你好！你想讨论怎样的故事？"}}]}""",
+                        )
+                    }
+                }
+            }
+        }) { server ->
+            val source = session()
+            val result = runBlocking { agent().run(source, "你好？", config(server)) }
+            assertEquals(2, requests.get())
+            assertEquals("completed", result.status)
+            assertEquals("你好！你想讨论怎样的故事？", result.reply)
+            assertEquals(source["revision"], result.session["revision"])
+            assertEquals(listOf("set_tool_categories"), result.toolResults.map { it.jsonObject.string("tool") })
+            assertEquals("ok", result.toolResults.single().jsonObject.string("status"))
+        }
+    }
+
+    @Test
     fun `standalone agent continues past the old six step limit`() {
         val requests = AtomicInteger()
         withServer(object : Dispatcher() {
@@ -351,7 +395,7 @@ class MobileCreationConversationAgentTest {
                         """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
                     )
                     1 -> {
-                        val calls = (1..13).joinToString(",") { index ->
+                        val calls = (1..60).joinToString(",") { index ->
                             """{"id":"call-write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"genre\":\"类型$index\"}}"}}"""
                         }
                         chatStreamResponse(
@@ -361,7 +405,7 @@ class MobileCreationConversationAgentTest {
                     else -> {
                         val messages = body.getValue("messages").jsonArray.map { it.jsonObject }
                         assertEquals(
-                            13,
+                            60,
                             messages.count { it.string("role") == "tool" && it.string("tool_call_id").startsWith("call-write-") },
                         )
                         chatStreamResponse(
@@ -394,16 +438,16 @@ class MobileCreationConversationAgentTest {
             assertEquals(3, requests.get())
             assertEquals(0, persisted.get())
             assertEquals(1, result.session.getValue("revision").jsonPrimitive.content.toInt())
-            assertEquals(13, result.toolResults.count {
-                it.jsonObject.string("status") == "denied" &&
-                    it.jsonObject.string("detail").contains("超过 32KiB")
+            assertEquals(60, result.toolResults.count {
+                it.jsonObject.string("status") == "error" &&
+                    it.jsonObject["data"]?.jsonObject?.string("reason") == "tool_result_batch_over_capacity"
             })
         }
     }
 
     @Test
     fun `oversized creation rejection remains delivered without a ledger after restart`() {
-        val oversizedContent = "x".repeat(17_000)
+        val oversizedContent = "x".repeat(250_000)
         val persisted = AtomicInteger()
         withServer(object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = chatStreamResponse(
@@ -432,7 +476,7 @@ class MobileCreationConversationAgentTest {
                     )
                 }
             }
-            assertEquals(MobileConversationContextErrorCode.PROTOCOL_INVALID, error.code)
+            assertEquals(MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY, error.code)
             assertEquals(0, persisted.get())
 
             val restarted = MobileAssistantConversationStore(directory)
@@ -441,7 +485,7 @@ class MobileCreationConversationAgentTest {
             }
             val runtime = snapshot.toolRuntimeStates.single()
             assertEquals(MobileToolTransactionState.DELIVERED, runtime.transactions.single().state)
-            assertEquals(runtime.transactions, runtime.deliveredTransactions)
+            assertEquals(runtime.transactions, runtime.activeTransactions)
             assertTrue(runtime.executionLedger.isEmpty())
             assertTrue(runtime.transactions.single().results.all { result ->
                 result.resultRef == null && result.persistedStepId == null

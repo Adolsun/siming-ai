@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import re
 
+from app.core.provider_errors import provider_protocol_rejected
+
 
 def classify_failure(message: str | None) -> str | None:
     text = str(message or "").strip()
     if not text:
         return None
     lower = text.lower()
+    if lower.partition(":")[0] == "tool_transaction_over_capacity":
+        return "conversation_context"
     if re.search(r"free\s+usage\s+exceeded|quota|rate\s*limit|too many requests|429|402", lower):
         return "quota_or_rate_limit"
+    if provider_protocol_rejected(text):
+        return "provider_protocol"
     if (
         ("json schema" in lower and re.search(r"arguments?|parameters?|参数", lower))
         or re.search(

@@ -70,7 +70,6 @@ from app.services.workspace.conversation_context_adapter import (
     build_workspace_context_input,
     workspace_checkpoint_source_turns,
     workspace_execution_ledger_from_run_steps,
-    workspace_tool_receipts_from_run_steps,
 )
 from app.services.workspace.run_log import (
     create_assistant_run,
@@ -484,7 +483,8 @@ class WorkspaceAssistantTurnRunner:
             "不要输出工具 JSON，不要启动另一个 CLI，不要修改任何全局 MCP 配置。"
             "请依据用户最新消息和真实项目数据自行判断任务、选择目标与工具。"
             "若决定生成章节正文，必须先取得真实章级大纲 ID，再读取写作上下文并保存一份未入库草稿；"
-            "若当前消息要求修改 active_chapter_draft，必须将其真实 ID 作为 source_draft_id 建立上下文并原地更新；"
+            "若当前消息要求修改 active_chapter_draft，"
+            "必须将其真实 ID 作为 source_draft_id 建立上下文并原地更新；"
             "草稿生成或修改成功后立即结束，不得继续执行角色、关系、世界观或建档写入。"
         )
 
@@ -677,9 +677,9 @@ class WorkspaceAssistantTurnRunner:
         durable_steps, trusted_ledger, source_hashes = self._execution_snapshot(
             state, durable_conversation
         )
-        receipts = self._current_receipts(state, durable_conversation, durable_steps)
         delivered = tuple(
-            tx for tx in state.tool_transactions if tx.state is ToolTransactionState.DELIVERED
+            tx for tx in state.tool_transactions
+            if tx.state in {ToolTransactionState.DELIVERED, ToolTransactionState.CONSUMED}
         )
 
         def reload_turns():
@@ -725,7 +725,6 @@ class WorkspaceAssistantTurnRunner:
             system_prompt=system_prompt,
             current_tools=tuple(actual_tools),
             reload_turns=reload_turns,
-            current_ledger=receipts,
             delivered_transactions=delivered,
             trusted_execution_ledger=trusted_ledger,
             execution_source_hashes=source_hashes,
@@ -758,6 +757,7 @@ class WorkspaceAssistantTurnRunner:
         # discards the freshly computed budget metrics.
         commit_session(state.db)
         state.require_current_run()
+        state.request_budget = prepared.budget
         return prepared.provider_messages
 
     @staticmethod
@@ -806,30 +806,6 @@ class WorkspaceAssistantTurnRunner:
         return steps, ledger, execution_source_hashes_from_run_steps(steps)
 
     @staticmethod
-    def _current_receipts(
-        state: WorkspaceAssistantTurnState, conversation: Any, steps: tuple[Any, ...]
-    ):
-        compactable_ids = {
-            str(result.persisted_step_id)
-            for transaction in state.tool_transactions
-            if transaction.state is ToolTransactionState.COMPACTABLE
-            for result in transaction.results
-            if result.persisted_step_id
-        }
-        if not compactable_ids:
-            return ()
-        receipt_steps = tuple(step for step in steps if str(step.id) in compactable_ids)
-        if len(receipt_steps) != len(compactable_ids):
-            raise ValidationError("已消费工具事务缺少持久 RunStep")
-        return workspace_tool_receipts_from_run_steps(
-            conversation,
-            state.assistant_run,
-            receipt_steps,
-            project_id=state.project_id,
-            write_tools=state.all_write_tool_names,
-        )
-
-    @staticmethod
     def _finalize(state: WorkspaceAssistantTurnState) -> dict[str, Any]:
         return finalize_workspace_assistant_turn(
             state.db,
@@ -842,6 +818,7 @@ class WorkspaceAssistantTurnRunner:
             searched_context=state.searched_context,
             final_model=state.final_model,
             final_usage=state.final_usage,
+            visible_reasoning=state.visible_reasoning,
         )
 
     @staticmethod

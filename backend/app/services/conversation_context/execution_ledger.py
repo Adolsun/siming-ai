@@ -6,11 +6,17 @@ import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
+from app.architecture.tool_status import (
+    TOOL_COMPLETED_STATUSES,
+    TOOL_SUCCESS_STATUSES,
+    tool_status_detail,
+)
+
 from .canonical import canonical_sha256
 from .contracts import ExecutionLedgerEntry, ProjectReference, ResourceReference
 from .tool_transactions import ToolExecutionReceipt
 
-_SUCCESS_STEP_STATUSES = frozenset({"ok", "completed", "success", "succeeded"})
+_SUCCESS_STEP_STATUSES = TOOL_SUCCESS_STATUSES
 _OPEN_STEP_STATUSES = frozenset({"pending", "queued", "running", "in_progress"})
 _CLOSED_NON_ERROR_STEP_STATUSES = frozenset({
     "aborted",
@@ -18,13 +24,14 @@ _CLOSED_NON_ERROR_STEP_STATUSES = frozenset({
     "canceled",
     "skipped",
     "superseded",
+    "needs_confirmation",
 })
 _PARTIAL_COMMIT_STEP_STATUSES = {"create_outline_nodes": frozenset({"error"})}
 
 
 def _allows_committed_refs(tool: str, status: str) -> bool:
     normalized = status.strip().lower()
-    return normalized in _SUCCESS_STEP_STATUSES or normalized in _PARTIAL_COMMIT_STEP_STATUSES.get(
+    return normalized in TOOL_COMPLETED_STATUSES or normalized in _PARTIAL_COMMIT_STEP_STATUSES.get(
         tool,
         (),
     )
@@ -218,7 +225,7 @@ def tool_receipts_from_run_steps(
     write_tools: Iterable[str] = (),
     reread_for_tool: Callable[[str], str | None] | None = None,
 ) -> tuple[ToolExecutionReceipt, ...]:
-    """Create the compact same-turn replacement for consumed transactions.
+    """Create durable receipts for audit and closed-turn historical context.
 
     A RunStep ``detail``/``error`` may contain provider diagnostics or an
     exception string.  Those fields remain outside model-visible context and
@@ -235,15 +242,7 @@ def tool_receipts_from_run_steps(
         if not step_id or not tool or not status:
             continue
         refs = resource_references_from_run_step(step)
-        normalized_status = status.lower()
-        if normalized_status in _SUCCESS_STEP_STATUSES:
-            summary = f"{tool} 已完成"
-        elif normalized_status in {"cancelled", "canceled", "aborted"}:
-            summary = f"{tool} 已取消"
-        elif normalized_status in {"skipped", "superseded"}:
-            summary = f"{tool} 未执行"
-        else:
-            summary = f"{tool} 执行失败"
+        summary = tool_status_detail(tool, status)
         if refs:
             summary += f"；已记录 {len(refs)} 个持久资源引用，使用前必须重新读取"
         receipts.append(
@@ -258,7 +257,7 @@ def tool_receipts_from_run_steps(
                 write_committed=(
                     tool in writes
                     and (
-                        status.lower() in {"ok", "completed", "success", "succeeded"} or bool(refs)
+                        status.lower() in TOOL_COMPLETED_STATUSES or bool(refs)
                     )
                 ),
             )

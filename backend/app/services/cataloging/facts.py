@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
@@ -43,6 +44,9 @@ def try_parse_fact_line(line: str) -> dict[str, Any]:
     text = clean_jsonl_text(line)
     if not text:
         return {}
+    # A delimiter after a complete object is framing, never part of its fields.
+    if text.endswith(","):
+        text = text[:-1].rstrip()
     try:
         parsed = parse_json_line(text)
         if parsed is None:
@@ -53,6 +57,45 @@ def try_parse_fact_line(line: str) -> dict[str, Any]:
         return {"fact": fact, "raw": json.dumps(fact, ensure_ascii=False)}
     except Exception as exc:
         return {"bad_line": text, "error": str(exc)}
+
+
+def parse_fact_response(text: str) -> list[dict[str, Any]]:
+    """Decode every record or fail; never search past an invalid JSON fragment."""
+    # Strip a provider's leading protocol block only. Literal tags inside a
+    # quoted fact/evidence field are author data and must remain unchanged.
+    value = re.sub(r"\A\s*<think>.*?</think>\s*", "", text, count=1, flags=re.S | re.I)
+    value = clean_jsonl_text(value).strip().lstrip("\ufeff")
+    decoder = json.JSONDecoder()
+    facts: list[dict[str, Any]] = []
+    position = 0
+    while position < len(value):
+        try:
+            parsed, end = decoder.raw_decode(value, position)
+        except json.JSONDecodeError as exc:
+            reason = "模型未输出可用事实" if not facts else "事实响应不完整，不能只使用部分事实"
+            raise ValueError(
+                f"{reason}；JSON 第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}"
+            ) from exc
+        items = parsed.get("facts") if isinstance(parsed, dict) and "facts" in parsed else parsed
+        if not isinstance(items, list):
+            items = [items]
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("每条事实必须是 JSON 对象")
+            result = try_parse_fact_line(json.dumps(item, ensure_ascii=False))
+            if not result.get("fact"):
+                raise ValueError(result.get("error") or "事实记录无效")
+            facts.append(result["fact"])
+        position = end
+        while position < len(value) and value[position].isspace():
+            position += 1
+        if position < len(value) and value[position] == ",":
+            position += 1
+            while position < len(value) and value[position].isspace():
+                position += 1
+    if not facts:
+        raise ValueError("模型未输出可用事实")
+    return facts
 
 
 def normalize_fact(raw: dict[str, Any]) -> dict[str, Any]:

@@ -215,6 +215,7 @@ def test_repair_request_does_not_silently_character_truncate_required_state() ->
     request = json.loads(messages[-1]["content"].split("\n", 1)[1])
     assert request["invalid_output"] == invalid
     assert request["validation_error"] == error
+    assert not any(item["role"] == "assistant" for item in messages)
 
 
 def test_required_prior_quote_state_over_output_budget_fails_explicitly() -> None:

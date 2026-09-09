@@ -26,6 +26,7 @@ from ....services.cataloging.job_control import (
     reset_run_for_resolution_retry,
     reset_run_for_retry,
     resume_job,
+    set_job_execution_mode,
 )
 from ....services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
@@ -166,11 +167,9 @@ async def set_cataloging_mode(db: Session, project_id: str, args: dict[str, Any]
     mode = str(args.get("execution_mode") or args.get("mode") or "")
     if mode not in {"auto", "manual"}:
         return {"tool": "set_cataloging_mode", "status": "skipped", "detail": "模式必须是 auto 或 manual"}
-    job.execution_mode = mode
+    should_resume = set_job_execution_mode(db, job, mode)
     db.flush()
-    if job.status == "waiting_confirmation" and mode == "auto":
-        job.status = "running"
-        job.blocked_chapter_id = None
+    if should_resume:
         queue_managed_cataloging_job(job)
     return {"tool": "set_cataloging_mode", "status": "ok", "detail": f"建档模式已切换为 {mode}", "data": job_to_dict(job)}
 

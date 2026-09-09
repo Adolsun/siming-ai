@@ -139,6 +139,11 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         self.assertIn("outline_position", rendered_prompt)
         self.assertNotIn("SECRET CHARACTER DATA", rendered_prompt)
         self.assertEqual(call.kwargs["max_tokens"], manifest.output_reserve_tokens)
+        nodes_schema = call.kwargs["tools"][0]["function"]["parameters"]["properties"]["nodes"]
+        self.assertEqual(nodes_schema["minItems"], 1)
+        self.assertEqual(nodes_schema["maxItems"], 1)
+        self.assertIn("场景细节", rendered_prompt)
+        self.assertNotIn("必须额外输出", rendered_prompt)
 
         completion.reset_mock()
         blocked = asyncio.run(
@@ -514,6 +519,16 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
             "context_selection_token": token, "insert_after_id": "o1", "batch_count": 6}))
         self.assertEqual(result["status"], "error")
         self.assertIn("6", result["detail"])
+        from app.services.workspace.tool_result_projection import sanitize_diagnostic_tool_result
+
+        projected = sanitize_diagnostic_tool_result("outline_writer", result)
+        self.assertEqual(projected["data"]["reason"], "outline_node_count_mismatch")
+        self.assertEqual(projected["data"]["expected_count"], 6)
+        self.assertEqual(projected["data"]["actual_count"], 1)
+        self.assertIn("数量", projected["detail"])
+        nodes_schema = completion.await_args.kwargs["tools"][0]["function"]["parameters"]["properties"]["nodes"]
+        self.assertEqual(nodes_schema["minItems"], 6)
+        self.assertEqual(nodes_schema["maxItems"], 6)
         self.assertEqual(self.db.query(OutlineDraft).count(), 0)
 
 

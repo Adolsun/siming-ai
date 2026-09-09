@@ -1158,7 +1158,7 @@ def test_scene_gap_reports_the_exact_scene_number_for_incremental_repair():
         engine.dispose()
 
 
-def test_missing_section_numbers_are_normalized_before_identity_and_apply():
+def test_scene_numbers_must_be_explicit_before_identity_and_apply():
     engine, db = database()
     try:
         project = Project(id="project-scene-number", title="场景编号归一化")
@@ -1191,6 +1191,12 @@ def test_missing_section_numbers_are_normalized_before_identity_and_apply():
             for number in range(1, 4)
         ]
 
+        for index, raw in enumerate(raw_sections, start=1):
+            rejected = create_candidate_from_raw(db, job, run, raw, index)
+            assert "scene_number" in rejected["error"]
+        assert db.query(CatalogingCandidate).filter_by(chapter_run_id=run.id).count() == 0
+        for index, raw in enumerate(raw_sections, start=1):
+            raw["scene_number"] = index
         created = [
             create_candidate_from_raw(db, job, run, raw, index)
             for index, raw in enumerate(raw_sections, start=1)

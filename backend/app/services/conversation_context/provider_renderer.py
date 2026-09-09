@@ -17,8 +17,8 @@ class ContextLayer(StrEnum):
     SYSTEM_CONTRACT = "system_contract"
     HISTORICAL_REFERENCE = "historical_reference"
     RECENT_EXACT_TURN = "recent_exact_turn"
-    CURRENT_USER = "current_user"
     CURRENT_TURN_LEDGER = "current_turn_ledger"
+    CURRENT_USER = "current_user"
     PENDING_TOOL_TRANSACTION = "pending_tool_transaction"
 
 
@@ -156,20 +156,11 @@ def render_context_frame(
             messages.append(
                 RenderedContextMessage(
                     message_id=f"context-turn-status:{turn.turn_id}",
-                    role="assistant",
+                    role="user",
                     content=status_receipt,
                     layer=ContextLayer.RECENT_EXACT_TURN,
                 )
             )
-
-    messages.append(
-        RenderedContextMessage(
-            message_id=frame.current_user_message.message_id,
-            role="user",
-            content=frame.current_user_message.content,
-            layer=ContextLayer.CURRENT_USER,
-        )
-    )
 
     if frame.current_turn_ledger:
         ledger_payload = [receipt.to_dict() for receipt in frame.current_turn_ledger]
@@ -184,11 +175,23 @@ def render_context_frame(
         messages.append(
             RenderedContextMessage(
                 message_id=f"context-ledger:{frame.calculate_hash()}",
-                role="assistant",
+                role="user",
                 content=ledger_content,
                 layer=ContextLayer.CURRENT_TURN_LEDGER,
             )
         )
+
+    # Server receipts are reference data, not provider-generated assistant
+    # responses. Keep them before the author's exact message so they cannot
+    # become the latest user intent or require invented provider reasoning.
+    messages.append(
+        RenderedContextMessage(
+            message_id=frame.current_user_message.message_id,
+            role="user",
+            content=frame.current_user_message.content,
+            layer=ContextLayer.CURRENT_USER,
+        )
+    )
 
     for transaction in frame.pending_tool_transactions:
         if transaction.state is ToolTransactionState.PENDING:

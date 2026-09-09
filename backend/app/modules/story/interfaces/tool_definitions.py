@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
 from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from app.modules.story.domain.project_read_contract import (
+    PROJECT_INFO_FIELDS,
+    PROJECT_READ_MAX_CHARS,
+)
 from app.modules.story.interfaces.search_tool_definitions import SEARCH_TOOL_DEFINITIONS
 
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
@@ -21,10 +25,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="get_project_info",
-        description="读取作品设置、基础信息及关联立项约束（含目标字数、目标章节和已确认状态）。默认读取当前作品，也可传入作品ID。不会读取API Key。",
+        description="读取作品设置概览和真实作品ID，不包含立项目标、约束及立项长文。长设置字段在 field_ranges 标注预览与续读参数；用 field 分页读取完整字段。列表等结构化设置以 JSON 文本提供。不会读取API Key。",
         input_schema={
             "id": {"type": "string", "description": "可选，作品ID。不传则读取当前作品"},
             "project_id": {"type": "string", "description": "兼容字段，同id"},
+            "field": {"type": "string", "enum": list(PROJECT_INFO_FIELDS), "description": "可选，单独完整读取的设置字段；不传则返回概览"},
+            "offset_chars": {"type": "integer", "minimum": 0, "description": "field 文本的起始字符偏移，使用 field_ranges.next_arguments"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 2147483647, "description": f"期望的单字段页长度；服务端每页安全上限{PROJECT_READ_MAX_CHARS}，更大请求正常分页，按实际返回范围继续"},
         },
         tool_type="read",
         estimated_cost="free",
@@ -32,10 +39,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="get_project_creation_brief",
-        description="读取当前正式作品的立项资料，包括创作约束、目标字数/章节、创意方向、文风与世界观，以及各项状态。正文创作前应读取；不会修改数据。",
+        description="分页读取正式作品的权威立项 JSON 文档（创作约束、目标字数/章节、创意方向、文风及状态）。data.content 是文档文本切片，content_range 标注完整度；按 next_arguments 继续，不把未完成切片当作完整 JSON。可用 path 精确读取已知 JSON Pointer 字段。正文创作前应读取；不会修改数据。",
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
             "id": {"type": "string", "description": "兼容字段，同project_id"},
+            "path": {"type": "string", "maxLength": 256, "description": "可选，JSON Pointer；空字符串读取整个文档，/constraints 读取创作约束"},
+            "offset_chars": {"type": "integer", "minimum": 0, "description": "文档字符偏移，使用上一页 next_arguments"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 2147483647, "description": f"期望的 JSON 文本页长度；服务端每页安全上限{PROJECT_READ_MAX_CHARS}，更大请求正常分页，按实际返回范围继续"},
         },
         tool_type="read",
         estimated_cost="free",

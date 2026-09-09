@@ -112,7 +112,8 @@ def _external_writing_context_result(
         else:
             page = build_context_page(document, args)
     except ValueError as error:
-        return {"tool": "prepare_external_writing_context", "status": "skipped", "detail": str(error),
+        return {"tool": "prepare_external_writing_context", "status": "skipped",
+                "detail": str(error),
                 "data": {"context_manifest_id": manifest.id}}
     db.flush()
     delivery_ready = selection_ready and context_delivery_ready(manifest, selection_token)
@@ -161,7 +162,9 @@ def _external_writing_context_result(
                            "prepare_task_context" if selection_ready
                            else "prepare_external_writing_context"
                        ), "arguments": page_arguments,
-                       "description": "Read the remaining context pages; source text has not been truncated."}]
+                       "description": (
+                           "Read the remaining context pages; source text has not been truncated."
+                       )}]
     if delivery_ready:
         next_tools.append({
             "tool": "save_external_chapter_draft",
@@ -185,7 +188,10 @@ def _external_writing_context_result(
                 ),
                 "source_draft_id": source_draft.id if source_draft else None,
             },
-            "prompt_pack": {key: value for key, value in prompt_pack.items() if key != "system_prompt"} if prompt_pack else None,
+            "prompt_pack": (
+                {key: value for key, value in prompt_pack.items() if key != "system_prompt"}
+                if prompt_pack else None
+            ),
             "context_manifest_id": manifest.id,
             "context_manifest_status": manifest.status,
             "requires_author_confirmation": status == "needs_confirmation",
@@ -289,7 +295,9 @@ async def prepare_external_writing_context(
             return {
                 "tool": "prepare_external_writing_context",
                 "status": "skipped",
-                "detail": "source_draft_id must identify the current pending draft for this outline.",
+                "detail": (
+                    "source_draft_id must identify the current pending draft for this outline."
+                ),
                 "data": {"source_draft_id": source_draft_id},
             }
         draft_target_id = str(source_draft.target_chapter_id or "").strip()
@@ -365,7 +373,10 @@ async def prepare_external_writing_context(
         return {
             "tool": "prepare_external_writing_context",
             "status": "blocked_rebuild",
-            "detail": "Context index rebuild is incomplete; check the project context status before retrying.",
+            "detail": (
+                "Context index rebuild is incomplete; "
+                "check the project context status before retrying."
+            ),
             "data": {
                 "context_manifest_id": manifest.id,
                 "context_manifest_status": manifest.status,
@@ -516,7 +527,9 @@ def _resolve_external_draft_target(
         return None, "", None, None, {
             "tool": "save_external_chapter_draft",
             "status": "skipped",
-            "detail": "The Agent must select a real chapter-level outline ID before saving a draft.",
+            "detail": (
+                "The Agent must select a real chapter-level outline ID before saving a draft."
+            ),
             "data": None,
         }
     target_outline = (
@@ -652,7 +665,9 @@ async def save_external_chapter_draft(
             return {
                 "tool": "save_external_chapter_draft",
                 "status": "skipped",
-                "detail": "source_draft_id must identify the current pending draft for this outline.",
+                "detail": (
+                    "source_draft_id must identify the current pending draft for this outline."
+                ),
                 "data": {"source_draft_id": source_draft_id},
             }
         args = dict(args)
@@ -870,6 +885,7 @@ async def save_external_outline_draft(
     from ....core.exceptions import ValidationError
     from ....services.context_orchestrator import ContextOrchestrator
     from ..outline_drafts import (
+        OutlineProposalCountError,
         PendingOutlineDraftConflict,
         latest_pending_outline_draft,
         outline_draft_result_data,
@@ -920,7 +936,10 @@ async def save_external_outline_draft(
     except ValidationError as exc:
         return {
             "tool": "save_external_outline_draft", "status": "error",
-            "detail": str(exc), "data": {"context_manifest_id": manifest.id},
+            "detail": str(exc), "data": {
+                "context_manifest_id": manifest.id,
+                **(exc.result_data() if isinstance(exc, OutlineProposalCountError) else {}),
+            },
         }
     if not orchestrator.mark_consumed(manifest):
         return {
@@ -951,7 +970,10 @@ async def save_external_outline_draft(
     except ValidationError as exc:
         return {
             "tool": "save_external_outline_draft", "status": "error",
-            "detail": str(exc), "data": {"context_manifest_id": manifest.id},
+            "detail": str(exc), "data": {
+                "context_manifest_id": manifest.id,
+                **(exc.result_data() if isinstance(exc, OutlineProposalCountError) else {}),
+            },
         }
     return apply_turn_directive(
         {

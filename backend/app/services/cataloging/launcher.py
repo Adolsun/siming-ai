@@ -6,6 +6,7 @@ worker through this module.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import nullcontext
 from functools import wraps
@@ -22,7 +23,11 @@ from ...database.models import (
     OperationRun,
 )
 from ...database.session import SessionLocal
-from ...database.write_coordination import DatabaseWriteCoordinator, sqlite_database_path
+from ...database.write_coordination import (
+    DatabaseWriteCoordinator,
+    DatabaseWriteLockTimeout,
+    sqlite_database_path,
+)
 from .constants import JOB_RUNNING_STATUSES
 from .context import ordered_chapters
 from .job_control import cancel_job, refresh_job_progress
@@ -492,9 +497,11 @@ async def run_cataloging_job(job_id: str) -> None:
     """Start the worker appropriate for a previously committed job."""
 
     db = SessionLocal()
+    worker_lease = None
     try:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-        if not job or job.status in _TERMINAL_JOB_STATUSES:
+        inactive = _TERMINAL_JOB_STATUSES | {"paused", "paused_on_failure", "waiting_confirmation"}
+        if not job or job.status in inactive:
             return
         if job.execution_backend == "local_cli_agent":
             ensure_local_cli_cataloging_worker(db, job, provider=job.provider)
@@ -502,6 +509,18 @@ async def run_cataloging_job(job_id: str) -> None:
         if job.execution_backend == "external_agent":
             return
         project_id = job.project_id
+        database_path = sqlite_database_path(str(db.get_bind().url))
+        if database_path is not None:
+            # Queue deduplication is process-local. Desktop and MCP must also
+            # share an execution lease, distinct from the short DB write lock.
+            key = hashlib.sha256(job_id.encode()).hexdigest()
+            coordinator = DatabaseWriteCoordinator(
+                database_path.with_name(f"{database_path.name}.cataloging-worker-{key}"),
+            )
+            try:
+                worker_lease = coordinator.acquire(timeout=0)
+            except DatabaseWriteLockTimeout:
+                return  # Another worker owns this job; observers never compete.
     except Exception as exc:
         db.rollback()
         mark_cataloging_worker_failure(
@@ -530,6 +549,9 @@ async def run_cataloging_job(job_id: str) -> None:
             failure_class=type(exc).__name__,
         )
         logger.exception("Cataloging worker failed for %s", job_id)
+    finally:
+        if worker_lease is not None:
+            worker_lease.release()
 
 
 def queue_cataloging_job(job_id: str) -> asyncio.Task[None]:
@@ -541,7 +563,11 @@ def queue_cataloging_job(job_id: str) -> asyncio.Task[None]:
         name=f"cataloging-launch-{job_id}",
     )
     _LAUNCH_TASKS[job_id] = task
-    task.add_done_callback(lambda _task: _LAUNCH_TASKS.pop(job_id, None))
+    def release_task(completed: asyncio.Task[None]) -> None:
+        if _LAUNCH_TASKS.get(job_id) is completed:
+            _LAUNCH_TASKS.pop(job_id, None)
+
+    task.add_done_callback(release_task)
     return task
 
 

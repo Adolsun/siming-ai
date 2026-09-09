@@ -437,7 +437,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         "candidates": [
                             summary,
                             outline,
-                            {"type": "outline_create", "node_type": "section", "title": "场景一"},
+                            {"type": "outline_create", "node_type": "section", "title": "场景一", "scene_number": 1},
                             {"type": "chapter_link", "description": "聚合关联"},
                         ],
                     },

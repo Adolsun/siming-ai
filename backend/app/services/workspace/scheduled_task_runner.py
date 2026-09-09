@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -19,6 +20,15 @@ from ...architecture.tool_categories import (
 from ...database.models import ScheduledTask
 from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..agent_tool_stream import collect_tool_turn
+from ..context_orchestrator import ContextOrchestrator
+from ..conversation_context import (
+    ConversationContextError,
+    ConversationContextErrorCode,
+    RequestBudgetEnvelope,
+    RequestTokenComponents,
+    build_request_budget,
+    resolve_generation_model_binding,
+)
 from . import executor as workspace_executor
 from .native_tool_batch import (
     NativeToolBatchValidationError,
@@ -28,10 +38,13 @@ from .native_tool_batch import (
 from .registry import registry
 from .run_step_payloads import serialize_step_result
 from .tool_result_projection import (
+    MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS,
     ToolResultBatchOverCapacity,
     ToolResultProjectionError,
     admit_native_assistant_transaction,
     declared_model_results_for_tool_names,
+    max_model_visible_result_tokens_for_open_tool_schemas,
+    max_native_tool_transaction_wrapper_tokens,
     model_tool_result_projector,
 )
 from .tool_schemas import build_workspace_tool_schemas
@@ -107,7 +120,9 @@ def _tool_message(tool_call: dict[str, Any], result: dict[str, Any]) -> dict[str
         content = serialize_step_result(result)
     else:
         try:
-            content = model_tool_result_projector.project(tool, result).content
+            content = model_tool_result_projector.project(
+                tool, result, arguments=json.loads(function["arguments"]),
+            ).content
         except ToolResultProjectionError as exc:
             content = serialize_step_result(exc.model_error_result())
     return {
@@ -122,7 +137,7 @@ def _validated_native_turn(
     *,
     allowed_tool_names: set[str],
     require_initial_controller: bool,
-) -> tuple[str, ValidatedNativeToolBatch]:
+) -> tuple[str, ValidatedNativeToolBatch, dict[str, Any]]:
     content = str(result.get("content") or "")
     raw_calls = (
         list(result.get("tool_calls") or []) if isinstance(result.get("tool_calls"), list) else []
@@ -136,8 +151,6 @@ def _validated_native_turn(
         )
     except NativeToolBatchValidationError as exc:
         raise RuntimeError(f"conversation_protocol_invalid:{exc.reason}") from exc
-    if not batch.calls:
-        return content, batch
     assistant_payload: dict[str, Any] = {
         "role": "assistant",
         "content": content,
@@ -149,17 +162,41 @@ def _validated_native_turn(
     provider_state = result.get("provider_state")
     if isinstance(provider_state, list) and provider_state:
         assistant_payload["provider_state"] = provider_state
-    try:
-        declared = declared_model_results_for_tool_names(
-            batch.names,
-            resolve_tool=registry.get,
-        )
-        admit_native_assistant_transaction(assistant_payload, declared)
-    except ToolResultBatchOverCapacity as exc:
-        raise RuntimeError(f"conversation_protocol_invalid:{exc.reason}") from exc
-    except ValueError as exc:
-        raise RuntimeError("conversation_protocol_invalid:native_tool_contract_invalid") from exc
-    return content, batch
+    return content, batch, assistant_payload
+
+
+def _scheduled_request_budget(
+    db: Session, messages: list[dict[str, Any]], schemas: list[dict[str, Any]],
+    model: str | None,
+) -> tuple[str, RequestBudgetEnvelope]:
+    binding, counter, margin = resolve_generation_model_binding(
+        orchestrator=ContextOrchestrator(db), model=model, task_type="assistant",
+        protocol="chat_completions", system_prompt=str(messages[0]["content"]),
+        current_tools=schemas,
+    )
+    output = min(4000, binding.max_output_tokens)
+    budget = build_request_budget(
+        binding=binding, counter=counter, safety_margin_tokens=margin,
+        output_reserve_tokens=output,
+        components=RequestTokenComponents(
+            # Scheduled runs keep one exact in-memory transcript, without a
+            # conversation checkpoint. Count the complete messages only once.
+            message_wrapper_tokens=counter.count_value(messages),
+            tool_schema_tokens=counter.count_value(schemas),
+            provider_protocol_tokens=counter.count_value({
+                "model": binding.normalized_model, "temperature": 0.3,
+                "max_tokens": output, "stream": True, "tool_choice": "required",
+            }),
+            max_model_visible_result_tokens_for_open_tools=(
+                max_model_visible_result_tokens_for_open_tool_schemas(
+                    schemas, resolve_tool=registry.get,
+                )
+            ),
+            next_step_wrapper_tokens=max_native_tool_transaction_wrapper_tokens(),
+        ),
+    )
+    budget.require_sendable()
+    return binding.normalized_model, budget
 
 
 def run_workspace_scheduled_task(db: Session, task: ScheduledTask) -> str:
@@ -186,18 +223,22 @@ def run_workspace_scheduled_task(db: Session, task: ScheduledTask) -> str:
     async def run_agent_loop() -> str:
         active_categories: tuple[str, ...] = ()
         category_selected = False
+        consecutive_rejections = 0
+        model: str | None = None
         while True:
+            schemas = _tool_schemas(authorized_names, active_categories)
+            model, request_budget = _scheduled_request_budget(db, messages, schemas, model)
             result = await collect_tool_turn(
                 LLMGateway,
                 messages=messages,
-                tools=_tool_schemas(authorized_names, active_categories),
+                tools=schemas,
                 tool_choice="required" if not category_selected else "auto",
-                model=None,
+                model=model,
                 temperature=0.3,
-                max_tokens=4000,
+                max_tokens=request_budget.output_reserve_tokens,
                 timeout=120,
             )
-            content, batch = _validated_native_turn(
+            content, batch, assistant_payload = _validated_native_turn(
                 result,
                 allowed_tool_names={
                     TOOL_CATEGORY_CONTROLLER,
@@ -214,13 +255,31 @@ def run_workspace_scheduled_task(db: Session, task: ScheduledTask) -> str:
             if not tool_calls:
                 return content.strip() or "任务执行完成"
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": tool_calls,
-                }
-            )
+            try:
+                admit_native_assistant_transaction(
+                    assistant_payload,
+                    declared_model_results_for_tool_names(batch.names, resolve_tool=registry.get),
+                    request_budget=request_budget,
+                )
+            except ToolResultBatchOverCapacity as exc:
+                consecutive_rejections += 1
+                if not exc.recovery_fits or (
+                    consecutive_rejections >= MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS
+                ):
+                    raise ConversationContextError(
+                        (ConversationContextErrorCode.PROTOCOL_INVALID
+                         if exc.reason == "native_assistant_transaction_invalid"
+                         else ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY),
+                        "定时任务工具批次超过剩余容量，本批次未执行。",
+                        details=exc.model_error_result("tool_batch")["data"],
+                    ) from exc
+                messages.append(assistant_payload)
+                messages.extend(_tool_message(
+                    call, exc.model_error_result(str(call["function"]["name"])),
+                ) for call in tool_calls)
+                continue
+            consecutive_rejections = 0
+            messages.append(assistant_payload)
 
             for tool_call in tool_calls:
                 function = tool_call.get("function") if isinstance(tool_call, dict) else None
@@ -253,6 +312,8 @@ def run_workspace_scheduled_task(db: Session, task: ScheduledTask) -> str:
     try:
         return asyncio.run(run_agent_loop())
     except Exception as exc:
+        if isinstance(exc, ConversationContextError):
+            raise RuntimeError(f"Agent execution failed: {exc.code.value}") from exc
         raw = str(exc)
         if raw.startswith("conversation_protocol_invalid:"):
             reason = raw.split(":", 2)[1]

@@ -9,6 +9,22 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
+internal fun bindOutlineOutputNodeCount(template: JsonArray, batchCount: Int): JsonArray {
+    require(batchCount in 1..OUTLINE_PROPOSAL_MAX_NODES) { "大纲规划数量超出契约范围" }
+    val tool = template.single() as JsonObject
+    val function = tool.getValue("function") as JsonObject
+    val parameters = function.getValue("parameters") as JsonObject
+    val properties = parameters.getValue("properties") as JsonObject
+    val nodes = properties.getValue("nodes") as JsonObject
+    val boundedNodes = JsonObject(nodes + mapOf(
+        "minItems" to JsonPrimitive(batchCount), "maxItems" to JsonPrimitive(batchCount),
+    ))
+    val boundedProperties = JsonObject(properties + ("nodes" to boundedNodes))
+    val boundedParameters = JsonObject(parameters + ("properties" to boundedProperties))
+    val boundedFunction = JsonObject(function + ("parameters" to boundedParameters))
+    return JsonArray(listOf(JsonObject(tool + ("function" to boundedFunction))))
+}
+
 /** Runtime view of the build-generated PC PromptSpec and tool catalog. */
 internal class PcPromptContract(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -146,6 +162,9 @@ internal class PcPromptContract(context: Context) {
     fun writerOutputTool(kind: String): JsonArray = JsonArray(
         listOf((root["writer_output_tools"] as JsonObject).getValue(kind)),
     )
+
+    fun outlineWriterOutputTool(batchCount: Int): JsonArray =
+        bindOutlineOutputNodeCount(writerOutputTool("outline"), batchCount)
 
     fun characterWriterUser(
         requirements: String,

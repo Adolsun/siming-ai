@@ -147,7 +147,7 @@ def test_unknown_retry_reason_keeps_generic_projection() -> None:
     assert projected == {
         "tool": "save_external_chapter_draft",
         "status": "needs_confirmation",
-        "detail": "save_external_chapter_draft 状态已更新",
+        "detail": "save_external_chapter_draft 等待确认",
     }
     assert secret not in json.dumps(projected, ensure_ascii=False)
 

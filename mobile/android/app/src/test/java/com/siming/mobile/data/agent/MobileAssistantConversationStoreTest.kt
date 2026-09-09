@@ -101,7 +101,7 @@ class MobileAssistantConversationStoreTest {
     }
 
     @Test
-    fun `delivered tool transaction and compactable receipt persist atomically`() = runBlocking {
+    fun `consumed result is persisted exactly and archived only on turn completion`() = runBlocking {
         withTemporaryDirectory { directory ->
             val store = MobileAssistantConversationStore(directory)
             val turn = store.beginTurn("project-1", null, "读取作品")
@@ -132,22 +132,32 @@ class MobileAssistantConversationStoreTest {
             ).toolRuntimeState(turn.turnId)
             assertEquals(
                 listOf("transaction-1"),
-                deliveredBeforeConsumption?.deliveredTransactions?.map { it.transactionId },
+                deliveredBeforeConsumption?.activeTransactions?.map { it.transactionId },
             )
             assertEquals(
                 "{ \"project_id\": \"project-1\" }",
-                deliveredBeforeConsumption?.deliveredTransactions?.single()?.calls?.single()?.argumentsJson,
+                deliveredBeforeConsumption?.activeTransactions?.single()?.calls?.single()?.argumentsJson,
             )
 
             store.markDeliveredToolTransactionsConsumed("project-1", turn)
-            val compactedAfterRestart = assertNotNull(
+            // Inspect the persisted state without starting a second store: opening
+            // a new process intentionally aborts a turn that lost its live owner.
+            val persistedRoot = Json.parseToJsonElement(directory.resolve("project-1.json").readText()) as JsonObject
+            val persistedConversation = (persistedRoot["conversations"] as JsonArray).single() as JsonObject
+            val persistedRuntime = MobileTurnToolRuntimeState.fromJson(
+                (persistedConversation["tool_runtime_states"] as JsonArray).single() as JsonObject,
+            )
+            assertEquals(delivered.results.single().content, persistedRuntime?.activeTransactions?.single()?.results?.single()?.content)
+            assertEquals(MobileToolTransactionState.CONSUMED, persistedRuntime?.transactions?.single()?.state)
+            assertEquals(1, persistedRuntime?.executionLedger?.size)
+            assertNotNull(persistedRuntime?.transactions?.single()?.results?.single()?.resultRef)
+            assertNotNull(persistedRuntime?.transactions?.single()?.results?.single()?.persistedStepId)
+            store.finishTurn("project-1", turn, "已读取", "completed", emptyList())
+            val closed = assertNotNull(
                 MobileAssistantConversationStore(directory).snapshot("project-1", turn.conversationId),
             ).toolRuntimeState(turn.turnId)
-            assertTrue(compactedAfterRestart?.deliveredTransactions.orEmpty().isEmpty())
-            assertEquals(MobileToolTransactionState.COMPACTABLE, compactedAfterRestart?.transactions?.single()?.state)
-            assertEquals(1, compactedAfterRestart?.executionLedger?.size)
-            assertNotNull(compactedAfterRestart?.transactions?.single()?.results?.single()?.resultRef)
-            assertNotNull(compactedAfterRestart?.transactions?.single()?.results?.single()?.persistedStepId)
+            assertTrue(closed?.activeTransactions.orEmpty().isEmpty())
+            assertEquals(MobileToolTransactionState.COMPACTABLE, closed?.transactions?.single()?.state)
         }
     }
 
@@ -178,8 +188,8 @@ class MobileAssistantConversationStoreTest {
             val admission = MobileNativeToolBatchAdmission(
                 accepted = false,
                 reason = MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY,
-                declaredJsonBytes = 17_000,
-                maxJsonBytes = MobileNativeToolBudgetContract.MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
+                requiredTokens = 17_000,
+                availableTokens = 8_000,
                 callCount = 1,
             )
 
@@ -194,13 +204,13 @@ class MobileAssistantConversationStoreTest {
                     afterPersist = {},
                 )
             }
-            assertEquals(MobileConversationContextErrorCode.PROTOCOL_INVALID, error.code)
+            assertEquals(MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY, error.code)
 
             val restarted = MobileAssistantConversationStore(directory)
             val snapshot = assertNotNull(restarted.snapshot("project-1", turn.conversationId))
             val runtime = assertNotNull(snapshot.toolRuntimeState(turn.turnId))
             assertEquals(MobileToolTransactionState.DELIVERED, runtime.transactions.single().state)
-            assertEquals(runtime.transactions, runtime.deliveredTransactions)
+            assertEquals(runtime.transactions, runtime.activeTransactions)
             assertTrue(runtime.executionLedger.isEmpty())
             assertNull(runtime.transactions.single().results.single().resultRef)
             assertNull(runtime.transactions.single().results.single().persistedStepId)

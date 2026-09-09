@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from app.architecture.tool_categories import tool_category_controller_schema
 from app.architecture.tool_definition import ToolDef
 from app.architecture.tool_result_policy import (
-    DEFAULT_MODEL_RESULT_CONTRACT,
     ModelResultContract,
     ModelResultListProjection,
     ModelResultPolicy,
@@ -18,19 +16,16 @@ from app.architecture.tool_result_policy import (
 from app.services.workspace.executor import execute_workspace_action
 from app.services.workspace.registry import registry
 from app.services.workspace.tool_result_projection import (
-    MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
-    MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
     ToolResultBatchOverCapacity,
     ToolResultOverCapacity,
     ToolResultProjectionError,
-    admit_model_tool_result_batch,
     admit_native_assistant_transaction,
     declared_model_results_for_tool_names,
-    max_model_visible_result_tokens_for_open_tool_schemas,
     max_native_tool_transaction_wrapper_tokens,
     model_tool_result_projector,
     sanitize_diagnostic_tool_result,
 )
+from tests.tool_budget_helpers import request_budget
 
 
 def _tool(name: str, contract: ModelResultContract) -> ToolDef:
@@ -626,245 +621,107 @@ def test_result_with_wrong_tool_name_is_rejected_before_model_delivery() -> None
         )
 
 
-def test_open_tool_reserve_and_batch_admission_share_one_hard_boundary() -> None:
-    schemas = [
-        tool_category_controller_schema(),
-        registry.get_spec("search_chapters").openai_schema(),
-    ]
-    reserve = max_model_visible_result_tokens_for_open_tool_schemas(
-        schemas,
-        resolve_tool=registry.get,
-    )
-    assert reserve == MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
+def _native_calls(names, arguments=None):
+    return {"role": "assistant", "content": "", "tool_calls": [
+        {"id": f"call-{i}", "type": "function", "function": {
+            "name": name, "arguments": json.dumps(arguments or {}, ensure_ascii=False)}}
+        for i, name in enumerate(names)
+    ]}
 
-    one_search = declared_model_results_for_tool_names(
-        ["search_chapters"],
-        resolve_tool=registry.get,
-    )
-    assert admit_model_tool_result_batch(one_search) == 16 * 1024
 
-    two_searches = declared_model_results_for_tool_names(
-        ["search_chapters", "search_outline"],
-        resolve_tool=registry.get,
-    )
-    assert admit_model_tool_result_batch(two_searches) == reserve
+@pytest.mark.parametrize("names", [["search_outline"] * 3, ["list_chapters"] * 4])
+def test_incident_batches_fit_the_bound_model_budget(names):
+    payload = _native_calls(names, {"limit": 2})
+    payload["reasoning_content"] = "思考状态" * 2_000
+    tools = declared_model_results_for_tool_names(names, resolve_tool=registry.get)
+    original = json.dumps(payload, ensure_ascii=False)
+    needed = admit_native_assistant_transaction(payload, tools, request_budget=request_budget())
+    assert needed > 16_384
+    assert json.dumps(payload, ensure_ascii=False) == original
 
-    three_searches = declared_model_results_for_tool_names(
-        ["search_chapters", "search_outline", "search_characters"],
-        resolve_tool=registry.get,
-    )
+
+def test_remaining_budget_controls_admission_and_no_fixed_call_count_limit():
+    tool = _tool("tiny", ModelResultContract(max_json_bytes=128))
+    payload = _native_calls(["tiny"] * 20)
+    assert admit_native_assistant_transaction(payload, [tool] * 20, request_budget=request_budget()) > 20 * 128
     with pytest.raises(ToolResultBatchOverCapacity) as caught:
-        admit_model_tool_result_batch(three_searches)
-    assert caught.value.model_error_result("search_chapters")["data"]["reason"] == (
-        "tool_result_batch_over_capacity"
-    )
-
-
-def test_native_batch_admission_has_no_fixed_call_count_limit() -> None:
-    tools = tuple(
-        _tool(
-            f"tiny_status_{index}",
-            ModelResultContract(
-                policy=ModelResultPolicy.STATUS_ONLY,
-                max_json_bytes=128,
-            ),
-        )
-        for index in range(20)
-    )
-    assistant_payload = {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": f"call-{index}",
-                "type": "function",
-                "function": {"name": tool.name, "arguments": "{}"},
-            }
-            for index, tool in enumerate(tools)
-        ],
-    }
-
-    assert admit_model_tool_result_batch(tools) == 20 * 128
-    assert admit_native_assistant_transaction(assistant_payload, tools) > 20 * 128
-
-
-def _assistant_payload(arguments: str = "{}", **extra: object) -> dict[str, object]:
-    return {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": "call-1",
-                "type": "function",
-                "function": {"name": "search_chapters", "arguments": arguments},
-            }
-        ],
-        **extra,
-    }
-
-
-def test_exact_native_assistant_admission_counts_utf8_reasoning_and_provider_state() -> None:
-    tools = declared_model_results_for_tool_names(
-        ["search_chapters"],
-        resolve_tool=registry.get,
-    )
-    admitted = admit_native_assistant_transaction(
-        _assistant_payload(
-            json.dumps({"query": "城门"}, ensure_ascii=False),
-            reasoning_content="需要查询章节",
-            provider_state=[{"opaque": "状态"}],
-        ),
-        tools,
-    )
-    assert admitted <= (
-        max_native_tool_transaction_wrapper_tokens()
-        + MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    )
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        _assistant_payload(json.dumps({"query": "界" * 6_000}, ensure_ascii=False)),
-        _assistant_payload(reasoning_content="界" * 6_000),
-        _assistant_payload(provider_state=[{"opaque": "界" * 6_000}]),
-    ],
-)
-def test_large_utf8_native_assistant_state_is_rejected_before_handlers(
-    payload: dict[str, object],
-) -> None:
-    tools = declared_model_results_for_tool_names(
-        ["search_chapters"],
-        resolve_tool=registry.get,
-    )
-    with pytest.raises(ToolResultBatchOverCapacity) as caught:
-        admit_native_assistant_transaction(payload, tools)
+        admit_native_assistant_transaction(payload, [tool] * 20, request_budget=request_budget(100))
     assert caught.value.reason == "native_assistant_transaction_over_capacity"
+    assert not caught.value.recovery_fits
 
 
-def test_invalid_native_assistant_state_has_a_stable_protocol_reason() -> None:
-    tools = declared_model_results_for_tool_names(
-        ["search_chapters"],
-        resolve_tool=registry.get,
-    )
-    payload = _assistant_payload(provider_state={"not_json": {"a", "set"}})
-
+def test_budget_shortage_preserves_whole_denial_protocol_when_it_fits():
+    payload = _native_calls(["search_outline"] * 3)
+    tools = declared_model_results_for_tool_names(["search_outline"] * 3, resolve_tool=registry.get)
     with pytest.raises(ToolResultBatchOverCapacity) as caught:
-        admit_native_assistant_transaction(payload, tools)
+        admit_native_assistant_transaction(payload, tools, request_budget=request_budget(20_000))
+    error = caught.value
+    assert error.reason == "tool_result_batch_over_capacity"
+    assert error.declared_result_json_bytes == 103_152
+    assert error.recovery_fits
+    assert error.model_error_result("search_outline")["data"]["available_tokens"] == 20_000
 
+
+@pytest.mark.parametrize("field", ["content", "reasoning_content", "provider_state"])
+def test_complete_utf8_assistant_state_is_counted_without_truncation(field):
+    payload = _native_calls(["list_chapters"], {"limit": 1})
+    payload[field] = [{"opaque": "界" * 6_000}] if field == "provider_state" else "界" * 6_000
+    tools = [registry.get("list_chapters")]
+    admit_native_assistant_transaction(payload, tools, request_budget=request_budget())
+    with pytest.raises(ToolResultBatchOverCapacity) as caught:
+        admit_native_assistant_transaction(payload, tools, request_budget=request_budget(8_000))
+    assert caught.value.reason == "native_assistant_transaction_over_capacity"
+    assert not caught.value.recovery_fits
+
+
+@pytest.mark.parametrize("mutation", ["duplicate_id", "wrong_tool", "invalid_json", "non_object"])
+def test_invalid_native_protocol_is_rejected_even_with_plenty_of_capacity(mutation):
+    payload = _native_calls(["list_chapters"] * 2)
+    if mutation == "duplicate_id":
+        payload["tool_calls"][1]["id"] = payload["tool_calls"][0]["id"]
+    elif mutation == "wrong_tool":
+        payload["tool_calls"][0]["function"]["name"] = "write"
+    else:
+        payload["tool_calls"][0]["function"]["arguments"] = "{" if mutation == "invalid_json" else "[]"
+    with pytest.raises(ToolResultBatchOverCapacity) as caught:
+        admit_native_assistant_transaction(payload, [registry.get("list_chapters")] * 2,
+                                           request_budget=request_budget())
     assert caught.value.reason == "native_assistant_transaction_invalid"
-    assert caught.value.model_error_result("search_chapters")["data"]["reason"] == (
-        "native_assistant_transaction_invalid"
-    )
-
-    mismatched = _assistant_payload()
-    mismatched["tool_calls"][0]["function"]["name"] = "search_outline"
-    with pytest.raises(ToolResultBatchOverCapacity) as mismatched_error:
-        admit_native_assistant_transaction(mismatched, tools)
-    assert mismatched_error.value.reason == "native_assistant_transaction_invalid"
 
 
-def test_native_tool_budget_constants_match_cross_platform_fixture() -> None:
-    fixture = json.loads(
-        (
-            Path(__file__).resolve().parents[2]
-            / "contracts"
-            / "fixtures"
-            / "conversation-context-v1-interop.json"
-        ).read_text(encoding="utf-8")
-    )["native_tool_budget"]
-
-    assert fixture["max_native_assistant_transaction_json_bytes"] == (
-        MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES
-    )
-    assert fixture["max_model_visible_tool_result_batch_json_bytes"] == (
-        MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    )
-    assert fixture["schema"] == "native_tool_transaction_budget.v2"
-    assert "max_native_tool_calls_per_step" not in fixture
-    assert fixture["next_step_wrapper_tokens"] == (max_native_tool_transaction_wrapper_tokens())
-    assert fixture["max_projected_transaction_growth_tokens"] == (
-        max_native_tool_transaction_wrapper_tokens()
-        + MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    )
-    assert fixture["errors"] == {
-        "assistant_over_capacity": "native_assistant_transaction_over_capacity",
-        "assistant_invalid": "native_assistant_transaction_invalid",
-        "result_batch_over_capacity": "tool_result_batch_over_capacity",
-    }
-    standalone_contracts = fixture["standalone_result_json_bytes_by_tool"]
-    assert standalone_contracts["set_tool_categories"] == 4 * 1024
-    assert {
-        name: registry.get_model_result_contract(name).max_json_bytes
-        for name in standalone_contracts
-        if name != "set_tool_categories"
-    } == {
-        name: max_bytes
-        for name, max_bytes in standalone_contracts.items()
-        if name != "set_tool_categories"
-    }
+def test_missing_bound_budget_does_not_silently_fall_back():
+    with pytest.raises(ValueError, match="请求预算"):
+        admit_native_assistant_transaction(_native_calls(["list_chapters"]),
+                                           [registry.get("list_chapters")], request_budget=None)
 
 
-def test_next_step_reserve_counts_independent_native_replay_objects_once() -> None:
-    # The first 16 KiB is the exact assistant message (content, calls,
-    # reasoning and provider state). The second bounds the aggregate result
-    # message wrappers using metadata already present in that assistant JSON;
-    # declared result contents are the separate 32 KiB batch below.
-    wrapper = max_native_tool_transaction_wrapper_tokens()
-    assert wrapper == 2 * MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES
-    assert wrapper + MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES == 65_536
+@pytest.mark.parametrize("tool_name", ["list_chapters", "search_outline_tree", "search_outline"])
+def test_smaller_page_has_smaller_enforced_result_ceiling(tool_name):
+    tool = registry.get(tool_name)
+    contract = tool.model_result_contract
+    small = contract.bytes_for_arguments({"limit": 1})
+    assert small < contract.bytes_for_arguments({}) <= contract.max_json_bytes
+    raw = {"tool": tool_name, "status": "ok", "detail": "", "data": []}
+    projected = model_tool_result_projector.project(tool, raw, arguments={"limit": 1})
+    assert json.loads(projected.content)["data"] == []
+    raw["detail"] = "x" * small
+    with pytest.raises(ToolResultOverCapacity):
+        model_tool_result_projector.project(tool, raw, arguments={"limit": 1})
 
 
-def test_default_contract_and_common_read_pairs_do_not_consume_the_whole_batch_alone() -> None:
-    assert DEFAULT_MODEL_RESULT_CONTRACT.max_json_bytes == 16 * 1024
-
-    for names in (
-        ("search_chapters", "search_outline"),
-        ("search_characters", "search_worldbuilding"),
-        ("list_characters", "search_chapters"),
-    ):
-        tools = declared_model_results_for_tool_names(names, resolve_tool=registry.get)
-        assert admit_model_tool_result_batch(tools) <= (
-            MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-        ), names
-
-    evidence_page = declared_model_results_for_tool_names(
-        ("search_task_context",),
-        resolve_tool=registry.get,
-    )
-    assert admit_model_tool_result_batch(evidence_page) == (
-        MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    )
-    with pytest.raises(ToolResultBatchOverCapacity):
-        admit_model_tool_result_batch(
-            declared_model_results_for_tool_names(
-                ("search_task_context", "search_context"),
-                resolve_tool=registry.get,
-            )
-        )
-
-
-def test_all_registered_results_fit_the_admitted_single_result_boundary() -> None:
-    violations = [
-        tool.name
-        for tool in (registry.get(name) for name in registry.all_names())
-        if tool.model_result_contract.max_json_bytes
-        > MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    ]
-    assert violations == []
-    large_single_step_reads = {
-        tool.name
-        for tool in (registry.get(name) for name in registry.all_names())
-        if tool.model_result_contract.max_json_bytes
-        == MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES
-    }
-    assert large_single_step_reads == {
-        "read_project_file",
-        "prepare_external_writing_context",
-        "prepare_task_context",
-        "read_imported_file",
-        "search_task_context",
-    }
+def test_new_budget_contract_matches_cross_platform_fixture():
+    fixture = json.loads((Path(__file__).parents[2] / "contracts/fixtures/conversation-context-v1-interop.json").read_text(encoding="utf-8"))
+    budget = fixture["native_tool_budget"]
+    assert budget["schema"] == "native_tool_transaction_budget.v3"
+    assert budget["next_step_wrapper_tokens"] == max_native_tool_transaction_wrapper_tokens() == 1024
+    assert "max_native_assistant_transaction_json_bytes" not in budget
+    for tool, page in budget["page_budgets"].items():
+        contract = registry.get(tool).model_result_contract
+        for count in (1, page["max_items"]):
+            text_bytes = 6 * page.get("default_text_chars", 0) * max(
+                page.get("min_text_fields", 0), count * page.get("text_fields_per_item", 0))
+            assert contract.bytes_for_arguments({"limit": count}) == page["base_json_bytes"] + page["item_json_bytes"] * count + text_bytes
+        assert contract.max_json_bytes == budget["standalone_result_json_bytes_by_tool"][tool]
 
 
 def test_external_writing_context_accepts_one_full_chinese_context_page() -> None:

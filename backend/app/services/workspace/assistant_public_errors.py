@@ -14,6 +14,9 @@ from app.services.conversation_context import (
 from app.services.conversation_context.checkpoint_state import safe_public_error_detail
 
 _CONTEXT_MESSAGES = {
+    ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY: (
+        "工具批次超过当前模型剩余容量，已保留进度；本批次未执行。"
+    ),
     ConversationContextErrorCode.CURRENT_USER_OVER_CAPACITY: (
         "当前作者消息超过所选模型的可验证容量，本次任务未执行。"
     ),
@@ -31,6 +34,9 @@ _CONTEXT_MESSAGES = {
     ),
 }
 _REMEDIATION = {
+    ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY: (
+        "请减少本轮查询范围，或使用更大上下文容量的模型后重试。"
+    ),
     ConversationContextErrorCode.CAPACITY_UNKNOWN: "请配置模型上下文窗口或切换已验证模型。",
     ConversationContextErrorCode.CURRENT_USER_OVER_CAPACITY: "请缩短当前消息或切换更大上下文模型。",
     ConversationContextErrorCode.CHECKPOINT_FAILED: (
@@ -69,10 +75,17 @@ _MODEL_FAILURE_RESPONSES: dict[str, tuple[str, str, bool]] = {
     "unavailable": ("model_unavailable", "当前模型暂不可用，请切换模型或稍后重试。", True),
     "empty_response": ("model_empty_response", "模型没有返回有效内容，请重试。", True),
     "invalid_response": ("model_invalid_response", "模型返回格式无法解析，请重试。", True),
+    "provider_protocol": (
+        "model_provider_protocol_error",
+        "模型接口拒绝了工具或思考协议，请检查模型设置中的接口协议或切换模型后重试。",
+        False,
+    ),
 }
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 _SAFE_REASON = re.compile(r"^[a-z0-9_]{1,100}$")
 _NUMERIC_FIELDS = {
+    "assistant_json_bytes", "declared_result_json_bytes", "consecutive_rejections",
+    "batch_call_count",
     "iteration",
     "call_index",
     "call_count",
@@ -105,6 +118,8 @@ def public_context_failure(error: ConversationContextError) -> PublicAssistantFa
         message = "对话上下文处理失败，本次任务未执行。"
     details = _safe_context_details(code, error.details)
     details["retryable"] = code not in _RETRYABLE_FALSE
+    if code is ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY:
+        details["retryable"] = False  # The automatic recovery budget is exhausted.
     remediation = _REMEDIATION.get(code)
     if remediation:
         details["remediation"] = remediation
@@ -175,7 +190,10 @@ def _safe_context_details(
             value = str(details.get(field) or "").strip()
             if _SAFE_TOKEN.fullmatch(value):
                 safe[field] = value
-    if code is ConversationContextErrorCode.PROTOCOL_INVALID:
+    if code in {
+        ConversationContextErrorCode.PROTOCOL_INVALID,
+        ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+    }:
         tool = str(details.get("tool") or "").strip()
         if _SAFE_TOKEN.fullmatch(tool):
             safe["tool"] = tool

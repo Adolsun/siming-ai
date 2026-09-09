@@ -25,6 +25,18 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 
 class DirectApiClientTest {
+    private fun resumePrefix(messages: List<JsonObject>): String {
+        assertFalse(messages.any { it.getValue("role").jsonPrimitive.content == "assistant" })
+        assertEquals("user", messages.last().getValue("content").jsonPrimitive.content)
+        val reference = messages.single {
+            it.getValue("content").jsonPrimitive.content.startsWith("[SERVER_VERIFIED_STREAM_CHECKPOINT]")
+        }
+        assertEquals("user", reference.getValue("role").jsonPrimitive.content)
+        val checkpoint = Json.parseToJsonElement(reference.getValue("content").jsonPrimitive.content.lines()[2]).jsonObject
+        assertEquals("第一段", checkpoint.getValue("committed_text").jsonPrimitive.content)
+        return checkpoint.getValue("required_prefix").jsonPrimitive.content
+    }
+
     @Test
     fun `task model without its own capacity profile uses 256k fallback`() {
         val config = DirectApiConfig(
@@ -182,8 +194,7 @@ class DirectApiClientTest {
                         )
                     } else {
                         val messages = body.getValue("messages").jsonArray.map { it.jsonObject }
-                        val resumeRequest = messages.last().getValue("content").jsonPrimitive.content
-                        val expected = resumeRequest.substringAfter("：\n")
+                        val expected = resumePrefix(messages)
                         sseResponse(
                             """{"choices":[{"delta":{"content":"$expected 第二段"},"finish_reason":"stop"}]}""",
                         )
@@ -221,8 +232,7 @@ class DirectApiClientTest {
                         )
                     } else {
                         val input = body.getValue("input").jsonArray.map { it.jsonObject }
-                        val expected = input.last().getValue("content").jsonPrimitive.content
-                            .substringAfter("：\n")
+                        val expected = resumePrefix(input)
                         sseResponse(
                             """{"type":"response.output_text.delta","delta":"$expected 第二段"}""",
                             """{"type":"response.completed","response":{"status":"completed"}}""",
@@ -599,6 +609,52 @@ class DirectApiClientTest {
                 }
             }
             assertEquals(listOf("已输出片段"), content)
+            assertEquals(1, attempts.get())
+        }
+    }
+
+    @Test
+    fun `repeated tool choice rejection is bounded for both native transports`() {
+        listOf(false, true).forEach { streamed ->
+            val attempts = AtomicInteger()
+            withServer(object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                    val count = attempts.incrementAndGet()
+                    assertEquals(count == 1, "tool_choice" in body)
+                    return jsonResponse("""{"error":{"message":"Thinking mode does not support this tool_choice"}}""", 400)
+                }
+            }) { server ->
+                assertFailsWith<DirectApiHttpException> {
+                    runBlocking {
+                        val config = config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS)
+                        val messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取") })
+                        if (streamed) testClient().streamAgentTurn(config, messages, singleTool("get_project_info"), "required")
+                        else testClient().agentTurn(config, messages, singleTool("get_project_info"), "required")
+                    }
+                }
+                assertEquals(2, attempts.get())
+            }
+        }
+    }
+
+    @Test
+    fun `request rejections are not treated as resumable text interruptions`() {
+        val attempts = AtomicInteger()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                attempts.incrementAndGet()
+                return jsonResponse("""{"error":{"message":"reasoning_content must be passed back"}}""", 400)
+            }
+        }) { server ->
+            assertFailsWith<DirectApiHttpException> {
+                runBlocking {
+                    testClient().completeResumable(
+                        config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS), "system", "user",
+                        initialContent = "已有片段", maxResumeAttempts = 8,
+                    )
+                }
+            }
             assertEquals(1, attempts.get())
         }
     }

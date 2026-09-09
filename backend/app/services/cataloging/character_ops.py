@@ -49,7 +49,7 @@ STATE_FIELD_LIMITS = {
     "current_goal": 2000,
     "active_conflict": 2000,
     "abilities_state": 2000,
-    "items_or_assets": 2000,
+    "items_or_assets": None,
 }
 
 PLACEHOLDER_CHARACTER_NAMES = {"未命名", "未命名角色", "未命名主角", "未知", "无名", "角色名", "某人"}
@@ -300,7 +300,7 @@ def fill_character_fields(db: Session, character: Character, chapter: Chapter, p
                 # character_update defines background as a complete rewritten
                 # field.  Appending that cumulative profile duplicates earlier
                 # chapter history whenever the model paraphrases old facts.
-                character.background = _replacement_text(payload.get(field), 12000)
+                character.background = _replacement_text(payload.get(field), None)
             else:
                 # personality follows the same replacement contract.  Per
                 # chapter changes belong in character_state_update/timeline.
@@ -584,7 +584,11 @@ def _write_character_aliases(db: Session, character: Character, chapter: Chapter
         )
 
 
-def _replacement_text(value: Any, limit: int) -> str | None:
+def _replacement_text(value: Any, limit: int | None) -> str | None:
+    # Cumulative archive fields have already passed exact-preservation guards.
+    # Trimming or clipping here would invalidate that guarantee after validation.
+    if limit is None:
+        return str(value) if value not in (None, "") else None
     text = str(value or "").strip()
     return text[:limit] if text else None
 

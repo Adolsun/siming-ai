@@ -51,7 +51,7 @@ from app.services.creation_agent_turn_records import (
 from app.services.workspace.executor import execute_workspace_action
 from app.services.workspace.registry import registry
 from app.services.workspace.tool_result_projection import (
-    MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
+    MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS,
     TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT,
     ToolResultBatchOverCapacity,
     ToolResultOverCapacity,
@@ -88,6 +88,7 @@ class CreationTurnState:
     system_prompt: str
     prepare_model_messages: Callable[..., Awaitable[list[dict[str, Any]]]]
     provider_max_tokens: Callable[[], int | None]
+    provider_request_budget: Callable[[], Any]
     persist_runtime_state: PersistRuntimeState
     messages: list[dict[str, Any]]
     schemas: list[dict[str, Any]]
@@ -112,6 +113,7 @@ class CreationTurnState:
     current_ledger: list[ToolExecutionReceipt] = field(default_factory=list)
     compacted_transactions: list[dict[str, Any]] = field(default_factory=list)
     native_transaction_count: int = 0
+    consecutive_capacity_rejections: int = 0
     active_categories: tuple[str, ...] = ()
     successful_write_count: int = 0
     failed_write_count: int = 0
@@ -150,12 +152,28 @@ async def _report_stream_resume(
     )
 
 
-def _consume_delivered_transactions(state: CreationTurnState) -> None:
-    """Replace model-consumed native batches with compact server receipts."""
+def _consume_delivered_transactions(state: CreationTurnState) -> bool:
+    """Acknowledge delivery without removing facts from the active turn."""
 
-    consumed_any = bool(state.tool_transactions)
+    consumed_any = False
+    for index, transaction in enumerate(state.tool_transactions):
+        if transaction.state.value == "delivered":
+            state.tool_transactions[index] = transaction.mark_consumed()
+            consumed_any = True
+    if consumed_any:
+        state.active_read_calls.clear()
+    return consumed_any
+
+
+def _archive_consumed_transactions(state: CreationTurnState) -> None:
+    """Create audit receipts only after the final model response is complete."""
+
+    pending = []
     for transaction in state.tool_transactions:
-        compactable = transaction.mark_consumed().mark_compactable()
+        if transaction.state.value != "consumed":
+            pending.append(transaction)
+            continue
+        compactable = transaction.mark_compactable(turn_closed=True)
         receipts = state.pending_transaction_receipts.pop(
             transaction.transaction_id,
             (),
@@ -164,12 +182,7 @@ def _consume_delivered_transactions(state: CreationTurnState) -> None:
         state.compacted_transactions.append(
             compactable.to_dict(include_native_payload=False)
         )
-    state.tool_transactions.clear()
-    if consumed_any:
-        # A successful next provider response proves that the read result was
-        # consumed.  The model may now safely re-read the same target if later
-        # reasoning requires fresh state; writes remain permanently deduped.
-        state.active_read_calls.clear()
+    state.tool_transactions[:] = pending
 
 
 def _all_execution_receipts(
@@ -237,7 +250,7 @@ class _RuntimeResultTool:
     model_result_contract: Any = TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT
 
 
-def _tool_message_content(name: str, result: dict[str, Any]) -> str:
+def _tool_message_content(name: str, result: dict[str, Any], arguments: dict[str, Any]) -> str:
     """Apply the one declarative model-result projection path."""
 
     tool = registry.get(name) or _RuntimeResultTool(name=name)
@@ -245,7 +258,7 @@ def _tool_message_content(name: str, result: dict[str, Any]) -> str:
         return model_tool_result_projector.project(
             tool,
             result,
-            max_json_bytes=MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
+            arguments=arguments,
         ).content
     except ToolResultOverCapacity as exc:
         return json.dumps(
@@ -358,7 +371,7 @@ def _prepare_native_batch(
     assistant_reasoning_content: str,
     assistant_provider_state: tuple[dict[str, Any], ...],
 ) -> _PreparedNativeBatch:
-    if state.tool_transactions:
+    if any(transaction.state.value != "consumed" for transaction in state.tool_transactions):
         raise RuntimeError("上一批原生工具事务尚未消费，不能创建下一批事务")
     resolved = declared_model_results_for_tool_names(
         (
@@ -380,19 +393,26 @@ def _prepare_native_batch(
     if assistant_provider_state:
         assistant_payload["provider_state"] = list(assistant_provider_state)
     try:
-        admit_native_assistant_transaction(assistant_payload, resolved)
+        admit_native_assistant_transaction(
+            assistant_payload, resolved, request_budget=state.provider_request_budget(),
+        )
+        state.consecutive_capacity_rejections = 0
     except ToolResultBatchOverCapacity as exc:
         rejection = exc
-        if exc.reason != "tool_result_batch_over_capacity":
+        state.consecutive_capacity_rejections += 1
+        exc.recovery_fits = (
+            exc.recovery_fits
+            and state.consecutive_capacity_rejections < MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS
+        )
+        if not exc.recovery_fits:
             terminal_error = ConversationContextError(
-                ConversationContextErrorCode.PROTOCOL_INVALID,
-                "模型返回的原生工具事务超过可验证协议容量，本批次未执行。",
+                (ConversationContextErrorCode.PROTOCOL_INVALID
+                 if exc.reason == "native_assistant_transaction_invalid"
+                 else ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY),
+                "工具批次无法在当前模型预算内恢复，已保留本轮进度；本批次未执行。",
                 details={
-                    "reason": exc.reason,
-                    "call_count": exc.call_count,
-                    "actual_bytes": exc.declared_json_bytes,
-                    "max_bytes": exc.max_json_bytes,
-                    "remediation": "减少单步工具调用、参数或模型推理状态后重试。",
+                    **exc.model_error_result("tool_batch")["data"],
+                    "consecutive_rejections": state.consecutive_capacity_rejections,
                 },
             )
     except ToolResultProjectionError:
@@ -539,7 +559,7 @@ async def _execute_one_native_call(
         transaction_number=transaction_number,
         call=native_call,
         result=tool_result,
-        model_content=_tool_message_content(name, tool_result),
+        model_content=_tool_message_content(name, tool_result, arguments),
         read_tools=READ_TOOLS,
         write_tools=WRITE_TOOLS,
         write_success_statuses=CREATION_WRITE_SUCCESS_STATUSES,
@@ -672,11 +692,9 @@ async def _run_native_step(
         schemas=state.schemas,
         result=result,
     )
-    # A successful provider response proves that the immediately preceding
-    # delivered native batch was consumed. Replace it before adding any new
-    # tool calls so raw assistant/tool payloads never accumulate by step.
-    consumed_delivered = bool(state.tool_transactions)
-    _consume_delivered_transactions(state)
+    # Keep every complete transaction available to later steps in this turn.
+    # The shared budget counts the whole request before any further execution.
+    consumed_delivered = _consume_delivered_transactions(state)
     if consumed_delivered:
         await state.persist_runtime_state(_durable_runtime_snapshot(state))
     content = str(result.get("content") or "")
@@ -826,8 +844,7 @@ async def _complete_reply(
                 schemas=[],
                 result=summary,
             )
-            consumed_delivered = bool(state.tool_transactions)
-            _consume_delivered_transactions(state)
+            consumed_delivered = _consume_delivered_transactions(state)
             if consumed_delivered:
                 await state.persist_runtime_state(_durable_runtime_snapshot(state))
             state.final_reply = str(summary.get("content") or "").strip()
@@ -878,6 +895,8 @@ async def finish_creation_turn(
 ) -> dict[str, Any]:
     created_project_id = _created_project_id(state)
     await _complete_reply(state, bindings, created_project_id)
+    _archive_consumed_transactions(state)
+    await state.persist_runtime_state(_durable_runtime_snapshot(state, status="completed"))
     for offset in range(0, len(state.final_reply), 240):
         await bindings.emit_progress(
             state.on_event,

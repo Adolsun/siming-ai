@@ -476,20 +476,13 @@ class MobileConversationContextTest {
     }
 
     @Test
-    fun `native tool byte limits match golden and reject the whole response before handlers`() {
+    fun `native tool budget uses bound request capacity and rejects the whole response before handlers`() {
         val fixture = interopFixture()["native_tool_budget"] as JsonObject
         assertEquals(
             (fixture["schema"] as JsonPrimitive).content,
             MobileNativeToolBudgetContract.SCHEMA,
         )
-        assertEquals(
-            fixture["max_native_assistant_transaction_json_bytes"]?.toString()?.toInt(),
-            MobileNativeToolBudgetContract.MAX_NATIVE_ASSISTANT_TRANSACTION_JSON_BYTES,
-        )
-        assertEquals(
-            fixture["max_model_visible_tool_result_batch_json_bytes"]?.toString()?.toInt(),
-            MobileNativeToolBudgetContract.MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
-        )
+        assertFalse("max_native_assistant_transaction_json_bytes" in fixture)
         assertFalse("max_native_tool_calls_per_step" in fixture)
         assertEquals(
             fixture["next_step_wrapper_tokens"]?.toString()?.toInt(),
@@ -499,7 +492,10 @@ class MobileConversationContextTest {
         resultContracts.forEach { (tool, bytes) ->
             assertEquals(
                 bytes.toString().toInt(),
-                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool),
+                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, buildJsonObject {
+                    if (tool == "search_outline") put("summary_chars", 1000)
+                    if (tool == "search_chapters") put("content_chars", 4000)
+                }),
                 tool,
             )
         }
@@ -509,7 +505,27 @@ class MobileConversationContextTest {
             MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_INVALID,
         )
 
+        val pageBudgets = fixture["page_budgets"] as JsonObject
+        pageBudgets.forEach { (tool, value) ->
+            val page = value as JsonObject
+            val one = buildJsonObject { put("limit", 1) }
+            val textBytes = 6 * (page["default_text_chars"]?.toString()?.toInt() ?: 0) * maxOf(
+                page["min_text_fields"]?.toString()?.toInt() ?: 0,
+                page["text_fields_per_item"]?.toString()?.toInt() ?: 0,
+            )
+            assertEquals(
+                page["base_json_bytes"].toString().toInt() + page["item_json_bytes"].toString().toInt() + textBytes,
+                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one),
+            )
+            assertTrue(MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one) <
+                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool))
+            assertFalse(MobileNativeToolBudgetContract.actualResultFits(
+                tool, buildJsonObject { put("detail", "x".repeat(MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one))) }, one,
+            ))
+        }
+
         val accepted = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
             assistantPayload = nativeAssistantPayload(listOf("set_tool_categories")),
             orderedToolNames = listOf("set_tool_categories"),
         )
@@ -517,36 +533,54 @@ class MobileConversationContextTest {
 
         val manySmallCalls = (1..20).map { index -> "tiny-status-$index" }
         val acceptedMany = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
             assistantPayload = nativeAssistantPayload(manySmallCalls),
             orderedToolNames = manySmallCalls,
-            resultJsonBytes = { 128 },
+            resultJsonBytes = { _, _ -> 128 },
         )
         assertTrue(acceptedMany.accepted)
         assertEquals(20, acceptedMany.callCount)
 
         val resultBatch = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
             assistantPayload = nativeAssistantPayload(
                 listOf("search_chapters", "search_outline", "search_characters"),
             ),
             orderedToolNames = listOf("search_chapters", "search_outline", "search_characters"),
         )
-        assertFalse(resultBatch.accepted)
+        assertTrue(resultBatch.accepted)
+        val rejectedResults = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            assistantPayload = nativeAssistantPayload(List(3) { "search_outline" }),
+            orderedToolNames = List(3) { "search_outline" },
+            requestBudget = nativeBudget(20_000),
+        )
+        assertFalse(rejectedResults.accepted)
+        assertTrue(rejectedResults.recoveryFits)
+        assertEquals(103_152, rejectedResults.declaredResultJsonBytes)
         assertEquals(
             MobileNativeToolBudgetContract.TOOL_RESULT_BATCH_OVER_CAPACITY,
-            resultBatch.reason,
+            rejectedResults.reason,
         )
 
         val assistantBatch = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
             assistantPayload = nativeAssistantPayload(
                 listOf("set_tool_categories"),
                 content = "x".repeat(17_000),
             ),
             orderedToolNames = listOf("set_tool_categories"),
         )
-        assertFalse(assistantBatch.accepted)
+        assertTrue(assistantBatch.accepted)
+        val rejectedAssistant = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            assistantPayload = nativeAssistantPayload(List(4) { "list_chapters" }, content = "思".repeat(8_000)),
+            orderedToolNames = List(4) { "list_chapters" },
+            requestBudget = nativeBudget(8_000),
+        )
+        assertFalse(rejectedAssistant.accepted)
+        assertFalse(rejectedAssistant.recoveryFits)
         assertEquals(
             MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY,
-            assistantBatch.reason,
+            rejectedAssistant.reason,
         )
 
         val duplicateIdPayload = JsonObject(
@@ -567,6 +601,7 @@ class MobileConversationContextTest {
         )
         val duplicate = assertFailsWith<MobileConversationContextException> {
             MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
                 assistantPayload = duplicateIdPayload,
                 orderedToolNames = listOf("set_tool_categories", "set_tool_categories"),
             )
@@ -580,6 +615,7 @@ class MobileConversationContextTest {
             )
             val admissionError = assertFailsWith<MobileConversationContextException> {
                 MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            requestBudget = nativeBudget(),
                     assistantPayload = payload,
                     orderedToolNames = listOf("set_tool_categories"),
                 )
@@ -650,7 +686,8 @@ class MobileConversationContextTest {
                 ),
             ),
         )
-        val compactable = consumed.markCompactable()
+        assertFailsWith<IllegalArgumentException> { consumed.markCompactable(turnClosed = false) }
+        val compactable = consumed.markCompactable(turnClosed = true)
         assertTrue(compactable.canCompact)
         assertFailsWith<IllegalArgumentException> {
             delivered.copy(state = MobileToolTransactionState.COMPACTABLE)
@@ -658,7 +695,7 @@ class MobileConversationContextTest {
     }
 
     @Test
-    fun `three tool rounds replay only the newest delivered batch and keep a bounded receipt ledger`() {
+    fun `three tool rounds retain every exact result until the turn closes`() {
         var runtime = MobileTurnToolRuntimeState(turnId = "turn-current")
 
         repeat(3) { index ->
@@ -666,18 +703,25 @@ class MobileConversationContextTest {
             runtime = runtime.recordDelivered(transaction)
 
             assertEquals(
-                listOf(transaction.transactionId),
-                runtime.deliveredTransactions.map(MobileToolTransaction::transactionId),
+                (0..index).map { deliveredTransaction(it).transactionId },
+                runtime.activeTransactions.map(MobileToolTransaction::transactionId),
             )
 
             runtime = runtime.markDeliveredConsumed()
-            assertTrue(runtime.deliveredTransactions.isEmpty())
+            assertEquals(index + 1, runtime.activeTransactions.size)
+            assertTrue(runtime.activeTransactions.all { it.state == MobileToolTransactionState.CONSUMED })
+            assertEquals(
+                (0..index).map { deliveredTransaction(it).results.single().content },
+                runtime.activeTransactions.map { it.results.single().content },
+            )
             assertEquals(index + 1, runtime.executionLedger.size)
-            assertEquals(index + 1, runtime.transactions.count(MobileToolTransaction::canCompact))
+            assertEquals(0, runtime.transactions.count(MobileToolTransaction::canCompact))
         }
 
         assertEquals(3, runtime.executionLedger.size)
         assertEquals(3, runtime.executionLedger.map(MobileToolExecutionReceipt::stepId).distinct().size)
+        runtime = runtime.closeTurn()
+        assertTrue(runtime.activeTransactions.isEmpty())
         assertTrue(runtime.transactions.all(MobileToolTransaction::canCompact))
     }
 
@@ -927,6 +971,13 @@ class MobileConversationContextTest {
         assertTrue(envelope.fitsCurrent)
         assertFalse(envelope.fitsProjected)
         envelope.requireSendable()
+        val plan = MobileRecentTurnPlanner.planWithCounter(
+            emptyList(), emptyList(), MobileUtf8ByteTokenCounter,
+            envelope.copy(recentExactTurnTokens = 0, currentInputTokens = 260),
+        )
+        assertTrue(plan.recentExactTurns.isEmpty())
+        assertFalse(plan.requiresCheckpoint)
+        assertEquals(260, plan.fixedInputTokens)
         assertEquals(binding.fingerprint, envelope.toJson()["model_binding_fingerprint"]?.toString()?.trim('"'))
     }
 
@@ -1020,6 +1071,23 @@ class MobileConversationContextTest {
                 transcriptRevision = 3L,
             )
             val rendered = renderMobileContextFrameUnchecked(frame, systemPrompt)
+            val ledgerMessage = rendered.messages.single {
+                (it["message_id"] as JsonPrimitive).content.startsWith("context-ledger:")
+            }
+            assertEquals("user", (ledgerMessage["role"] as JsonPrimitive).content)
+            assertEquals("继续", (rendered.messages.last { (it["role"] as JsonPrimitive).content == "user" }["content"] as JsonPrimitive).content)
+            val native = rendered.messages.single { it["tool_calls"] != null }
+            assertEquals("provider reasoning", (native["reasoning_content"] as JsonPrimitive).content)
+            listOf("error", "cancelled").forEach { status ->
+                val failedHistory = renderMobileContextFrameUnchecked(
+                    frame.copy(recentTurns = listOf(completedTurn(1).copy(status = status))), systemPrompt,
+                )
+                val receipt = failedHistory.messages.single {
+                    (it["message_id"] as JsonPrimitive).content.startsWith("context-turn-status:")
+                }
+                assertEquals("user", (receipt["role"] as JsonPrimitive).content)
+                assertEquals("继续", (failedHistory.messages.last { (it["role"] as JsonPrimitive).content == "user" }["content"] as JsonPrimitive).content)
+            }
             val config = DirectApiConfig(
                 displayName = "test",
                 baseUrl = "https://example.com/v1",
@@ -1203,6 +1271,13 @@ class MobileConversationContextTest {
         pendingToolTransactionTokens = 0,
     )
 
+    private fun nativeBudget(available: Int = 250_000): MobileRequestBudgetEnvelope = buildMobileRequestBudget(
+        binding = testBinding().copy(contextWindowTokens = available + 5_512, maxOutputTokens = 4_000),
+        counter = MobileUtf8ByteTokenCounter,
+        components = MobileRequestTokenComponents(systemPromptTokens = 1_000),
+        safetyMarginTokens = 512,
+    )
+
     private fun testBinding() = MobileGenerationModelBinding(
         taskType = "assistant",
         provider = "openai",
@@ -1242,6 +1317,19 @@ class MobileConversationContextTest {
         put("role", "tool")
         put("tool_call_id", id)
         put("content", "{}")
+    }
+
+    @Test
+    fun `tool state descriptions follow the same PC contract including ready and confirmation`() {
+        val fixture = resourceFixture("tool-status-v1.json")
+        val tool = (fixture["tool"] as JsonPrimitive).content
+        (fixture["cases"] as JsonArray).forEach { element ->
+            val case = element as JsonObject
+            assertEquals(
+                (case["detail"] as JsonPrimitive).content,
+                mobileToolStatusDetail(tool, (case["status"] as JsonPrimitive).content),
+            )
+        }
     }
 
     private fun interopFixture(): JsonObject = resourceFixture("conversation-context-v1-interop.json")

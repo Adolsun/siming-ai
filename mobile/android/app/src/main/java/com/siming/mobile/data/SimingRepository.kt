@@ -2363,8 +2363,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         return mobileConversationContextStatePayload(
             status = status,
             detail = when (status) {
-                "compressing" -> "正在整理较早上下文；当前任务尚未执行"
-                "failed" -> "较早上下文整理失败；完整聊天记录仍保留"
+                "compressing" -> "正在整理较早上下文；完成容量检查后继续当前任务"
+                "failed" -> "上下文准备受阻；后续步骤已暂停，完整聊天记录仍保留"
                 else -> if (snapshot.activeCheckpoint == null) {
                     "当前完整会话仍在模型容量内"
                 } else {

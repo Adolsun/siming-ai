@@ -158,7 +158,9 @@ class ToolTransaction:
             raise ValueError("only a delivered transaction can be consumed")
         return replace(self, state=ToolTransactionState.CONSUMED)
 
-    def mark_compactable(self) -> ToolTransaction:
+    def mark_compactable(self, *, turn_closed: bool) -> ToolTransaction:
+        if not turn_closed:
+            raise ValueError("active turn tool results must remain exact")
         if self.state is not ToolTransactionState.CONSUMED:
             raise ValueError("only a consumed transaction can become compactable")
         if any(not result.result_ref or not result.persisted_step_id for result in self.results):

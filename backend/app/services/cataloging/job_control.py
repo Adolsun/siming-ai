@@ -124,7 +124,7 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "title": "建档候选等待确认",
                     "message": job.error or "请审阅当前章节的建档候选后继续。",
                     "action_label": "查看建档候选",
-                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "action_url": f"/project/{job.project_id}?view=cataloging&job={job.id}",
                     "blocking": True,
                 }
                 result = {
@@ -139,7 +139,7 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "title": "作品建档已暂停",
                     "message": job.error or "请打开作品建档页处理当前章节后继续。",
                     "action_label": "前往处理建档",
-                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "action_url": f"/project/{job.project_id}?view=cataloging&job={job.id}",
                     "blocking": True,
                 }
                 result = {
@@ -342,6 +342,20 @@ def resume_job(job: CatalogingJob) -> None:
     job.error = None
     job.completed_at = None
     job.updated_at = datetime.utcnow()
+
+
+def set_job_execution_mode(db: Session, job: CatalogingJob, mode: str) -> bool:
+    """Apply the shared mode transition before an explicit command queues work."""
+    if mode not in {"auto", "manual"}:
+        raise ValueError("模式必须是 auto 或 manual")
+    should_resume = job.status == "waiting_confirmation" and mode == "auto"
+    job.execution_mode = mode
+    job.updated_at = datetime.utcnow()
+    if should_resume:
+        resume_job(job)
+        job.blocked_chapter_id = None
+        refresh_job_progress(db, job)
+    return should_resume
 
 
 def mark_run_skipped(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:

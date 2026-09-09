@@ -1097,18 +1097,21 @@ describe('GuiAssistantChat new-book handoff', () => {
 
   it('keeps the structured editor open when saving before a new conversation fails', async () => {
     localStorage.setItem('siming.gui.assistant.sidebarCollapsed', '0')
+    // Both autosave and navigation save must fail, regardless of host speed.
+    // A one-shot rejection can be consumed by the five-second autosave first.
+    mockPatch.mockRejectedValue(new Error('模拟保存失败'))
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
-    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    fireEvent.change(await screen.findByRole('textbox', { name: '给司命的消息' }), {
+      target: { value: '我要创建新的小说' },
+    })
     await user.click(screen.getByRole('button', { name: /发送/ }))
     await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
     await user.click(await screen.findByRole('button', { name: /灰港遗忘症/ }))
 
     const title = await screen.findByDisplayValue('灰港遗忘症')
-    await user.clear(title)
-    await user.type(title, '尚未保存的创意')
-    mockPatch.mockRejectedValueOnce(new Error('模拟保存失败'))
-
+    // This scenario checks failed-save recovery, independently of typing speed.
+    fireEvent.change(title, { target: { value: '尚未保存的创意' } })
     await user.click((await screen.findAllByRole('button', { name: '新对话' }))[0])
 
     await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
@@ -1118,6 +1121,13 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(screen.getByRole('heading', { name: '创意方案' })).toBeInTheDocument()
     expect(screen.getByDisplayValue('尚未保存的创意')).toBeInTheDocument()
     expect(await screen.findByText('模拟保存失败')).toBeInTheDocument()
+    const failedSaveCount = mockPatch.mock.calls.length
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 5500)) })
+    expect(mockPatch).toHaveBeenCalledTimes(failedSaveCount)
+    expect(screen.getByText('保存失败，内容仍保留')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '重试保存' }))
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledTimes(failedSaveCount + 1))
+    expect(screen.getByDisplayValue('尚未保存的创意')).toBeInTheDocument()
   })
 
   it('keeps a new conversation empty when the previous history response arrives late', async () => {

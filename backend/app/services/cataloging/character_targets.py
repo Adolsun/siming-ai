@@ -8,6 +8,33 @@ from sqlalchemy.orm import Session
 from ...database.models import Character
 
 
+class ArchiveValueMismatch(ValueError):
+    """An exact-value guard with machine-readable correction context."""
+
+    def __init__(
+        self, message: str, character: Character, field: str, expected: str, provided: Any,
+        *, preserve_and_append: bool = False,
+    ):
+        if isinstance(provided, str):
+            offset = next((i for i, pair in enumerate(zip(expected, provided, strict=False))
+                           if pair[0] != pair[1]), min(len(expected), len(provided)))
+            message += (
+                f"；当前原值 {len(expected)} 字符，提交值 {len(provided)} 字符，"
+                f"首个差异在第 {offset + 1} 个字符（标点和空白也须保留）"
+            )
+            if preserve_and_append:
+                message += (
+                    f"；差异字符：原值 {expected[offset:offset + 1]!r}，"
+                    f"新值 {provided[offset:offset + 1]!r}"
+                )
+        super().__init__(message)
+        self.repair_context = {
+            "target_id": character.id, "field": field, "expected_value": expected,
+        }
+        if preserve_and_append:
+            self.repair_context["requirement"] = "preserve_and_append"
+
+
 def validate_character_profile_target(
     db: Session, project_id: str, item_type: str, payload: dict[str, Any],
 ) -> Character | None:
@@ -76,15 +103,18 @@ def validate_character_profile_target(
         if current_background and incoming_background != current_background:
             acknowledged = payload.get("background_before")
             if acknowledged != current_background:
-                raise ValueError(
+                raise ArchiveValueMismatch(
                     f"角色 {character.name} 的 background 与当前档案不同；自动建档修改时"
-                    "必须用 background_before 逐字复制当前完整值"
+                    "必须用 background_before 逐字复制当前完整值",
+                    character, "background_before", current_background, acknowledged,
                 )
             if current_background not in incoming_background:
-                raise ValueError(
+                raise ArchiveValueMismatch(
                     f"角色 {character.name} 的 background 是稳定档案整字段替换；新值必须"
-                    "逐字保留当前完整值并追加正文确认的稳定信息，禁止用本章概述截短旧背景。"
-                    "确需重写或删除时请由作者通过角色编辑接口复核后修改"
+                    "逐字保留当前完整值（含末尾标点和空白）并追加正文确认的稳定信息。"
+                    "确需重写或删除时请由作者通过角色编辑接口复核后修改",
+                    character, "background", current_background, incoming_background,
+                    preserve_and_append=True,
                 )
     return character
 
@@ -133,9 +163,10 @@ def validate_character_state_target(
         evidence_key = f"{field}_evidence"
         acknowledged = payload.get(before_key)
         if current and acknowledged != current:
-            raise ValueError(
+            raise ArchiveValueMismatch(
                 f"角色 {character.name} 的 {field} 与当前档案不同；本章确有{label}变化时，"
-                f"必须用 {before_key} 逐字复制当前值，否则省略 {field} 以保留旧值"
+                f"必须用 {before_key} 逐字复制当前值，否则省略 {field} 以保留旧值",
+                character, before_key, current, acknowledged,
             )
         evidence = payload.get(evidence_key)
         if not isinstance(evidence, str) or not evidence.strip():
@@ -160,21 +191,24 @@ def validate_character_state_target(
     current = str(character.items_or_assets or "")
     acknowledged = payload.get("items_or_assets_before")
     if acknowledged is not None and acknowledged != current:
-        raise ValueError(
+        raise ArchiveValueMismatch(
             f"角色 {character.name} 的 items_or_assets_before 与当前档案不一致；"
-            "请重新读取完整角色卡后再提交"
+            "请重新读取完整角色卡后再提交",
+            character, "items_or_assets_before", current, acknowledged,
         )
     if incoming == current or not current:
         return character
     if acknowledged is None:
-        raise ValueError(
+        raise ArchiveValueMismatch(
             f"角色 {character.name} 已有非空 items_or_assets；自动建档修改时必须提供"
-            "逐字复制的 items_or_assets_before"
+            "逐字复制的 items_or_assets_before",
+            character, "items_or_assets_before", current, acknowledged,
         )
     if current not in incoming:
-        raise ValueError(
+        raise ArchiveValueMismatch(
             f"角色 {character.name} 的 items_or_assets 是整字段替换；新值必须逐字保留"
-            "当前完整值并追加本章变化，禁止用本章短列表静默覆盖。确需删除时请由作者"
-            "通过角色编辑接口复核后修改"
+            "当前完整值（含末尾标点和空白）并追加本章变化。确需删除时请由作者"
+            "通过角色编辑接口复核后修改",
+            character, "items_or_assets", current, incoming, preserve_and_append=True,
         )
     return character

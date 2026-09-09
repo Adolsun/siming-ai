@@ -36,6 +36,7 @@ from ..services.cataloging.job_control import (
     reset_run_for_retry,
     reset_run_for_resolution_retry,
     resume_job,
+    set_job_execution_mode,
 )
 from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ..services.cataloging.lookups import find_character_by_name_or_id
@@ -49,10 +50,10 @@ from ..services.cataloging.launcher import (
     create_and_queue_cataloging_job,
     queue_managed_cataloging_job,
 )
-from ..services.cataloging.orchestrator import job_to_dict, run_to_dict, stream_cataloging_job
+from ..services.cataloging.orchestrator import job_to_dict, run_to_dict
+from ..services.cataloging.progress import observe_cataloging_job
 from ..services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
-    stream_local_cli_cataloging_job,
 )
 from ..services.character_merge_service import build_character_merge_preview
 
@@ -124,16 +125,11 @@ def get_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_d
 async def stream_cataloging(project_id: str, job_id: str):
     db = SessionLocal()
     try:
-        job = _get_job_or_404(db, project_id, job_id)
-        local_cli = job.execution_backend == "local_cli_agent"
+        _get_job_or_404(db, project_id, job_id)
     finally:
         db.close()
     return StreamingResponse(
-        (
-            stream_local_cli_cataloging_job(project_id, job_id)
-            if local_cli
-            else stream_cataloging_job(project_id, job_id)
-        ),
+        observe_cataloging_job(project_id, job_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -144,16 +140,15 @@ async def stream_cataloging(project_id: str, job_id: str):
 
 
 @router.patch("/projects/{project_id}/cataloging/{job_id}/mode")
-def update_cataloging_mode(project_id: str, job_id: str, payload: CatalogingModeUpdate, db: Session = Depends(get_db)):
+async def update_cataloging_mode(
+    project_id: str, job_id: str, payload: CatalogingModeUpdate, db: Session = Depends(get_db),
+):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    job.execution_mode = payload.execution_mode
-    job.updated_at = datetime.utcnow()
-    should_resume = job.status == "waiting_confirmation" and payload.execution_mode == "auto"
-    if should_resume and job.execution_backend == "local_cli_agent":
-        job.status = "running"
-        job.blocked_chapter_id = None
+    should_resume = set_job_execution_mode(db, job, payload.execution_mode)
     commit_session(db)
+    if should_resume:
+        queue_managed_cataloging_job(job)
     return ApiResponse.success(data={"job": job_to_dict(job), "should_resume": should_resume})
 
 
@@ -327,7 +322,7 @@ async def apply_pending_cataloging(project_id: str, job_id: str, db: Session = D
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/skip-current")
-def skip_current_cataloging_chapter(project_id: str, job_id: str, db: Session = Depends(get_db)):
+async def skip_current_cataloging_chapter(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
     run = first_blocking_run(db, job)
@@ -335,6 +330,7 @@ def skip_current_cataloging_chapter(project_id: str, job_id: str, db: Session = 
         raise ValidationError("当前没有可跳过的章节")
     mark_run_skipped(db, job, run)
     commit_session(db)
+    queue_managed_cataloging_job(job)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已显式跳过")
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/retry-current")

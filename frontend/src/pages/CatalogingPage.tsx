@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Col, Row, message } from 'antd'
+import { Alert, Button, Col, Row, Spin, message } from 'antd'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
 import CatalogingCandidatesPanel from './CatalogingCandidatesPanel'
@@ -20,20 +20,22 @@ import { createLatestRequestGate } from '../shared/latestRequest'
 
 interface CatalogingPageProps {
   projectId: string
+  focusJobId?: string
+  active?: boolean
 }
 
 const finishedRunStatuses = new Set(['completed', 'completed_with_warnings', 'skipped_by_user'])
 
 const candidateRunId = (job: CatalogingJob | null, runs: CatalogingRun[]) => {
   if (!job) return undefined
-  const chapterId = job.blocked_chapter_id || job.current_chapter_id
+  const chapterId = job.blocked_chapter_id || job.current_chapter_id || job.last_completed_chapter_id
   if (chapterId) {
     return runs.find((run) => run.chapter_id === chapterId)?.id
   }
   return runs.find((run) => !finishedRunStatuses.has(run.status))?.id
 }
 
-function CatalogingPage({ projectId }: CatalogingPageProps) {
+function CatalogingPage({ projectId, focusJobId, active = true }: CatalogingPageProps) {
   const [mode, setMode] = useState<CatalogingMode>('auto')
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions('cataloging')
   const [model, setModel] = useState<string | undefined>()
@@ -55,9 +57,21 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [logs, setLogs] = useState<string[]>([])
   const [streaming, setStreaming] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [jobLoading, setJobLoading] = useState(false)
+  const [jobLoadError, setJobLoadError] = useState('')
+  const lastOpenedJobIdRef = useRef<string | null>(null)
+  const jobLoadAbortRef = useRef<AbortController | null>(null)
   const activeJobIdRef = useRef<string | null>(null)
   const loadJobRequestGate = useRef(createLatestRequestGate<string>())
   const jobsRequestGate = useRef(createLatestRequestGate<string>())
+  const streamRequestGate = useRef(createLatestRequestGate<string>())
+  const stopStreamRef = useRef<(() => void) | undefined>()
+
+  const stopProgressStream = useCallback(() => {
+    streamRequestGate.current.invalidate()
+    stopStreamRef.current?.()
+    stopStreamRef.current = undefined
+  }, [])
 
   const progress = useMemo(() => {
     if (!job || !job.total_chapters) return 0
@@ -105,9 +119,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     }
   }, [projectId])
 
-  const fetchJob = useCallback(async (jobId: string) => {
-    const res = await apiClient.get<ApiResponse<{ job: CatalogingJob; runs: CatalogingRun[] }>>(`/projects/${projectId}/cataloging/${jobId}`)
-    if (activeJobIdRef.current === jobId) {
+  const fetchJob = useCallback(async (jobId: string, signal?: AbortSignal) => {
+    const res = await apiClient.get<ApiResponse<{ job: CatalogingJob; runs: CatalogingRun[] }>>(`/projects/${projectId}/cataloging/${jobId}`, undefined, { signal, timeout: 15000 })
+    if (!signal?.aborted && activeJobIdRef.current === jobId) {
       setJob(res.data.data.job)
       setMode(res.data.data.job.execution_mode)
       setRuns(res.data.data.runs)
@@ -115,7 +129,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     return res.data.data
   }, [projectId])
 
-  const fetchCandidates = useCallback(async (jobId: string, chapterRunId?: string) => {
+  const fetchCandidates = useCallback(async (jobId: string, chapterRunId?: string, signal?: AbortSignal) => {
     if (!chapterRunId) {
       if (activeJobIdRef.current === jobId) {
         setCandidates([])
@@ -126,8 +140,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     const res = await apiClient.get<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(
       `/projects/${projectId}/cataloging/${jobId}/candidates`,
       { chapter_run_id: chapterRunId },
+      { signal, timeout: 15000 },
     )
-    if (activeJobIdRef.current !== jobId) return
+    if (signal?.aborted || activeJobIdRef.current !== jobId) return
     setCandidates(res.data.data.items)
     setCandidateDrafts((current) => {
       const next = { ...current }
@@ -138,7 +153,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     })
   }, [projectId])
 
-  const fetchFacts = useCallback(async (jobId: string, chapterRunId?: string) => {
+  const fetchFacts = useCallback(async (jobId: string, chapterRunId?: string, signal?: AbortSignal) => {
     if (!chapterRunId) {
       if (activeJobIdRef.current === jobId) setFacts([])
       return
@@ -146,26 +161,11 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     const res = await apiClient.get<ApiResponse<{ items: CatalogingFact[]; total: number }>>(
       `/projects/${projectId}/cataloging/${jobId}/facts`,
       { chapter_run_id: chapterRunId },
+      { signal, timeout: 15000 },
     )
-    if (activeJobIdRef.current !== jobId) return
+    if (signal?.aborted || activeJobIdRef.current !== jobId) return
     setFacts(res.data.data.items || [])
   }, [projectId])
-
-  const loadJob = useCallback(async (jobId: string) => {
-    const request = loadJobRequestGate.current.begin(jobId)
-    activeJobIdRef.current = jobId
-    setLoading(false)
-    setStreaming(false)
-    setJob(null)
-    setRuns([])
-    setCandidates([])
-    setCandidateDrafts({})
-    setFacts([])
-    const data = await fetchJob(jobId)
-    if (!loadJobRequestGate.current.isCurrent(request) || activeJobIdRef.current !== jobId) return
-    const runId = candidateRunId(data.job, data.runs)
-    await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
-  }, [fetchCandidates, fetchFacts, fetchJob])
 
   const handleStreamEvent = useCallback((raw: string) => {
     let event: any
@@ -175,7 +175,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       return
     }
 
-    if (['chapter_started', 'chapter_completed', 'completed'].includes(event.type)) {
+    if (event.type === 'chapter_started') {
       setCandidates([])
       setCandidateDrafts({})
       setFacts([])
@@ -203,26 +203,19 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         [event.candidate.id]: current[event.candidate.id] || safeStringify(event.candidate.payload),
       }))
     }
-    if (event.type === 'fact_extracted' && event.fact && event.run) {
-      setFacts((current) => [
-        ...current,
-        {
-          id: `stream-${event.run.id}-${current.length}`,
-          job_id: event.job?.id,
-          chapter_run_id: event.run.id,
-          chapter_id: event.run.chapter_id,
-          fact_type: event.fact.fact_type,
-          payload: event.fact.payload || {},
-          confidence: event.fact.confidence,
-          evidence: event.fact.evidence,
-          status: 'active',
-        },
-      ])
+    if (event.type === 'fact_extracted' && event.fact?.id && event.run) {
+      setFacts((current) => {
+        const idx = current.findIndex((item) => item.id === event.fact.id)
+        if (idx < 0) return [...current, event.fact]
+        const next = [...current]
+        next[idx] = event.fact
+        return next
+      })
     }
 
     const label = event.message || event.detail || event.error || event.type
     if (label) appendLog(`${new Date().toLocaleTimeString()} ${label}`)
-    if (['completed', 'paused_on_failure', 'waiting_confirmation', 'paused', 'cancelled'].includes(event.type)) {
+    if (['completed', 'failed', 'paused_on_failure', 'waiting_confirmation', 'paused', 'cancelled'].includes(event.type)) {
       setStreaming(false)
       fetchJobs().catch(() => undefined)
     }
@@ -230,20 +223,56 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
 
   const streamJob = useCallback((jobId: string) => {
     if (activeJobIdRef.current !== jobId) return
+    stopProgressStream()
+    const request = streamRequestGate.current.begin(jobId)
     setStreaming(true)
-    apiClient.stream(
+    stopStreamRef.current = apiClient.stream(
       `/projects/${projectId}/cataloging/${jobId}/stream`,
       {},
       (raw: string) => {
-        if (activeJobIdRef.current === jobId) handleStreamEvent(raw)
+        if (streamRequestGate.current.isCurrent(request) && activeJobIdRef.current === jobId) handleStreamEvent(raw)
       },
       (err) => {
-        if (activeJobIdRef.current !== jobId) return
+        if (!streamRequestGate.current.isCurrent(request) || activeJobIdRef.current !== jobId) return
         setStreaming(false)
         message.error(err.message || '作品建档流式连接失败')
       },
     )
-  }, [handleStreamEvent, projectId])
+  }, [handleStreamEvent, projectId, stopProgressStream])
+
+  const loadJob = useCallback(async (jobId: string) => {
+    stopProgressStream()
+    jobLoadAbortRef.current?.abort()
+    const controller = new AbortController()
+    jobLoadAbortRef.current = controller
+    const request = loadJobRequestGate.current.begin(jobId)
+    activeJobIdRef.current = jobId
+    lastOpenedJobIdRef.current = jobId
+    setLoading(false)
+    setStreaming(false)
+    setJobLoading(true)
+    setJobLoadError('')
+    setJob(null)
+    setRuns([])
+    setCandidates([])
+    setCandidateDrafts({})
+    setFacts([])
+    setLogs([])
+    try {
+      const data = await fetchJob(jobId, controller.signal)
+      if (!loadJobRequestGate.current.isCurrent(request) || activeJobIdRef.current !== jobId) return
+      const runId = candidateRunId(data.job, data.runs)
+      await Promise.all([fetchCandidates(jobId, runId, controller.signal), fetchFacts(jobId, runId, controller.signal)])
+      if (!loadJobRequestGate.current.isCurrent(request) || activeJobIdRef.current !== jobId) return
+      streamJob(jobId)
+    } catch (error) {
+      if (loadJobRequestGate.current.isCurrent(request)) {
+        setJobLoadError(error instanceof Error ? error.message : '建档任务加载失败')
+      }
+    } finally {
+      if (loadJobRequestGate.current.isCurrent(request)) setJobLoading(false)
+    }
+  }, [fetchCandidates, fetchFacts, fetchJob, stopProgressStream, streamJob])
 
   const startJob = async () => {
     if (selectedChapterIds.length === 0) {
@@ -251,6 +280,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       return
     }
     const request = loadJobRequestGate.current.begin(`start:${projectId}`)
+    stopProgressStream()
     activeJobIdRef.current = null
     setJob(null)
     setRuns([])
@@ -495,9 +525,13 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   useEffect(() => {
     const loadGate = loadJobRequestGate.current
     const historyGate = jobsRequestGate.current
+    stopProgressStream()
     loadGate.invalidate()
     historyGate.invalidate()
     activeJobIdRef.current = null
+    lastOpenedJobIdRef.current = null
+    setJobLoading(false)
+    setJobLoadError('')
     setJob(null)
     setRuns([])
     setCandidates([])
@@ -514,8 +548,24 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       loadGate.invalidate()
       historyGate.invalidate()
       activeJobIdRef.current = null
+      stopProgressStream()
     }
-  }, [fetchChapters, fetchJobs])
+  }, [fetchChapters, fetchJobs, stopProgressStream])
+
+  useEffect(() => {
+    if (active) {
+      const target = focusJobId || lastOpenedJobIdRef.current
+      if (target) void loadJob(target)
+    }
+    return () => {
+      loadJobRequestGate.current.invalidate()
+      jobLoadAbortRef.current?.abort()
+      activeJobIdRef.current = null
+      stopProgressStream()
+      setStreaming(false)
+      setJobLoading(false)
+    }
+  }, [active, focusJobId, loadJob, stopProgressStream])
 
   return (
     <div>
@@ -532,6 +582,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         onStartJob={startJob}
       />
 
+      {jobLoading && <div role="status"><Spin size="small" /> 正在加载建档进度…</div>}
+      {jobLoadError && <Alert type="error" showIcon message="无法加载建档进度" description={jobLoadError}
+        action={<Button onClick={() => { if (lastOpenedJobIdRef.current) void loadJob(lastOpenedJobIdRef.current) }}>重新加载进度</Button>} />}
       <CatalogingJobControlCard
         job={job}
         currentRun={currentRun}

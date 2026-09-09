@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.provider_errors import provider_field_rejected
+
 TOOL_CAPABILITY_UNAVAILABLE = "tool_capability_unavailable"
 TOOL_CAPABILITY_UNAVAILABLE_MESSAGE = (
     f"{TOOL_CAPABILITY_UNAVAILABLE}: 当前模型不支持原生工具调用，本次请求未发送。"
@@ -95,8 +97,7 @@ def sanitize_tool_request(
 
 def should_retry_without_tool_choice(error: BaseException) -> bool:
     """Detect provider errors caused specifically by tool_choice."""
-    text = str(error).lower()
-    return "tool_choice" in text or "tool choice" in text
+    return provider_field_rejected(error, "tool_choice", "tool choice")
 
 
 def normalize_retry_count(retry: int | None) -> int:

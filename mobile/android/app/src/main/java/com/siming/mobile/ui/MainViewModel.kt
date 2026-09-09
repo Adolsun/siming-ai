@@ -942,19 +942,21 @@ private fun updateCatalogingProgress(
         fields: Map<String, Any?>,
         basePayload: JsonObject? = null,
         onSaved: () -> Unit,
+        onFailed: (Throwable) -> Unit = {},
     ) {
         viewModelScope.launch {
             try {
                 saveRecordInternal(projectId, entityType, entityId, fields, basePayload)
                 uiState.value = uiState.value.copy(
                     notice = if (connection.value != null) {
-                        "已通过 PC 端同一 API 保存，服务端副作用与桌面端一致"
+                        "已保存到 Gateway"
                     } else {
                         "已保存到手机；连接 Gateway 后自动同步"
                     },
                 )
                 onSaved()
             } catch (error: Exception) {
+                onFailed(error)
                 showError(error)
             }
         }
@@ -1577,6 +1579,7 @@ private fun updateCatalogingProgress(
             "content_delta" -> AssistantEventUpdate(output = delta)
             "reasoning_delta" -> AssistantEventUpdate(
                 reasoning = delta,
+                replaceReasoning = event["replace"]?.jsonPrimitive?.contentOrNull == "true",
                 activity = "模型正在思考…",
             )
             "complete" -> {
@@ -1650,10 +1653,10 @@ private fun updateCatalogingProgress(
                     } else state
                     val context = mobileAssistantContextStateFromJson(normalizedState, checkpoint)
                     val activity = when (status) {
-                        "pending", "compressing" -> "正在整理较早上下文；当前任务尚未执行"
+                        "pending", "compressing" -> "正在整理较早上下文；完成容量检查后继续当前任务"
                         "ready" -> context.detail.ifBlank { "较早上下文已整理，正在继续当前任务" }
                         "failed" -> context.errorDetail.orEmpty()
-                            .ifBlank { "较早上下文整理失败；当前任务尚未执行" }
+                            .ifBlank { "上下文准备受阻；后续步骤已暂停" }
                         "syncing_transcript" -> context.detail.ifBlank { "正在同步手机完整会话…" }
                         "transcript_synced" -> context.detail.ifBlank { "手机完整会话已同步" }
                         else -> context.detail.takeIf(String::isNotBlank)

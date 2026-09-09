@@ -11,7 +11,7 @@ from ...database.models import CatalogingCandidate, CatalogingChapterRun, Catalo
 from ...modules.story.application.content_sync import enqueue_project_sync
 from .applier import apply_candidates_for_run
 from .candidate_io import candidate_has_usable_summary, float_or_none
-from .candidate_store import ensure_outline_section_scene_number
+from .scene_contract import validate_scene_candidate
 from .candidate_validation import (
     candidate_coverage_error_message,
     candidate_coverage_review_message,
@@ -39,7 +39,7 @@ def create_manual_candidate(
         "payload": dict(payload),
         "target_name": target_name,
     }
-    ensure_outline_section_scene_number(db, run, normalized)
+    validate_scene_candidate(db, run, normalized)
     payload = normalized["payload"]
     sort_order = db.query(CatalogingCandidate).filter(CatalogingCandidate.chapter_run_id == run.id).count()
     candidate = CatalogingCandidate(

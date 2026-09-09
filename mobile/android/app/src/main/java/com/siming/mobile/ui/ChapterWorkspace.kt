@@ -57,6 +57,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -158,6 +161,7 @@ internal fun PendingChapterDraftEditorScreen(
     var lastGeneratedContent by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
     var showingFormalText by rememberSaveable(draft.draftId) { mutableStateOf(false) }
     var showDiscardDialog by rememberSaveable(draft.draftId) { mutableStateOf(false) }
+    val saveState = chapterDraftSaveState(draft, title, online, busy, showingFormalText)
 
     LaunchedEffect(draft.content, draft.status) {
         if (draft.generating || content == lastGeneratedContent) {
@@ -242,19 +246,17 @@ internal fun PendingChapterDraftEditorScreen(
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        OutlinedButton(
-                            enabled = !busy && title.isNotBlank()
-                                && !draft.versionConflict && !showingFormalText,
+                        Button(
+                            enabled = saveState.canSave,
                             onClick = {
                                 viewModel.savePendingChapterDraft(
                                     draft, title, content, "save_only", onSaved,
                                 )
                             },
                             modifier = Modifier.weight(1f),
-                        ) { Text("仅保存") }
-                        Button(
-                            enabled = online && !busy && title.isNotBlank()
-                                && !draft.versionConflict && !showingFormalText,
+                        ) { Text("保存正文") }
+                        OutlinedButton(
+                            enabled = saveState.canCatalog,
                             onClick = {
                                 viewModel.savePendingChapterDraft(
                                     draft, title, content, "save_and_catalog", onSaved,
@@ -276,6 +278,12 @@ internal fun PendingChapterDraftEditorScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (draft.generating || busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                saveState.hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
             if (draft.revision) {
                 Text(
                     if (draft.versionConflict) {
@@ -325,8 +333,8 @@ internal fun PendingChapterDraftEditorScreen(
                     showingFormalText -> "当前正式正文 · 只读对比"
                     draft.versionConflict -> "修订候选已保留，但版本冲突时禁止覆盖保存"
                     draft.revision -> "${content.count { !it.isWhitespace() }} 字 · 修订候选，保存后更新原章节"
-                    online -> "${content.count { !it.isWhitespace() }} 字 · 请选择仅保存，或保存并建档"
-                    else -> "${content.count { !it.isWhitespace() }} 字 · 独立模式可仅保存；连接 PC 后可建档"
+                    online -> "${content.count { !it.isWhitespace() }} 字 · 确认满意后再建档"
+                    else -> "${content.count { !it.isWhitespace() }} 字 · 正文可保存在手机；连接 Gateway 后可建档"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -472,16 +480,31 @@ internal fun ChapterEditorScreen(
     var editing by rememberSaveable(chapter?.key) { mutableStateOf(chapter == null) }
     var showMore by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    var showLeaveConfirmation by rememberSaveable(chapter?.key) { mutableStateOf(false) }
+    var savedTitle by rememberSaveable(chapter?.key) { mutableStateOf(originalTitle.ifBlank { suggestedTitle }) }
+    var savedContent by rememberSaveable(chapter?.key) { mutableStateOf(originalContent) }
+    val hasEdits = title != savedTitle || content != savedContent
 
     fun cancelEditing() {
         if (chapter == null) {
             onBack()
         } else {
-            title = originalTitle
-            content = originalContent
+            title = savedTitle
+            content = savedContent
             editing = false
         }
     }
+
+    fun requestLeaveEditor() {
+        if (saving) return
+        if (editing && hasEdits) showLeaveConfirmation = true
+        else if (editing) cancelEditing()
+        else onBack()
+    }
+
+    BackHandler(enabled = editing, onBack = ::requestLeaveEditor)
 
     Scaffold(
         containerColor = SimingPaper,
@@ -499,7 +522,7 @@ internal fun ChapterEditorScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = if (editing) ::cancelEditing else onBack) {
+                    IconButton(onClick = ::requestLeaveEditor, enabled = !saving) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
                     }
                 },
@@ -523,13 +546,17 @@ internal fun ChapterEditorScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         OutlinedButton(
-                            onClick = ::cancelEditing,
+                            onClick = ::requestLeaveEditor,
+                            enabled = !saving,
                             modifier = Modifier.weight(1f),
                         ) {
                             Text(if (chapter == null) "取消" else "放弃修改")
                         }
                         Button(
                             onClick = {
+                                if (saving) return@Button
+                                saving = true
+                                saveError = null
                                 val fields = linkedMapOf<String, Any?>(
                                     "title" to title.trim(),
                                     "content" to content,
@@ -542,15 +569,22 @@ internal fun ChapterEditorScreen(
                                     entityId = chapter?.entityId,
                                     fields = fields,
                                     basePayload = chapter?.payload(),
+                                    onFailed = { error ->
+                                        saving = false
+                                        saveError = error.message ?: "保存失败，请重试。"
+                                    },
                                     onSaved = {
+                                        saving = false
+                                        savedTitle = title
+                                        savedContent = content
                                         if (chapter == null) onBack() else editing = false
                                     },
                                 )
                             },
-                            enabled = title.isNotBlank(),
+                            enabled = !saving && title.isNotBlank() && (chapter == null || hasEdits),
                             modifier = Modifier.weight(1.4f),
                         ) {
-                            Text("保存")
+                            Text(if (saving) "正在保存…" else "保存正文")
                         }
                     }
                 }
@@ -592,9 +626,23 @@ internal fun ChapterEditorScreen(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    when {
+                        saving -> "正在保存正文，请稍候。"
+                        saveError != null -> "保存未完成：$saveError。编辑内容仍保留，可重试保存。"
+                        title.isBlank() -> "先填写章节标题。"
+                        chapter == null || hasEdits -> "当前正文尚未保存。确认修改后点击“保存正文”。"
+                        else -> "正文已保存。可以继续修改本章。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (saveError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
+                    enabled = !saving,
                     placeholder = { Text("章节标题") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -602,6 +650,7 @@ internal fun ChapterEditorScreen(
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
+                    enabled = !saving,
                     placeholder = { Text("开始写正文…") },
                     minLines = 16,
                     maxLines = Int.MAX_VALUE,
@@ -609,7 +658,7 @@ internal fun ChapterEditorScreen(
                     textStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
                 )
                 Text(
-                    "${content.count { !it.isWhitespace() }} 字 · ${if (connection != null) "保存后同步到 PC" else "离线保存在本机"}",
+                    "${content.count { !it.isWhitespace() }} 字 · ${if (connection != null) "点击保存后提交到 Gateway" else "点击保存后保存在手机"}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -622,6 +671,23 @@ internal fun ChapterEditorScreen(
                 modifier = Modifier.padding(padding),
             )
         }
+    }
+
+    if (showLeaveConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirmation = false },
+            title = { Text("还有未保存的修改") },
+            text = { Text("离开后，这些修改不会保留。你可以继续编辑并保存，或放弃本次修改。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeaveConfirmation = false
+                    cancelEditing()
+                }) { Text("放弃修改", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirmation = false }) { Text("继续编辑") }
+            },
+        )
     }
 
     if (showMore && chapter != null) {

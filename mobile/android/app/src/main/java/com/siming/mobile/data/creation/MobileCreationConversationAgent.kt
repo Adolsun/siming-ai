@@ -101,11 +101,12 @@ internal class MobileCreationConversationAgent(
         val userMessage = chatMessage("user", message)
         var currentConversation = conversation
         val initialRuntime = conversation.toolRuntimeState(turnContext.turnId)
-        val deliveredTransactions = initialRuntime?.deliveredTransactions.orEmpty().toMutableList()
+        val deliveredTransactions = initialRuntime?.activeTransactions.orEmpty().toMutableList()
         val executionLedger = initialRuntime?.executionLedger.orEmpty().toMutableList()
 
         var finalReply = ""
         var iteration = 0
+        var consecutiveCapacityRejections = 0
         var activeCategories = emptyList<String>()
         var categorySelected = false
         var successfulWriteCount = 0
@@ -140,6 +141,7 @@ internal class MobileCreationConversationAgent(
                 else -> "auto"
             }
             val prepared = conversationContextRuntime.prepare(
+                resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
                 storageId = storageId,
                 currentUserPrompt = message,
                 config = config,
@@ -196,7 +198,7 @@ internal class MobileCreationConversationAgent(
                     turnContext = turnContext,
                 )
                 deliveredTransactions.clear()
-                deliveredTransactions += consumed.deliveredTransactions
+                deliveredTransactions += consumed.activeTransactions
                 executionLedger.clear()
                 executionLedger += consumed.executionLedger
                 currentConversation = conversationStore.snapshot(storageId, turnContext.conversationId)
@@ -259,14 +261,18 @@ internal class MobileCreationConversationAgent(
                     "模型没有调用本步骤唯一开放的 set_tool_categories，整批未执行",
                 )
             }
-            val batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            var batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
                 assistantPayload = turn.assistantMessage,
                 orderedToolNames = calls.map(DirectAgentToolCall::name),
-                resultJsonBytes = ::creationDeclaredResultBytes,
+                requestBudget = prepared.budget,
+                resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
             )
             if (!batchAdmission.accepted) {
+                consecutiveCapacityRejections += 1
+                batchAdmission = batchAdmission.copy(recoveryFits = batchAdmission.recoveryFits &&
+                    consecutiveCapacityRejections < MobileNativeToolBudgetContract.MAX_CONSECUTIVE_CAPACITY_REJECTIONS)
                 val rejectedResults = calls.map { call ->
-                    creationRejectedBatchResult(call.name, batchAdmission.reason.orEmpty())
+                    batchAdmission.errorResult(call.name)
                 }
                 persistRejectedMobileNativeToolBatch(
                     conversationStore = conversationStore,
@@ -277,7 +283,7 @@ internal class MobileCreationConversationAgent(
                     overCapacityDetail = "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行",
                 ) { runtime ->
                     deliveredTransactions.clear()
-                    deliveredTransactions += runtime.deliveredTransactions
+                    deliveredTransactions += runtime.activeTransactions
                     toolResults += rejectedResults
                     rejectedResults.forEach { result ->
                         onProgress(
@@ -294,6 +300,7 @@ internal class MobileCreationConversationAgent(
                 continue
             }
 
+            consecutiveCapacityRejections = 0
             val categoryCall = categoryCalls.firstOrNull()
             if (categoryCall != null) {
                 val assistantToolMessage = assistantToolMessage(turn.content, listOf(categoryCall))
@@ -326,7 +333,7 @@ internal class MobileCreationConversationAgent(
                     ),
                 )
                 deliveredTransactions.clear()
-                deliveredTransactions += runtime.deliveredTransactions
+                deliveredTransactions += runtime.activeTransactions
                 selected.getOrNull()?.let { categories ->
                     activeCategories = categories
                     categorySelected = true
@@ -439,7 +446,7 @@ internal class MobileCreationConversationAgent(
                 transaction = deliveredTransaction(turn, calls, modelVisibleResults),
             )
             deliveredTransactions.clear()
-            deliveredTransactions += runtime.deliveredTransactions
+            deliveredTransactions += runtime.activeTransactions
             iteration += 1
         }
 
@@ -457,6 +464,7 @@ internal class MobileCreationConversationAgent(
                 put("thinking", buildJsonObject { put("type", "disabled") })
             } else null
             val prepared = conversationContextRuntime.prepare(
+                resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
                 storageId = storageId,
                 currentUserPrompt = message,
                 config = config,
@@ -590,17 +598,6 @@ internal class MobileCreationConversationAgent(
         tool in CREATION_LARGE_READ_TOOLS -> CREATION_LARGE_READ_RESULT_BYTES
         else -> CREATION_STANDARD_RESULT_BYTES
     }
-
-    private fun creationRejectedBatchResult(tool: String, reason: String): JsonObject = result(
-        tool = tool,
-        status = "denied",
-        detail = when (reason) {
-            MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY ->
-                "立项原生 assistant 工具事务超过 16KiB；整批未执行。请缩小参数。"
-            else -> "立项工具批次超过 32KiB 声明结果上限；整批未执行。请减少并行调用。"
-        },
-        data = buildJsonObject { put("reason", reason) },
-    )
 
     private fun creationModelVisibleResult(tool: String, raw: JsonObject): JsonObject {
         val projected = if (tool == contract.categoryController || tool in contract.writeToolNames) {

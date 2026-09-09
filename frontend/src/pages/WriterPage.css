@@ -85,8 +85,8 @@
 
 .writer-chapter-order-controls .ant-btn {
   color: var(--ant-color-text-tertiary);
-  height: 22px;
-  width: 24px;
+  height: 28px;
+  width: 28px;
 }
 
 .writer-chapter-item[draggable="true"] {
@@ -173,6 +173,68 @@
 
 .writer-editor-heading {
   min-width: 0;
+}
+
+.writer-editor-head {
+  flex-wrap: wrap;
+}
+
+.writer-editor-actions {
+  justify-content: flex-end;
+}
+
+.writer-save-bar {
+  align-items: center;
+  background: var(--ant-color-fill-quaternary);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding: 12px;
+}
+
+.writer-save-guidance {
+  display: grid;
+  flex: 1 1 300px;
+  font-size: 13px;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.writer-save-guidance > span {
+  color: var(--ant-color-text-secondary);
+}
+
+.writer-save-shortcut {
+  font-size: 12px;
+}
+
+.writer-save-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+
+.writer-save-actions .ant-btn {
+  min-height: 36px;
+}
+
+.chapter-save-impact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.chapter-save-impact-actions .ant-btn {
+  margin-inline-start: 0 !important;
+  min-height: 36px;
 }
 
 .writer-editor-title.ant-typography {
@@ -609,6 +671,15 @@
   .writer-editor-head > .ant-space {
     align-self: stretch;
     justify-content: flex-end;
+  }
+
+  .writer-save-actions {
+    width: 100%;
+  }
+
+  .writer-save-actions .ant-btn {
+    flex: 1 1 130px;
+    min-height: 40px;
   }
 }
 

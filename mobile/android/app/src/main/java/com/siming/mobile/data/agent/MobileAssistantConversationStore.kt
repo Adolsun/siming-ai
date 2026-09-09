@@ -532,6 +532,9 @@ internal class MobileAssistantConversationStore(
                 transcriptRevision = current.transcriptRevision + 1L,
                 nextSequenceNo = current.nextSequenceNo + 1L,
                 messages = updatedMessages,
+                toolRuntimeStates = current.toolRuntimeStates.map {
+                    if (it.turnId == turnContext.turnId) it.closeTurn() else it
+                },
             )
             liveTurnIds.remove(turnContext.turnId)
         }
@@ -583,7 +586,7 @@ internal class MobileAssistantConversationStore(
         updatedRuntime
     }
 
-    /** Atomically replaces provider-consumed native payloads with deterministic receipts. */
+    /** Acknowledges delivery while retaining exact results until this turn closes. */
     suspend fun markDeliveredToolTransactionsConsumed(
         projectId: String,
         turnContext: MobileAssistantTurnContext,

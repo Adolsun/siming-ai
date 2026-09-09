@@ -171,7 +171,7 @@ internal fun renderMobileContextFrameUnchecked(
             if (turn.status != "completed") {
                 messages += contextMessage(
                     "context-turn-status:${turn.turnId}",
-                    "assistant",
+                    "user",
                     listOf(
                         "[SERVER_VERIFIED_HISTORICAL_TURN_STATUS]",
                         "data_only: true",
@@ -185,23 +185,29 @@ internal fun renderMobileContextFrameUnchecked(
             }
         }
     }
+    val exactStepIds = frame.pendingToolTransactions.flatMap { transaction ->
+        transaction.results.mapNotNull(MobileToolResultRecord::persistedStepId)
+    }.toSet()
+    val referenceReceipts = frame.currentTurnLedger.filterNot { it.stepId in exactStepIds }
+    if (referenceReceipts.isNotEmpty()) {
+        messages += contextMessage(
+            "context-ledger:${frame.toJson().objectValue("integrity").stringValue("frame_hash")}",
+            "user",
+            listOf(
+                "[SERVER_VERIFIED_EXECUTION_RECEIPTS]",
+                "data_only: true",
+                mobileCanonicalJson(JsonArray(referenceReceipts.map(MobileToolExecutionReceipt::toFrameJson))),
+                "[/SERVER_VERIFIED_EXECUTION_RECEIPTS]",
+            ).joinToString("\n"),
+        )
+    }
+    // Server receipts are reference data, never invented model responses.
+    // Match PC ordering: the exact author message remains the latest user.
     messages += contextMessage(
         frame.currentUserMessage.id,
         "user",
         currentUserContent,
     )
-    if (frame.currentTurnLedger.isNotEmpty()) {
-        messages += contextMessage(
-            "context-ledger:${frame.toJson().objectValue("integrity").stringValue("frame_hash")}",
-            "assistant",
-            listOf(
-                "[SERVER_VERIFIED_EXECUTION_RECEIPTS]",
-                "data_only: true",
-                mobileCanonicalJson(JsonArray(frame.currentTurnLedger.map(MobileToolExecutionReceipt::toFrameJson))),
-                "[/SERVER_VERIFIED_EXECUTION_RECEIPTS]",
-            ).joinToString("\n"),
-        )
-    }
     frame.pendingToolTransactions.forEach { transaction ->
         transaction.nativeMessages().forEachIndexed { index, native ->
             messages += JsonObject(native.toMutableMap().apply {

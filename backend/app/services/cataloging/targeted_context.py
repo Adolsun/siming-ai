@@ -47,6 +47,7 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
         "recent_chapter_summaries": _recent_summaries(db, chapters, index),
         "character_name_index": [
             {
+                "id": item.id,
                 "name": item.name,
                 "age": item.age,
                 "role_type": item.role_type,
@@ -60,6 +61,10 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
         "worldbuilding_title_index": [
             {"id": item.id, "dimension": item.dimension, "title": item.title}
             for item in _load_worldbuilding_index(db, project_id)
+        ],
+        "worldbuilding_identity_review_required": [
+            {"id": item.id, "dimension": item.dimension, "title": item.title}
+            for item in world_entries
         ],
         "relevant_worldbuilding": [_worldbuilding_context(item) for item in world_entries],
         "nearby_outline_nodes": _nearby_outline_nodes(db, project_id, index),
@@ -229,9 +234,11 @@ def _character_context(character: Character) -> dict:
         ],
         "role_type": character.role_type,
         "age": character.age,
-        "appearance": _clip(character.appearance, 360),
+        # These values participate in exact *_before checks. An excerpt can
+        # never acknowledge the stored value and would make a valid update fail.
+        "appearance": character.appearance,
         "personality": _clip(character.personality, 480),
-        "background": _clip(character.background, 720),
+        "background": character.background,
         "abilities": _parse_list(character.abilities)[:12],
         "life_status": character.life_status,
         "current_location": character.current_location,
@@ -241,7 +248,7 @@ def _character_context(character: Character) -> dict:
         "current_goal": _clip(character.current_goal, 260),
         "active_conflict": _clip(character.active_conflict, 260),
         "abilities_state": _clip(character.abilities_state, 260),
-        "items_or_assets": _clip(character.items_or_assets, 260),
+        "items_or_assets": character.items_or_assets,
         "profile": dict(character.profile_json or {}),
         "recent_timeline": [
             {

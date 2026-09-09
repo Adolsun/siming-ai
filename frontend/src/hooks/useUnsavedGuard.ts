@@ -64,6 +64,7 @@ export function useUnsavedGuard() {
       content: '离开后，这些修改不会保留。你可以先留下并保存，或确认放弃修改。',
       okText: '放弃并离开',
       cancelText: '留下保存',
+      autoFocusButton: 'cancel',
       okButtonProps: { danger: true },
       onOk: () => {
         dirtyRef.current = false

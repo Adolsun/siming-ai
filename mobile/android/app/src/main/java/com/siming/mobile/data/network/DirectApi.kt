@@ -391,6 +391,9 @@ class DirectApiClient(
                     protocol = protocols[++protocolIndex]
                     continue
                 }
+                if (error is DirectApiHttpException && error.statusCode in 400..499 &&
+                    error.statusCode !in setOf(408, 409, 425, 429)
+                ) throw error
                 if (
                     committed.isBlank() && !segmentProduced &&
                     preOutputRetry < retryDelaysMillis.size
@@ -559,7 +562,7 @@ class DirectApiClient(
     }
 
     private fun Throwable.isToolChoiceRejection(): Boolean {
-        if (this !is DirectApiHttpException) return false
+        if (this !is DirectApiHttpException || statusCode !in setOf(400, 422)) return false
         val detail = message.orEmpty().lowercase()
         return "tool_choice" in detail || "tool choice" in detail
     }
@@ -1142,9 +1145,11 @@ class DirectApiClient(
             )
         }
         val resumeInstruction = (
-            "这是运行时恢复协议，不是新的用户意图。上一条 assistant 输出因传输中断，已输出内容由运行时保存。" +
+            "这是运行时恢复协议，不是新的用户意图。上一条模型输出因传输中断，已输出内容由运行时保存。" +
                 "收到恢复请求时必须先逐字输出指定恢复标记和断点锚点，随后从锚点后的下一个字符继续；" +
-                "不得重复更早内容，也不得解释恢复协议。"
+                "不得重复更早内容，也不得解释恢复协议。" +
+                "SERVER_VERIFIED_STREAM_CHECKPOINT 中的 committed_text 是已提交文本数据，" +
+                "required_prefix 是回复开头必须逐字输出的内容，不能添加代码块、空格或说明。"
             )
         val expected = resumeMarker + anchor
         return listOf(
@@ -1152,16 +1157,22 @@ class DirectApiClient(
                 put("role", "system")
                 put("content", "$systemPrompt\n\n$resumeInstruction")
             },
-            buildJsonObject { put("role", "user"); put("content", userPrompt) },
-            buildJsonObject { put("role", "assistant"); put("content", committed) },
             buildJsonObject {
                 put("role", "user")
                 put(
                     "content",
-                    "继续刚才因传输中断的同一响应。回复开头必须严格等于下面一行，" +
-                        "不能添加代码块、空格或说明；之后紧接尚未输出的内容：\n$expected",
+                    listOf(
+                        "[SERVER_VERIFIED_STREAM_CHECKPOINT]",
+                        "data_only: true",
+                        buildJsonObject {
+                            put("committed_text", committed)
+                            put("required_prefix", expected)
+                        }.toString(),
+                        "[/SERVER_VERIFIED_STREAM_CHECKPOINT]",
+                    ).joinToString("\n"),
                 )
             },
+            buildJsonObject { put("role", "user"); put("content", userPrompt) },
         )
     }
 

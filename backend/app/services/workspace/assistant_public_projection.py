@@ -17,13 +17,18 @@ from typing import Any
 
 from app.architecture.resource_references import public_resource_reference
 from app.architecture.tool_result_policy import ModelResultPolicy, ModelResultPreview
+from app.architecture.tool_status import (
+    TOOL_ERROR_STATUSES,
+    TOOL_SUCCESS_STATUSES,
+    tool_status_detail,
+)
 from app.core.utils import utc_isoformat
 from app.services.chapter_writing_constraints import recommended_han_character_target
 from app.services.workspace.assistant_public_errors import public_model_error_message
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9._:/-]{1,255}$")
-_SUCCESS_STATUSES = frozenset({"ok", "completed", "success", "succeeded"})
-_ERROR_STATUSES = frozenset({"error", "failed", "interrupted"})
+_SUCCESS_STATUSES = TOOL_SUCCESS_STATUSES
+_ERROR_STATUSES = TOOL_ERROR_STATUSES
 _SAFE_USAGE_KEYS = frozenset(
     {
         "input_tokens",
@@ -43,25 +48,16 @@ def _safe_identifier(value: Any) -> str | None:
     return normalized if _SAFE_IDENTIFIER.fullmatch(normalized) else None
 
 
-def _stable_step_detail(tool: str | None, status: str) -> str:
-    label = tool or "工具步骤"
-    if status in _SUCCESS_STATUSES:
-        return f"{label} 已完成"
-    if status in {"cancelled", "aborted"}:
-        return f"{label} 已取消"
-    if status == "running":
-        return f"正在执行 {label}"
-    if status in _ERROR_STATUSES:
-        return f"{label} 执行失败"
-    return f"{label} 状态已更新"
-
-
 def _public_tool_remediation(
     tool: str | None,
     status: str,
     value: Any,
 ) -> dict[str, Any] | None:
     """Project only producer-declared, author-actionable retry information."""
+
+    capacity = _capacity_remediation(value)
+    if status in _ERROR_STATUSES and capacity is not None:
+        return capacity
 
     if (
         tool != "save_external_chapter_draft"
@@ -115,6 +111,42 @@ def _public_tool_remediation(
         "missing_han_characters": missing,
         "recommended_han_characters": recommended,
         "recommended_additional_han_characters": recommended_additional,
+    }
+
+
+def _capacity_remediation(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    data = value.get("data")
+    if not isinstance(data, Mapping):
+        data = value.get("remediation")
+    if not isinstance(data, Mapping):
+        return None
+    code = data.get("reason") or data.get("code")
+    if code == "tool_result_over_capacity":
+        actual, maximum = data.get("actual_bytes"), data.get("max_bytes")
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in (actual, maximum)):
+            return None
+        return {"code": code, "message": (
+            f"工具已执行，但返回结果 {actual} 字节超过本次读取契约的 {maximum} 字节，未交给模型。"
+            "请按该工具的分页或字段参数缩小读取范围；这不是模型总上下文不足。"
+        ), "actual_bytes": actual, "max_bytes": maximum, "retryable": True}
+    if code not in {
+        "tool_result_batch_over_capacity", "native_assistant_transaction_over_capacity",
+    }:
+        return None
+    required, available = data.get("required_tokens"), data.get("available_tokens")
+    if any(not isinstance(n, int) or isinstance(n, bool) or n < 0
+           for n in (required, available)):
+        return None
+    retryable = data.get("retryable") is True
+    return {
+        "code": code,
+        "message": (
+            f"本批工具预计需要 {required} Token 安全预算，当前剩余 {available}；尚未执行。"
+            + ("正在调整查询数量或读取范围。" if retryable else "已保留进度，请缩小范围后重试。")
+        ),
+        "retryable": retryable, "required_tokens": required, "available_tokens": available,
     }
 
 
@@ -233,17 +265,27 @@ def _author_visible_draft_data(tool_name: str, value: Any) -> dict[str, Any] | N
 
 def public_tool_log(value: Any, *, include_success_data: bool = False) -> dict[str, Any]:
     item = value if isinstance(value, Mapping) else {}
+    delivery = item.get("model_delivery")
+    execution_status = None
+    if isinstance(delivery, Mapping):
+        execution_status = _safe_identifier(item.get("status"))
+        item = {**delivery, "tool": item.get("tool"), "step_id": item.get("step_id")}
+    elif item.get("model_delivery_status") == "rejected":
+        execution_status = _safe_identifier(item.get("execution_status"))
     tool = _safe_identifier(item.get("tool")) or "tool"
     status = (_safe_identifier(item.get("status")) or "unknown").lower()
     projected: dict[str, Any] = {
         "tool": tool,
         "status": status,
-        "detail": _stable_step_detail(tool, status),
+        "detail": tool_status_detail(tool, status),
     }
     remediation = _public_tool_remediation(tool, status, item)
     if remediation is not None:
         projected["detail"] = remediation["message"]
         projected["remediation"] = remediation
+    if execution_status:
+        projected["execution_status"] = execution_status
+        projected["model_delivery_status"] = "rejected"
     step_id = _safe_identifier(item.get("step_id") or item.get("stepId"))
     if step_id:
         projected["step_id"] = step_id
@@ -266,6 +308,12 @@ def _public_failure(value: Any) -> dict[str, Any] | None:
     error_id = _safe_identifier(details.get("error_id"))
     if error_id:
         projected_details["error_id"] = error_id
+    if code == "tool_transaction_over_capacity":
+        for key in ("required_tokens", "available_tokens", "assistant_json_bytes",
+                    "declared_result_json_bytes", "consecutive_rejections"):
+            number = details.get(key)
+            if isinstance(number, int) and not isinstance(number, bool) and number >= 0:
+                projected_details[key] = number
     remediation = _stable_public_remediation(code)
     if remediation:
         projected_details["remediation"] = remediation
@@ -277,6 +325,8 @@ def _public_failure(value: Any) -> dict[str, Any] | None:
 
 
 def _stable_public_error_message(code: str) -> str:
+    if code == "tool_transaction_over_capacity":
+        return "工具批次超过当前模型剩余容量，已保留进度；本批次未执行。"
     if code == "conversation_capacity_unknown":
         return "当前模型缺少可验证的上下文容量配置，本次任务未执行。"
     if code == "conversation_checkpoint_failed":
@@ -298,6 +348,8 @@ def _stable_public_error_message(code: str) -> str:
 
 
 def _stable_public_remediation(code: str) -> str | None:
+    if code == "tool_transaction_over_capacity":
+        return "请减少本轮查询范围，或使用更大上下文容量的模型后重试。"
     if code == "conversation_capacity_unknown":
         return "请配置模型上下文窗口或切换已验证模型。"
     if code == "conversation_checkpoint_failed":
@@ -326,6 +378,11 @@ def public_message_payload(value: Any) -> dict[str, Any] | None:
         item = value.get(field)
         if isinstance(item, str) and len(item) <= 255:
             result[field] = item
+    if value.get("reasoning_source") == "model_api" and isinstance(
+        value.get("reasoning_content"), str
+    ):
+        result["reasoning_content"] = value["reasoning_content"]
+        result["reasoning_source"] = "model_api"
     usage = value.get("usage")
     if isinstance(usage, Mapping):
         safe_usage = {
@@ -395,7 +452,7 @@ def _public_run_error(status: str, raw_error: Any) -> tuple[str | None, str | No
         return "workspace_assistant_aborted", "作品助手任务未完成。"
     if code and (code.startswith("conversation_") or code.startswith("model_")):
         return code, _stable_public_error_message(code)
-    if code == "workspace_assistant_server_error":
+    if code in {"workspace_assistant_server_error", "tool_transaction_over_capacity"}:
         return code, _stable_public_error_message(code)
     return "workspace_assistant_failed", "作品助手任务未完成。"
 
@@ -516,8 +573,21 @@ def public_step_payload(step: Any, *, can_retry: bool, retry_block_reason: str |
             raw_result = json.loads(step.result_json)
         except (TypeError, json.JSONDecodeError):
             raw_result = None
-    remediation = _public_tool_remediation(tool, status, raw_result)
-    detail = remediation["message"] if remediation else _stable_step_detail(tool, status)
+    delivery_view = public_tool_log(raw_result)
+    delivery_failed = isinstance(raw_result, Mapping) and isinstance(
+        raw_result.get("model_delivery"), Mapping
+    )
+    if delivery_failed:
+        status = delivery_view["status"]
+        failed = True
+        # Execution may have committed; a delivery failure must not replay a write.
+        can_retry = False
+        retry_block_reason = "工具已执行；请调整读取范围，不要重放已完成的写入。"
+    remediation = (
+        delivery_view.get("remediation") if delivery_failed
+        else _public_tool_remediation(tool, status, raw_result)
+    )
+    detail = remediation["message"] if remediation else tool_status_detail(tool, status)
     result = {
         "id": step.id,
         "run_id": step.run_id,
@@ -526,7 +596,7 @@ def public_step_payload(step: Any, *, can_retry: bool, retry_block_reason: str |
         "status": status,
         "iteration": step.iteration or 0,
         "detail": detail,
-        "error": _stable_step_detail(tool, status) if failed else None,
+        "error": tool_status_detail(tool, status) if failed else None,
         "attempt_no": step.attempt_no or 1,
         "retry_of_step_id": step.retry_of_step_id,
         "resolved_step_id": step.resolved_step_id,
@@ -543,6 +613,9 @@ def public_step_payload(step: Any, *, can_retry: bool, retry_block_reason: str |
     }
     if remediation is not None:
         result["remediation"] = remediation
+    if delivery_failed:
+        result["execution_status"] = str(step.status or "")
+        result["model_delivery_status"] = "rejected"
     return result
 
 

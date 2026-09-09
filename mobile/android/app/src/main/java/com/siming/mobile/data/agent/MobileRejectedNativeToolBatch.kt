@@ -25,10 +25,10 @@ internal suspend fun persistRejectedMobileNativeToolBatch(
         transaction = transaction,
     )
     afterPersist(runtime)
-    if (admission.reason == MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY) {
+    if (!admission.recoveryFits) {
         throw MobileConversationContextException(
-            MobileConversationContextErrorCode.PROTOCOL_INVALID,
-            overCapacityDetail,
+            MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+            "工具批次无法在当前模型预算内恢复，已保留进度；本批次未执行。$overCapacityDetail",
         )
     }
     return runtime

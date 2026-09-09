@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Modal, message } from 'antd'
+import { CanceledError } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
@@ -8,6 +9,8 @@ const api = vi.hoisted(() => ({
   put: vi.fn(),
   delete: vi.fn(),
 }))
+
+vi.unmock('axios')
 
 vi.mock('../api/client', () => ({ apiClient: api }))
 vi.mock('../hooks/useModelOptions', () => ({
@@ -118,6 +121,103 @@ describe('WriterPage manual writing actions', () => {
     }))
   })
 
+  it('shows an unsaved blank chapter and keeps both save choices visible', async () => {
+    render(<WriterPage projectId="project-1" />)
+    await screen.findByDisplayValue(source)
+    fireEvent.click(screen.getByRole('button', { name: '新建章节' }))
+    expect(await screen.findByText('尚未保存')).toBeInTheDocument()
+    expect(screen.queryByText('已保存')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存正文' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '保存并建档' })).toBeDisabled()
+    expect(screen.getByText('先填写章节标题')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox', { name: '标题' }), { target: { value: '新的一章' } })
+    expect(screen.getByRole('button', { name: '保存正文' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '保存并建档' })).toBeEnabled()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])('saves only the current text with the keyboard shortcut %j', async (modifier) => {
+    render(<WriterPage projectId="project-1" />)
+    const editor = await screen.findByDisplayValue(source)
+    fireEvent.change(editor, { target: { value: candidate } })
+    fireEvent.keyDown(editor, { key: 's', ...modifier })
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      '/projects/project-1/chapters/chapter-1',
+      expect.objectContaining({ content: candidate, cataloging_mode: 'save_only' }),
+    ))
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('locks the submitted text and ignores repeated saves until the response arrives', async () => {
+    let finishSave!: (value: ReturnType<typeof response<typeof chapter>>) => void
+    api.put.mockReturnValue(new Promise((resolve) => { finishSave = resolve }))
+    render(<WriterPage projectId="project-1" />)
+    const editor = await screen.findByDisplayValue(source)
+    fireEvent.change(editor, { target: { value: candidate } })
+    fireEvent.click(screen.getByRole('button', { name: '保存正文' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+    expect(editor).toBeDisabled()
+    expect(screen.getByRole('button', { name: '新建章节' })).toBeDisabled()
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true })
+    fireEvent.click(screen.getByRole('button', { name: '新建章节' }))
+    expect(screen.queryByText('新建章节', { selector: 'h4' })).not.toBeInTheDocument()
+    expect(api.put).toHaveBeenCalledTimes(1)
+    await act(async () => finishSave(response({ ...chapter, content: candidate, current_version: 2 })))
+    await waitFor(() => expect(editor).toBeEnabled())
+  })
+
+  it('preserves failed save text and allows a direct save-only retry', async () => {
+    api.put.mockRejectedValueOnce(new Error('连接暂时中断'))
+    render(<WriterPage projectId="project-1" />)
+    const editor = await screen.findByDisplayValue(source)
+    fireEvent.change(editor, { target: { value: candidate } })
+    fireEvent.click(screen.getByRole('button', { name: '保存正文' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('保存失败'))
+    expect(editor).toHaveValue(candidate)
+    expect(editor).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '保存正文' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2))
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('returning from the save confirmation preserves dirty text without a failure notice', async () => {
+    api.put.mockRejectedValueOnce(new CanceledError('已返回编辑，正文未保存'))
+    render(<WriterPage projectId="project-1" />)
+    const editor = await screen.findByDisplayValue(source)
+    fireEvent.change(editor, { target: { value: candidate } })
+    fireEvent.click(screen.getByRole('button', { name: '保存正文' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('有未保存修改'))
+    expect(editor).toHaveValue(candidate)
+    expect(editor).toBeEnabled()
+    expect(screen.queryByText('保存失败')).not.toBeInTheDocument()
+  })
+
+  it('keeps cataloging launch failure visible after the toast and retries without saving again', async () => {
+    const saved = { ...chapter, cataloging_required: true }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(null))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [saved], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(saved))
+      if (url.endsWith('/cataloging/jobs')) return Promise.resolve(response({ items: [] }))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    api.post.mockRejectedValueOnce(new Error('模型当前不可用'))
+      .mockResolvedValueOnce(response({ ...saved, cataloging_job: { started: true } }))
+    render(<WriterPage projectId="project-1" />)
+    await screen.findByDisplayValue(source)
+    fireEvent.click(screen.getByRole('button', { name: '开始建档' }))
+    await screen.findByText('正文已保存，建档未完成')
+    act(() => message.destroy())
+    expect(screen.getByRole('alert')).toHaveTextContent('模型当前不可用')
+    expect(screen.getByRole('alert')).toHaveTextContent('不会重新生成或丢失已保存正文')
+    fireEvent.click(screen.getByRole('button', { name: '开始建档' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
+    expect(api.post).toHaveBeenLastCalledWith('/projects/project-1/chapters/chapter-1/cataloging', {})
+    expect(api.put).not.toHaveBeenCalled()
+  })
+
   it('shows an API UTC chapter update as labelled local time across midnight', async () => {
     const NativeFormatter = Intl.DateTimeFormat
     vi.spyOn(Intl, 'DateTimeFormat').mockImplementation((locales, options) => (
@@ -211,7 +311,8 @@ describe('WriterPage manual writing actions', () => {
       id: 'job-1', status: 'paused_on_failure', current_chapter_id: chapter.id,
       error: '临时 MCP 连接失败',
     }] })))
-    expect(await screen.findByText('正文已保存，建档未完成')).toBeInTheDocument()
+    expect(await screen.findByText('上次建档未完成，当前修改尚未保存')).toBeInTheDocument()
+    expect(screen.queryByText('正文已保存，建档未完成')).not.toBeInTheDocument()
     expect(editor).toHaveValue(authorEdit)
     await waitFor(() => expect(screen.getByRole('button', { name: /保存并建档/ })).toBeEnabled(), { timeout: 5000 })
     expect(api.put).not.toHaveBeenCalled()

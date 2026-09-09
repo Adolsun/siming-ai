@@ -15,13 +15,11 @@ interface TabCacheProps {
  * Active tab gets a brief fade-in animation for switch feedback.
  */
 export default function TabCache({ activeKey, tabs }: TabCacheProps) {
-  const cacheRef = useRef<Record<string, ReactNode>>({})
+  const visitedRef = useRef(new Set<string>())
   const [fadeInKey, setFadeInKey] = useState<string | null>(null)
 
   // Render the active tab into cache if not already present
-  if (!cacheRef.current[activeKey] && tabs[activeKey]) {
-    cacheRef.current[activeKey] = tabs[activeKey]()
-  }
+  if (tabs[activeKey]) visitedRef.current.add(activeKey)
 
   // Trigger fade-in animation on tab switch
   useEffect(() => {
@@ -32,13 +30,13 @@ export default function TabCache({ activeKey, tabs }: TabCacheProps) {
 
   return (
     <>
-      {Object.entries(cacheRef.current).map(([key, node]) => (
+      {Array.from(visitedRef.current).map((key) => (
         <div
           key={key}
           className={key === activeKey && key === fadeInKey ? 'tab-cache-fade-in' : undefined}
           style={{ display: key === activeKey ? 'contents' : 'none' }}
         >
-          {node}
+          {tabs[key]?.()}
         </div>
       ))}
     </>

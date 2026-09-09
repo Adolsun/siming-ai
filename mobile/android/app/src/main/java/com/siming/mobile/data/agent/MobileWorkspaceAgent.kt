@@ -129,10 +129,11 @@ internal class MobileWorkspaceAgent(
 
         var currentConversation = conversation
         val initialRuntime = conversation.toolRuntimeState(turnContext.turnId)
-        val deliveredTransactions = initialRuntime?.deliveredTransactions.orEmpty().toMutableList()
+        val deliveredTransactions = initialRuntime?.activeTransactions.orEmpty().toMutableList()
         val executionLedger = initialRuntime?.executionLedger.orEmpty().toMutableList()
         var activeCategories = emptyList<String>()
         var categorySelected = false
+        var consecutiveCapacityRejections = 0
         while (true) {
             val scopedTools = contract.toolSchemas(activeCategories)
             val requestToolChoice = if (categorySelected) "auto" else "required"
@@ -246,9 +247,10 @@ internal class MobileWorkspaceAgent(
                     "草稿生成工具必须是模型步骤中唯一的业务调用，整批未执行",
                 )
             }
-            val batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            var batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
                 assistantPayload = turn.assistantMessage,
                 orderedToolNames = calledToolNames,
+                requestBudget = prepared.budget,
             )
             currentConversation = consumeDeliveredTransactions(
                 projectId = projectId,
@@ -258,6 +260,9 @@ internal class MobileWorkspaceAgent(
                 executionLedger = executionLedger,
             )
             if (!batchAdmission.accepted) {
+                consecutiveCapacityRejections += 1
+                batchAdmission = batchAdmission.copy(recoveryFits = batchAdmission.recoveryFits &&
+                    consecutiveCapacityRejections < MobileNativeToolBudgetContract.MAX_CONSECUTIVE_CAPACITY_REJECTIONS)
                 val results = turn.toolCalls.map { call ->
                     rejectedNativeBatchResult(call.name, batchAdmission)
                 }
@@ -272,7 +277,7 @@ internal class MobileWorkspaceAgent(
                         "模型返回的原生 assistant 工具事务超过容量协议；逐调用拒绝已记录，整批业务处理器未执行",
                 ) { runtime ->
                     deliveredTransactions.clear()
-                    deliveredTransactions += runtime.deliveredTransactions
+                    deliveredTransactions += runtime.activeTransactions
                     results.forEach { result ->
                         onEvent(event(type = "tool", detail = result.string("detail")))
                     }
@@ -280,6 +285,7 @@ internal class MobileWorkspaceAgent(
                 continue
             }
 
+            consecutiveCapacityRejections = 0
             if (categoryCall != null) {
                 val selected = runCatching {
                     contract.toolCategories.normalize(
@@ -303,7 +309,7 @@ internal class MobileWorkspaceAgent(
                     transaction,
                 )
                 deliveredTransactions.clear()
-                deliveredTransactions += runtime.deliveredTransactions
+                deliveredTransactions += runtime.activeTransactions
                 selected.getOrNull()?.let { categories ->
                     activeCategories = categories
                     categorySelected = true
@@ -331,7 +337,7 @@ internal class MobileWorkspaceAgent(
                 } else {
                     skipped(call.name, "手机提示词契约未开放该工具")
                 }
-                val result = modelVisibleToolResult(call.name, rawResult)
+                val result = modelVisibleToolResult(call.name, rawResult, call.arguments)
                 onEvent(
                     event(
                         type = "tool",
@@ -405,7 +411,7 @@ internal class MobileWorkspaceAgent(
                 transaction,
             )
             deliveredTransactions.clear()
-            deliveredTransactions += runtime.deliveredTransactions
+            deliveredTransactions += runtime.activeTransactions
         }
     }
 
@@ -520,7 +526,7 @@ internal class MobileWorkspaceAgent(
             turnContext = turnContext,
         )
         deliveredTransactions.clear()
-        deliveredTransactions += consumed.deliveredTransactions
+        deliveredTransactions += consumed.activeTransactions
         executionLedger.clear()
         executionLedger += consumed.executionLedger
         return conversationStore.snapshot(projectId, turnContext.conversationId)
@@ -661,28 +667,10 @@ internal class MobileWorkspaceAgent(
         tool: String,
         admission: MobileNativeToolBatchAdmission,
     ): JsonObject {
-        val reason = requireNotNull(admission.reason)
-        val detail = if (reason == MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY) {
-            "当前原生工具 assistant 事务为 ${admission.declaredJsonBytes} 字节，超过协议上限 " +
-                "${admission.maxJsonBytes} 字节；整批未执行。请减少并行调用或缩小工具参数。"
-        } else {
-            "当前工具批次的声明结果上限为 ${admission.declaredJsonBytes} 字节，超过单步 " +
-                "${admission.maxJsonBytes} 字节上限；整批未执行。请减少并行调用或使用分页。"
-        }
-        return buildJsonObject {
-            put("tool", tool)
-            put("status", "error")
-            put("detail", detail)
-            put("data", buildJsonObject {
-                put("reason", reason)
-                put("batch_call_count", admission.callCount)
-                put("declared_batch_json_bytes", admission.declaredJsonBytes)
-                put("max_batch_json_bytes", admission.maxJsonBytes)
-            })
-        }
+        return admission.errorResult(tool)
     }
 
-    private fun modelVisibleToolResult(tool: String, raw: JsonObject): JsonObject {
+    private fun modelVisibleToolResult(tool: String, raw: JsonObject, arguments: JsonObject): JsonObject {
         val projected = when {
             tool in STATUS_ONLY_RESULT_TOOLS -> statusReceipt(tool, raw)
             tool == "submit_context_evidence" -> contextSelectionReceipt(raw)
@@ -710,7 +698,7 @@ internal class MobileWorkspaceAgent(
             }
             else -> raw
         }
-        if (MobileNativeToolBudgetContract.actualResultFits(tool, projected)) return projected
+        if (MobileNativeToolBudgetContract.actualResultFits(tool, projected, arguments)) return projected
         return buildJsonObject {
             put("tool", tool)
             put("status", "error")
@@ -718,7 +706,7 @@ internal class MobileWorkspaceAgent(
             put("data", buildJsonObject {
                 put("error_code", MobileConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY)
                 put("retryable", true)
-                put("declared_max_json_bytes", MobileNativeToolBudgetContract.declaredResultJsonBytes(tool))
+                put("declared_max_json_bytes", MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, arguments))
             })
         }
     }
@@ -789,7 +777,7 @@ internal class MobileWorkspaceAgent(
         config: DirectApiConfig,
         onEvent: suspend (String) -> Unit,
     ): JsonObject = when (tool) {
-        "get_project_info" -> getProjectInfo(projectId)
+        "get_project_info" -> getProjectInfo(projectId, args)
         "update_project_info" -> updateProjectInfo(projectId, args)
         "list_characters" -> listCharacters(projectId, args)
         "list_chapters" -> listChapters(projectId, args)
@@ -833,10 +821,13 @@ internal class MobileWorkspaceAgent(
         else -> skipped(tool, "未知工具")
     }
 
-    private suspend fun getProjectInfo(projectId: String): JsonObject {
+    private suspend fun getProjectInfo(projectId: String, args: JsonObject): JsonObject {
         val project = records(projectId).firstOrNull { it.entity.entityType == "project" }
             ?: return skipped("get_project_info", "未找到作品")
-        return ok("get_project_info", "已读取作品：${project.payload.string("title")}", clean(project.payload))
+        val page = mobileProjectInfoPage(clean(project.payload), args)
+        return JsonObject(ok("get_project_info", "已读取作品设置概览", page.getValue("data")).toMutableMap().apply {
+            put("field_ranges", page.getValue("field_ranges"))
+        })
     }
 
     private suspend fun updateProjectInfo(projectId: String, args: JsonObject): JsonObject {
@@ -948,16 +939,18 @@ internal class MobileWorkspaceAgent(
         val query = args.string("query")
         if (query.length > 200) return skipped("search_chapters", "章节查询超过200字符，请缩小范围", JsonArray(emptyList()))
         val outlineId = args.string("outline_node_id")
+        val chapterId = args.string("chapter_id")
         val page = mobilePage(
             records(projectId, "chapter").filter {
-                if (outlineId.isNotBlank()) it.payload.string("outline_node_id") == outlineId
+                if (chapterId.isNotBlank()) it.payload.string("id") == chapterId
+                else if (outlineId.isNotBlank()) it.payload.string("outline_node_id") == outlineId
                 else query.isBlank() || it.payload.string("title").contains(query, ignoreCase = true)
             },
             args.cursor(),
             args.limit(2, 2),
         )
         val contentOffset = args.int("content_offset_chars").coerceAtLeast(0)
-        val contentChars = args.int("content_chars", 400).coerceIn(1, 400)
+        val contentChars = args.int("content_chars", 2000).coerceIn(1, 4000)
         val items = page.values.map { item ->
             val payload = item.payload
             val content = mobileTextRange(payload.text("content"), contentOffset, contentChars)
@@ -969,6 +962,12 @@ internal class MobileWorkspaceAgent(
                 put("summary_truncated", summary.length > 100)
                 put("content", content.text)
                 put("content_range", content.metadata)
+                if (content.metadata["has_more"] == JsonPrimitive(true)) put("next_arguments", buildJsonObject {
+                    put("chapter_id", payload.string("id"))
+                    put("limit", 1)
+                    put("content_offset_chars", content.metadata["next_offset_chars"]!!)
+                    put("content_chars", contentChars)
+                })
                 put("quality_score", payload["quality_score"] ?: JsonNull)
                 put("quality_detail", qualityDetail.take(100))
                 put("quality_detail_truncated", qualityDetail.length > 100)
@@ -2007,7 +2006,7 @@ internal class MobileWorkspaceAgent(
                     ),
                 ),
             ),
-            tools = contract.writerOutputTool("outline"),
+            tools = contract.outlineWriterOutputTool(batchCount),
             toolChoice = "required",
             maxOutputTokens = manifest.outputReserveTokens.coerceAtLeast(1),
             temperature = 0.7,
@@ -2017,9 +2016,12 @@ internal class MobileWorkspaceAgent(
         val nodes = parsed["nodes"] as? JsonArray
             ?: return errorResult("outline_writer", "大纲生成结果缺少 nodes")
         if (nodes.isEmpty()) return errorResult("outline_writer", "大纲生成结果没有可审阅节点")
-        if (nodes.size > 8) return errorResult("outline_writer", "单次大纲草稿最多包含 8 个节点")
         if (nodes.size != batchCount) {
-            return errorResult("outline_writer", "本次规划要求 $batchCount 个节点，实际提交 ${nodes.size} 个；请完整提交，不能缩减批次")
+            return result("outline_writer", "error", "大纲节点数量与已审阅的规划不一致，未保存草稿。请按精确数量提交。", buildJsonObject {
+                put("reason", "outline_node_count_mismatch")
+                put("expected_count", batchCount)
+                put("actual_count", nodes.size)
+            })
         }
         if (nodes.any { element -> element !is JsonObject }) {
             return errorResult("outline_writer", "大纲生成结果包含无效节点")
@@ -2687,7 +2689,7 @@ internal fun mobileOutlineSearchResult(
             put("cursor", nextCursor)
             put("limit", page.limit)
             put("summary_offset_chars", args.mobileOutlineInt("summary_offset_chars").coerceAtLeast(0))
-            put("summary_chars", args.mobileOutlineInt("summary_chars", 100).coerceIn(1, 100))
+            put("summary_chars", args.mobileOutlineInt("summary_chars", 500).coerceIn(1, 1000))
             put("linked_cursor", args.mobileOutlineInt("linked_cursor").coerceAtLeast(0))
             put("linked_limit", args.mobileOutlineInt("linked_limit", 2).coerceIn(1, 2))
             if (nodeId.isNotBlank()) put("node_id", nodeId)
@@ -2703,7 +2705,7 @@ internal fun mobileOutlineSearchItem(
     children: List<JsonObject>? = null,
 ): JsonObject {
     val summaryOffset = args.mobileOutlineInt("summary_offset_chars").coerceAtLeast(0)
-    val summaryChars = args.mobileOutlineInt("summary_chars", 100).coerceIn(1, 100)
+    val summaryChars = args.mobileOutlineInt("summary_chars", 500).coerceIn(1, 1000)
     val linkedCursor = args.mobileOutlineInt("linked_cursor").coerceAtLeast(0)
     val linkedLimit = args.mobileOutlineInt("linked_limit", 2).coerceIn(1, 2)
     val summary = mobileTextRange(

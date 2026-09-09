@@ -5,7 +5,6 @@ from app.architecture.uow import commit_session
 
 import asyncio
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -34,6 +33,9 @@ from .candidate_retry import (
     candidate_coverage_error as _candidate_coverage_error,
     candidate_coverage_requires_model_retry as _candidate_coverage_requires_model_retry,
     candidate_coverage_review as _candidate_coverage_review,
+    candidate_issue,
+    candidate_issue_summary,
+    candidate_retry_reason,
 )
 from .candidate_validation import candidate_coverage_error_message, inspect_candidate_coverage
 from .constants import (
@@ -43,7 +45,7 @@ from .constants import (
     CATALOGING_TIMEOUT_SECONDS,
 )
 from .context import ordered_chapters
-from .facts import facts_text, try_parse_fact_line
+from .facts import facts_text, parse_fact_response, try_parse_fact_line
 from .fact_store import clear_facts_for_run, create_fact, load_facts_for_run
 from .jsonl import clean_jsonl_text
 from .job_control import refresh_job_progress
@@ -230,58 +232,6 @@ def _fact_prompt_messages(
     ]
 
 
-def _clean_model_json_text(text: str) -> str:
-    value = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S | re.I)
-    return clean_jsonl_text(value).strip()
-
-
-def _facts_from_json_value(value: Any) -> list[dict[str, Any]]:
-    items: list[Any]
-    if isinstance(value, dict) and isinstance(value.get("facts"), list):
-        items = value["facts"]
-    elif isinstance(value, list):
-        items = value
-    else:
-        items = [value]
-    facts: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        parsed = try_parse_fact_line(json.dumps(item, ensure_ascii=False))
-        fact = parsed.get("fact")
-        if fact:
-            facts.append(fact)
-    return facts
-
-
-def _salvage_facts_from_text(text: str) -> list[dict[str, Any]]:
-    clean = _clean_model_json_text(text)
-    if not clean:
-        return []
-    try:
-        return _facts_from_json_value(json.loads(clean))
-    except Exception:
-        pass
-    facts: list[dict[str, Any]] = []
-    decoder = json.JSONDecoder()
-    index = 0
-    while index < len(clean):
-        brace = clean.find("{", index)
-        bracket = clean.find("[", index)
-        starts = [pos for pos in (brace, bracket) if pos >= 0]
-        if not starts:
-            break
-        start = min(starts)
-        try:
-            value, offset = decoder.raw_decode(clean[start:])
-        except Exception:
-            index = start + 1
-            continue
-        facts.extend(_facts_from_json_value(value))
-        index = start + max(offset, 1)
-    return facts
-
-
 def create_cataloging_job(
     db: Session,
     project_id: str,
@@ -320,7 +270,7 @@ def create_cataloging_job(
         message="建档任务已创建，正在准备第一章",
         model_source=model,
         tool_mode=execution_backend,
-        resume_url=f"/project/{project_id}?view=cataloging",
+        resume_url=f"/project/{project_id}?view=cataloging&job={job.id}",
         can_pause=True,
         can_cancel=True,
         can_retry=True,
@@ -346,6 +296,7 @@ def create_cataloging_job(
 async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[str, None]:
     from ..operation_runtime import heartbeat_loop, iterate_with_operation
     from .job_control import complete_cataloging_job
+    from .progress import record_cataloging_progress
 
     db = SessionLocal()
     heartbeat_task: asyncio.Task | None = None
@@ -386,6 +337,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                     yield "data: [DONE]\n\n"
                     return
                 async for event in iterate_with_operation(operation_id, _apply_run(db, job, run)):
+                    record_cataloging_progress(db, job, event)
                     yield event
                 continue
 
@@ -400,6 +352,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 return
 
             async for event in iterate_with_operation(operation_id, _extract_run(db, job, run)):
+                record_cataloging_progress(db, job, event)
                 yield event
 
             db.refresh(job)
@@ -423,6 +376,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 return
 
             async for event in iterate_with_operation(operation_id, _apply_run(db, job, run)):
+                record_cataloging_progress(db, job, event)
                 yield event
     finally:
         if heartbeat_task:
@@ -466,7 +420,6 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
     raw_candidate_parts: list[str] = []
     facts: list[dict[str, Any]] = []
     fact_buffer = ""
-    fact_bad_lines: list[str] = []
     candidate_count = db.query(CatalogingCandidate).filter(CatalogingCandidate.chapter_run_id == run.id).count()
     has_summary = db.query(CatalogingCandidate).filter(
         CatalogingCandidate.chapter_run_id == run.id,
@@ -486,7 +439,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
             yield sse_event({"type": "cataloging_stage", "message": "第一阶段：裸读章节，抽取事实线索", "run": run_to_dict(run)})
             for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
                 fact_buffer = ""
-                fact_bad_lines = []
+                fact_rows = []
                 attempt_fact_parts: list[str] = []
                 if attempt > 1:
                     facts = []
@@ -522,12 +475,13 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         for line in lines:
                             parsed = try_parse_fact_line(line)
                             if parsed.get("bad_line"):
-                                fact_bad_lines.append(parsed["bad_line"])
                                 yield sse_event({"type": "fact_parse_warning", "run": run_to_dict(run), "line": parsed["bad_line"][:500], "error": parsed["error"]})
                             fact = parsed.get("fact")
                             if fact:
                                 facts.append(fact)
-                                create_fact(db, job, run, fact, len(facts) - 1)
+                                fact_rows.append(
+                                    create_fact(db, job, run, fact, len(facts) - 1)
+                                )
                                 commit_session(db)
                                 yield sse_event({
                                     "type": "fact_extracted",
@@ -538,36 +492,49 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     tail = clean_jsonl_text(fact_buffer)
                     if tail:
                         parsed = try_parse_fact_line(tail)
-                        if parsed.get("bad_line"):
-                            fact_bad_lines.append(parsed["bad_line"])
                         if parsed.get("fact"):
                             facts.append(parsed["fact"])
-                            create_fact(db, job, run, parsed["fact"], len(facts) - 1)
+                            fact_rows.append(
+                                create_fact(db, job, run, parsed["fact"], len(facts) - 1)
+                            )
                             commit_session(db)
-                    if not facts:
-                        salvaged = _salvage_facts_from_text("".join(attempt_fact_parts))
-                        for fact in salvaged:
-                            facts.append(fact)
-                            create_fact(db, job, run, fact, len(facts) - 1)
+                    # Line parsing is provisional. Validate the complete response
+                    # even when some lines succeeded; otherwise one valid tail
+                    # could hide every earlier malformed/multiline record.
+                    complete_facts = parse_fact_response("".join(attempt_fact_parts))
+                    saved_rows: dict[str, list[Any]] = {}
+                    for fact, row in zip(facts, fact_rows, strict=True):
+                        key = json.dumps(fact, ensure_ascii=False, sort_keys=True)
+                        saved_rows.setdefault(key, []).append(row)
+                    for index, fact in enumerate(complete_facts):
+                        key = json.dumps(fact, ensure_ascii=False, sort_keys=True)
+                        existing = saved_rows.get(key)
+                        if existing:
+                            existing.pop(0).sort_order = index
+                        else:
+                            create_fact(db, job, run, fact, index)
                             commit_session(db)
                             yield sse_event({
                                 "type": "fact_extracted",
-                                "message": f"已修复抽取事实: {fact.get('fact_type')}",
+                                "message": f"已解析完整事实: {fact.get('fact_type')}",
                                 "fact": fact,
                                 "run": run_to_dict(run),
                             })
-                    if not facts:
-                        raise ValueError("模型未输出可用事实")
+                    if any(saved_rows.values()):
+                        raise ValueError(
+                            "流式事实与完整响应不一致，不能使用部分事实继续建档"
+                        )
+                    facts = complete_facts
+                    commit_session(db)
                     break
                 except Exception as exc:
-                    if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
-                        raise
                     clear_facts_for_run(db, run)
                     commit_session(db)
                     facts = []
                     fact_buffer = ""
-                    fact_bad_lines = []
                     raw_fact_parts.append(f"\n[FACT EXTRACTION FAILED: {exc}]\n")
+                    if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                        raise
                     yield sse_event({
                         "type": "cataloging_retry",
                         "stage": "fact_extraction",
@@ -595,10 +562,15 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         })
 
         bad_lines: list[str] = []
-        previous_retry_reason = ""
+        candidate_issues: list[dict[str, Any]] = []
+        previous_retry_reason = (
+            candidate_retry_reason(db, run, [], _candidate_coverage_error(db, run))
+            if candidate_count else ""
+        )
         for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
             candidate_buffer = ""
             bad_lines = []
+            candidate_issues = []
             attempt_parts: list[str] = []
             if attempt > 1:
                 raw_candidate_parts.append(f"\n\n=== CANDIDATE RESOLUTION RETRY {attempt} ===\n")
@@ -641,6 +613,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         for created in try_create_candidates(db, job, run, line, candidate_count):
                             if created.get("bad_line"):
                                 bad_lines.append(created["bad_line"])
+                                candidate_issues.append(candidate_issue(created))
                                 yield sse_event({"type": "parse_warning", "run": run_to_dict(run), "line": created["bad_line"][:500], "error": created["error"]})
                             if created.get("skipped"):
                                 reason = created.get("reason") or "候选缺少有效内容，已跳过"
@@ -661,6 +634,11 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     for created in try_create_candidates(db, job, run, tail, candidate_count):
                         if created.get("bad_line"):
                             bad_lines.append(created["bad_line"])
+                            candidate_issues.append(candidate_issue(created))
+                            yield sse_event({
+                                "type": "parse_warning", "run": run_to_dict(run),
+                                "line": created["bad_line"][:500], "error": created["error"],
+                            })
                         if created.get("skipped"):
                             reason = created.get("reason") or "候选缺少有效内容，已跳过"
                             yield sse_event({
@@ -696,9 +674,10 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     coverage_reason = _candidate_coverage_error(db, run)
                     if recovery["coverage"].is_complete and not coverage_reason:
                         bad_lines = []
+                        candidate_issues = []
 
                 retry_reason = (
-                    f"{len(bad_lines)} 行 JSONL 解析失败"
+                    candidate_issue_summary(candidate_issues)
                     if bad_lines
                     else coverage_reason
                 )
@@ -715,7 +694,9 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                             "run": run_to_dict(run),
                         })
                     break
-                previous_retry_reason = retry_reason
+                previous_retry_reason = candidate_retry_reason(
+                    db, run, candidate_issues, coverage_reason,
+                )
                 yield sse_event({
                     "type": "cataloging_retry",
                     "stage": "candidate_resolution",
@@ -744,6 +725,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                             "recovered": True,
                         })
                     bad_lines = []
+                    candidate_issues = []
                     break
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
                     yield sse_event({
@@ -757,7 +739,12 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     raise
                 candidate_buffer = ""
                 bad_lines = []
-                previous_retry_reason = str(exc)
+                candidate_issues = []
+                previous_retry_reason = candidate_retry_reason(
+                    db, run,
+                    [{"kind": "candidate_processing", "message": str(exc)}],
+                    _candidate_coverage_error(db, run),
+                )
                 raw_candidate_parts.append(f"\n[CANDIDATE RESOLUTION FAILED: {exc}]\n")
                 yield sse_event({
                     "type": "cataloging_retry",
@@ -780,15 +767,12 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         return
 
     run.raw_output = _combined_raw_output(raw_fact_parts, raw_candidate_parts)
-    if fact_bad_lines:
-        yield sse_event({
-            "type": "parse_warning",
-            "run": run_to_dict(run),
-            "error": f"第一阶段有 {len(fact_bad_lines)} 行事实未能解析，已用其余事实继续",
-        })
     if bad_lines:
         run.status = "failed"
-        run.error = f"{len(bad_lines)} 行 JSONL 解析失败，已暂停在当前章节"
+        run.error = (
+            candidate_issue_summary(candidate_issues, details=True)
+            + "，已暂停在当前章节"
+        )
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
@@ -856,9 +840,9 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             "aliases": aliases(item.get("aliases")),
             "role_type": item.get("role_type"),
             "age": item.get("age"),
-            "appearance": clip(item.get("appearance"), 180),
+            "appearance": item.get("appearance"),
             "personality": clip(item.get("personality"), 180),
-            "background": clip(item.get("background"), 260),
+            "background": item.get("background"),
             "abilities": (item.get("abilities") or [])[:8] if isinstance(item.get("abilities"), list) else [],
             "life_status": item.get("life_status"),
             "current_location": clip(item.get("current_location"), 120),
@@ -868,7 +852,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             "current_goal": clip(item.get("current_goal"), 160),
             "active_conflict": clip(item.get("active_conflict"), 160),
             "abilities_state": clip(item.get("abilities_state"), 160),
-            "items_or_assets": clip(item.get("items_or_assets"), 160),
+            "items_or_assets": item.get("items_or_assets"),
             # Stable writing locks and speech style are continuity data too.
             # Dropping them only for local runtimes made the CLI route unable
             # to distinguish an already-complete card from a missing field.
@@ -929,6 +913,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
         ],
         "character_name_index": [
             {
+                "id": item.get("id"),
                 "name": item.get("name"),
                 "age": item.get("age"),
                 "role_type": item.get("role_type"),
@@ -940,7 +925,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
         ],
         "relevant_characters": [
             character(item)
-            for item in (context.get("relevant_characters") or [])[:6]
+            for item in (context.get("relevant_characters") or [])
             if isinstance(item, dict)
         ],
         "relevant_relationships": [
@@ -962,9 +947,12 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             for item in (context.get("worldbuilding_title_index") or [])[:100]
             if isinstance(item, dict)
         ],
+        "worldbuilding_identity_review_required": context.get(
+            "worldbuilding_identity_review_required", [],
+        ),
         "relevant_worldbuilding": [
             worldbuilding(item)
-            for item in (context.get("relevant_worldbuilding") or [])[:6]
+            for item in (context.get("relevant_worldbuilding") or [])
             if isinstance(item, dict)
         ],
         "nearby_outline_nodes": [

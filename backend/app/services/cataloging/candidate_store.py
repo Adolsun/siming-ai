@@ -35,6 +35,7 @@ from .candidate_validation import (
     validate_candidate_source_character_grounding,
 )
 from .character_targets import (
+    ArchiveValueMismatch,
     validate_character_profile_target,
     validate_character_state_target,
 )
@@ -49,6 +50,14 @@ from .jsonl import (
 )
 from .repair_identity import has_stable_profile_evidence, is_anonymous_character
 from .targeted_context import worldbuilding_identity_review_candidates
+from .scene_contract import (
+    is_scene_replacement,
+    replace_scene_candidates,
+    scene_repair_context,
+    source_overview_scene_count,
+    validate_scene_candidate,
+    validate_scene_replacement,
+)
 from ..character_role_types import normalize_character_role_type
 
 _SIGNATURE_PAYLOAD_KEYS = (
@@ -177,97 +186,6 @@ def _ensure_outline_identity(
         payload["title"] = title
         payload.setdefault("parent_title", chapter.title)
         normalized["target_name"] = normalized.get("target_name") or title
-
-
-def ensure_outline_section_scene_number(
-    db: Session,
-    run: CatalogingChapterRun,
-    normalized: dict[str, Any],
-) -> None:
-    """Give every staged section a stable, positive number before identity matching.
-
-    Cataloging providers sometimes return ordered section cards without the
-    redundant ``scene_number`` field. The order of those cards is already a
-    deterministic protocol fact, so persistence can fill the omitted ordinal
-    without interpreting prose. Existing editable rows are normalized first
-    so retries reuse their run-local identity instead of creating new cards.
-    """
-
-    if normalized.get("item_type") not in {"outline_create", "outline_update"}:
-        return
-    payload = normalized.get("payload")
-    if not isinstance(payload, dict):
-        return
-    node_type = str(payload.get("node_type") or "chapter").strip().lower()
-    if node_type not in {"section", "scene"}:
-        return
-
-    rows = (
-        db.query(CatalogingCandidate)
-        .filter(
-            CatalogingCandidate.chapter_run_id == run.id,
-            CatalogingCandidate.item_type.in_(("outline_create", "outline_update")),
-            CatalogingCandidate.status != "rejected",
-        )
-        .order_by(
-            CatalogingCandidate.sort_order.asc(),
-            CatalogingCandidate.created_at.asc(),
-            CatalogingCandidate.id.asc(),
-        )
-        .all()
-    )
-    section_rows: list[tuple[CatalogingCandidate, dict[str, Any]]] = []
-    used_numbers: set[int] = set()
-    for row in rows:
-        existing_payload = _payload_from_candidate(row)
-        existing_type = str(
-            existing_payload.get("node_type") or "chapter"
-        ).strip().lower()
-        if existing_type not in {"section", "scene"}:
-            continue
-        section_rows.append((row, existing_payload))
-        existing_number = _positive_int(existing_payload.get("scene_number"))
-        if existing_number:
-            used_numbers.add(existing_number)
-
-    next_number = 1
-    for row, existing_payload in section_rows:
-        if _positive_int(existing_payload.get("scene_number")):
-            continue
-        if row.status in {"applying", "applied"}:
-            continue
-        while next_number in used_numbers:
-            next_number += 1
-        existing_payload["scene_number"] = next_number
-        encoded = json.dumps(existing_payload, ensure_ascii=False)
-        if row.edited_payload is not None:
-            row.edited_payload = encoded
-        else:
-            row.raw_payload = encoded
-        used_numbers.add(next_number)
-        next_number += 1
-
-    incoming_number = _positive_int(payload.get("scene_number"))
-    if incoming_number:
-        payload["scene_number"] = incoming_number
-        return
-
-    incoming_title = _signature_text(
-        payload.get("title") or normalized.get("target_name")
-    )
-    if incoming_title:
-        for row, existing_payload in section_rows:
-            existing_title = _signature_text(
-                existing_payload.get("title") or row.target_name
-            )
-            existing_number = _positive_int(existing_payload.get("scene_number"))
-            if existing_title == incoming_title and existing_number:
-                payload["scene_number"] = existing_number
-                return
-
-    while next_number in used_numbers:
-        next_number += 1
-    payload["scene_number"] = next_number
 
 
 def _signature_text(value: Any) -> str:
@@ -535,13 +453,22 @@ def _validate_worldbuilding_source_fact_titles(
         "worldbuilding_update",
         "worldbuilding_timeline",
     }:
-        return "source_fact_titles 只能用于世界观候选"
+        return (
+            f"source_fact_titles 只能用于世界观候选，当前候选是 {normalized.get('item_type')}；"
+            "请从当前候选中移除该字段，保留其余有效字段。若要声明事实归属，另行输出对应的 "
+            "worldbuilding_create、worldbuilding_update 或 worldbuilding_timeline 候选，"
+            "在其 payload 中填写 source_fact_titles 字符串数组，不能写进 chapter_summary、"
+            "coverage_manifest 或 chapter_link，也不能写成带 worldbuilding 键的对象"
+        )
     values = payload.get("source_fact_titles")
     if (
         not isinstance(values, list)
         or any(not isinstance(value, str) or not value.strip() for value in values)
     ):
-        return "source_fact_titles 必须是非空字符串数组"
+        return (
+            "source_fact_titles 必须是非空字符串数组，例如 [\"原事实称呼\"]，"
+            "不能写成 {\"worldbuilding\":[...]} 对象"
+        )
     payload["source_fact_titles"] = list(
         dict.fromkeys(value.strip() for value in values)
     )
@@ -861,9 +788,16 @@ def _merge_candidate_payload(
         # containing every aggregate collection. Clear all identity-bearing
         # link fields first so an earlier alias or wrong endpoint cannot remain
         # active after the model explicitly corrects the record.
-        if not all(key in incoming for key in CHAPTER_LINK_REPLACE_LIST_FIELDS):
+        missing = [
+            key for key in CHAPTER_LINK_REPLACE_LIST_FIELDS
+            if not isinstance(incoming.get(key), list)
+        ]
+        if missing:
             raise ValueError(
-                "chapter_link replacement requires all aggregate list fields"
+                "chapter_link replacement requires all aggregate list fields; "
+                "missing or non-array fields: " + ", ".join(missing)
+                + ". Resubmit this chapter_link with complete characters, worldbuilding_titles, "
+                "locations, items, events arrays; preserve existing links, use [] only when empty."
             )
         merged = dict(existing)
         for key in CHAPTER_LINK_REPLACE_FIELDS:
@@ -966,7 +900,10 @@ def try_create_candidates(
         parsed = parse_json_line(text)
         if parsed is None:
             return []
-        return [
+    except ValueError as exc:
+        return [{"bad_line": text, "error": str(exc), "error_kind": "jsonl_parse"}]
+    try:
+        results = [
             create_candidate_from_raw(
                 db,
                 job,
@@ -976,8 +913,19 @@ def try_create_candidates(
             )
             for offset, record in enumerate(expand_candidate_records(parsed))
         ]
+        results = [entry for result in results for entry in (
+            [{"candidate": row, "scene_plan_replaced": True} for row in result["candidates"]]
+            if result.get("scene_plan_replaced") else [result]
+        )]
+        return [
+            {**result, "error_kind": "candidate_validation"}
+            if result.get("bad_line") else result
+            for result in results
+        ]
+    except ValueError as exc:
+        return [{"bad_line": text, "error": str(exc), "error_kind": "candidate_validation"}]
     except Exception as exc:
-        return [{"bad_line": text, "error": str(exc)}]
+        return [{"bad_line": text, "error": str(exc), "error_kind": "candidate_processing"}]
 
 
 def _preview_candidate_from_raw(
@@ -1060,6 +1008,27 @@ def recover_candidates_from_response_text(
     """
 
     records = parse_candidate_response_records(text)
+    if len(records) == 1 and is_scene_replacement(records[0]):
+        existing = _existing_recovery_candidates(db, run)
+        current_coverage = inspect_candidate_coverage(existing, db=db, project_id=job.project_id)
+        try:
+            targets, sections, _, _ = validate_scene_replacement(db, run, records[0])
+        except ValueError:
+            return {"results": [], "coverage": current_coverage, "record_count": 1}
+        _, scene_preview = _preview_response_records(run, sections, source_task=source_task)
+        replaced_ids = {row.id for row in targets}
+        proposed = [*[row for row in existing if row.id not in replaced_ids], *scene_preview]
+        coverage = inspect_candidate_coverage(proposed, db=db, project_id=job.project_id)
+        if not coverage.is_complete:
+            return {"results": [], "coverage": coverage, "record_count": 1}
+        replaced = replace_scene_candidates(db, job, run, records[0], len(existing))
+        return {
+            "results": [{"candidate": row} for row in replaced.get("candidates", [])],
+            "coverage": inspect_candidate_coverage(
+                _existing_recovery_candidates(db, run), db=db, project_id=job.project_id,
+            ),
+            "record_count": 1,
+        }
     valid_records, preview = _preview_response_records(
         run,
         records,
@@ -1127,6 +1096,14 @@ def recover_candidates_from_raw_output(
     # to complement cards already parsed from that same run.
     for reverse_index, attempt_text in enumerate(reversed(attempts), start=1):
         records = parse_candidate_response_records(attempt_text)
+        if len(records) == 1 and is_scene_replacement(records[0]):
+            recovered = recover_candidates_from_response_text(
+                db, job, run, attempt_text, source_task="raw_output_recovery",
+            )
+            if recovered["coverage"].is_complete:
+                recovered["attempt_from_end"] = reverse_index
+                return recovered
+            continue
         _, preview = _preview_response_records(
             run,
             records,
@@ -1187,6 +1164,8 @@ def create_candidate_from_raw(
     *,
     source_task: str | None = None,
 ) -> dict[str, Any]:
+    if is_scene_replacement(raw):
+        return replace_scene_candidates(db, job, run, raw, sort_order)
     try:
         normalized = normalize_candidate(raw)
     except ValueError as exc:
@@ -1196,8 +1175,12 @@ def create_candidate_from_raw(
         normalized,
         source_task=source_task or normalized.get("source_task"),
     )
-    ensure_outline_section_scene_number(db, run, normalized)
     _ensure_outline_identity(normalized, run)
+    try:
+        validate_scene_candidate(db, run, normalized)
+    except ValueError as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "scene_repair": scene_repair_context(db, run)}
     if normalized["item_type"] not in VALID_ITEM_TYPES:
         return {
             "bad_line": json.dumps(raw, ensure_ascii=False),
@@ -1231,6 +1214,9 @@ def create_candidate_from_raw(
             run,
             normalized,
         )
+    except ArchiveValueMismatch as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "repair_context": exc.repair_context}
     except ValueError as exc:
         return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
     matching = _matching_candidate(db, job, run, normalized)
@@ -1252,6 +1238,9 @@ def create_candidate_from_raw(
         validate_character_profile_target(
             db, job.project_id, normalized["item_type"], normalized["payload"],
         )
+    except ArchiveValueMismatch as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "repair_context": exc.repair_context}
     except ValueError as exc:
         return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
     if matching:
@@ -1274,11 +1263,26 @@ def create_candidate_from_raw(
             in {matching.item_type, normalized["item_type"]}
             else normalized["item_type"]
         )
-        merged_payload = _merge_candidate_payload(
-            old_payload,
-            normalized["payload"],
-            item_type=merged_item_type,
-        )
+        try:
+            merged_payload = _merge_candidate_payload(
+                old_payload,
+                normalized["payload"],
+                item_type=merged_item_type,
+            )
+            if (merged_item_type == "chapter_summary"
+                    and normalized["payload"].get("coverage_manifest_mode") == "replace"):
+                source_count = source_overview_scene_count(db, run)
+                if source_count:
+                    # Explicit correction back to the immutable source plan is
+                    # different from shrinking coverage to hide missing work.
+                    merged_payload["coverage_manifest"]["scene_count"] = source_count
+                    if "scene_count" in merged_payload:
+                        merged_payload["scene_count"] = source_count
+        except ValueError as exc:
+            # The same store is used by streaming and whole-response recovery.
+            # Invalid model fields must remain repairable on both paths; letting
+            # this escape caused recovery to raise again and bypass all retries.
+            return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
         if preserve_worldbuilding_create_identity:
             for key in ("title", "entry_title"):
                 if key in old_payload:

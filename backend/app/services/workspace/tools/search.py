@@ -163,12 +163,15 @@ async def search_chapters(
             "data": [],
         }
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
+    chapter_id = str(args.get("chapter_id") or "").strip() or None
     limit = max(1, min(int(args.get("limit") or 2), 2))
     cursor = max(0, int(args.get("cursor") or 0))
     content_offset = max(0, int(args.get("content_offset_chars") or 0))
-    content_chars = max(1, min(int(args.get("content_chars") or 400), 400))
+    content_chars = max(1, min(int(args.get("content_chars") or 2000), 4000))
     base = db.query(Chapter).filter(Chapter.project_id == project_id)
-    if outline_node_id:
+    if chapter_id:
+        base = base.filter(Chapter.id == chapter_id)
+    elif outline_node_id:
         base = base.filter(Chapter.outline_node_id == outline_node_id)
     elif query:
         base = base.filter(Chapter.title.ilike(f"%{query}%"))
@@ -200,6 +203,11 @@ async def search_chapters(
                 "summary_truncated": len(summary_text) > 100,
                 "content": content,
                 "content_range": content_range,
+                **({"next_arguments": {
+                    "chapter_id": ch.id, "limit": 1,
+                    "content_offset_chars": content_range["next_offset_chars"],
+                    "content_chars": content_chars,
+                }} if content_range["has_more"] else {}),
                 "quality_score": ch.quality_score,
                 "quality_detail": (ch.quality_detail or "")[:100],
                 "quality_detail_truncated": len(ch.quality_detail or "") > 100,
@@ -332,7 +340,7 @@ async def search_outline(
     limit = max(1, min(int(args.get("limit") or 2), 2))
     cursor = max(0, int(args.get("cursor") or 0))
     summary_offset = max(0, int(args.get("summary_offset_chars") or 0))
-    summary_chars = max(1, min(int(args.get("summary_chars") or 100), 100))
+    summary_chars = max(1, min(int(args.get("summary_chars") or 500), 1000))
     linked_cursor = max(0, int(args.get("linked_cursor") or 0))
     linked_limit = max(1, min(int(args.get("linked_limit") or 2), 2))
 

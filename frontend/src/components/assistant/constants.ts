@@ -71,6 +71,21 @@ export const runStepToLog = (step: WorkspaceAssistantRunStep): WorkspaceRunLog =
   retryBlockReason: step.retry_block_reason,
 })
 
+export function toolStatusColor(status?: string | null): string {
+  switch (status?.toLowerCase()) {
+    case 'ready': case 'ok': case 'completed': case 'success': case 'succeeded':
+      return 'green'
+    case 'error': case 'failed': case 'interrupted':
+      return 'red'
+    case 'needs_confirmation': case 'blocked': case 'denied': case 'rejected':
+      return 'orange'
+    case 'skipped': case 'cancelled': case 'canceled': case 'superseded':
+      return 'default'
+    default:
+      return 'blue'
+  }
+}
+
 export function assistantOutcomeToRunLog(
   payload: WorkspaceAssistantResponse,
   tool: string,

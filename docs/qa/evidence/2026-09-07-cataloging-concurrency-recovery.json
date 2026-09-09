@@ -1,0 +1,502 @@
+{
+  "status": "passed",
+  "scope": "Single cataloging worker, read-only observers, complete fact parsing and model repair.",
+  "original_failure": {
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "error": "source_fact_titles 只能用于世界观候选",
+    "observed_at_local": "2026-09-07 21:48-21:49",
+    "prior_installed_executable_sha256": "e11a4fe6b57c19c15664b7173093548a136b87bb69205bfaadaf5d6a03dd91fe",
+    "two_interleaved_fact_sequences": true,
+    "source_chapter_checkpoint_unchanged": true,
+    "prose_sha256": "6c439f3a00d2062f4a99c9a69620d3ab0a4553ee8a02903fdc8ea45ee4676c19",
+    "run_status": "failed",
+    "facts": 30,
+    "candidates": 21
+  },
+  "old_code_regression": {
+    "scenario": "Retry queue + two ASGI observers + disconnect/reconnect",
+    "model_calls_before_first_request_released": 7,
+    "expected": 1
+  },
+  "backend_tests": 326,
+  "frontend_tests": 14,
+  "android_tests": 282,
+  "android_task_execution": "Gradle reported 1 executed task and 28 up-to-date; existing JVM test XML was inspected. No live phone interaction.",
+  "parity_capabilities": 27,
+  "lint": {
+    "status": "passed",
+    "scope": "No increased per-rule lint counts in previously dirty-style production files; new regression file clean.",
+    "new_test_lint_passed": true,
+    "files": [
+      {
+        "path": "backend/app/prompts/cataloging_source.py",
+        "baseline_counts": {
+          "E501": 96
+        },
+        "current_counts": {
+          "E501": 96
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/routers/cataloging.py",
+        "baseline_counts": {
+          "I001": 1,
+          "F401": 1,
+          "B008": 18,
+          "E501": 11
+        },
+        "current_counts": {
+          "I001": 1,
+          "F401": 1,
+          "B008": 18,
+          "E501": 11
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/candidate_retry.py",
+        "baseline_counts": {
+          "E501": 1
+        },
+        "current_counts": {
+          "E501": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/candidate_store.py",
+        "baseline_counts": {
+          "I001": 1,
+          "E501": 14,
+          "SIM118": 2
+        },
+        "current_counts": {
+          "I001": 1,
+          "E501": 14,
+          "SIM118": 2
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/orchestrator.py",
+        "baseline_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 32,
+          "B904": 1
+        },
+        "current_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 32,
+          "B904": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/facts.py",
+        "baseline_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 3
+        },
+        "current_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 3
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/launcher.py",
+        "baseline_counts": {},
+        "current_counts": {},
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/job_control.py",
+        "baseline_counts": {},
+        "current_counts": {},
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/local_cli_agent.py",
+        "baseline_counts": {
+          "I001": 2,
+          "SIM105": 5,
+          "E501": 19
+        },
+        "current_counts": {
+          "I001": 2,
+          "SIM105": 5,
+          "E501": 15
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/workspace/tools/cataloging.py",
+        "baseline_counts": {
+          "I001": 1,
+          "E501": 29
+        },
+        "current_counts": {
+          "I001": 1,
+          "E501": 29
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/workspace/tools/external_cataloging.py",
+        "baseline_counts": {
+          "I001": 2,
+          "E501": 37,
+          "E712": 1
+        },
+        "current_counts": {
+          "I001": 2,
+          "E501": 37,
+          "E712": 1
+        },
+        "increased_rule_counts": {}
+      }
+    ]
+  },
+  "intermediate_findings": [
+    {
+      "conclusion": "Exposed incomplete manifest repair feedback",
+      "runtime_status": "failed",
+      "final_run_status": "failed",
+      "source_fact_count": 18,
+      "candidate_count": 19,
+      "error": "候选覆盖不完整：worldbuilding candidates for declared entries (2/3)；缺少世界观候选或既有设定关联：001号卷，已暂停在当前章节"
+    },
+    {
+      "conclusion": "REJECTED acceptance: nominal completion dropped facts",
+      "runtime_status": "passed",
+      "final_run_status": "completed",
+      "source_fact_count": 1,
+      "candidate_count": 5,
+      "error": null
+    },
+    {
+      "conclusion": "Exposed uncaught replacement validation in recovery",
+      "runtime_status": "failed",
+      "final_run_status": "failed",
+      "source_fact_count": 18,
+      "candidate_count": 19,
+      "error": "chapter_link replacement requires all aggregate list fields"
+    }
+  ],
+  "public_retry_model_test": {
+    "status": "passed",
+    "mode": "http_retry_real_queue_concurrent_http_observers",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "chapter_id": "e299f3b8-a6f6-4b7f-8969-fa67206319ca",
+    "final_run_status": "completed",
+    "final_job_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "model_calls": [
+      {
+        "index": 1,
+        "stage": "facts",
+        "request_characters": 7091,
+        "complete_response_fact_count": 15
+      },
+      {
+        "index": 2,
+        "stage": "candidates",
+        "request_characters": 72831
+      },
+      {
+        "index": 3,
+        "stage": "candidates",
+        "request_characters": 91930
+      }
+    ],
+    "max_concurrent_model_calls": 1,
+    "concurrent_process_lease_probe": "passed",
+    "observer_final_statuses": {
+      "gui_disconnected": "running",
+      "phone": "completed",
+      "gui_reconnected": "completed",
+      "completed_replay": "completed"
+    },
+    "candidate_count": 18,
+    "candidate_statuses": {
+      "applied": 18
+    },
+    "source_fact_count": 15,
+    "complete_coverage": true,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "saved_fact_ids_retained": null
+  },
+  "second_public_retry_model_test": {
+    "status": "passed",
+    "mode": "http_retry_real_queue_concurrent_http_observers",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "chapter_id": "e299f3b8-a6f6-4b7f-8969-fa67206319ca",
+    "final_run_status": "completed",
+    "final_job_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "model_calls": [
+      {
+        "index": 1,
+        "stage": "facts",
+        "request_characters": 7091,
+        "complete_response_fact_count": 15
+      },
+      {
+        "index": 2,
+        "stage": "candidates",
+        "request_characters": 73098
+      },
+      {
+        "index": 3,
+        "stage": "candidates",
+        "request_characters": 93246
+      }
+    ],
+    "max_concurrent_model_calls": 1,
+    "concurrent_process_lease_probe": "passed",
+    "observer_final_statuses": {
+      "gui_disconnected": "running",
+      "phone": "completed",
+      "gui_reconnected": "completed",
+      "completed_replay": "completed"
+    },
+    "candidate_count": 18,
+    "candidate_statuses": {
+      "applied": 18
+    },
+    "source_fact_count": 15,
+    "complete_coverage": true,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "saved_fact_ids_retained": null
+  },
+  "checkpoint_model_test": {
+    "status": "passed",
+    "mode": "private_checkpoint_resume_real_queue_http_observers",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "chapter_id": "e299f3b8-a6f6-4b7f-8969-fa67206319ca",
+    "final_run_status": "completed_with_warnings",
+    "final_job_status": "completed",
+    "error": null,
+    "review_warning": "候选已保留，需要核对模型抽取的原文线索：原文设定未进入章节覆盖清单：终审流转单",
+    "model_calls": [
+      {
+        "index": 1,
+        "stage": "candidates",
+        "request_characters": 98158
+      },
+      {
+        "index": 2,
+        "stage": "candidates",
+        "request_characters": 98640
+      }
+    ],
+    "max_concurrent_model_calls": 1,
+    "concurrent_process_lease_probe": "passed",
+    "observer_final_statuses": {
+      "gui_disconnected": "running",
+      "phone": "completed",
+      "gui_reconnected": "completed",
+      "completed_replay": "completed"
+    },
+    "candidate_count": 19,
+    "candidate_statuses": {
+      "applied": 19
+    },
+    "source_fact_count": 18,
+    "complete_coverage": true,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "saved_fact_ids_retained": true
+  },
+  "apply_audit": {
+    "status": "passed",
+    "scope": "Completed public retry on private database; no source application access or model call during this audit.",
+    "original_chapter_prose_unchanged": true,
+    "entity_count_changes": {
+      "characters": {
+        "created_count": 0,
+        "deleted_count": 0
+      },
+      "worldbuilding_entries": {
+        "created_count": 0,
+        "deleted_count": 0
+      }
+    },
+    "chapter_outline_type_owner_and_source_valid": true,
+    "section_count": 4,
+    "all_candidates_applied": 18,
+    "repeat_apply_formal_tables_unchanged": true,
+    "repeat_apply_table_count": 13,
+    "checkpoint_original_fact_count": 18,
+    "checkpoint_original_fact_ids_and_payloads_retained": true,
+    "checkpoint_added_derived_fact_count": 23,
+    "oracle_note": "The initial checkpoint helper compared all fact IDs for equality; applying a summary adds derived facts. Original IDs and payloads are now checked separately."
+  },
+  "production_changes_since_previous_installer": [
+    "backend/app/prompts/cataloging_source.py",
+    "backend/app/routers/cataloging.py",
+    "backend/app/services/cataloging/candidate_retry.py",
+    "backend/app/services/cataloging/candidate_store.py",
+    "backend/app/services/cataloging/facts.py",
+    "backend/app/services/cataloging/job_control.py",
+    "backend/app/services/cataloging/launcher.py",
+    "backend/app/services/cataloging/local_cli_agent.py",
+    "backend/app/services/cataloging/orchestrator.py",
+    "backend/app/services/cataloging/progress.py",
+    "backend/app/services/workspace/tools/cataloging.py",
+    "backend/app/services/workspace/tools/external_cataloging.py",
+    "frontend/src/api/client.ts",
+    "frontend/src/pages/CatalogingJobControlCard.tsx",
+    "frontend/src/pages/CatalogingPage.tsx"
+  ],
+  "previous_installer_preserved_sha256": "86640d31ea7ad1bbc2a43c263e38bcc354c5d5d58a617f3f7d992ea8ffd100bf",
+  "installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-07T23:15:57.8066946+08:00",
+    "version": "3.3.13",
+    "bytes": 42531034,
+    "sha256": "17c3dfb5e3295e0f9506e845e7491d5ee931ac3c07b43ac8ac2dba0ee954a96b",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with single cataloging worker, read-only progress, complete fact parsing, actionable repairs, and previous fixes. Not published."
+  },
+  "package_integrity": {
+    "status": "passed",
+    "all_verified_app_module_count": 625,
+    "fixed_backend_module_count": 52,
+    "frontend_file_count": 136,
+    "prompt_spec_file_count": 8
+  },
+  "fixed_frozen_modules": {
+    "app.prompts.cataloging_source": {
+      "path": "backend/app/prompts/cataloging_source.py",
+      "source_sha256": "4bcbfb0ecef176c1514a89f44a4f9a53bc9110e81dc9d107c6b21f02f6eed533",
+      "code_sha256": "335d3e3aa93057b635beaa0f953380919361cdb1932fd9ec57c49822c5c64912"
+    },
+    "app.routers.cataloging": {
+      "path": "backend/app/routers/cataloging.py",
+      "source_sha256": "6fd19383626b9345a2b7abe95791bc9a118a07fff59628e4339955e3a54812f4",
+      "code_sha256": "ea5ed2432d77af685e86870263f73e60e86ab3430af852da418a3626fefd9c7b"
+    },
+    "app.services.cataloging.candidate_retry": {
+      "path": "backend/app/services/cataloging/candidate_retry.py",
+      "source_sha256": "aa405be21c7c95c43e6d4a9df01536d4e9ecc1187e35be33835f09480a9ce7e4",
+      "code_sha256": "096a15f2913bb56d1cb45739842aba47f0332e6e37c8495723ba6dcc2b3cbb31"
+    },
+    "app.services.cataloging.candidate_store": {
+      "path": "backend/app/services/cataloging/candidate_store.py",
+      "source_sha256": "7a05ee9c008d7093164784dbf28ceda7cbe0d50d838eef70ad028c2d62baf34e",
+      "code_sha256": "5dba87762abb0b0b86e99faa07e093734ca3915a9d29b2a3def61cb1e63d6ccf"
+    },
+    "app.services.cataloging.facts": {
+      "path": "backend/app/services/cataloging/facts.py",
+      "source_sha256": "aa327407e89e1ec8419df7990c5edf10c9f14afdff652f082c07c680c81552c6",
+      "code_sha256": "f50c41773536984fd3fb603ed41629626360118152732a22f690237232370590"
+    },
+    "app.services.cataloging.job_control": {
+      "path": "backend/app/services/cataloging/job_control.py",
+      "source_sha256": "f7ebffcb2359f0f6ec864bc532d19002e19b0751fcc6bbcf00d7ba2b4b31511e",
+      "code_sha256": "3fe7056382d25036ae2fe335d88e1ffe3a6ad6783f90e724b0ee513d6ad92812"
+    },
+    "app.services.cataloging.launcher": {
+      "path": "backend/app/services/cataloging/launcher.py",
+      "source_sha256": "2f9fa1b238af3f60eab90512d36c16a9412fed739147a79001744047fe7c2049",
+      "code_sha256": "4d1b311428fbfe5d6eff607dc2e544725973e644c5bc7b15257c0838ebbb6bad"
+    },
+    "app.services.cataloging.local_cli_agent": {
+      "path": "backend/app/services/cataloging/local_cli_agent.py",
+      "source_sha256": "45c58c11ab8cd090e59993c313e5d4717c703be0396471e17ae2aaa60e170f56",
+      "code_sha256": "58a3a8e95fbedf9f78aba6e4fc9dc5e1992ae6c0a8a5ed303655611761517d1a"
+    },
+    "app.services.cataloging.orchestrator": {
+      "path": "backend/app/services/cataloging/orchestrator.py",
+      "source_sha256": "747cbabc9cfd327bf7c89aa55868ed05d00e4b96f977d8c99041c5b9620de370",
+      "code_sha256": "325b8fd8c58528c0b9e9befdb73b4dabfc6d6527f2bde9455bccf3b1653be2ec"
+    },
+    "app.services.cataloging.progress": {
+      "path": "backend/app/services/cataloging/progress.py",
+      "source_sha256": "284de62edb31685cb01e69b5b525217bf33a4174e928729fa93317b0e617776a",
+      "code_sha256": "afdc80df8c70b0a1310affd1d57d9d13cc4a4bfd8c62c4020a6a6bb57bb47369"
+    },
+    "app.services.workspace.tools.cataloging": {
+      "path": "backend/app/services/workspace/tools/cataloging.py",
+      "source_sha256": "137c6432eebb0baba44b3d5970bb3e149f786189944ad063a77601730f13f8f5",
+      "code_sha256": "4c52332ff82a709bb112a309150d9fbfb8b30adf91aba6046f23c43e4c7d91f6"
+    },
+    "app.services.workspace.tools.external_cataloging": {
+      "path": "backend/app/services/workspace/tools/external_cataloging.py",
+      "source_sha256": "d70d515f39332b5f3664d41577d4bf319815ba2f4744dacdd91a3d22f698c045",
+      "code_sha256": "75d7c57c6e049a7eb16adffad2168fd06214b620d381bf07234000617a6fa44f"
+    }
+  },
+  "packaged_mcp_smoke": {
+    "status": "passed",
+    "first_empty_selection": "ok",
+    "version": 1,
+    "active_version": 1,
+    "selection_events": 1,
+    "active_business_categories": [],
+    "available_tools_after_activation": [
+      "set_tool_categories"
+    ],
+    "business_tool_writes": 0,
+    "fixture_projects": 1,
+    "executable_sha256": "0c93a8f3f514466215d180df62524dd26a461fdcf14732856566864985379034",
+    "packaged_chapters_read": 41,
+    "query_pages": 11,
+    "scope": "Frozen MCP in a new isolated app home; no user database or model invocation.",
+    "long_chapter_chars": 20000,
+    "long_chapter_pages": 5,
+    "long_chapter_reconstructed": true,
+    "whole_chapter_length_request_safely_paged": true,
+    "query_permission_pack": "readonly_collaboration",
+    "business_data_unchanged": true,
+    "scope_boundary": "Managed workspace Direct MCP is tested for its empty category controller; paged queries are tested only on the separately authorized readonly MCP surface. Production permissions were not changed.",
+    "per_process_timeout_seconds": 30,
+    "process_timings": [
+      {
+        "request_count": 3,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 2.188
+      },
+      {
+        "request_count": 2,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 2.203
+      },
+      {
+        "request_count": 3,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 1.984
+      },
+      {
+        "request_count": 13,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 2.422
+      }
+    ],
+    "timing_limitation": "One isolated functional run under a 30-second per-process deadline; not a general startup-performance benchmark."
+  },
+  "limitations": [
+    "Real model tests used private DB copies and deepseek:deepseek-v4-flash; the original author DB was not modified.",
+    "Checkpoint resumed with a retained review warning, not a warning-free completion.",
+    "No new live CLI-model run or physical phone interaction; their shared backend contracts were regression-tested.",
+    "Android standalone/offline cataloging remains an explicit existing parity gap.",
+    "Lint baseline warnings remain; touched files have no increased per-rule counts and new files are clean.",
+    "Local unsigned manual Windows installer only; no publication, automatic installation, or merge.",
+    "These chapter regressions do not complete the original over-100000-character and over-40-chapter acceptance."
+  ]
+}

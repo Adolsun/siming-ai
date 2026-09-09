@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.conversation_context import ToolTransaction
+from app.services.conversation_context.budget import RequestBudgetEnvelope
 from app.services.workspace.assistant_response import WorkspaceTurnTelemetry
 
 SseEncoder = Callable[[Any], str]
@@ -55,6 +56,8 @@ class WorkspaceAssistantTurnState:
     authorized_tool_names: set[str] = field(default_factory=set)
     active_categories: tuple[str, ...] = ()
     category_selected: bool = False
+    request_budget: RequestBudgetEnvelope | None = None
+    consecutive_capacity_rejections: int = 0
     observed_category_version: int = 0
     workspace_tool_names: list[str] = field(default_factory=list)
     workspace_tool_name_set: set[str] = field(default_factory=set)
@@ -65,6 +68,7 @@ class WorkspaceAssistantTurnState:
 
     tool_logs: list[dict[str, Any]] = field(default_factory=list)
     final_reply: str = ""
+    visible_reasoning_by_iteration: dict[int, str] = field(default_factory=dict)
     applied_actions: list[dict[str, Any]] = field(default_factory=list)
     searched_context: list[dict[str, Any]] = field(default_factory=list)
     final_model: str = ""
@@ -76,6 +80,23 @@ class WorkspaceAssistantTurnState:
 
     def event(self, payload: Any) -> str:
         return self.encode_event(payload)
+
+    @property
+    def visible_reasoning(self) -> str:
+        return "\n\n".join(
+            value for _, value in sorted(self.visible_reasoning_by_iteration.items()) if value
+        )
+
+    def reasoning_event(self, iteration: int, content: str) -> str | None:
+        previous = self.visible_reasoning
+        self.visible_reasoning_by_iteration[iteration] = content
+        current = self.visible_reasoning
+        if current == previous:
+            return None
+        append = current.startswith(previous)
+        return self.event({"type": "reasoning_delta", "iteration": iteration,
+                           "delta": current[len(previous):] if append else current,
+                           "replace": not append})
 
     def require_current_run(self) -> None:
         """Fail before provider/tool work when a newer turn superseded this run."""

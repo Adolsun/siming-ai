@@ -35,7 +35,7 @@ def get_outline_granularity_rules() -> str:
    不得把章节标题写进 parent_id，也不得自行猜测任何数据库 UUID；新节点只用 parent_title 表达父级，真实 ID 由司命解析。
 4. chapter 节点 summary 写整章目标、冲突、转折、结果和结尾钩子；section 节点 summary 写该场景的地点、参与角色、行动目标、冲突推进、信息揭示和场景结果。
 5. 如果章节非常短且只有单一场景，可以只输出 chapter 节点，但必须在 summary 中说明这是单场景章节。
-6. section 节点尽量补充 scene_number、purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions，供写后归档和上下文打包使用。
+6. section 节点必须由模型明确填写 scene_number 正整数，并补充 purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions。编号对应 chapter_overview.scenes 的顺序，总数须等于该数组长度；同一场景内的多个事件合并进同一 section，不按事件条数重新分场。系统不按标题或输出次序猜测场景编号。
 7. scene_number 是同一章节内的稳定场景键。重新建档时，同一逻辑场景沿用原编号；正文已删除的场景不要继续输出，系统会退役旧的建档场景节点。
 8. 内部建档、外部 MCP 建档、本机 CLI 建档都必须遵守同一套大纲粒度规则；不要因为调用方式不同降低粒度。"""
 
@@ -74,7 +74,8 @@ def get_fact_extraction_rules() -> str:
 
 
 def get_cataloging_candidate_schema() -> str:
-    return """【允许的候选 type 与 payload】
+    return (
+        """【允许的候选 type 与 payload】
 首次生成回合的首个响应对象必须同时包含两个必填对象：
 {"chapter_summary":{"summary_text":"...","coverage_manifest":{"scene_count":1,"characters":[],"worldbuilding":[],"relationships":[],"character_profiles":[]},"narrative_state":{"events":[],"timeline_events":[],"foreshadowing_planted":[],"foreshadowing_resolved":[],"storyline_progress":[],"new_storylines":[],"reader_known_facts":[],"character_known_facts":[],"unresolved_actions":[]},"narrative_review":{"source":"provided","outcome":"assessed"}},"chapter_outline":{"title":"当前章节原题","summary":"...","node_type":"chapter","status":"completed"}}
 系统会把这两个必填对象拆成 chapter_summary 与章级 outline_create。增量修复回合不重复这个骨架，只输出校验明确指出的缺失或失败候选；chapter_summary 或 chapter_outline 只有在明确缺失时才补。没有角色、新设定或关系时，coverage_manifest 对应项必须是 []，不得虚构补卡。
@@ -82,15 +83,24 @@ def get_cataloging_candidate_schema() -> str:
 node_type 只用于 outline_create/outline_update 的层级，而且只能是 chapter、section 或 volume；世界观、角色等候选不得输出 node_type。
 - chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "coverage_manifest":{"scene_count":1,"characters":["..."],"worldbuilding":["..."],"relationships":[{"source_name":"...","target_name":"...","relationship_type":"..."}],"character_profiles":["本章新建或稳定档案发生变化的角色名"]}, "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}, "narrative_review":{"source":"provided", "outcome":"assessed", "evidence":"本章叙事治理检查依据"}}
 - outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
-- character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"protagonist|supporting|antagonist|mentor|other", "age":"...", "appearance":"...", "personality":"...", "background_before":"已有角色修改 background 时逐字复制当前完整值", "background":"逐字保留旧背景并追加正文确认的稳定信息", "abilities":["..."], "profile":{"core_motivation":"...","inner_lack":"...","core_belief":"...","public_persona":"...","hidden_persona":"...","reveal_chapter":3,"moral_taboo":"...","voice":"...","action_habit":"...","trauma_trigger":"..."}, "tone_style":"...", "catchphrases":["..."], "verbosity":"brief|moderate|verbose", "emotion_tendency":"...", "custom_system_prompt":"..."}
-- character_state_update: {"name":"...", "aliases":["..."], "appearance_before":"修改外貌时逐字复制当前值", "appearance_evidence":"本章正文逐字摘录", "appearance":"...", "age_before":"修改年龄时逐字复制当前值", "age_evidence":"本章正文逐字摘录", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets_before":"修改物品时逐字复制当前完整值", "items_or_assets":"逐字保留旧值并追加本章变化后的完整状态"}
+- character_create: {"name":"...", "aliases":["..."], "role_type":"protagonist|supporting|antagonist|mentor|other", "age":"...", "appearance":"...", "personality":"...", "background":"正文确认的稳定身份和经历", "abilities":["..."], "profile":{"core_motivation":"...","inner_lack":"...","core_belief":"...","public_persona":"...","hidden_persona":"...","reveal_chapter":3,"moral_taboo":"...","voice":"...","action_habit":"...","trauma_trigger":"..."}, "tone_style":"...", "catchphrases":["..."], "verbosity":"brief|moderate|verbose", "emotion_tendency":"...", "custom_system_prompt":"..."}。仅用于新角色，禁止传入已有角色 id。
+"""
+        '- character_update: {"id":"从 relevant_characters、character_name_index 或 '
+        'character_alias_index 逐字复制的真实角色 ID，必填", "name":"已有稳定主名", '
+        '"background_before":"修改 background 时逐字复制当前完整值", '
+        '"background":"逐字保留旧背景并追加正文确认的稳定信息", '
+        '"profile":{"本章变化的档案字段":"新值"}}。其余可修改字段与 character_create 相同，'
+        '只提交本章确有变化的字段；不修改 background 就同时省略 background 与 background_before，'
+        '不能照抄示例占位内容。\n'
+        """- character_state_update: {"name":"...", "aliases":["..."], "appearance_before":"修改外貌时逐字复制当前值", "appearance_evidence":"本章正文逐字摘录", "appearance":"...", "age_before":"修改年龄时逐字复制当前值", "age_evidence":"本章正文逐字摘录", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets_before":"修改物品时逐字复制当前完整值", "items_or_assets":"逐字保留旧值并追加本章变化后的完整状态"}
 - character_timeline: {"name":"...", "event_description":"...", "event_type":"appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change":"..."}
 - character_relationship: {"source_name":"...", "target_name":"...", "relationship_type":"...", "description":"..."}
 - character_merge_candidate: {"primary_name":"...", "secondary_name":"...", "canonical_name":"...", "aliases":["..."], "confidence_reason":"...", "evidence_points":["..."], "background_append":"..."}
-- worldbuilding_create: {"dimension":"geography|history|factions|power_system|races|culture", "title":"...", "content":"...", "status":"active", "identity_resolution":{"decision":"create", "reviewed_existing_ids":["逐字复制 worldbuilding_identity_review_required 中的全部 ID；列表为空时至少复制完整标题索引中最接近的一个 ID"], "reason":"逐项说明为何不是这些旧条目的更新"}}
-- worldbuilding_update: {"id":"从 worldbuilding_title_index 或 relevant_worldbuilding 逐字复制的已有条目ID", "dimension":"geography|history|factions|power_system|races|culture", "title":"沿用已有稳定标题", "content":"...", "status":"active"}
-- worldbuilding_timeline: {"id":"已有设定时复制其ID；新设定可省略", "title":"...", "dimension":"...", "event_description":"...", "event_type":"introduced|confirmed|changed|damaged|used|limited", "evidence":"..."}
+- worldbuilding_create: {"dimension":"geography|history|factions|power_system|races|culture", "title":"...", "content":"...", "status":"active", "source_fact_titles":["该设定对应的原事实称呼；无称呼差异可省略此字段"], "identity_resolution":{"decision":"create", "reviewed_existing_ids":["逐字复制 worldbuilding_identity_review_required 中的全部 ID；列表为空时至少复制完整标题索引中最接近的一个 ID"], "reason":"逐项说明为何不是这些旧条目的更新"}}
+- worldbuilding_update: {"id":"从 worldbuilding_title_index 或 relevant_worldbuilding 逐字复制的已有条目ID", "dimension":"geography|history|factions|power_system|races|culture", "title":"沿用已有稳定标题", "content":"...", "status":"active", "source_fact_titles":["归入该卡的原事实称呼"]}
+- worldbuilding_timeline: {"id":"已有设定时复制其ID；新设定可省略", "title":"...", "dimension":"...", "event_description":"...", "event_type":"introduced|confirmed|changed|damaged|used|limited", "evidence":"...", "source_fact_titles":["归入该卡的原事实称呼"]}
 - chapter_link: {"characters":[{"name":"...","appearance_type":"出场|提及|回忆"}], "worldbuilding_titles":["..."], "outline_title":"...", "description":"...", "locations":["..."], "items":["..."], "events":["..."], "importance":"major|normal|minor", "appearance_order":1}"""
+    )
 
 
 def get_cataloging_candidate_rules() -> str:
@@ -157,9 +167,10 @@ def get_cataloging_candidate_rules() -> str:
 def get_incremental_cataloging_repair_rules() -> str:
     return """【候选缺项自动修复】
 1. 当用户消息包含“上一轮校验未通过”时，这是增量修复回合，本节规则优先于首次生成规则。系统已经保留上一轮通过的候选；只输出错误信息明确指出的缺失候选，或解析失败、身份不一致、结构错误候选的修正版。
-2. 不要重发完整候选集，不得重复、删除、缩减或改写已有正确候选。chapter_summary 和 chapter_outline 只有在错误明确指出其缺失时才允许输出。
-3. 已有 coverage_manifest 是本章的累计验收合同。增量修复不得减少 scene_count，也不得删除其中已有角色、设定、关系或角色档案；需要修正清单时只能补充遗漏项。
+2. 不要重发完整候选集，不得重复、删除、缩减或改写已有正确候选。chapter_outline 只有在缺失时输出；chapter_summary 在缺失或明确纠正错误覆盖清单时输出。
+3. 增量修复不得减少 scene_count。先核对已保留候选与事实，缺项就补齐候选；若 coverage_manifest 误列了同一身份的不同称呼，或把 stable_profile_change=false 且无稳定档案变化的已有角色误列为档案更新对象，可以输出一条 chapter_summary，设置 coverage_manifest_mode="replace"，提供完整纠正清单。不得为补齐错误清单而虚构档案变化或新建近义卡；也不能删掉事实中确实存在的角色、设定、关系或稳定档案变化来绕过校验。已有事实归入精确 ID 的世界观卡时，摘要清单只列规范卡稳定标题；另行输出该世界观候选，在其 payload.source_fact_titles 字符串数组中声明原事实标签。source_fact_titles 禁止放进 chapter_summary、coverage_manifest 或 chapter_link，禁止写成 {"worldbuilding":[...]} 对象；摘要修复和世界观来源映射是两类候选，分别输出。若返回 coverage_repairs，按其中 candidate_id、field 和 required_mode 修正摘要清单或章节关联，使用模型已声明的规范标题并保留其他内容；mapping_candidate_id 指向的世界观候选已经保存，仅重发它不能修复摘要或关联。
 4. 错误若列出缺失场景编号，逐个输出对应 scene_number 的 section outline_create，并填写 purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions；不要用重写摘要代替场景卡。
+5. 若 scene_repair 显示越界、重复或错位场景，必须对照 source_scenes 完整重排全部场景，不能只删末条或换编号覆盖其他场景。单独输出 {"type":"scene_outline_replace","expected_candidate_ids":["当前全部section候选ID"],"sections":[全部N条完整的outline_create/section候选]}；sections 必须唯一覆盖1..N并保留全部源场景事件及状态。系统在全部修正版通过后原子替换当前场景候选集，失败则全部回滚，旧候选保留审计记录。只能替换本次运行未被作者编辑的pending场景，不能改动章级大纲、其他章节或已应用候选。
 5. 错误若列出缺失角色、设定、关系或章节关联，逐个输出相同稳定主名/标题/关系端点的对应候选。别名只放 aliases，不得在主名与别名之间切换。
 6. 输出完成后立即结束，不要附带解释。"""
 

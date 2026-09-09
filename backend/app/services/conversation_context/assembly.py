@@ -154,10 +154,10 @@ def _validate_options(options: _AssemblyOptions) -> None:
     if options.model_binding.tool_schema_hash != canonical_sha256(list(options.current_tools)):
         raise ValueError("model binding tool schema hash does not match current tools")
     for transaction in options.delivered_transactions:
-        if transaction.state is not ToolTransactionState.DELIVERED:
+        if transaction.state not in {ToolTransactionState.DELIVERED, ToolTransactionState.CONSUMED}:
             raise ConversationContextError(
                 ConversationContextErrorCode.INCOMPLETE_TOOL_TRANSACTION,
-                "只有完整 delivered 工具事务可以进入下一模型步骤。",
+                "只有完整 delivered/consumed 工具事务可以进入当前回合的下一模型步骤。",
                 details={"transaction_id": transaction.transaction_id},
             )
 
@@ -311,7 +311,7 @@ def _require_base_sendable(
         ):
             raise ConversationContextError(
                 ConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
-                "活动 checkpoint 或未完成协议状态超过模型容量，不能静默删除。",
+                "历史约束或当前回合工具上下文超过模型容量，不能丢弃后继续。",
                 details={
                     "required_state_tokens": required,
                     "current_input_tokens": budget.current_input_tokens,
@@ -327,7 +327,7 @@ def _turn_cost(counter: TokenCounter, turn: ConversationTurn) -> int:
     ]
     status_receipt = render_historical_turn_status(turn)
     if status_receipt is not None:
-        messages.append({"role": "assistant", "content": status_receipt})
+        messages.append({"role": "user", "content": status_receipt})
     return counter.count_value(messages)
 
 
@@ -340,22 +340,14 @@ def _select_exact_turns(
         components.max_model_visible_result_tokens_for_open_tools
         + components.next_step_wrapper_tokens
     )
-    available = budget.request_input_limit - budget.current_input_tokens - growth
-    if available < 0:
-        raise ConversationContextError(
-            ConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY,
-            "当前工具可能返回的结果无法在下一步安全送入模型。",
-            details={
-                "projected_next_step_tokens": budget.projected_next_step_tokens,
-                "request_input_limit": budget.request_input_limit,
-            },
-        )
+    available = budget.request_input_limit - budget.current_input_tokens
     try:
         selection = select_recent_turns(
             options.turns,
             available_tokens=available,
             count_turn_tokens=lambda turn: _turn_cost(options.token_counter, turn),
             covered_sequence_ranges=_covered_ranges(options),
+            growth_reserve_tokens=growth,
         )
     except MandatoryExactTurnsOverCapacity as exc:
         raise ConversationContextError(
@@ -394,12 +386,8 @@ def _seal_final_step(
     provisional = _provisional_frame(options, recent_turns=exact_turns)
     _, _, budget = _build_budget(options, provisional)
     budget.require_sendable()
-    if not budget.fits_projected:
-        raise ConversationContextError(
-            ConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY,
-            "下一步工具结果预算超过模型容量。",
-            details=budget.to_dict(),
-        )
+    # A sendable request may ask the model to recover from a rejected batch
+    # or finish without another tool. Actual batch admission remains mandatory.
     frame = replace(provisional, budget=budget).sealed()
     rendered = render_context_frame(frame, system_prompt=options.system_prompt)
     capability = options.model_capability or ModelToolCapability(

@@ -766,7 +766,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "appearance or age must include the exact current *_before value and a verbatim chapter "
             "*_evidence excerpt. A state update that changes an existing "
             "non-empty items_or_assets must copy it exactly to items_or_assets_before and retain it in "
-            "the new full value. Empty entity lists are valid. API-free."
+            "the new full value. Section candidates require explicit scene_number within the source "
+            "scene plan. Use scene_repair to reconcile the source scenes and retained candidates. "
+            "Repair scene drift with a single scene_outline_replace object: expected_candidate_ids "
+            "lists ALL current section candidate IDs, and sections contains the complete corrected "
+            "1..N outline_create/section objects, preserving all source events and scene state. "
+            "The entire scene set is replaced atomically; only unedited pending scenes in this run "
+            "are eligible. Empty entity lists are valid. API-free."
         ),
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},

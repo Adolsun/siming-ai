@@ -64,7 +64,7 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="search_chapters",
-        description="分页搜索章节，并按 content_offset_chars/content_chars 精确读取正文范围。返回 content_range.next_offset_chars 时用它继续。",
+        description="分页搜索章节或按 chapter_id 读取指定章节；正文返回明确字符范围，按每章 next_arguments 可连续读全，不限制章节总字数。",
         input_schema={
             "query": {
                 "type": "string",
@@ -74,6 +74,10 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "outline_node_id": {
                 "type": "string",
                 "description": "限定大纲节点ID，传入后忽略query直接返回该节点下所有章节",
+            },
+            "chapter_id": {
+                "type": "string",
+                "description": "当前作品的真实章节ID；精确读取时优先于 outline_node_id 和 query，分页保持同一章节",
             },
             "limit": {
                 "type": "integer",
@@ -90,8 +94,8 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "content_chars": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 400,
-                "description": "每章本页正文字符数，默认/最大400",
+                "maximum": 2147483647,
+                "description": "期望的本页正文字符数，默认2000。服务端每页安全上限4000；请求更大值会返回安全页及实际范围，不拒绝长章节。按 next_arguments 继续可读全；缩小此值会降低预算",
             },
         },
         tool_type="read",
@@ -132,8 +136,8 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "summary_chars": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 100,
-                "description": "每个摘要字段的本页字符数，默认/最大100",
+                "maximum": 2147483647,
+                "description": "每个摘要字段期望的本页字符数，默认500。服务端每页安全上限1000；请求更大值会返回安全页及实际范围，不拒绝长摘要。按 summary_range 继续可读全；缩小此值会降低预算",
             },
             "linked_cursor": {
                 "type": "integer",

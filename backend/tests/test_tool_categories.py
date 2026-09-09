@@ -170,6 +170,54 @@ def test_reselecting_active_categories_does_not_restart_the_model_step():
         remove_tool_category_state(state_file)
 
 
+@pytest.mark.parametrize("initial_categories", [[], ["creation_data"]])
+def test_empty_category_choice_is_recorded_once_and_keeps_business_tools_closed(
+    initial_categories: list[str],
+):
+    state_file = create_tool_category_state()
+    try:
+        if initial_categories:
+            replace_tool_categories(state_file, initial_categories)
+            activate_tool_categories(state_file)
+        before = read_tool_category_state(state_file)
+        _, event_offset = read_tool_category_events(state_file)
+
+        response = json.loads(handle_message(
+            json.dumps({
+                "jsonrpc": "2.0", "id": 20, "method": "tools/call",
+                "params": {
+                    "name": TOOL_CATEGORY_CONTROLLER,
+                    "arguments": {"enabled_categories": []},
+                },
+            }),
+            permission_pack="creation_session",
+            tool_category_state_file=state_file,
+        ))
+        assert response["result"]["isError"] is False
+        assert json.loads(response["result"]["content"][0]["text"])["status"] == "ok"
+        pending = read_tool_category_state(state_file)
+        assert pending["version"] == before["version"] + 1
+        assert pending["active_version"] == before["active_version"]
+        assert pending["requested_categories"] == []
+
+        # A retry before the next model step cannot create another transition.
+        assert replace_tool_categories(state_file, [])["status"] == "ok"
+        events, _ = read_tool_category_events(state_file, event_offset)
+        assert len(events) == 1
+        assert events[0]["data"]["enabled_categories"] == []
+        activate_tool_categories(state_file)
+        assert _mcp_names(state_file) == {TOOL_CATEGORY_CONTROLLER}
+
+        # Once selected, choosing the same empty set remains a no-op.
+        assert replace_tool_categories(state_file, [])["status"] == "skipped"
+        selected = read_tool_category_state(state_file)
+        assert selected["version"] == pending["version"]
+        assert selected["active_version"] == pending["version"]
+        assert read_tool_category_audits(state_file)[0]["status"] == "ok"
+    finally:
+        remove_tool_category_state(state_file)
+
+
 def _symlink_or_skip(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)

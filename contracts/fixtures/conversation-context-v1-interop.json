@@ -15,20 +15,47 @@
     "tool_capability_unavailable",
     "tool_result_over_capacity",
     "provider_message_mapping_failed",
-    "final_agent_request_over_capacity"
+    "final_agent_request_over_capacity",
+    "tool_transaction_over_capacity"
   ],
   "native_tool_budget": {
-    "schema": "native_tool_transaction_budget.v2",
-    "max_native_assistant_transaction_json_bytes": 16384,
-    "max_model_visible_tool_result_batch_json_bytes": 32768,
-    "next_step_wrapper_tokens": 32768,
-    "max_projected_transaction_growth_tokens": 65536,
-    "assistant_replay_fields": [
-      "content",
-      "tool_calls",
-      "reasoning_content",
-      "provider_state"
-    ],
+    "schema": "native_tool_transaction_budget.v3",
+    "admission": "remaining_bound_request_input_tokens",
+    "next_step_wrapper_tokens": 1024,
+    "max_consecutive_capacity_rejections": 3,
+    "result_message_escaping_multiplier": 2,
+    "page_budgets": {
+      "search_chapters": {
+        "base_json_bytes": 4096,
+        "item_json_bytes": 1536,
+        "max_items": 2,
+        "text_argument": "content_chars",
+        "default_text_chars": 2000,
+        "max_text_chars": 4000,
+        "text_fields_per_item": 1,
+        "min_text_fields": 0
+      },
+      "list_chapters": {
+        "base_json_bytes": 1024,
+        "item_json_bytes": 1536,
+        "max_items": 10
+      },
+      "search_outline_tree": {
+        "base_json_bytes": 2048,
+        "item_json_bytes": 1536,
+        "max_items": 10
+      },
+      "search_outline": {
+        "base_json_bytes": 4096,
+        "item_json_bytes": 6144,
+        "max_items": 2,
+        "text_argument": "summary_chars",
+        "default_text_chars": 500,
+        "max_text_chars": 1000,
+        "text_fields_per_item": 3,
+        "min_text_fields": 4
+      }
+    },
     "standalone_result_json_bytes_by_tool": {
       "set_tool_categories": 4096,
       "chapter_writer": 16384,
@@ -40,9 +67,9 @@
       "list_chapters": 16384,
       "list_worldbuilding": 16384,
       "search_characters": 16384,
-      "search_chapters": 16384,
-      "search_outline": 16384,
-      "search_outline_tree": 16384,
+      "search_chapters": 55168,
+      "search_outline": 52384,
+      "search_outline_tree": 17408,
       "search_worldbuilding": 16384,
       "prepare_task_context": 32768,
       "search_task_context": 32768,
@@ -60,7 +87,8 @@
       "assistant_over_capacity": "native_assistant_transaction_over_capacity",
       "assistant_invalid": "native_assistant_transaction_invalid",
       "result_batch_over_capacity": "tool_result_batch_over_capacity"
-    }
+    },
+    "preparation_reserve": "twice_largest_default_open_tool_result_plus_wrapper"
   },
   "checkpoint_source": {
     "messages": [
