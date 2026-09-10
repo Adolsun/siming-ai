@@ -250,7 +250,7 @@ function ProjectWorkspace() {
         world: () => <WorldbuildingPage projectId={projectId} />,
         stats: () => <StatsPage projectId={projectId} />,
         deconstruct: () => <DeconstructPage projectId={projectId} />,
-        cataloging: () => <CatalogingPage projectId={projectId} />,
+        cataloging: () => <CatalogingPage projectId={projectId} focusJobId={searchParams.get('job') || undefined} active={activeKey === 'cataloging'} />,
         visualization: () => <VisualizationPage projectId={projectId} />,
         governance: () => <NarrativeGovernancePage projectId={projectId} />,
         skills: () => <SkillsPage projectId={projectId} />,

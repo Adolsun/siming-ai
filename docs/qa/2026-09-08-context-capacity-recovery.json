@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "scope": "Windows source validation and Android standalone budget unit tests",
+  "backend_tests": 201,
+  "frontend_targeted_tests": 7,
+  "frontend_typecheck": "passed",
+  "android_tests": 282,
+  "android_final_ui_text_recheck": "Two subsequent pending-state string edits inspected in source; duplicate full compilation stopped to reduce resource contention. No Android APK delivered.",
+  "mobile_pc_contract_capabilities": 27,
+  "production_database_mutated": false,
+  "installed_app_updated": false,
+  "installer_sha256": "10afb1ad82b6980bb984f8378025ba551ef3e26f519b9edc419e3d58ce397baf",
+  "prior_installer_unchanged": true,
+  "real_model_writer": {
+    "model": "deepseek:deepseek-v4-flash",
+    "completed": true,
+    "model_calls": 25,
+    "formal_data_unchanged": true,
+    "original_database_writes": 0,
+    "all_tool_results_retained": true,
+    "target_unsaved_draft_verified": true
+  },
+  "frozen_app_modules": 626,
+  "frontend_files": 136,
+  "packaged_mcp_tools": 153,
+  "packaged_mcp_startup_retry": "Initial 30-second cold-start timeout; unchanged smoke passed on retry with original timeout and assertions."
+}

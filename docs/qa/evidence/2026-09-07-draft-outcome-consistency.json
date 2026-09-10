@@ -1,0 +1,123 @@
+{
+  "status": "passed",
+  "scope": "Draft outcome consistency; one production module changed.",
+  "backend_tests": 193,
+  "android_tests": 282,
+  "parity_capabilities": 27,
+  "replay": {
+    "status": "passed",
+    "run_id": "779c5158-b200-4b23-a3f5-9670bbcb3614",
+    "source_access": "SQLite mode=ro + query_only",
+    "isolated_copy_only": true,
+    "model_calls": 0,
+    "evidence_submission_steps": [
+      [
+        11,
+        "needs_confirmation"
+      ],
+      [
+        12,
+        "ok"
+      ]
+    ],
+    "before": {
+      "outcome": "partial_success",
+      "reply": "章节草稿已生成并载入正文编辑器，尚未保存。你可以先使用“去除 AI 味”或“质量评分”；确认后请选择“保存并建档”或“仅保存”。建档完成前，AI 不会继续生成下一章。\n\n注意：本轮有工具执行失败，相关数据可能未保存：submit_context_evidence: submit_context_evidence 等待确认"
+    },
+    "after": {
+      "outcome": "completed_with_reply",
+      "reply": "章节草稿已生成并载入正文编辑器，尚未保存。你可以先使用“去除 AI 味”或“质量评分”；确认后请选择“保存并建档”或“仅保存”。建档完成前，AI 不会继续生成下一章。\n\n补充：本轮有 1 次前序工具调用未通过，后续流程已纠正；章节草稿已成功生成并暂存。",
+      "run_status": "completed"
+    },
+    "pending_draft": {
+      "draft_id": "309e289a-d0cf-4e72-9814-580b7d43569a",
+      "status": "pending",
+      "characters": 3471,
+      "saved_chapter_id": null
+    },
+    "formal_data_drafts_context_and_audit_unchanged": true,
+    "tool_log_history_preserved": true,
+    "editor_content_preserved": true
+  },
+  "production_changes_since_previous_installer": [
+    "backend/app/services/workspace/assistant_response.py"
+  ],
+  "previous_installer_preserved_sha256": "af1ad0c5ebe7f14471a79f6168069b2b64896c1cec25df14ce0f20fb26a7adf5",
+  "installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-07T20:18:19.3912687+08:00",
+    "version": "3.3.13",
+    "bytes": 42521987,
+    "sha256": "020a4a79be4291bd7f107d919f783a6ca892ceb4c55f57fce8c8947b619ab0cc",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with consistent API and CLI draft completion outcomes, distinct confirmation notices, and previous fixes. Not published."
+  },
+  "package_integrity": {
+    "status": "passed",
+    "all_verified_app_module_count": 624,
+    "fixed_backend_module_count": 38,
+    "frontend_file_count": 136,
+    "prompt_spec_file_count": 8
+  },
+  "fixed_frozen_module": {
+    "path": "backend/app/services/workspace/assistant_response.py",
+    "source_sha256": "cf7a64ef6a5ab716e408d2e5141b65191f23ffa43008fd41ba6addee0b4e0b67",
+    "code_sha256": "3fdc5963394062c54c3d341ff752dbc038b0aac1d3d73d15034d0ab70c88aefe"
+  },
+  "packaged_mcp_smoke": {
+    "status": "passed",
+    "first_empty_selection": "ok",
+    "version": 1,
+    "active_version": 1,
+    "selection_events": 1,
+    "active_business_categories": [],
+    "available_tools_after_activation": [
+      "set_tool_categories"
+    ],
+    "business_tool_writes": 0,
+    "fixture_projects": 1,
+    "executable_sha256": "733ea362b7ab925de69dea7e4ad8d78c78578defe8b3182b82fe81fe67b1241a",
+    "packaged_chapters_read": 41,
+    "query_pages": 11,
+    "scope": "Frozen MCP in a new isolated app home; no user database or model invocation.",
+    "long_chapter_chars": 20000,
+    "long_chapter_pages": 5,
+    "long_chapter_reconstructed": true,
+    "whole_chapter_length_request_safely_paged": true,
+    "query_permission_pack": "readonly_collaboration",
+    "business_data_unchanged": true,
+    "scope_boundary": "Managed workspace Direct MCP is tested for its empty category controller; paged queries are tested only on the separately authorized readonly MCP surface. Production permissions were not changed.",
+    "per_process_timeout_seconds": 30,
+    "process_timings": [
+      {
+        "request_count": 3,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 1.906
+      },
+      {
+        "request_count": 2,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 1.86
+      },
+      {
+        "request_count": 3,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 1.875
+      },
+      {
+        "request_count": 13,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 2.203
+      }
+    ],
+    "timing_limitation": "One isolated functional run under a 30-second per-process deadline; not a general startup-performance benchmark."
+  },
+  "limitations": [
+    "No new model calls; completion replay on an isolated database copy.",
+    "Only the backend final outcome implementation changed; mobile production code and frontend code are unchanged.",
+    "First Android attempt from the Unicode path could not load test classes; rerun uses the existing temporary ASCII workspace mapping.",
+    "Local unsigned manual Windows installer, not published or automatically installed."
+  ]
+}

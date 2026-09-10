@@ -71,6 +71,21 @@ export const runStepToLog = (step: WorkspaceAssistantRunStep): WorkspaceRunLog =
   retryBlockReason: step.retry_block_reason,
 })
 
+export function toolStatusColor(status?: string | null): string {
+  switch (status?.toLowerCase()) {
+    case 'ready': case 'ok': case 'completed': case 'success': case 'succeeded':
+      return 'green'
+    case 'error': case 'failed': case 'interrupted':
+      return 'red'
+    case 'needs_confirmation': case 'blocked': case 'denied': case 'rejected':
+      return 'orange'
+    case 'skipped': case 'cancelled': case 'canceled': case 'superseded':
+      return 'default'
+    default:
+      return 'blue'
+  }
+}
+
 export function assistantOutcomeToRunLog(
   payload: WorkspaceAssistantResponse,
   tool: string,
@@ -107,17 +122,41 @@ const messageTime = (message: WorkspaceAssistantMessage) => {
 
 export const sortWorkspaceMessages = (items: WorkspaceAssistantMessage[]) =>
   [...items].sort((a, b) => {
+    if (typeof a.sequence_no === 'number' && typeof b.sequence_no === 'number') {
+      const sequenceDiff = a.sequence_no - b.sequence_no
+      if (sequenceDiff !== 0) return sequenceDiff
+    }
     const timeDiff = messageTime(a) - messageTime(b)
     if (timeDiff !== 0) return timeDiff
     if (a.role !== b.role) return a.role === 'user' ? -1 : 1
     return String(a.id || '').localeCompare(String(b.id || ''))
   })
 
+/** Insert live notices by time while retaining the durable transcript order. */
+export const mergeWorkspaceTimeline = (
+  messages: WorkspaceAssistantMessage[],
+  notices: WorkspaceAssistantMessage[],
+): WorkspaceAssistantMessage[] => {
+  const dialogue = sortWorkspaceMessages(messages)
+  const notifications = sortWorkspaceMessages(notices)
+  const timeline: WorkspaceAssistantMessage[] = []
+  let nextNotice = 0
+  for (const item of dialogue) {
+    while (nextNotice < notifications.length
+      && messageTime(notifications[nextNotice]) <= messageTime(item)) {
+      timeline.push(notifications[nextNotice++])
+    }
+    timeline.push(item)
+  }
+  return [...timeline, ...notifications.slice(nextNotice)]
+}
+
 export const toWorkspaceMessage = (
   item: WorkspacePersistedMessage,
 ): WorkspaceAssistantMessage => ({
   id: item.id,
   conversation_id: item.conversation_id,
+  sequence_no: item.sequence_no,
   role: item.role,
   content: item.content,
   reasoning_content: item.role === 'assistant'

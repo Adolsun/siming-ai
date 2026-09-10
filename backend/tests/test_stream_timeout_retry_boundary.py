@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,12 @@ from app.ai.base import BaseAdapter
 from app.core.exceptions import LLMError
 from app.modules.model_runtime.infrastructure import gateway as gateway_module
 from app.modules.model_runtime.infrastructure.gateway import LLMGateway
+
+
+def _checkpoint(messages):
+    reference = next(item for item in messages if item["content"].startswith("[SERVER_VERIFIED_STREAM_CHECKPOINT]"))
+    assert reference["role"] == "user"
+    return json.loads(reference["content"].splitlines()[2])
 
 
 class TimeoutBoundaryAdapter(BaseAdapter):
@@ -43,7 +50,7 @@ class TimeoutBoundaryAdapter(BaseAdapter):
             self.last_stream_finish_reason = "length"
             return
         if behavior in {"resume_success", "resume_timeout"}:
-            expected = kwargs["messages"][-1]["content"].split("：\n", 1)[1]
+            expected = _checkpoint(kwargs["messages"])["required_prefix"]
             yield expected[:17]
             yield expected[17:] + " suffix"
             if behavior == "resume_timeout":
@@ -215,10 +222,10 @@ def test_text_stream_resumes_from_verified_checkpoint_without_duplicate_prefix()
     assert "".join(received) == "prefix suffix"
     assert error is None
     assert TimeoutBoundaryAdapter.text_calls == 2
-    assert TimeoutBoundaryAdapter.text_messages[1][-2] == {
-        "role": "assistant",
-        "content": "prefix",
-    }
+    recovered = TimeoutBoundaryAdapter.text_messages[1]
+    assert _checkpoint(recovered)["committed_text"] == "prefix"
+    assert not any(item["role"] == "assistant" for item in recovered)
+    assert recovered[-1] == {"role": "user", "content": "probe"}
     on_resume.assert_awaited_once()
     assert on_resume.await_args.args[0]["checkpoint_chars"] == len("prefix")
 
@@ -245,7 +252,7 @@ def test_text_stream_can_resume_more_than_once_without_repeating_committed_text(
     assert "".join(received) == "prefix suffix suffix"
     assert error is None
     assert TimeoutBoundaryAdapter.text_calls == 3
-    assert TimeoutBoundaryAdapter.text_messages[2][-2]["content"] == "prefix suffix"
+    assert _checkpoint(TimeoutBoundaryAdapter.text_messages[2])["committed_text"] == "prefix suffix"
 
 
 def test_tool_stream_discards_partial_json_and_replans_one_complete_call():

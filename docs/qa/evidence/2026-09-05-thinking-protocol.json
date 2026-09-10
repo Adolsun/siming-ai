@@ -1,0 +1,553 @@
+{
+  "schema": "siming.thinking_protocol_regression_evidence.v1",
+  "recorded_at": "2026-09-05T19:07:39.6539195+08:00",
+  "branch": "codex/hci-usability-20260905",
+  "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+  "working_tree_has_uncommitted_changes": true,
+  "scope": "Source regression and real provider protocol probes; no installer or device acceptance",
+  "backend": {
+    "tests": 360,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "android": [
+    {
+      "name": "com.siming.mobile.data.agent.MobileAssistantConversationStoreTest",
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileChapterWriteStoreTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileContextDeliveryTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileContextManifestTest",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileContextParityTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileConversationContextTest",
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileOutlineDraftStoreTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileWorkspaceAgentChapterTargetTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileWorkspaceAgentOutlinePaginationTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.agent.MobileWorkspacePaginationTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.ApiDateTimeTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.CreationAgentTurnRecordsTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.CreationWorkbenchContractTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.MobileCreationAgentTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.MobileCreationConversationAgentTest",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.MobileCreationJsonRepairTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.creation.PcCreationAgentContractTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.local.CanonicalReplicaContractTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.local.ReplicaOrderingTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.MobileAssistantModelsTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.MobileProjectToolsTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.DirectApiClientTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.MobileKnownModelCapacityTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcAdvancedPathsTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcApiPathsTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcApiPayloadsTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcAuxiliaryPayloadsTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcCanonicalCommandResultTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcRelationshipEditorContractTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.PcWorldAdvancedPathsTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.ProjectToolPathsTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.network.WorkspaceAssistantRequestTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.NovelImportTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.ProjectPackageTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.data.UserFacingErrorTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.security.MobileProviderEncryptionContractTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.security.PairingSecurityTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.AboutWorkspaceTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.AssistantConversationContextDetailTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ChapterDraftSaveStateTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ChapterWorkspaceTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ManagementUiWorkspaceTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.OutlineTreeModelTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ProjectNavigationTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ReferenceAssistantWorkspaceTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ReferenceCreationConversationWorkspaceTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.siming.mobile.ui.ReplicaPresentationTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "real_provider": [
+    {
+      "kind": "real-provider-protocol-smoke",
+      "steps": [
+        {
+          "iteration": 1,
+          "roles": [
+            "system",
+            "user"
+          ],
+          "pending_reasoning_chars": [],
+          "request_meta": {
+            "provider": "ds",
+            "model": "deepseek-v4-flash",
+            "adjustments": [
+              "接口拒绝 tool_choice，已自动去掉该参数重试"
+            ]
+          },
+          "seconds": 4.08,
+          "reasoning_chars": 214,
+          "tool_names": [
+            "set_tool_categories"
+          ]
+        },
+        {
+          "iteration": 2,
+          "roles": [
+            "system",
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "pending_reasoning_chars": [
+            214
+          ],
+          "request_meta": {
+            "provider": "ds",
+            "model": "deepseek-v4-flash",
+            "adjustments": []
+          },
+          "seconds": 2.55,
+          "reasoning_chars": 382,
+          "tool_names": [
+            "get_creation_session"
+          ]
+        },
+        {
+          "iteration": 3,
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "pending_reasoning_chars": [
+            382
+          ],
+          "request_meta": {
+            "provider": "ds",
+            "model": "deepseek-v4-flash",
+            "adjustments": []
+          },
+          "seconds": 1.88,
+          "reasoning_chars": 141,
+          "tool_names": []
+        }
+      ],
+      "project_writes": 0,
+      "configuration_writes": 0,
+      "source_provider": "deepseek",
+      "request_provider": "ds",
+      "model": "deepseek-v4-flash",
+      "status": "passed"
+    },
+    {
+      "kind": "real-provider-protocol-smoke",
+      "steps": [
+        {
+          "iteration": 1,
+          "roles": [
+            "system",
+            "user"
+          ],
+          "pending_reasoning_chars": [],
+          "request_meta": {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "adjustments": [
+              "deepseek 不支持当前 tool_choice 参数，已让模型自动选择工具"
+            ]
+          },
+          "seconds": 2.05,
+          "reasoning_chars": 145,
+          "tool_names": [
+            "set_tool_categories"
+          ]
+        },
+        {
+          "iteration": 2,
+          "roles": [
+            "system",
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "pending_reasoning_chars": [
+            145
+          ],
+          "request_meta": {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "adjustments": [
+              "deepseek 不支持当前 tool_choice 参数，已让模型自动选择工具"
+            ]
+          },
+          "seconds": 3.27,
+          "reasoning_chars": 1280,
+          "tool_names": [
+            "get_creation_session"
+          ]
+        },
+        {
+          "iteration": 3,
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "pending_reasoning_chars": [
+            1280
+          ],
+          "request_meta": {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "adjustments": [
+              "deepseek 不支持当前 tool_choice 参数，已让模型自动选择工具"
+            ]
+          },
+          "seconds": 1.73,
+          "reasoning_chars": 121,
+          "tool_names": []
+        }
+      ],
+      "project_writes": 0,
+      "configuration_writes": 0,
+      "source_provider": "deepseek",
+      "request_provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "status": "passed"
+    }
+  ],
+  "source_sha256": [
+    {
+      "path": "backend/app/core/provider_errors.py",
+      "sha256": "46aaf9b66bdef0b562b6114d078d62232a26410e18f6ea5cfaf83648588fe8a7"
+    },
+    {
+      "path": "backend/app/ai/capabilities.py",
+      "sha256": "0ec444df408dd2ea901d120a9084ff0501b2cd8bdf9994d7b1c8f82a26f699b3"
+    },
+    {
+      "path": "backend/app/modules/model_runtime/infrastructure/gateway.py",
+      "sha256": "77411b77f47acafe46569c9672f782d3eb76e665667399ca059a87737ff7235f"
+    },
+    {
+      "path": "backend/app/modules/operations/domain/failures.py",
+      "sha256": "0b55a5ed21788693db909f86acbb90678033994fa666b7498292fc52fb9346e3"
+    },
+    {
+      "path": "backend/app/services/conversation_context/provider_renderer.py",
+      "sha256": "4f8ad85466214a43a9c13328de5e623a770729e45caf2b7d1153369ea07bb0dd"
+    },
+    {
+      "path": "backend/app/services/conversation_context/assembly.py",
+      "sha256": "2485a5c298942696420903816780870b749fc96e3acdddadad950ce0b18c3d95"
+    },
+    {
+      "path": "backend/app/services/conversation_context/checkpoint_prompt.py",
+      "sha256": "5cc6d51dbeafc5662d7a2be96595fabd917790b87c17ef0bab4fb3d2daa9fd44"
+    },
+    {
+      "path": "backend/app/services/agent_tool_stream.py",
+      "sha256": "a01e0390061ed7be7e26f23ab08165dd99fc4efcceace869efa567787fd4e55b"
+    },
+    {
+      "path": "backend/app/services/creation_agent_turn_runtime.py",
+      "sha256": "a2b8edd4f4ebfbb4bcea4043ab710ad92553937a8e19160919059a4d33651b76"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_native_turn.py",
+      "sha256": "7be86be10e9422ca049c419140a7231eb4e14dfe007b33895bee78d26d61879a"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_public_errors.py",
+      "sha256": "eff535a1a0e2607561dfed420c7dc94c4261e728798005e4687ab7f77a77537c"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileConversationRuntime.kt",
+      "sha256": "65f76b3352583e906dde7eb0b6981b2e6fa26985add7a8f041806b230bae5441"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/DirectApi.kt",
+      "sha256": "75cb5f5f66f3da38f3b35d1abbb208506a181d8cab8676fd6f174b5d2f80c1dd"
+    }
+  ]
+}

@@ -32,7 +32,7 @@ describe('projectCatalogingMessages', () => {
     expect(messages[0].content).toContain('下一章写作已锁定')
     expect(messages[0].navigation_action).toEqual({
       label: '查看建档进度',
-      to: '/project/project-1?view=cataloging',
+      to: '/project/project-1?view=cataloging&job=job-1',
     })
   })
 
@@ -106,5 +106,14 @@ describe('projectCatalogingMessages', () => {
     ], 'project-1')
 
     expect(messages[0].content).not.toContain('作者已启动建档')
+  })
+
+  it('keeps the most recent activity when an older job completes later', () => {
+    const messages = projectCatalogingMessages([
+      operation({ id: 'old-resumed', created_at: '2026-08-01T10:00:00Z', status: 'completed', completed_at: '2026-09-10T03:04:02Z' }),
+      ...[1, 2, 3].map(day => operation({ id: `job-${day}`, created_at: `2026-09-0${day}T10:00:00Z`, updated_at: `2026-09-0${day}T10:01:00Z` })),
+    ], 'project-1')
+    expect(messages).toHaveLength(3)
+    expect(messages[messages.length - 1]?.id).toBe('cataloging-operation-old-resumed')
   })
 })

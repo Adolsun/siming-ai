@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { isCancel } from 'axios'
 import {
   Alert,
   Button,
@@ -31,13 +32,13 @@ import {
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
-  SaveOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../../api/client'
 import { SaveStatusIndicator } from '../../components/interaction'
 import { useAiPanelContext } from '../../contexts/AiPanelContext'
 import { useModelOptions } from '../../hooks/useModelOptions'
 import { useUnsavedGuard } from '../../hooks/useUnsavedGuard'
+import { formatApiDateTime } from '../../utils/dateTime'
 import {
   WriterReviewDialogs,
   type DeAiPreview,
@@ -46,6 +47,7 @@ import {
   type QualityScoreTarget,
 } from './WriterReviewDialogs'
 import { useWriterSourceNavigation } from './useWriterSourceNavigation'
+import { WriterSaveActions, WriterSaveGuidance, type ChapterSaveMode } from './WriterSaveActions'
 
 const { Paragraph, Text, Title } = Typography
 const { TextArea } = Input
@@ -85,6 +87,15 @@ interface ChapterDetail extends ChapterItem {
     status?: string
     error?: string
   }
+}
+
+interface WriterCatalogingJob {
+  id: string
+  status: string
+  current_chapter_id?: string | null
+  blocked_chapter_id?: string | null
+  last_completed_chapter_id?: string | null
+  error?: string | null
 }
 
 interface SnapshotItem {
@@ -136,7 +147,10 @@ interface PendingChapterDraft {
   outline_node_id?: string | null
   context_manifest_id?: string | null
   saved_chapter_id?: string | null
-  draft_status: 'pending' | 'saved' | 'superseded'
+  draft_kind?: 'new' | 'revision'
+  target_chapter_id?: string | null
+  base_chapter_version?: number | null
+  draft_status: 'pending' | 'saved' | 'discarded' | 'superseded'
   content: string
   word_count: number
 }
@@ -144,6 +158,13 @@ interface PendingChapterDraft {
 interface AppliedDeAiRevision {
   before: string
   after: string
+}
+
+interface AppliedGeneratedRevision {
+  draftId: string
+  draftVersion: string
+  before: ChapterFormValues
+  wasDirty: boolean
 }
 
 interface WriterPageProps {
@@ -172,6 +193,7 @@ export function chapterStatusLabel(status?: string | null) {
 const TRIGGER_LABEL: Record<string, string> = {
   manual_save: '手动保存',
   ai_insert: 'AI 插入',
+  ai_revision: 'AI 修订',
   de_ai: '去除 AI 味',
   restore: '版本恢复',
 }
@@ -214,7 +236,11 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveMode, setSaveMode] = useState<ChapterSaveMode | null>(null)
+  const saveInFlightRef = useRef(false)
+  const [discardingDraft, setDiscardingDraft] = useState(false)
   const [catalogingStartedChapterId, setCatalogingStartedChapterId] = useState<string | null>(null)
+  const [catalogingError, setCatalogingError] = useState<string | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
   const [fromSnapshotId, setFromSnapshotId] = useState<string | undefined>()
   const [toSnapshotId, setToSnapshotId] = useState<string | undefined>()
@@ -225,6 +251,8 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const [deAiTarget, setDeAiTarget] = useState<DeAiTarget | null>(null)
   const [deAiPreview, setDeAiPreview] = useState<DeAiPreview | null>(null)
   const [appliedDeAiRevision, setAppliedDeAiRevision] = useState<AppliedDeAiRevision | null>(null)
+  const [appliedGeneratedRevision, setAppliedGeneratedRevision] = useState<AppliedGeneratedRevision | null>(null)
+  const [revisionCompareOpen, setRevisionCompareOpen] = useState(false)
   const [qualityOpen, setQualityOpen] = useState(false)
   const [qualityLoading, setQualityLoading] = useState(false)
   const [qualityModel, setQualityModel] = useState<string>()
@@ -241,6 +269,28 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const pendingGeneratedDraft = generatedDraft?.projectId === projectId && generatedDraft.status === 'pending'
     ? generatedDraft
     : null
+  const pendingRevisionDraft = pendingGeneratedDraft?.draftKind === 'revision'
+    ? pendingGeneratedDraft
+    : null
+  const pendingNewDraft = pendingGeneratedDraft && pendingGeneratedDraft.draftKind !== 'revision'
+    ? pendingGeneratedDraft
+    : null
+  const pendingGeneratedDraftVersion = pendingGeneratedDraft
+    ? `${pendingGeneratedDraft.draftId}:${pendingGeneratedDraft.contextManifestId || 'unversioned'}`
+    : null
+  const revisionTargetLoaded = Boolean(
+    pendingRevisionDraft?.targetChapterId
+    && detail?.id === pendingRevisionDraft.targetChapterId,
+  )
+  const revisionVersionMatches = Boolean(
+    revisionTargetLoaded
+    && pendingRevisionDraft?.baseChapterVersion
+    && detail?.current_version === pendingRevisionDraft.baseChapterVersion,
+  )
+  const activeEditorDraft = pendingNewDraft
+    || (appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion
+      ? pendingRevisionDraft
+      : null)
   const evaluationModels = useModelOptions('evaluation')
   const writingModels = useModelOptions('writing')
   const modelOptions = evaluationModels.modelOptions
@@ -253,11 +303,12 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const watchedTitle = Form.useWatch('title', form)
   const watchedContent = Form.useWatch('content', form)
   const chapterIds = useMemo(() => chapters.map((chapter) => chapter.id), [chapters])
-  const loadedDraftIdRef = useRef<string | null>(null)
+  const loadedDraftVersionRef = useRef<string | null>(null)
+  const closedDraftIdRef = useRef<string | null>(null)
   const detailRequestVersionRef = useRef(0)
   const snapshotRequestVersionRef = useRef(0)
-  const pendingGeneratedDraftRef = useRef(pendingGeneratedDraft)
-  pendingGeneratedDraftRef.current = pendingGeneratedDraft
+  const pendingNewDraftRef = useRef(pendingNewDraft)
+  pendingNewDraftRef.current = pendingNewDraft
 
 
   const getContentTextArea = () => document.querySelector<HTMLTextAreaElement>(
@@ -318,14 +369,14 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     const requestVersion = ++snapshotRequestVersionRef.current
     try {
       const res = await apiClient.get<ApiResponse<{ items: SnapshotItem[]; total: number }>>(`/projects/${projectId}/chapters/${chapterId}/snapshots`)
-      if (requestVersion !== snapshotRequestVersionRef.current || pendingGeneratedDraftRef.current) return
+      if (requestVersion !== snapshotRequestVersionRef.current || pendingNewDraftRef.current) return
       const items = res.data.data.items
       setSnapshots(items)
       setDiff(null)
       setFromSnapshotId(items[1]?.id || items[0]?.id)
       setToSnapshotId(items[0]?.id)
     } catch {
-      if (requestVersion !== snapshotRequestVersionRef.current || pendingGeneratedDraftRef.current) return
+      if (requestVersion !== snapshotRequestVersionRef.current || pendingNewDraftRef.current) return
       message.warning('获取版本历史失败')
     }
   }, [projectId])
@@ -334,7 +385,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     const requestVersion = ++detailRequestVersionRef.current
     try {
       const res = await apiClient.get<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${chapterId}`)
-      if (requestVersion !== detailRequestVersionRef.current || pendingGeneratedDraftRef.current) return
+      if (requestVersion !== detailRequestVersionRef.current || pendingNewDraftRef.current) return
       setDetail(res.data.data)
       if (!res.data.data.cataloging_required) setCatalogingStartedChapterId(null)
       setCreating(false)
@@ -344,17 +395,19 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
         content: res.data.data.content,
       })
       setAppliedDeAiRevision(null)
+      setAppliedGeneratedRevision(null)
       markSaved()
       fetchSnapshots(chapterId)
     } catch (err: any) {
-      if (requestVersion !== detailRequestVersionRef.current || pendingGeneratedDraftRef.current) return
+      if (requestVersion !== detailRequestVersionRef.current || pendingNewDraftRef.current) return
       message.error(err.message || '获取章节详情失败')
     }
   }, [fetchSnapshots, form, markSaved, projectId])
 
   const blockFormalChapterNavigation = useCallback(() => {
-    if (!pendingGeneratedDraftRef.current) return false
-    message.info('请先保存当前 AI 章节草稿；保存前草稿是正文编辑器的唯一内容')
+    if (saveInFlightRef.current) return true
+    if (!pendingNewDraftRef.current) return false
+    message.info('请先保存或丢弃当前 AI 章节草稿；处理前草稿是正文编辑器的唯一内容')
     return true
   }, [])
 
@@ -391,6 +444,51 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   }, [fetchChapters, fetchOutline])
 
   useEffect(() => {
+    setCatalogingError(null)
+    if (!selectedId || pendingNewDraft || !detail?.cataloging_required) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refreshCataloging = async () => {
+      try {
+        const [response, chapterResponse] = await Promise.all([
+          apiClient.get<ApiResponse<{ items: WriterCatalogingJob[] }>>(`/projects/${projectId}/cataloging/jobs`),
+          apiClient.get<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}`),
+        ])
+        if (!active) return
+        const saved = chapterResponse.data.data
+        // The chapter is authoritative even when a completed job no longer
+        // points at this chapter (for example, a multi-chapter job moved on).
+        if (saved.id === selectedId && saved.current_version === detail.current_version
+          && !saved.cataloging_required) {
+          setDetail((current) => current?.id === saved.id && current.current_version === saved.current_version
+            ? { ...current, cataloging_required: false, summary_text: saved.summary_text, key_events: saved.key_events }
+            : current)
+          setCatalogingStartedChapterId(null)
+          setCatalogingError(null)
+          void fetchChapters()
+          return
+        }
+        const job = response.data.data.items.find((item) => (
+          item.current_chapter_id === selectedId
+          || item.blocked_chapter_id === selectedId
+          || item.last_completed_chapter_id === selectedId
+        ))
+        if (job) {
+          const running = ['pending', 'queued', 'running'].includes(job.status)
+          setCatalogingStartedChapterId(running ? selectedId : null)
+          if (running) setCatalogingError(null)
+          else if (job.error) setCatalogingError(job.error)
+        }
+      } catch {
+        // A transient status-read failure is not evidence that the job stopped.
+      }
+      if (active) timer = setTimeout(refreshCataloging, 5000)
+    }
+    void refreshCataloging()
+    return () => { active = false; if (timer) clearTimeout(timer) }
+  }, [detail?.cataloging_required, detail?.current_version, fetchChapters, pendingNewDraft, projectId, selectedId])
+
+  useEffect(() => {
     if (generatedDraft?.projectId === projectId) return
     let active = true
     apiClient.get<ApiResponse<PendingChapterDraft | null>>(
@@ -405,6 +503,9 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
         outlineNodeId: draft.outline_node_id || null,
         contextManifestId: draft.context_manifest_id || null,
         savedChapterId: draft.saved_chapter_id || null,
+        draftKind: draft.draft_kind === 'revision' ? 'revision' : 'new',
+        targetChapterId: draft.target_chapter_id || null,
+        baseChapterVersion: draft.base_chapter_version ?? null,
         content: draft.content,
         wordCount: draft.word_count,
         status: draft.draft_status,
@@ -416,10 +517,10 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   }, [generatedDraft?.projectId, openGeneratedDraft, projectId])
 
   useEffect(() => {
-    // A generated draft owns the editor until the author saves it.  Do not
+    // A generated new-chapter draft owns the editor until the author saves it.  Do not
     // start (or re-start) a detail fetch for the previously selected chapter:
     // that response can arrive after the draft and overwrite its form values.
-    if (pendingGeneratedDraft) return
+    if (pendingNewDraft) return
     if (selectedId) {
       fetchDetail(selectedId)
 
@@ -429,12 +530,35 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
 
       form.resetFields()
     }
-  }, [creating, fetchDetail, form, pendingGeneratedDraft, selectedId])
+  }, [creating, fetchDetail, form, pendingNewDraft, selectedId])
 
   useEffect(() => {
     if (!pendingGeneratedDraft) return
-    if (loadedDraftIdRef.current === pendingGeneratedDraft.draftId) return
-    loadedDraftIdRef.current = pendingGeneratedDraft.draftId
+    if (loadedDraftVersionRef.current === pendingGeneratedDraftVersion) return
+    loadedDraftVersionRef.current = pendingGeneratedDraftVersion
+    if (pendingRevisionDraft) {
+      setCreating(false)
+      if (pendingRevisionDraft.targetChapterId && selectedId !== pendingRevisionDraft.targetChapterId) {
+        if (isDirty) {
+          message.warning('修订候选已保留；当前编辑尚未保存，请保存或放弃后再打开目标章节')
+          return
+        }
+        setSelectedId(pendingRevisionDraft.targetChapterId)
+      }
+      if (appliedGeneratedRevision?.draftId === pendingRevisionDraft.draftId) {
+        form.setFieldsValue({
+          title: pendingRevisionDraft.title,
+          outline_node_id: pendingRevisionDraft.outlineNodeId || undefined,
+          content: pendingRevisionDraft.content,
+        })
+        setAppliedGeneratedRevision((current) => current ? {
+          ...current,
+          draftVersion: pendingGeneratedDraftVersion || current.draftVersion,
+        } : current)
+        markDirty()
+      }
+      return
+    }
     detailRequestVersionRef.current += 1
     snapshotRequestVersionRef.current += 1
     setSelectedId(null)
@@ -443,6 +567,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     setSnapshots([])
     setDiff(null)
     setAppliedDeAiRevision(null)
+    setAppliedGeneratedRevision(null)
     setCatalogingStartedChapterId(null)
     editorSelectionRef.current = null
     setSelectedText('')
@@ -453,7 +578,16 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
       content: pendingGeneratedDraft.content,
     })
     markDirty()
-  }, [form, markDirty, pendingGeneratedDraft])
+  }, [
+    appliedGeneratedRevision?.draftId,
+    form,
+    isDirty,
+    markDirty,
+    pendingGeneratedDraft,
+    pendingGeneratedDraftVersion,
+    pendingRevisionDraft,
+    selectedId,
+  ])
 
   useEffect(() => {
     if (
@@ -465,6 +599,64 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     setSelectedId(generatedDraft.savedChapterId)
   }, [generatedDraft?.projectId, generatedDraft?.savedChapterId, generatedDraft?.status, projectId])
 
+  useEffect(() => {
+    if (
+      generatedDraft?.projectId !== projectId
+      || generatedDraft.status !== 'discarded'
+    ) return
+    if (closedDraftIdRef.current === generatedDraft.draftId) {
+      if (
+        generatedDraft.draftKind !== 'revision'
+        && !selectedId
+        && chapters[0]?.id
+      ) setSelectedId(chapters[0].id)
+      return
+    }
+    closedDraftIdRef.current = generatedDraft.draftId
+    loadedDraftVersionRef.current = null
+    pendingNewDraftRef.current = null
+    setRevisionCompareOpen(false)
+
+    if (generatedDraft.draftKind === 'revision') {
+      if (appliedGeneratedRevision?.draftId === generatedDraft.draftId) {
+        form.setFieldsValue(appliedGeneratedRevision.before)
+        if (appliedGeneratedRevision.wasDirty) markDirty()
+        else markSaved()
+      }
+      setAppliedGeneratedRevision(null)
+      return
+    }
+
+    detailRequestVersionRef.current += 1
+    snapshotRequestVersionRef.current += 1
+    setAppliedDeAiRevision(null)
+    setAppliedGeneratedRevision(null)
+    setCatalogingStartedChapterId(null)
+    editorSelectionRef.current = null
+    setSelectedText('')
+    setSelectedTextChapterId(null)
+    markSaved()
+
+    setCreating(false)
+    const nextChapterId = chapters[0]?.id || null
+    setSelectedId(nextChapterId)
+    if (!nextChapterId) {
+      setDetail(null)
+      setSnapshots([])
+      setDiff(null)
+      form.resetFields()
+    }
+  }, [
+    appliedGeneratedRevision,
+    chapters,
+    form,
+    generatedDraft,
+    markDirty,
+    markSaved,
+    projectId,
+    selectedId,
+  ])
+
   // Sync selections to AI context
   useEffect(() => {
     setAiContext({
@@ -475,21 +667,47 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
 
   useEffect(() => {
     if (!pendingGeneratedDraft?.draftId) return
+    if (
+      pendingRevisionDraft?.draftId
+      && appliedGeneratedRevision?.draftVersion !== pendingGeneratedDraftVersion
+    ) return
+    const editorValues = form.getFieldsValue(true) as Partial<ChapterFormValues>
+    const nextTitle = String(editorValues.title || '')
+    const nextOutlineNodeId = editorValues.outline_node_id || null
+    const nextContent = String(editorValues.content || '')
+    if (
+      pendingGeneratedDraft.title === nextTitle
+      && pendingGeneratedDraft.outlineNodeId === nextOutlineNodeId
+      && pendingGeneratedDraft.content === nextContent
+    ) return
     updateGeneratedDraft({
-      title: String(watchedTitle || ''),
-      outlineNodeId: watchedOutlineNodeId || null,
-      content: String(watchedContent || ''),
+      title: nextTitle,
+      outlineNodeId: nextOutlineNodeId,
+      content: nextContent,
     })
-  }, [pendingGeneratedDraft?.draftId, updateGeneratedDraft, watchedContent, watchedOutlineNodeId, watchedTitle])
+  }, [
+    appliedGeneratedRevision?.draftVersion,
+    form,
+    pendingGeneratedDraft?.content,
+    pendingGeneratedDraft?.draftId,
+    pendingGeneratedDraft?.outlineNodeId,
+    pendingGeneratedDraft?.title,
+    pendingGeneratedDraftVersion,
+    pendingRevisionDraft?.draftId,
+    updateGeneratedDraft,
+    watchedContent,
+    watchedOutlineNodeId,
+    watchedTitle,
+  ])
 
   // Refresh data when AI applies changes
   useEffect(() => {
     if (refreshKey > 0) {
       fetchChapters()
       fetchOutline()
-      if (selectedId && !pendingGeneratedDraft) fetchDetail(selectedId)
+      if (selectedId && !pendingNewDraft) fetchDetail(selectedId)
     }
-  }, [fetchChapters, fetchDetail, fetchOutline, pendingGeneratedDraft, refreshKey, selectedId])
+  }, [fetchChapters, fetchDetail, fetchOutline, pendingNewDraft, refreshKey, selectedId])
 
   const startCreate = () => {
     if (blockFormalChapterNavigation()) return
@@ -510,6 +728,64 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     confirmLeave(() => setSelectedId(chapterId))
   }
 
+  const openRevisionTarget = () => {
+    if (saveInFlightRef.current || !pendingRevisionDraft?.targetChapterId) return
+    confirmLeave(() => {
+      setCreating(false)
+      setSelectedId(pendingRevisionDraft.targetChapterId)
+    })
+  }
+
+  const applyGeneratedRevisionNow = () => {
+    if (saveInFlightRef.current) return
+    if (
+      !pendingRevisionDraft
+      || !pendingGeneratedDraftVersion
+      || !revisionTargetLoaded
+      || !revisionVersionMatches
+    ) {
+      message.error('目标章节版本已变化，候选稿保持独立；请重新生成或人工合并差异')
+      return
+    }
+    const before = form.getFieldsValue(true) as ChapterFormValues
+    setAppliedGeneratedRevision({
+      draftId: pendingRevisionDraft.draftId,
+      draftVersion: pendingGeneratedDraftVersion,
+      before,
+      wasDirty: isDirty,
+    })
+    form.setFieldsValue({
+      title: pendingRevisionDraft.title,
+      outline_node_id: pendingRevisionDraft.outlineNodeId || undefined,
+      content: pendingRevisionDraft.content,
+    })
+    setAppliedDeAiRevision(null)
+    markDirty()
+    message.info('修订候选已应用到编辑器，尚未保存')
+  }
+
+  const applyGeneratedRevision = () => {
+    if (!isDirty || appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion) {
+      applyGeneratedRevisionNow()
+      return
+    }
+    Modal.confirm({
+      title: '用修订候选替换当前未保存编辑？',
+      content: '当前手动修改会暂时被候选稿替换；应用后仍可点击“撤销应用”恢复。',
+      okText: '应用候选',
+      cancelText: '保留当前编辑',
+      onOk: applyGeneratedRevisionNow,
+    })
+  }
+
+  const undoGeneratedRevision = () => {
+    if (saveInFlightRef.current || !appliedGeneratedRevision) return
+    form.setFieldsValue(appliedGeneratedRevision.before)
+    if (appliedGeneratedRevision.wasDirty) markDirty()
+    else markSaved()
+    setAppliedGeneratedRevision(null)
+  }
+
   const confirmDeleteChapter = () => {
     const chapterTitle = detail?.title
       || chapters.find((chapter) => chapter.id === selectedId)?.title
@@ -524,25 +800,64 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     })
   }
 
+  const discardGeneratedChapterDraft = async () => {
+    const draft = pendingGeneratedDraft
+    if (!draft || discardingDraft) return
+    setDiscardingDraft(true)
+    try {
+      await apiClient.delete(`/projects/${projectId}/chapter-drafts/${draft.draftId}`)
+      updateGeneratedDraft({ status: 'discarded' })
+      fetchChapters()
+      message.success('章节草稿已丢弃；正式正文未改变')
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '丢弃章节草稿失败')
+    } finally {
+      setDiscardingDraft(false)
+    }
+  }
+
+  const confirmDiscardGeneratedChapterDraft = () => {
+    if (!pendingGeneratedDraft) return
+    Modal.confirm({
+      title: '丢弃这份 AI 章节草稿？',
+      content: pendingGeneratedDraft.draftKind === 'revision'
+        ? '修订候选会被丢弃；如已应用，将恢复应用前的编辑内容。正式章节正文不会改变。'
+        : '这份草稿及当前编辑会被丢弃；已有正式章节和大纲不会改变。',
+      okText: '丢弃草稿',
+      cancelText: '继续编辑',
+      okButtonProps: { danger: true },
+      autoFocusButton: 'cancel',
+      onOk: discardGeneratedChapterDraft,
+    })
+  }
+
   const saveChapter = async (
     values: ChapterFormValues,
-    catalogingMode: 'save_only' | 'save_and_catalog' = 'save_and_catalog',
+    catalogingMode: ChapterSaveMode = 'save_only',
   ) => {
+    if (saveInFlightRef.current || (selectedId && catalogingStartedChapterId === selectedId)) return
     if (!values.title.trim()) { message.warning('请输入章节标题'); return }
+    saveInFlightRef.current = true
+    setSaveMode(catalogingMode)
     setSaving(true)
     markSaving()
+    const acceptedRevision = pendingRevisionDraft
+      && appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion
+      ? pendingRevisionDraft
+      : null
+    const savingDraft = pendingNewDraft || acceptedRevision
     try {
       const payload = {
         title: values.title.trim(),
         outline_node_id: values.outline_node_id || null,
         content: values.content || '',
-        draft_id: pendingGeneratedDraft?.draftId,
-        context_manifest_id: pendingGeneratedDraft?.contextManifestId,
+        draft_id: savingDraft?.draftId,
+        context_manifest_id: savingDraft?.contextManifestId,
         cataloging_mode: catalogingMode,
       }
       let savedChapterId = selectedId
       let savedData: ChapterDetail
-      if (pendingGeneratedDraft || creating || !selectedId) {
+      if (pendingNewDraft || creating || !selectedId) {
         const res = await apiClient.post<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters`, payload)
         savedData = res.data.data
         savedChapterId = res.data.data.id
@@ -552,40 +867,49 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
       } else {
         const res = await apiClient.put<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}`, {
           ...payload,
-          trigger_type: appliedDeAiRevision ? 'de_ai' : 'manual_save',
+          trigger_type: acceptedRevision ? 'ai_revision' : appliedDeAiRevision ? 'de_ai' : 'manual_save',
+          expected_version: acceptedRevision?.baseChapterVersion || detail?.current_version,
         })
         savedData = res.data.data
         setDetail(res.data.data)
         fetchSnapshots(selectedId)
       }
-      if (pendingGeneratedDraft && savedChapterId) {
+      if (savingDraft && savedChapterId) {
         updateGeneratedDraft({ status: 'saved', savedChapterId })
       }
       setAppliedDeAiRevision(null)
+      setAppliedGeneratedRevision(null)
       markSaved()
       fetchChapters()
       if (catalogingMode === 'save_and_catalog') {
+        setCatalogingError(null)
         if (savedData.cataloging_job?.started) {
           setCatalogingStartedChapterId(savedChapterId)
           message.success('章节已保存，建档已经开始')
         } else {
           setCatalogingStartedChapterId(null)
-          message.error(savedData.cataloging_job?.error || '章节已保存，但建档启动失败；可点击“开始建档”重试')
+          const error = savedData.cataloging_job?.error || '建档启动失败'
+          setCatalogingError(error)
+          message.error('正文已保存，建档未启动；可以稍后重试')
         }
       } else {
         setCatalogingStartedChapterId(null)
-        message.success('章节已仅保存；完成建档前不能让 AI 继续下一章')
+        message.success('正文已保存，可以继续修改；满意后再开始建档')
       }
     } catch (err: any) {
+      if (isCancel(err)) {
+        markDirty()
+        return
+      }
       const detail = err?.response?.data?.detail || err.message || '保存章节失败'
       markSaveFailed(detail)
       message.error(detail)
-      if (pendingGeneratedDraft) {
+      if (savingDraft) {
         try {
           const pending = await apiClient.get<ApiResponse<PendingChapterDraft | null>>(
             `/projects/${projectId}/chapter-drafts/pending`,
           )
-          if (pending.data.data?.draft_id !== pendingGeneratedDraft.draftId) {
+          if (pending.data.data?.draft_id !== savingDraft.draftId) {
             updateGeneratedDraft({ status: 'superseded' })
             fetchChapters()
           }
@@ -594,13 +918,18 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
         }
       }
     } finally {
+      saveInFlightRef.current = false
       setSaving(false)
+      setSaveMode(null)
     }
   }
 
   const startCurrentCataloging = async () => {
-    if (!selectedId) return
+    if (!selectedId || saveInFlightRef.current) return
+    saveInFlightRef.current = true
     setSaving(true)
+    setSaveMode('save_and_catalog')
+    setCatalogingError(null)
     try {
       const res = await apiClient.post<ApiResponse<ChapterDetail>>(
         `/projects/${projectId}/chapters/${selectedId}/cataloging`,
@@ -615,13 +944,18 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
       }
     } catch (err: any) {
       setCatalogingStartedChapterId(null)
-      message.error(err.message || '建档启动失败')
+      const error = err?.response?.data?.detail || err.message || '建档启动失败'
+      setCatalogingError(error)
+      message.error(error)
     } finally {
+      saveInFlightRef.current = false
       setSaving(false)
+      setSaveMode(null)
     }
   }
 
-  const submitChapterSave = async (mode: 'save_only' | 'save_and_catalog') => {
+  const submitChapterSave = async (mode: ChapterSaveMode) => {
+    if (saveInFlightRef.current || discardingDraft || (selectedId && catalogingStartedChapterId === selectedId)) return
     if (
       mode === 'save_and_catalog'
       && selectedId
@@ -655,7 +989,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   }
 
   const saveChapterOrder = async (nextChapters: ChapterItem[]) => {
-    if (reordering) return
+    if (reordering || saveInFlightRef.current) return
     const previous = chapters
     const optimistic = nextChapters.map((chapter, index) => ({
       ...chapter,
@@ -700,7 +1034,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   }
 
   const restoreSnapshot = async (snapshotId: string) => {
-    if (!selectedId) return
+    if (!selectedId || saveInFlightRef.current) return
     try {
       const res = await apiClient.post<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}/restore/${snapshotId}`)
       setDetail(res.data.data)
@@ -771,8 +1105,8 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     setQualityLoading(true)
     try {
       const res = await apiClient.post<ApiResponse<QualityScorePreview>>(
-        pendingGeneratedDraft
-          ? `/projects/${projectId}/chapter-drafts/${pendingGeneratedDraft.draftId}/quality-score-preview`
+        activeEditorDraft
+          ? `/projects/${projectId}/chapter-drafts/${activeEditorDraft.draftId}/quality-score-preview`
           : `/projects/${projectId}/chapters/${selectedId}/quality-score-preview`,
         { ...qualityTarget, model: qualityModel },
       )
@@ -835,8 +1169,8 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
           }
         : { content: deAiTarget.source, model: deAiModel }
       const res = await apiClient.post<ApiResponse<DeAiPreview>>(
-        pendingGeneratedDraft
-          ? `/projects/${projectId}/chapter-drafts/${pendingGeneratedDraft.draftId}/de-ai-preview`
+        activeEditorDraft
+          ? `/projects/${projectId}/chapter-drafts/${activeEditorDraft.draftId}/de-ai-preview`
           : `/projects/${projectId}/chapters/${selectedId}/de-ai-preview`,
         requestPayload,
       )
@@ -880,8 +1214,9 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   }
 
   const undoAppliedDeAiRevision = () => {
-    if (!appliedDeAiRevision) return
+    if (saveInFlightRef.current || !appliedDeAiRevision) return
     const restore = () => {
+      if (saveInFlightRef.current) return
       form.setFieldValue('content', appliedDeAiRevision.before)
       setAppliedDeAiRevision(null)
       markDirty()
@@ -905,15 +1240,33 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     label: `v${snapshot.version_number} · ${TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type}`,
   })), [snapshots])
 
-  const editorTitle = pendingGeneratedDraft
-    ? `${pendingGeneratedDraft.title || '章节草稿'} · 未保存`
+  const editorTitle = pendingNewDraft
+    ? `${pendingNewDraft.title || '章节草稿'} · 未保存`
+    : appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion
+      ? `${detail?.title || '章节正文'} · 修订候选已应用`
     : creating ? '新建章节' : detail?.title || '章节正文'
   const canReviewCurrentText = Boolean(
-    selectedId || pendingGeneratedDraft,
+    selectedId || pendingNewDraft,
   )
+  const hasEditor = Boolean(creating || detail || pendingNewDraft)
+  const catalogingRunning = Boolean(selectedId && catalogingStartedChapterId === selectedId)
+  const saveGuidanceProps = {
+    creating,
+    dirty: isDirty,
+    hasTitle: Boolean(String(watchedTitle || '').trim()),
+    catalogingRequired: Boolean(detail?.cataloging_required),
+    catalogingRunning,
+    busy: saving || discardingDraft,
+  }
 
   return (
-    <div className="writer-page">
+    <div className="writer-page" onKeyDownCapture={(event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return
+      if (event.nativeEvent.isComposing) return
+      event.preventDefault()
+      if (event.repeat || !hasEditor || (!creating && !isDirty)) return
+      void submitChapterSave('save_only')
+    }}>
       <div className="writer-shell">
         {/* ── Left: Chapter List ── */}
         <aside className="writer-chapter-panel">
@@ -921,13 +1274,13 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
             <Title level={4} style={{ margin: 0 }}><FileTextOutlined /> 章节</Title>
             <Space size={6}>
               <Button aria-label="刷新章节列表" icon={<ReloadOutlined />} onClick={fetchChapters} loading={loading} />
-              <Button type="primary" icon={<PlusOutlined />} aria-label="新建章节" onClick={startCreate}>新建</Button>
+              <Button type="primary" icon={<PlusOutlined />} aria-label="新建章节" disabled={saving} onClick={startCreate}>新建</Button>
             </Space>
           </div>
-          {pendingGeneratedDraft && (
+          {pendingNewDraft && (
             <List
               className="writer-pending-draft-list"
-              dataSource={[pendingGeneratedDraft]}
+              dataSource={[pendingNewDraft]}
               renderItem={(draft) => (
                 <List.Item
                   className="writer-chapter-item writer-chapter-item-active writer-chapter-item-draft"
@@ -957,18 +1310,19 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
             loading={loading}
             dataSource={chapters}
             locale={{
-              emptyText: pendingGeneratedDraft
+              emptyText: pendingNewDraft
                 ? null
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节"><Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>新建章节</Button></Empty>,
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节"><Button type="primary" icon={<PlusOutlined />} disabled={saving} onClick={startCreate}>新建章节</Button></Empty>,
             }}
             renderItem={(chapter, index) => (
               <List.Item
-                className={`writer-chapter-item${!pendingGeneratedDraft && chapter.id === selectedId ? ' writer-chapter-item-active' : ''}${chapter.id === dragOverChapterId ? ' writer-chapter-item-drag-over' : ''}`}
+                className={`writer-chapter-item${!pendingNewDraft && chapter.id === selectedId ? ' writer-chapter-item-active' : ''}${chapter.id === dragOverChapterId ? ' writer-chapter-item-drag-over' : ''}`}
                 role="button"
                 tabIndex={0}
                 aria-label={`打开章节：${chapter.title}`}
+                aria-disabled={saving}
                 title="拖动章节卡片，或使用上下按钮调整正文顺序"
-                draggable={!loading && !reordering}
+                draggable={!loading && !reordering && !saving}
                 onDragStart={(event) => {
                   setDraggedChapterId(chapter.id)
                   event.dataTransfer.effectAllowed = 'move'
@@ -993,6 +1347,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                 }}
                 onClick={() => selectChapter(chapter.id)}
                 onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
                   if (event.key !== 'Enter' && event.key !== ' ') return
                   event.preventDefault()
                   selectChapter(chapter.id)
@@ -1005,7 +1360,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                       size="small"
                       icon={<ArrowUpOutlined />}
                       aria-label={`上移章节：${chapter.title}`}
-                      disabled={index === 0 || reordering}
+                      disabled={index === 0 || reordering || saving}
                       onClick={(event) => {
                         event.stopPropagation()
                         moveChapterByOffset(chapter.id, -1)
@@ -1018,7 +1373,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                       size="small"
                       icon={<ArrowDownOutlined />}
                       aria-label={`下移章节：${chapter.title}`}
-                      disabled={index === chapters.length - 1 || reordering}
+                      disabled={index === chapters.length - 1 || reordering || saving}
                       onClick={(event) => {
                         event.stopPropagation()
                         moveChapterByOffset(chapter.id, 1)
@@ -1034,7 +1389,13 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                       <div className="writer-chapter-facts">
                         <span>{chapter.word_count} 字</span>
                         <span>v{chapter.current_version}</span>
-                        {chapter.outline_status && <Tag color={STATUS_COLOR[chapter.outline_status] || 'default'}>{chapterStatusLabel(chapter.outline_status)}</Tag>}
+                        {chapter.cataloging_required ? (
+                          <Tag color={catalogingStartedChapterId === chapter.id ? 'processing' : 'warning'}>
+                            {catalogingStartedChapterId === chapter.id ? '建档中' : '待建档'}
+                          </Tag>
+                        ) : chapter.outline_status && (
+                          <Tag color={STATUS_COLOR[chapter.outline_status] || 'default'}>{chapterStatusLabel(chapter.outline_status)}</Tag>
+                        )}
                       </div>
                     </div>
                   }
@@ -1049,21 +1410,39 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
           <div className="writer-editor-head">
             <div className="writer-editor-heading">
               <Title level={4} className="writer-editor-title" title={editorTitle}>{editorTitle}</Title>
-              {(detail || pendingGeneratedDraft || creating || saveStatus === 'error') && (
+              {(detail || pendingNewDraft || creating || saveStatus === 'error') && (
                 <Space size={8} wrap>
                   {detail && !creating && (
-                    <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
+                    <Space size={[8, 0]} wrap>
+                      <Text type="secondary">{detail.word_count} 字 · v{detail.current_version}</Text>
+                      <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>最近更新（本地时间）：{formatApiDateTime(detail.updated_at) || '时间未记录'}</Text>
+                    </Space>
                   )}
-                  <SaveStatusIndicator status={saveStatus} error={saveError} />
+                  <SaveStatusIndicator
+                    status={creating && saveStatus === 'saved' ? 'dirty' : saveStatus}
+                    label={creating && saveStatus === 'saved' ? '尚未保存' : undefined}
+                    error={saveError}
+                  />
                 </Space>
               )}
             </div>
-            <Space>
+            <Space wrap className="writer-editor-actions">
+              {pendingGeneratedDraft && (
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={discardingDraft}
+                  disabled={saving}
+                  onClick={confirmDiscardGeneratedChapterDraft}
+                >
+                  丢弃草稿
+                </Button>
+              )}
               {canReviewCurrentText && (
                 <Tooltip title={modelOptions.length === 0 ? '请先启用一个可用模型' : '按编辑器中的当前整章评分；只读，不修改正文'}>
                   <Button
                     icon={<AuditOutlined />}
-                    disabled={String(watchedContent || '').trim().length < 20 || modelOptions.length === 0}
+                    disabled={saving || String(watchedContent || '').trim().length < 20 || modelOptions.length === 0}
                     loading={qualityLoading}
                     onClick={openQualityDialog}
                   >
@@ -1075,7 +1454,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                 <Tooltip title={modelOptions.length === 0 ? '请先启用一个可用模型' : '有选中文本时处理选段，否则处理整章'}>
                   <Button
                     icon={<HighlightOutlined />}
-                    disabled={!String(watchedContent || '').trim() || modelOptions.length === 0}
+                    disabled={saving || !String(watchedContent || '').trim() || modelOptions.length === 0}
                     loading={deAiLoading}
                     onClick={openDeAiDialog}
                   >
@@ -1094,36 +1473,75 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                     },
                   }}
                 >
-                  <Button icon={<MoreOutlined />} aria-label={`章节操作：${detail?.title || editorTitle}`}>
+                  <Button disabled={saving} icon={<MoreOutlined />} aria-label={`章节操作：${detail?.title || editorTitle}`}>
                     章节操作
                   </Button>
                 </Dropdown>
               )}
-              <Dropdown.Button
-                type="primary"
-                icon={<SaveOutlined />}
-                loading={saving}
-                disabled={
-                  (!creating && !isDirty && !detail?.cataloging_required)
-                  || Boolean(catalogingStartedChapterId && catalogingStartedChapterId === selectedId)
-                }
-                onClick={() => void submitChapterSave('save_and_catalog')}
-                menu={{
-                  items: [{ key: 'save_only', label: '仅保存', disabled: !creating && !isDirty }],
-                  onClick: ({ key }) => {
-                    if (key === 'save_only') void submitChapterSave('save_only')
-                  },
-                }}
-              >
-                {!creating && !isDirty && detail?.cataloging_required ? '开始建档' : '保存并建档'}
-              </Dropdown.Button>
             </Space>
           </div>
+
+          {hasEditor && (
+            <div className="writer-save-bar">
+              {!catalogingError && <WriterSaveGuidance {...saveGuidanceProps} />}
+              <WriterSaveActions
+                {...saveGuidanceProps}
+                hasEditor={hasEditor}
+                saveMode={saveMode}
+                onSave={(mode) => void submitChapterSave(mode)}
+              />
+            </div>
+          )}
 
           {!creating && !detail && chapters.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个章节，正文和版本历史会从这里开始。" />
           ) : (
             <>
+              {catalogingError && !pendingNewDraft && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={isDirty ? '上次建档未完成，当前修改尚未保存' : '正文已保存，建档未完成'}
+                  description={`${catalogingError}。${isDirty ? '可以先保存正文；也可以点击“保存并建档”保存修改后重试。' : '可以点击“开始建档”重试；不会重新生成或丢失已保存正文。'}`}
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+              {pendingRevisionDraft && (
+                <Alert
+                  type={revisionTargetLoaded && !revisionVersionMatches ? 'error' : 'warning'}
+                  showIcon
+                  message={
+                    appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion
+                      ? 'AI 修订候选已应用，尚未保存'
+                      : revisionTargetLoaded && !revisionVersionMatches
+                        ? 'AI 修订候选与当前章节版本冲突'
+                        : 'AI 已生成一份独立的章节修订候选'
+                  }
+                  description={
+                    revisionTargetLoaded && !revisionVersionMatches
+                      ? `候选基于 v${pendingRevisionDraft.baseChapterVersion ?? '?'}，当前为 v${detail?.current_version ?? '?'}。系统不会覆盖正文；请重新生成或人工合并。`
+                      : '候选不会自动覆盖正式正文。请先对比，再应用到编辑器；只有作者点击保存后才会生成新版本快照。'
+                  }
+                  action={(
+                    <Space wrap>
+                      {!revisionTargetLoaded && (
+                        <Button size="small" disabled={saving} onClick={openRevisionTarget}>打开目标章节</Button>
+                      )}
+                      {revisionTargetLoaded && (
+                        <Button size="small" icon={<DiffOutlined />} onClick={() => setRevisionCompareOpen(true)}>
+                          对比候选
+                        </Button>
+                      )}
+                      {revisionVersionMatches && appliedGeneratedRevision?.draftVersion !== pendingGeneratedDraftVersion && (
+                        <Button size="small" type="primary" disabled={saving} onClick={applyGeneratedRevision}>应用到编辑器</Button>
+                      )}
+                      {appliedGeneratedRevision?.draftVersion === pendingGeneratedDraftVersion && (
+                        <Button size="small" disabled={saving} onClick={undoGeneratedRevision}>撤销应用</Button>
+                      )}
+                    </Space>
+                  )}
+                />
+              )}
               {appliedDeAiRevision && (
                 <Alert
                   className="writer-de-ai-applied"
@@ -1131,18 +1549,18 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                   showIcon
                   message="去除 AI 味候选稿已应用，尚未保存"
                   description="请通读确认；保存后会生成一个可恢复的版本快照。"
-                  action={<Button size="small" onClick={undoAppliedDeAiRevision}>撤销应用</Button>}
+                  action={<Button size="small" disabled={saving} onClick={undoAppliedDeAiRevision}>撤销应用</Button>}
                 />
               )}
-              {pendingGeneratedDraft && (
+              {pendingNewDraft && (
                 <Alert
                   type="warning"
                   showIcon
                   message="AI 草稿尚未保存"
-                  description="评分和去除 AI 味会读取编辑器当前内容。请选择“保存并建档”或下拉菜单中的“仅保存”；建档完成前 AI 不会继续下一章。"
+                  description="你可以直接告诉作品助手如何修改当前草稿，修改结果仍保留在这份未保存草稿中。评分和去除 AI 味也会读取编辑器当前内容；建档完成前 AI 不会继续下一章。"
                 />
               )}
-              <Form form={form} layout="vertical" onFinish={saveChapter} onValuesChange={markDirty}>
+              <Form form={form} layout="vertical" disabled={saving || discardingDraft} onFinish={saveChapter} onValuesChange={markDirty}>
                 <div className="writer-form-grid">
                   <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入章节标题' }]}>
                     <Input placeholder="例如：第一章 风祭前夜" maxLength={200} />
@@ -1214,9 +1632,9 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                         children: (
                           <div className="writer-snapshot-row">
                             <div><Text strong>v{snapshot.version_number}</Text>
-                              <Text type="secondary"> · {TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type} · {snapshot.word_count} 字 · {new Date(snapshot.created_at).toLocaleString('zh-CN')}</Text></div>
-                            <Popconfirm title="恢复此版本" description="当前正文会被替换，并生成一条新的恢复快照。" okText="恢复" cancelText="取消" onConfirm={() => restoreSnapshot(snapshot.id)}>
-                              <Button size="small" icon={<RollbackOutlined />}>恢复</Button>
+                              <Text type="secondary"> · {TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type} · {snapshot.word_count} 字 · 版本时间（本地）：{formatApiDateTime(snapshot.created_at) || '时间未记录'}</Text></div>
+                            <Popconfirm disabled={saving} title="恢复此版本" description="当前正文会被替换，并生成一条新的恢复快照。" okText="恢复" cancelText="取消" onConfirm={() => restoreSnapshot(snapshot.id)}>
+                              <Button size="small" disabled={saving} icon={<RollbackOutlined />}>恢复</Button>
                             </Popconfirm>
                           </div>
                         ),
@@ -1274,6 +1692,24 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
           onApply: applyDeAiPreview,
         }}
       />
+      <Modal
+        title="正式正文与 AI 修订候选对比"
+        open={revisionCompareOpen}
+        onCancel={() => setRevisionCompareOpen(false)}
+        footer={null}
+        width={1100}
+      >
+        <div className="writer-diff-columns">
+          <div>
+            <Text strong>当前正式正文（v{detail?.current_version ?? '?'}）</Text>
+            <pre className="writer-diff-block writer-diff-old">{detail?.content || ' '}</pre>
+          </div>
+          <div>
+            <Text strong>修订候选（基于 v{pendingRevisionDraft?.baseChapterVersion ?? '?'}）</Text>
+            <pre className="writer-diff-block writer-diff-new">{pendingRevisionDraft?.content || ' '}</pre>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

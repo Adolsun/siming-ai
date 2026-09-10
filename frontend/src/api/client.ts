@@ -1,7 +1,38 @@
-import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, CanceledError } from 'axios'
+import { confirmChapterSave } from '../components/interaction/confirmChapterSave'
 
 const API_BASE_URL = '/api/v1'
 const API_TIMEOUT_MS = 600000
+const CHAPTER_SAVE_PATH = /^\/projects\/[^/]+\/chapters\/[^/]+$/
+
+async function chapterSaveConfig(
+  url: string,
+  data: unknown,
+  config?: AxiosRequestConfig,
+): Promise<AxiosRequestConfig | undefined> {
+  if (!CHAPTER_SAVE_PATH.test(url) || !data || typeof data !== 'object') {
+    return config
+  }
+  const payload = data as Record<string, unknown>
+  if (!Object.prototype.hasOwnProperty.call(payload, 'cataloging_mode')) {
+    return config
+  }
+  const existingHeaders = config?.headers || {}
+  if ('X-Siming-Cataloging-Impact' in existingHeaders) {
+    return config
+  }
+
+  const impact = await confirmChapterSave()
+  if (!impact) throw new CanceledError('已返回编辑，正文未保存')
+
+  return {
+    ...config,
+    headers: {
+      ...existingHeaders,
+      'X-Siming-Cataloging-Impact': impact,
+    },
+  }
+}
 
 class ApiClient {
   private client: AxiosInstance
@@ -41,8 +72,8 @@ class ApiClient {
     )
   }
 
-  get<T>(url: string, params?: Record<string, unknown>) {
-    return this.client.get<T>(url, { params })
+  get<T>(url: string, params?: Record<string, unknown>, config?: AxiosRequestConfig) {
+    return this.client.get<T>(url, { ...config, params })
   }
 
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
@@ -53,8 +84,8 @@ class ApiClient {
     return this.client.postForm<T>(url, data, config)
   }
 
-  put<T>(url: string, data?: unknown) {
-    return this.client.put<T>(url, data)
+  async put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+    return this.client.put<T>(url, data, await chapterSaveConfig(url, data, config))
   }
 
   patch<T>(url: string, data?: unknown) {
@@ -67,10 +98,12 @@ class ApiClient {
 
   stream(url: string, data: unknown, onMessage: (chunk: string) => void, onError?: (err: Error) => void) {
     const fullUrl = `${API_BASE_URL}${url}`
+    const controller = new AbortController()
     fetch(fullUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+      signal: controller.signal,
     })
       .then((response) => {
         if (!response.ok || !response.body) {
@@ -106,14 +139,15 @@ class ApiClient {
             }
             read()
           }).catch((err) => {
-            onError?.(err)
+            if (!controller.signal.aborted) onError?.(err)
           })
         }
         read()
       })
       .catch((err) => {
-        onError?.(err)
+        if (!controller.signal.aborted) onError?.(err)
       })
+    return () => controller.abort()
   }
 }
 

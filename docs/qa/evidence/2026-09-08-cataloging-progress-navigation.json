@@ -1,0 +1,420 @@
+{
+  "status": "passed",
+  "source_sha256": [
+    {
+      "path": "backend/app/ai/capabilities.py",
+      "sha256": "0ec444df408dd2ea901d120a9084ff0501b2cd8bdf9994d7b1c8f82a26f699b3"
+    },
+    {
+      "path": "backend/app/architecture/tool_result_policy.py",
+      "sha256": "20991765718eeb006e2b253396c5008eec7276b4f218121e21025094bb8d04bd"
+    },
+    {
+      "path": "backend/app/architecture/tool_status.py",
+      "sha256": "cf5668781d7f8376ce0bc6dea26e58e910cf170f9c081b071903a934d0098428"
+    },
+    {
+      "path": "backend/app/core/provider_errors.py",
+      "sha256": "46aaf9b66bdef0b562b6114d078d62232a26410e18f6ea5cfaf83648588fe8a7"
+    },
+    {
+      "path": "backend/app/mcp/adapter.py",
+      "sha256": "84e7e8881ef1041f040b3337b896b7cf47a02872db0405ae88ac2c1d66fb403c"
+    },
+    {
+      "path": "backend/app/modules/continuity/interfaces/tool_definitions.py",
+      "sha256": "56affeb545a4386b655ae3934fe857f069d7f9b1b5adf0ee0f6011e3a1848ee1"
+    },
+    {
+      "path": "backend/app/modules/model_runtime/infrastructure/gateway.py",
+      "sha256": "77411b77f47acafe46569c9672f782d3eb76e665667399ca059a87737ff7235f"
+    },
+    {
+      "path": "backend/app/modules/operations/domain/failures.py",
+      "sha256": "03c0fa90ae9a43c255f73e710b8ef47699543f122a7209099b95eed2f9424393"
+    },
+    {
+      "path": "backend/app/modules/operations/infrastructure/runtime.py",
+      "sha256": "4f6f3ff55857ba3cb0ce3e517a3a86705916a43cc05b2220cacf0d49ded2f158"
+    },
+    {
+      "path": "backend/app/modules/story/domain/project_read_contract.py",
+      "sha256": "d8a06e0097fc81a0e7f3061079a7ebbf662f6e5872379145c95ffd1acccfdd99"
+    },
+    {
+      "path": "backend/app/modules/story/interfaces/search_tool_definitions.py",
+      "sha256": "fdf1146a47824ca2813563b53120a793ea13e77f01fb086b073c9bbf17c8534f"
+    },
+    {
+      "path": "backend/app/modules/story/interfaces/tool_definitions.py",
+      "sha256": "ce16af79a07ef4656b7dbed751b179b9e797d29a1d582fefba0c51b0a646390f"
+    },
+    {
+      "path": "backend/app/prompts/cataloging_source.py",
+      "sha256": "e5fb5244c13df7b75208540775840c4e76d98bb8d26d0c9314059c4f163b8fde"
+    },
+    {
+      "path": "backend/app/prompts/outline_writer_prompts.py",
+      "sha256": "ab87068e85b9296e72b21d63c076d3221901d6fe1b82455478e78fa9d83ece79"
+    },
+    {
+      "path": "backend/app/routers/cataloging.py",
+      "sha256": "6fd19383626b9345a2b7abe95791bc9a118a07fff59628e4339955e3a54812f4"
+    },
+    {
+      "path": "backend/app/services/agent_tool_stream.py",
+      "sha256": "a01e0390061ed7be7e26f23ab08165dd99fc4efcceace869efa567787fd4e55b"
+    },
+    {
+      "path": "backend/app/services/cataloging/candidate_retry.py",
+      "sha256": "ccfec3834e683ed28cfd8e8f2c74154aaf8b58a9b4fe663ee7ba2431582cb525"
+    },
+    {
+      "path": "backend/app/services/cataloging/candidate_store.py",
+      "sha256": "63825b6bf82fb70f24aae3ce41ee76b852d42bd473037cf1ca4017674002149f"
+    },
+    {
+      "path": "backend/app/services/cataloging/character_ops.py",
+      "sha256": "b1a90657528215fb70625821afb01058e63c49a830ee800f60ec093c8a9b7b96"
+    },
+    {
+      "path": "backend/app/services/cataloging/character_targets.py",
+      "sha256": "0440423a85739226d307772f4ff82f081ec55feec2e593b6b5ea8bee104a810d"
+    },
+    {
+      "path": "backend/app/services/cataloging/facts.py",
+      "sha256": "aa327407e89e1ec8419df7990c5edf10c9f14afdff652f082c07c680c81552c6"
+    },
+    {
+      "path": "backend/app/services/cataloging/job_control.py",
+      "sha256": "7d7f94f50fe82876bd60b97f0f7dc591504b014a781b43dff0fe4fee66d652ab"
+    },
+    {
+      "path": "backend/app/services/cataloging/launcher.py",
+      "sha256": "2f9fa1b238af3f60eab90512d36c16a9412fed739147a79001744047fe7c2049"
+    },
+    {
+      "path": "backend/app/services/cataloging/local_cli_agent.py",
+      "sha256": "3700418b3bbdc232f1c2322bcf3e4c3e74b1144fe11b02f5120a55711dd86243"
+    },
+    {
+      "path": "backend/app/services/cataloging/manual_ops.py",
+      "sha256": "a7f8c18ff98e1c978cccf3af91d7d9a942d90664450741247f96758a0c69af6e"
+    },
+    {
+      "path": "backend/app/services/cataloging/orchestrator.py",
+      "sha256": "211063ba9a6d14fff75f0e5f4c9e6d8f38b71584992d8799dc4c088dc23bd7ab"
+    },
+    {
+      "path": "backend/app/services/cataloging/progress.py",
+      "sha256": "284de62edb31685cb01e69b5b525217bf33a4174e928729fa93317b0e617776a"
+    },
+    {
+      "path": "backend/app/services/cataloging/scene_contract.py",
+      "sha256": "cb3d6c4d2308a921c292845e603498c7c7f0fb3595f2f637be847e68317bf23c"
+    },
+    {
+      "path": "backend/app/services/cataloging/targeted_context.py",
+      "sha256": "ae0993f7b4fec907bdd34adcdad01da60f7a28f910a086b39ca91504e87581e8"
+    },
+    {
+      "path": "backend/app/services/conversation_context/assembly.py",
+      "sha256": "713df5452ac926d67ffd5a6dd5b668693af6f00eff2924c6c925aeaeca3ab9a4"
+    },
+    {
+      "path": "backend/app/services/conversation_context/budget.py",
+      "sha256": "180b1cd94023411475a572247bf0f880fed57676946b5635540b068beffdbdd3"
+    },
+    {
+      "path": "backend/app/services/conversation_context/checkpoint_prompt.py",
+      "sha256": "5cc6d51dbeafc5662d7a2be96595fabd917790b87c17ef0bab4fb3d2daa9fd44"
+    },
+    {
+      "path": "backend/app/services/conversation_context/checkpoint_state.py",
+      "sha256": "19109440fc752421a489f4bef4a492039aa730bbba86e4d9fe057df507c94bd2"
+    },
+    {
+      "path": "backend/app/services/conversation_context/errors.py",
+      "sha256": "aa35436f38d43efed200d2288ef24e30204c87788be06f6073bf234c3a15ee72"
+    },
+    {
+      "path": "backend/app/services/conversation_context/execution_ledger.py",
+      "sha256": "1285fc50f29b6c82fcf9636fb9c6a98d1da28de17a8333c65ad84dde10ff81c8"
+    },
+    {
+      "path": "backend/app/services/conversation_context/provider_renderer.py",
+      "sha256": "4f8ad85466214a43a9c13328de5e623a770729e45caf2b7d1153369ea07bb0dd"
+    },
+    {
+      "path": "backend/app/services/conversation_context/tool_transactions.py",
+      "sha256": "81f8d16aefee50900885e545af51beed753d3743e94949b63b038ffac6604a09"
+    },
+    {
+      "path": "backend/app/services/creation_agent_execution.py",
+      "sha256": "8b443e047d2af10c6cb7a8174a40d1e7bd223220b2ddefec5df8af89099d539d"
+    },
+    {
+      "path": "backend/app/services/creation_agent_turn_runtime.py",
+      "sha256": "1fdf8d439ffbc283737f2c9f5cea3ac8f7050747bdbb68b362f43e656a1dff26"
+    },
+    {
+      "path": "backend/app/services/novel_creation_agent.py",
+      "sha256": "9ff8eec88caf4f62d9a07e86fac2beaf48f8ef18f1db1a2b5524b0f39d12d6e9"
+    },
+    {
+      "path": "backend/app/services/tool_category_state.py",
+      "sha256": "e66b1dce6d5fb8a2830c6c686f2bb91d43a00c228ef994edb62b5a33110ddc83"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_native_turn.py",
+      "sha256": "d10988a34504818cdee24a8bce73df9755787e6143d6534ba678986a0a97d3da"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_public_errors.py",
+      "sha256": "a2e431ae618ae0bee6e0b9f4a9b42627836b644a35f2494c6b964d195d8b867a"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_public_projection.py",
+      "sha256": "56958cb5e650ec60d44cc1fc06d8e956dc5d835a0ecbd05ab22672d00c133109"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_response.py",
+      "sha256": "cf7a64ef6a5ab716e408d2e5141b65191f23ffa43008fd41ba6addee0b4e0b67"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_turn_runner.py",
+      "sha256": "761b0f56a317d42aeb799ba7df54e3d829657f5088eba0f2880101e0608a0e09"
+    },
+    {
+      "path": "backend/app/services/workspace/assistant_turn_state.py",
+      "sha256": "c15ca27f50ba5bd66d0ae3b3c0a24b00479a724279125b58c0ea9126026a01be"
+    },
+    {
+      "path": "backend/app/services/workspace/outline_drafts.py",
+      "sha256": "f6e9dadd7ef3c562660cfb2ae3922438dfa3ad70a613d37d25fe48c79753e7d9"
+    },
+    {
+      "path": "backend/app/services/workspace/registry.py",
+      "sha256": "16e256c428e80d8301e38c308eec160bce369c39201da58bf85e4ae7ce609447"
+    },
+    {
+      "path": "backend/app/services/workspace/scheduled_task_runner.py",
+      "sha256": "34053d17718f8b4d52b4c8213da0f429206b92851bd503f1e1b0ba1bc4d5b8bf"
+    },
+    {
+      "path": "backend/app/services/workspace/tool_result_projection.py",
+      "sha256": "803ebfae945e7fe71e13186241ab38d44e98fe6d2055d8b64902353ef3a96f39"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/cataloging.py",
+      "sha256": "137c6432eebb0baba44b3d5970bb3e149f786189944ad063a77601730f13f8f5"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/external_cataloging.py",
+      "sha256": "b0b6878951339c7d8fcde7cc9fd0d56f80e931a2b8bd4a881a79288abbe5aedd"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/external_writing.py",
+      "sha256": "af1008555dd5962aedfd9e5fa962719d25c541241086dd35fdeed7784544495b"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/outline_writer.py",
+      "sha256": "1ec5c8001358080e2f74c16ab84534da294db9d399a4a951fa18c67f1a07915c"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/projects.py",
+      "sha256": "8f53db9a146b41dbf79cc1e72b2fd93ff639f56bf8a91e93dd6e8ddbb72dc2d0"
+    },
+    {
+      "path": "backend/app/services/workspace/tools/search.py",
+      "sha256": "8f95714021e61ac5942399ba82382481594472933a43472959de71b70306a315"
+    },
+    {
+      "path": "backend/prompt_specs/assistant/workspace-quality.md",
+      "sha256": "c173cb431227e2b4c8d551c8ed3842819e183fbbf39780685b288ecc3f7be3e1"
+    },
+    {
+      "path": "backend/prompt_specs/continuity/cataloging-candidates.md",
+      "sha256": "32cc7282f454983bbf929b0d3c729666cec11dbd72242ac2c3bedd38cd3b6227"
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "sha256": "173e22864a5546aef8fb4b93f21f745c6ec04f2fe05c1b7fffe7b2706c6cad86"
+    },
+    {
+      "path": "frontend/src/components/GuiAssistantChat.tsx",
+      "sha256": "4fd3da0831682b296bd67d2cb579fe3b850b1cdda8416fd279d72003a91b04d7"
+    },
+    {
+      "path": "frontend/src/components/TabCache.tsx",
+      "sha256": "a174fb4318592b2edf38505b4f2c3b21c00f4476908d73eec6033960c3f6a34e"
+    },
+    {
+      "path": "frontend/src/components/WorkspaceAssistantChat.tsx",
+      "sha256": "a2a1ab0203322b40529119cbaa58018149cf4828632f87ae659c2e7249a37896"
+    },
+    {
+      "path": "frontend/src/components/assistant/ConversationCheckpointNotice.tsx",
+      "sha256": "c7fdda47008bbb6e784d2b0b87c50295974cf3abd793c1e3a6e3f2a3f6c1c780"
+    },
+    {
+      "path": "frontend/src/components/assistant/ReasoningDisclosure.tsx",
+      "sha256": "0db7630a030ae00cbf14ccc80e6fee789fae49fa0092ae20ca73d80bad718cea"
+    },
+    {
+      "path": "frontend/src/components/assistant/ToolLogPanel.tsx",
+      "sha256": "ec8693d93f41beae2b3608e0d9003be497246636f551398b5845b1e34e1289e6"
+    },
+    {
+      "path": "frontend/src/components/assistant/catalogingNotifications.ts",
+      "sha256": "12c1756d5e1aff0d471523cfb85b502d4d516f688d1918362acb0a2108eb72e7"
+    },
+    {
+      "path": "frontend/src/components/assistant/constants.ts",
+      "sha256": "713be717ffb8fbcc774840e62b89dc886b87efa6654ffa474dd406c734368ef1"
+    },
+    {
+      "path": "frontend/src/components/interaction/SaveStatusIndicator.tsx",
+      "sha256": "694945251a878eaea52f423be56cba0f4567794878a8e9203bc6d8907bf7f025"
+    },
+    {
+      "path": "frontend/src/components/interaction/confirmChapterSave.tsx",
+      "sha256": "5d40107ecce4e5709b52e8296da096173187db9c7657fd0fb0dbc9c6f5041004"
+    },
+    {
+      "path": "frontend/src/features/writer/WriterPageContent.tsx",
+      "sha256": "cee6642704cc618f403ed4bea42869fca3af0e17becc385409c200313e758c84"
+    },
+    {
+      "path": "frontend/src/features/writer/WriterSaveActions.tsx",
+      "sha256": "7d88cb8ea434bbcd9ee90d04cbf5eff93e90dc734c1de754ce582ade8abbeddb"
+    },
+    {
+      "path": "frontend/src/hooks/useUnsavedGuard.ts",
+      "sha256": "1deffec072d03c68c7f8aea7c573048077831acc753fb6dc701df6c872054472"
+    },
+    {
+      "path": "frontend/src/pages/CatalogingCandidatePayloadEditor.tsx",
+      "sha256": "bfe188c84fa7492a6edb08a88aed3ee37c2d8e1376f22bb16d8ef9a8e684f60a"
+    },
+    {
+      "path": "frontend/src/pages/CatalogingJobControlCard.tsx",
+      "sha256": "ac091d261bca4849f33a230f1f383a8250e904e89ddbdeb3416a7ed04fc6dc6a"
+    },
+    {
+      "path": "frontend/src/pages/CatalogingPage.tsx",
+      "sha256": "93eb250f36b7b5c37c9fe04d86428320d08801e003ee137c79b89d5719eec210"
+    },
+    {
+      "path": "frontend/src/pages/ProjectWorkspace.tsx",
+      "sha256": "7ca76c88aa5543e73838a8faad8c355f82536ac19ab3db9615772dfd761a29af"
+    },
+    {
+      "path": "frontend/src/pages/WriterPage.css",
+      "sha256": "086c763ffe4b0c865f033dc34839fc095bff54de45b8211f285a422f4b980d90"
+    },
+    {
+      "path": "mobile/android/app/src/main/assets/pc_workspace_prompt_contract.json",
+      "sha256": "8aed167aa9ecd87599a3a084adee9665ab99213957f55faf3d3269434bec6379"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileAssistantConversationStore.kt",
+      "sha256": "3588333220e1c82c196bbe585e4d7a523040a24b2323aa0ea5aa354cf1413f17"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileConversationBudget.kt",
+      "sha256": "cf09ce536158340315aba7a4264c70b11ebf3c4faec40e94d9df15db5e3f0657"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileConversationContext.kt",
+      "sha256": "1eae74c5f1fc2ad10196f13798a9a315a99f98f030e13f172e0ab927e48e063b"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileConversationRuntime.kt",
+      "sha256": "9edbfca63babb11625a39acf355cc4514673e196f92d9e8c02de5879f9bc4382"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileDirectConversationContextRuntime.kt",
+      "sha256": "b69a3f15be73613c87144499f0c413294b8c0562867140939e04009955b61f84"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileProjectReadContract.kt",
+      "sha256": "62c31c14b082b3a9dcde99dfad6840267fc2b74c2d71adae59be9eccda45800a"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileRejectedNativeToolBatch.kt",
+      "sha256": "091c962d15018386184cb69f721c0d59bce655d9b6193095ccae19cc63383186"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileToolStatus.kt",
+      "sha256": "a53488011ebb9b8035dd5ca657276b8846fad747a1f1d3a860ffb8c864723011"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+      "sha256": "dff4d50f997a6840003f7a71163284814f35df910e6cf7cc9d6a97f0cf510eda"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspacePagination.kt",
+      "sha256": "3d4e3e3a9fdd1e2be1de5bfb17046970b1b4e9f818cbe4a2f5d61a81197db669"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/PcPromptContract.kt",
+      "sha256": "156ccd8267178cdaf2d2d0d43aa2722d09201e04382f0a101070e00ca7052a0a"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationConversationAgent.kt",
+      "sha256": "b2bcd083b48b592315c8e1debe9064f32a25e54b4a5c6f8224871bb32a09a5b5"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/DirectApi.kt",
+      "sha256": "75cb5f5f66f3da38f3b35d1abbb208506a181d8cab8676fd6f174b5d2f80c1dd"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/ChapterDraftSaveState.kt",
+      "sha256": "ae14e6060df77f437348e7588cfb9fe9b327bae877e1fc50387299f9184661e0"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/ChapterWorkspace.kt",
+      "sha256": "2712996b9e4362fcc1c361b04474fa7f72efc6acb51857c76b50f7896b556137"
+    },
+    {
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/MainViewModel.kt",
+      "sha256": "2e7a5913c31448b2e9d6bee7793205c6c38d69307c8f03a2ecce1836f9e876db"
+    }
+  ],
+  "backend_tests": 35,
+  "frontend_first_pass_tests": 15,
+  "frontend_final_targeted_tests": 11,
+  "frontend_typecheck": "passed",
+  "mobile_pc_contract_capabilities": 27,
+  "production_database_mutated": false,
+  "installed_app_updated": false,
+  "prior_installer_sha256": "831dcc98f7da95a98e636ac82105035bd6f3993623efefc2803d450942d02b34",
+  "live_readonly_check": {
+    "latest_job_id": "151d9850-a7ec-407c-abee-9e2ab9d0b5e1",
+    "latest_job_status": "completed",
+    "health_http_status": 200,
+    "health_seconds": 0.17,
+    "job_http_status": 200,
+    "job_seconds": 0.25,
+    "processes_terminated": false
+  },
+  "installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-08T20:48:00.6514905+08:00",
+    "version": "3.3.13",
+    "installer": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\release\\local-cataloging-progress-fix-20260908\\Siming-Setup.exe",
+    "bytes": 42544943,
+    "sha256": "6be03d913d5802f9fb204bc02c0a36748ded17ccdc57bb8cb59d4955a86ca6e3",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with exact cataloging task navigation, progress loading and cancellation, live cached tab props, and previous fixes. Not published."
+  },
+  "payload_verification": {
+    "status": "passed",
+    "backend_modules": 626,
+    "frontend_files": 136,
+    "packaged_mcp_tools": 153
+  }
+}

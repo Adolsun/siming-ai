@@ -1,0 +1,339 @@
+{
+  "status": "passed",
+  "scope": "Cataloging validation, exact archive context and checkpoint recovery.",
+  "original_failure": {
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "message": "3 行 JSONL 解析失败，已暂停在当前章节",
+    "actual_final_attempt": "One exact character archive mismatch and two incomplete worldbuilding identity reviews.",
+    "original_asset_characters": 581,
+    "delivered_asset_characters": 263,
+    "source_project_unchanged": true,
+    "prose_sha256": "6c439f3a00d2062f4a99c9a69620d3ab0a4553ee8a02903fdc8ea45ee4676c19",
+    "run_status": "failed",
+    "facts": 19,
+    "candidates": 15
+  },
+  "backend_tests": 253,
+  "android_tests": 282,
+  "android_task_execution": "Gradle verified unchanged tasks as UP-TO-DATE; existing 282-result XML set inspected.",
+  "parity_capabilities": 27,
+  "lint": {
+    "status": "passed",
+    "scope": "No increased per-rule lint counts in previously dirty-style production files; new regression file clean.",
+    "new_test_lint_passed": true,
+    "files": [
+      {
+        "path": "backend/app/services/cataloging/candidate_retry.py",
+        "baseline_counts": {
+          "E501": 1
+        },
+        "current_counts": {
+          "E501": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/candidate_store.py",
+        "baseline_counts": {
+          "I001": 1,
+          "E501": 14,
+          "SIM118": 2
+        },
+        "current_counts": {
+          "I001": 1,
+          "E501": 14,
+          "SIM118": 2
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/orchestrator.py",
+        "baseline_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 32,
+          "B904": 1
+        },
+        "current_counts": {
+          "I001": 1,
+          "UP035": 1,
+          "E501": 32,
+          "B904": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/targeted_context.py",
+        "baseline_counts": {
+          "I001": 1,
+          "E501": 2,
+          "SIM110": 1
+        },
+        "current_counts": {
+          "I001": 1,
+          "E501": 2,
+          "SIM110": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/services/cataloging/character_targets.py",
+        "baseline_counts": {
+          "E501": 1
+        },
+        "current_counts": {
+          "E501": 1
+        },
+        "increased_rule_counts": {}
+      },
+      {
+        "path": "backend/app/prompts/cataloging_source.py",
+        "baseline_counts": {
+          "E501": 96
+        },
+        "current_counts": {
+          "E501": 96
+        },
+        "increased_rule_counts": {}
+      }
+    ]
+  },
+  "intermediate_model_tests": [
+    {
+      "attempt": "first",
+      "status": "failed",
+      "model_call_count": 3,
+      "final_run_status": "failed"
+    },
+    {
+      "attempt": "second",
+      "status": "failed",
+      "model_call_count": 3,
+      "final_run_status": "failed"
+    },
+    {
+      "attempt": "third",
+      "status": "failed",
+      "model_call_count": 3,
+      "final_run_status": "failed"
+    },
+    {
+      "attempt": "fourth",
+      "status": "failed",
+      "model_call_count": 3,
+      "final_run_status": "failed"
+    }
+  ],
+  "checkpoint_model_test": {
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "chapter_id": "e299f3b8-a6f6-4b7f-8969-fa67206319ca",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 87854,
+        "has_detailed_retry": true
+      },
+      {
+        "index": 2,
+        "request_characters": 89578,
+        "has_detailed_retry": true
+      },
+      {
+        "index": 3,
+        "request_characters": 100633,
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed_with_warnings",
+    "error": null,
+    "review_warning": "候选已保留，需要核对模型抽取的原文线索：世界观候选未写入 coverage_manifest.worldbuilding：档案馆著录卷·口径时间（接令）栏、联合校准对位流程",
+    "candidate_statuses": {
+      "applied": 22
+    },
+    "candidate_count": 22,
+    "complete_coverage": true,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true
+  },
+  "public_button_model_test": {
+    "mode": "public_retry_current_endpoint",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "f6c1ad4d-6539-427d-9146-27f58713d089",
+    "chapter_id": "e299f3b8-a6f6-4b7f-8969-fa67206319ca",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 7091,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 2,
+        "request_characters": 73337,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 3,
+        "request_characters": 91344,
+        "has_detailed_retry": true
+      },
+      {
+        "index": 4,
+        "request_characters": 92311,
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "candidate_statuses": {
+      "applied": 19
+    },
+    "candidate_count": 19,
+    "complete_coverage": true,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true
+  },
+  "apply_audit": {
+    "status": "passed",
+    "scope": "Completed public retry on private database; no source application access or model call during this audit.",
+    "original_chapter_prose_unchanged": true,
+    "entity_count_changes": {
+      "characters": {
+        "created_count": 0,
+        "deleted_count": 0
+      },
+      "worldbuilding_entries": {
+        "created_count": 0,
+        "deleted_count": 0
+      }
+    },
+    "chapter_outline_type_owner_and_source_valid": true,
+    "section_count": 5,
+    "all_candidates_applied": 19,
+    "repeat_apply_formal_tables_unchanged": true,
+    "repeat_apply_table_count": 13,
+    "checkpoint_original_fact_count": 19,
+    "checkpoint_original_fact_ids_and_payloads_retained": true,
+    "checkpoint_added_derived_fact_count": 17,
+    "oracle_note": "The initial checkpoint helper compared all fact IDs for equality; applying a summary adds derived facts. Original IDs and payloads are now checked separately."
+  },
+  "production_changes_since_previous_installer": [
+    "backend/app/prompts/cataloging_source.py",
+    "backend/app/services/cataloging/candidate_retry.py",
+    "backend/app/services/cataloging/candidate_store.py",
+    "backend/app/services/cataloging/character_targets.py",
+    "backend/app/services/cataloging/orchestrator.py",
+    "backend/app/services/cataloging/targeted_context.py"
+  ],
+  "previous_installer_preserved_sha256": "020a4a79be4291bd7f107d919f783a6ca892ceb4c55f57fce8c8947b619ab0cc",
+  "installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-07T21:31:07.6608272+08:00",
+    "version": "3.3.13",
+    "bytes": 42529490,
+    "sha256": "86640d31ea7ad1bbc2a43c263e38bcc354c5d5d58a617f3f7d992ea8ffd100bf",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with complete cataloging context, actionable candidate repair, durable checkpoint recovery, and previous fixes. Not published."
+  },
+  "package_integrity": {
+    "status": "passed",
+    "all_verified_app_module_count": 624,
+    "fixed_backend_module_count": 44,
+    "frontend_file_count": 136,
+    "prompt_spec_file_count": 8
+  },
+  "fixed_frozen_modules": {
+    "app.prompts.cataloging_source": {
+      "path": "backend/app/prompts/cataloging_source.py",
+      "source_sha256": "788a400f63d08c01d5943bd281fa3058ad58aba86cc34d7f143f541181bb6ee6",
+      "code_sha256": "6b7f5824c3f9a671158dc7300f6bb0fb68ad14d3e33ec0ae0db321f17727895c"
+    },
+    "app.services.cataloging.candidate_retry": {
+      "path": "backend/app/services/cataloging/candidate_retry.py",
+      "source_sha256": "4a589aa54091fcb16d999f2bd861e075e2313fe575aebc1c7fa62725a651332f",
+      "code_sha256": "3f8f3b99f3c091e8859ba95d15b9bf63301aa04db25827f151e8f120f70f2324"
+    },
+    "app.services.cataloging.candidate_store": {
+      "path": "backend/app/services/cataloging/candidate_store.py",
+      "source_sha256": "c53f9ebacaf0be1b13293f221b868799ffbc31136fb0bdb532cefbc7d6298ef5",
+      "code_sha256": "30262619dafd6b672f1a76ce11fc15a2daff3f801dce284ab6ef7ac46ca2b141"
+    },
+    "app.services.cataloging.character_targets": {
+      "path": "backend/app/services/cataloging/character_targets.py",
+      "source_sha256": "0cca3c2cb1bc32864901eb7a9b23f14851bfe9eb7e649fa645bcdc3e275faa2f",
+      "code_sha256": "40c2798bb45f53a718611a09ba9bdff75a11ab546e577b703ecc81ae0832256d"
+    },
+    "app.services.cataloging.orchestrator": {
+      "path": "backend/app/services/cataloging/orchestrator.py",
+      "source_sha256": "7790deef5ffe4e9f76669d1866283b96dc080f238646e31b54f9712ca6234342",
+      "code_sha256": "4689ef524d9fec18018cd0abe86231c718925be61656f1e385ce7646f28075e6"
+    },
+    "app.services.cataloging.targeted_context": {
+      "path": "backend/app/services/cataloging/targeted_context.py",
+      "source_sha256": "ae0993f7b4fec907bdd34adcdad01da60f7a28f910a086b39ca91504e87581e8",
+      "code_sha256": "54f14b6dd1423538da28ad94632134a0adfccc98f7117d41c51ca745f2542367"
+    }
+  },
+  "packaged_mcp_smoke": {
+    "status": "passed",
+    "first_empty_selection": "ok",
+    "version": 1,
+    "active_version": 1,
+    "selection_events": 1,
+    "active_business_categories": [],
+    "available_tools_after_activation": [
+      "set_tool_categories"
+    ],
+    "business_tool_writes": 0,
+    "fixture_projects": 1,
+    "executable_sha256": "e11a4fe6b57c19c15664b7173093548a136b87bb69205bfaadaf5d6a03dd91fe",
+    "packaged_chapters_read": 41,
+    "query_pages": 11,
+    "scope": "Frozen MCP in a new isolated app home; no user database or model invocation.",
+    "long_chapter_chars": 20000,
+    "long_chapter_pages": 5,
+    "long_chapter_reconstructed": true,
+    "whole_chapter_length_request_safely_paged": true,
+    "query_permission_pack": "readonly_collaboration",
+    "business_data_unchanged": true,
+    "scope_boundary": "Managed workspace Direct MCP is tested for its empty category controller; paged queries are tested only on the separately authorized readonly MCP surface. Production permissions were not changed.",
+    "per_process_timeout_seconds": 30,
+    "process_timings": [
+      {
+        "request_count": 3,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 2.125
+      },
+      {
+        "request_count": 2,
+        "permission_pack": "project_management",
+        "elapsed_seconds": 2.141
+      },
+      {
+        "request_count": 3,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 1.828
+      },
+      {
+        "request_count": 13,
+        "permission_pack": "readonly_collaboration",
+        "elapsed_seconds": 2.203
+      }
+    ],
+    "timing_limitation": "One isolated functional run under a 30-second per-process deadline; not a general startup-performance benchmark."
+  },
+  "limitations": [
+    "Actual model tests use private database copies and the configured deepseek:deepseek-v4-flash model.",
+    "Review warnings, if present, are retained; completed_with_warnings is not a warning-free result.",
+    "API/local-runtime context and external tool contracts covered by regressions; no new live CLI cataloging run.",
+    "Android standalone/offline cataloging remains an explicit existing mobile-PC parity gap; online mode uses this backend.",
+    "Ruff baseline warnings remain; no increase in per-rule counts and the new test file is clean.",
+    "Local unsigned manual Windows installer; not published, installed automatically, or merged.",
+    "This chapter regression is not the original 100000-character and over-40-chapter novel acceptance."
+  ]
+}

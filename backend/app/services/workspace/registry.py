@@ -16,6 +16,13 @@ from ...architecture.tool_categories import (
 )
 from ...architecture.tool_definition import ToolDef, ToolHandler
 from ...architecture.tool_permissions import classify_tool_definitions
+from ...architecture.tool_result_policy import (
+    ModelResultContract,
+    ModelResultListProjection,
+    ModelResultPageBudget,
+    ModelResultPolicy,
+    ModelResultPreview,
+)
 from ...architecture.tool_spec import ToolSpec
 from ...modules.assistant.application.tool_catalog import build_domain_tool_specs
 from ...modules.assistant.interfaces.tool_definitions import (
@@ -40,6 +47,7 @@ from ...modules.model_runtime.interfaces.tool_definitions import (
 from ...modules.operations.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as OPERATIONS_TOOL_DEFINITIONS,
 )
+from ...modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 from ...modules.story.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as STORY_TOOL_DEFINITIONS,
 )
@@ -49,6 +57,312 @@ from .spec_registry import ToolSpecRegistryMixin
 # ---------------------------------------------------------------------------
 # ToolDef — metadata for a single tool
 # ---------------------------------------------------------------------------
+
+
+_STATUS_RECEIPT_DATA_FIELDS = (
+    "id",
+    "revision",
+    "current_revision",
+    "project_id",
+    "created_project_id",
+    "chapter_id",
+    "outline_node_id",
+    "character_id",
+    "worldbuilding_id",
+    "relationship_id",
+    "session_id",
+    "artifact",
+    "artifact_id",
+    "entity_id",
+    "operation_id",
+    "run_id",
+    "job_id",
+    "report_id",
+    "import_id",
+    "file_id",
+    "candidate_id",
+    "fact_id",
+    "task_id",
+    "version_id",
+    "checkpoint_id",
+    "manifest_id",
+    "context_manifest_id",
+    "draft_id",
+    "content_ref",
+    "status",
+    "current_stage",
+    "saved_outline_node_ids",
+    "chapter_outline_node_ids",
+    "next_actions",
+)
+
+_STATUS_ONLY_CONTRACT = ModelResultContract(
+    policy=ModelResultPolicy.STATUS_ONLY,
+    max_json_bytes=4 * 1024,
+    data_fields=_STATUS_RECEIPT_DATA_FIELDS,
+)
+
+_CATALOGING_LAUNCH_RECEIPT_CONTRACT = ModelResultContract(
+    policy=ModelResultPolicy.STATUS_ONLY,
+    max_json_bytes=8 * 1024,
+    data_fields=(
+        "id",
+        "job_id",
+        "project_id",
+        "operation_id",
+        "status",
+        "execution_mode",
+        "execution_backend",
+        "total_chapters",
+        "completed_chapters",
+        "failed_chapters",
+        "started",
+        "worker_queued",
+        "existing_worker",
+        "trigger_source",
+        "idempotent_reuse",
+        "requested_chapter_ids",
+        "already_cataloged_chapter_ids",
+        "in_progress_chapter_ids",
+        "queued_chapter_ids",
+        "deferred_chapter_ids",
+        "reused_job_ids",
+        "superseded_job_ids",
+        "next_action",
+        "error",
+        "review_warning",
+    ),
+)
+
+_CHAPTER_DRAFT_RESULT_CONTRACT = ModelResultContract(
+    policy=ModelResultPolicy.ARTIFACT_REFERENCE,
+    max_json_bytes=16 * 1024,
+    data_fields=(
+        "draft_id",
+        "project_id",
+        "content_ref",
+        "title",
+        "outline_node_id",
+        "saved_chapter_id",
+        "draft_status",
+        "next_actions",
+        "word_count",
+        "context_manifest_id",
+        # A rejected short draft is not an artifact, but the model and author
+        # still need the deterministic retry receipt.  Keep only the declared
+        # counts and booleans; prose and tokens remain outside the projection.
+        "reason_code",
+        "actual_han_characters",
+        "minimum_han_characters",
+        "missing_han_characters",
+        "draft_stored",
+        "context_selection_token_consumed",
+    ),
+    reference_fields=("draft_id", "content_ref"),
+    preview=ModelResultPreview(
+        source_field="content",
+        output_field="content_preview",
+        max_chars=1_200,
+    ),
+)
+_OUTLINE_DRAFT_RESULT_CONTRACT = ModelResultContract(
+    policy=ModelResultPolicy.ARTIFACT_REFERENCE,
+    max_json_bytes=16 * 1024,
+    data_fields=(
+        "draft_id",
+        "project_id",
+        "context_manifest_id",
+        "parent_id",
+        "insert_after_id",
+        "draft_status",
+        "design_notes",
+        "saved_outline_node_ids",
+        "chapter_outline_node_ids",
+        "next_actions",
+    ),
+    reference_fields=("draft_id",),
+    preview=ModelResultPreview(
+        source_field="nodes",
+        output_field="nodes_preview",
+        item_fields=(
+            "id",
+            "parent_id",
+            "node_type",
+            "title",
+            "summary",
+            "parent_title",
+            "actual_summary",
+            "planned_summary",
+            "character_names",
+            "status",
+        ),
+        max_items=OUTLINE_PROPOSAL_MAX_NODES,
+    ),
+)
+
+_MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
+    # REST, native-agent and CLI/MCP callers must be able to distinguish a
+    # newly queued job from an idempotently reused current-version result.
+    # Hiding these launch fields makes repeated catalog clicks look like fresh
+    # work on the CLI surface even though the shared launcher did the right
+    # thing underneath.
+    "start_cataloging_job": _CATALOGING_LAUNCH_RECEIPT_CONTRACT,
+    "start_external_cataloging_job": _CATALOGING_LAUNCH_RECEIPT_CONTRACT,
+    # These generators persist their complete author-review product before
+    # returning. The model receives the durable reference plus a declared
+    # preview; the public projection uses the same declaration to build the
+    # author-visible draft receipt without exposing arbitrary result fields.
+    "chapter_writer": _CHAPTER_DRAFT_RESULT_CONTRACT,
+    "save_external_chapter_draft": _CHAPTER_DRAFT_RESULT_CONTRACT,
+    "outline_writer": _OUTLINE_DRAFT_RESULT_CONTRACT,
+    "save_external_outline_draft": _OUTLINE_DRAFT_RESULT_CONTRACT,
+    # Lightweight catalog tools already return only the listed identifiers and
+    # labels.  This remains a complete first delivery, not a replay summary.
+    "list_characters": ModelResultContract(
+        policy=ModelResultPolicy.SUMMARY_AND_IDS,
+        max_json_bytes=16 * 1024,
+        result_fields=("page",),
+        list_projections=(
+            ModelResultListProjection(
+                source_field=None,
+                output_field=None,
+                item_fields=("id", "name", "role_type"),
+                max_items=10,
+            ),
+        ),
+    ),
+    "list_chapters": ModelResultContract(
+        policy=ModelResultPolicy.SUMMARY_AND_IDS,
+        max_json_bytes=16 * 1024,
+        page_budget=ModelResultPageBudget(1024, 1536, 10),
+        result_fields=("page",),
+        list_projections=(
+            ModelResultListProjection(
+                source_field=None,
+                output_field=None,
+                item_fields=("id", "title", "outline_node_id"),
+                max_items=10,
+            ),
+        ),
+    ),
+    "list_worldbuilding": ModelResultContract(
+        policy=ModelResultPolicy.SUMMARY_AND_IDS,
+        max_json_bytes=16 * 1024,
+        result_fields=("page",),
+        list_projections=(
+            ModelResultListProjection(
+                source_field=None,
+                output_field=None,
+                item_fields=("id", "title", "dimension"),
+                max_items=10,
+            ),
+        ),
+    ),
+    # Search/read tools must deliver one complete result.  Their handlers own
+    # query limits/ranges; the projector never rewrites a fresh search result.
+    "search_characters": ModelResultContract(max_json_bytes=16 * 1024),
+    "search_chapters": ModelResultContract(
+        max_json_bytes=55168,
+        page_budget=ModelResultPageBudget(
+            4096, 1536, 2, text_argument="content_chars", default_text_chars=2000,
+            max_text_chars=4000, text_fields_per_item=1,
+        ),
+    ),
+    "search_outline": ModelResultContract(
+        max_json_bytes=52_384,
+        page_budget=ModelResultPageBudget(
+            4096, 6144, 2, text_argument="summary_chars", default_text_chars=500,
+            max_text_chars=1000, text_fields_per_item=3, min_text_fields=4,
+        ),
+    ),
+    "search_outline_tree": ModelResultContract(
+        max_json_bytes=17 * 1024, page_budget=ModelResultPageBudget(2048, 1536, 10),
+    ),
+    "search_worldbuilding": ModelResultContract(max_json_bytes=16 * 1024),
+    "search_relationships": ModelResultContract(max_json_bytes=16 * 1024),
+    "search_project_files": ModelResultContract(max_json_bytes=16 * 1024),
+    "read_project_file": ModelResultContract(max_json_bytes=32 * 1024),
+    "search_context": ModelResultContract(max_json_bytes=16 * 1024),
+    "prepare_task_context": ModelResultContract(max_json_bytes=32 * 1024),
+    # The external wrapper delivers the same lossless 20 KiB context pages as
+    # prepare_task_context, plus target and MCP workflow metadata. Keeping the
+    # default 16 KiB read contract makes a valid Chinese page fail projection
+    # once a real project has enough current context.
+    "prepare_external_writing_context": ModelResultContract(max_json_bytes=32 * 1024),
+    # Twelve 600-character evidence previews plus stable IDs/hashes fit this
+    # single-call envelope; the bound request budget admits the full batch.
+    "search_task_context": ModelResultContract(max_json_bytes=32 * 1024),
+    "submit_context_evidence": ModelResultContract(
+        policy=ModelResultPolicy.STATUS_ONLY,
+        # The success receipt includes the first lossless context page.  Its
+        # page body may use 20 KiB, so reserve a complete 24 KiB envelope.
+        max_json_bytes=24 * 1024,
+        data_fields=(
+            "manifest_id",
+            "accepted_count",
+            "selection_ready",
+            "context_selection_token",
+            "context_delivery_ready",
+            "context_delivery",
+            "estimated_input_tokens",
+            "input_budget_tokens",
+            "soft_target_tokens",
+            "soft_target_exceeded",
+            "warnings",
+            "context_page", "next_tool", "next_arguments",
+            "validation_errors", "validation_error_count", "validation_errors_has_more",
+        ),
+    ),
+    "save_external_cataloging_facts": ModelResultContract(
+        policy=ModelResultPolicy.STATUS_ONLY,
+        max_json_bytes=8 * 1024,
+        data_fields=(
+            "job_id", "project_id", "chapter_id", "facts_saved", "chapter_run_status",
+            "candidate_generation_allowed", "candidate_gate_note", "blocking_run",
+            "validation_errors", "validation_error_count", "validation_errors_has_more",
+            "allowed_fact_types", "next_tool", "next_arguments",
+        ),
+    ),
+    "save_external_cataloging_candidates": ModelResultContract(
+        policy=ModelResultPolicy.STATUS_ONLY,
+        max_json_bytes=64 * 1024,
+        data_fields=(
+            "job_id", "project_id", "chapter_id", "candidates_saved", "duplicates_skipped",
+            "candidates_total", "candidate_set_complete", "missing_required_items",
+            "chapter_run_status", "auto_applied", "apply_status", "coverage",
+            "candidate_generation_allowed", "blocking_run", "next_tool", "next_arguments",
+            "validation_errors", "validation_error_count", "validation_errors_has_more",
+            "candidate_errors", "coverage_repairs", "scene_repair", "recovery_context",
+            "submission_contract", "warnings",
+        ),
+    ),
+    "list_imported_files": ModelResultContract(max_json_bytes=16 * 1024),
+    "read_imported_file": ModelResultContract(max_json_bytes=32 * 1024),
+}
+
+
+def _model_result_contract_for(tool_def: ToolDef) -> ModelResultContract:
+    explicit = _MODEL_RESULT_CONTRACTS_BY_NAME.get(tool_def.name)
+    if explicit is not None:
+        return explicit
+    if tool_def.tool_type in {"write", "scheduler"}:
+        if tool_def.name == "create_outline_nodes":
+            return replace(
+                _STATUS_ONLY_CONTRACT,
+                max_json_bytes=12 * 1024,
+                list_projections=(
+                    ModelResultListProjection(
+                        source_field="nodes",
+                        output_field="nodes",
+                        item_fields=("id", "parent_id", "node_type", "title", "status"),
+                        max_items=OUTLINE_PROPOSAL_MAX_NODES,
+                    ),
+                ),
+            )
+        return _STATUS_ONLY_CONTRACT
+    if tool_def.name in {"remember", "forget"}:
+        return _STATUS_ONLY_CONTRACT
+    return tool_def.model_result_contract
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +389,10 @@ class ToolRegistry(ToolSpecRegistryMixin):
         td = self.get(name)
         return td.handler if td else None
 
+    def get_model_result_contract(self, name: str) -> ModelResultContract | None:
+        td = self.get(name)
+        return td.model_result_contract if td else None
+
     def all_names(self) -> list[str]:
         return list(self._tools.keys())
 
@@ -87,9 +405,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
     ) -> list[dict]:
         """Return OpenAI function-calling format dicts, optionally filtered by type."""
         selected_categories = (
-            set(normalize_tool_categories(list(categories)))
-            if categories is not None
-            else None
+            set(normalize_tool_categories(list(categories))) if categories is not None else None
         )
         result: list[dict] = []
         for td in self._tools.values():
@@ -137,9 +453,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
     ) -> list[ToolDef]:
         """Return tools available to the internal project assistant."""
         selected_categories = (
-            set(normalize_tool_categories(list(categories)))
-            if categories is not None
-            else None
+            set(normalize_tool_categories(list(categories))) if categories is not None else None
         )
         result = []
         for td in self._tools.values():
@@ -166,9 +480,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
     ) -> list[ToolDef]:
         """Return tools available to MCP clients for a given permission pack."""
         selected_categories = (
-            set(normalize_tool_categories(list(categories)))
-            if categories is not None
-            else None
+            set(normalize_tool_categories(list(categories))) if categories is not None else None
         )
 
         def category_allowed(tool: ToolDef) -> bool:
@@ -185,6 +497,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
             } | {
                 "prepare_external_writing_context",
                 "save_external_chapter_draft",
+                "save_external_outline_draft",
                 "report_agent_progress",
                 "report_context_selected",
             }
@@ -208,10 +521,10 @@ class ToolRegistry(ToolSpecRegistryMixin):
                 "verify_external_cataloging_progress",
                 "get_cataloging_control_state",
                 "list_cataloging_facts",
-                "apply_pending_cataloging",
             }
             return [
-                td for name, td in self._tools.items()
+                td
+                for name, td in self._tools.items()
                 if name in allowed_names and td.expose_to_mcp and category_allowed(td)
             ]
 
@@ -267,6 +580,16 @@ class ToolRegistry(ToolSpecRegistryMixin):
             if pack in allowed_packs:
                 result.append(td)
         return result
+
+    def list_for_workspace_direct_mcp(self) -> list[ToolDef]:
+        """Return the transaction-safe subset for one managed workspace turn."""
+
+        return [
+            definition
+            for definition in self.list_for_mcp(permission_pack="project_management")
+            if definition.direct_mcp_project_scoped
+            and definition.direct_mcp_transactional
+        ]
 
     def list_for_frontend(self) -> list[dict]:
         """Return tool metadata dicts for frontend display."""
@@ -381,7 +704,6 @@ _TOOL_REGISTRATION_ORDER = (
     "detect_new_worldbuilding",
     "detect_worldbuilding_conflicts",
     "detect_forbidden_patterns",
-    "preview_writing_context",
     "search_context",
     "preview_rag_context",
     "explain_context_selection",
@@ -414,6 +736,7 @@ _TOOL_REGISTRATION_ORDER = (
     "wait_local_cli_agent_run",
     "prepare_external_writing_context",
     "save_external_chapter_draft",
+    "save_external_outline_draft",
     "get_external_chapter_draft",
     "record_external_quality_review",
     "update_narrative_ledger_entry",
@@ -505,9 +828,28 @@ def _register_all() -> None:
     ]
     order = {name: index for index, name in enumerate(_TOOL_REGISTRATION_ORDER)}
     for definition in sorted(definitions, key=lambda item: order[item.name]):
+        contract = _model_result_contract_for(definition)
+        description = definition.description
+        if contract.page_budget is not None:
+            page = contract.page_budget
+            text_budget = (
+                f"另加 6 × {page.text_argument} × max({page.min_text_fields}, "
+                f"{page.text_fields_per_item} × 本次分页条数) 字节；"
+                f"{page.text_argument} 默认 {page.default_text_chars}、最大 {page.max_text_chars}。"
+                if page.text_argument else ""
+            )
+            description += (
+                f" 模型结果按 {page.argument} 分页：默认及上限 {page.max_items} 条，"
+                f"结果容量为 {page.base_json_bytes} + {page.item_json_bytes} × 本次分页条数 字节。"
+                f"{text_budget}"
+                "返回的 page/next_cursor 是继续读取的位置；容量不足时减少同一步调用数量或 limit，"
+                "不要原样反复查询。"
+            )
         categorized = replace(
             definition,
+            description=description,
             agent_category=tool_category_for_name(definition.name),
+            model_result_contract=contract,
         )
         registry.register(categorized.bind(resolve_handler))
 

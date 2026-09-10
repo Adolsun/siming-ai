@@ -1,0 +1,36 @@
+{
+  "schema": "siming.local_installer_verification.v1",
+  "recorded_at": "2026-09-05T19:23:32.5383710+08:00",
+  "build": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-05T19:20:15.4285194+08:00",
+    "version": "3.3.13",
+    "installer": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\release\\local-thinking-fix-20260905\\Siming-Setup.exe",
+    "bytes": 42498132,
+    "sha256": "e4a5874298583822b0c8efded36600bb311fe597e0d1ae3db3bea2e749b7f82f",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with thinking protocol fixes and prior HCI improvements. Not a published release."
+  },
+  "payload": {
+    "status": "passed",
+    "fixed_backend_modules": 11,
+    "verified_app_modules": 622,
+    "frontend_files": 136,
+    "executable_sha256": "1504cfe92fe9d50b59a6737549cdc4ee2f842331dbbf143bc10a8544e25fc5e1"
+  },
+  "frontend_tests": {
+    "passed": 32,
+    "failed": 0,
+    "pending": 0
+  },
+  "installer_signature": "NotSigned",
+  "manual_test_only": true,
+  "prior_hci_installer_sha256": "4d0787e43cbd53ac7f0e28ddfab708954a967a7b79d54296720f20465d6935e7",
+  "limitations": [
+    "No installer execution or desktop WebView2 acceptance in this run.",
+    "No Android APK or device acceptance in this run.",
+    "Earlier slow startup was not reproduced; its cause remains unproven."
+  ]
+}

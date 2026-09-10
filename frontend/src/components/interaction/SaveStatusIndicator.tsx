@@ -11,12 +11,12 @@ const icons: Record<SaveStatus, ReactNode> = {
   error: <CloseCircleOutlined />,
 }
 
-export function SaveStatusIndicator({ status, error }: { status: SaveStatus; error?: string | null }) {
+export function SaveStatusIndicator({ status, error, label }: { status: SaveStatus; error?: string | null; label?: string }) {
   const meta = saveStatusMeta[status]
   return (
     <Space size={7} wrap role="status" aria-live="polite">
       <Tag color={meta.color}>
-        <Space size={5}>{icons[status]}<span>{meta.label}</span></Space>
+        <Space size={5}>{icons[status]}<span>{label || meta.label}</span></Space>
       </Tag>
       {status === 'error' && error && <Typography.Text type="danger">{error}</Typography.Text>}
     </Space>

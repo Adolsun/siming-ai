@@ -1,0 +1,17 @@
+{
+  "schema": "tool_status.v1",
+  "tool": "prepare_task_context",
+  "cases": [
+    {"status": "ready", "detail": "prepare_task_context 已就绪"},
+    {"status": "ok", "detail": "prepare_task_context 已完成"},
+    {"status": "completed", "detail": "prepare_task_context 已完成"},
+    {"status": "needs_confirmation", "detail": "prepare_task_context 等待确认"},
+    {"status": "running", "detail": "正在执行 prepare_task_context"},
+    {"status": "skipped", "detail": "prepare_task_context 未执行"},
+    {"status": "cancelled", "detail": "prepare_task_context 已取消"},
+    {"status": "error", "detail": "prepare_task_context 执行失败"},
+    {"status": "failed", "detail": "prepare_task_context 执行失败"},
+    {"status": "denied", "detail": "prepare_task_context 已拒绝"},
+    {"status": "unknown", "detail": "prepare_task_context 状态已更新"}
+  ]
+}

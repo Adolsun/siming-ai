@@ -1,0 +1,88 @@
+{
+  "status": "fixed_and_verified",
+  "date": "2026-09-05",
+  "error_id": "01a60c544d3f486c99ef8e0c755f1a16",
+  "backend": {
+    "tests": 230,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 3
+  },
+  "android": {
+    "tests": 276,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "backend_skip_reason": "Three file symlink tests skipped because Windows reports WinError 1314.",
+  "source_sha256": [
+    {
+      "path": "backend/app/services/tool_category_state.py",
+      "sha256": "e66b1dce6d5fb8a2830c6c686f2bb91d43a00c228ef994edb62b5a33110ddc83"
+    },
+    {
+      "path": "backend/app/services/novel_creation_agent.py",
+      "sha256": "0f23cdc5b022930f9ed7484172caef6dc1243db412435b6be2d7cab217abf50a"
+    }
+  ],
+  "lint": {
+    "existing_findings": 19,
+    "current_findings": 19,
+    "new_findings": 0
+  },
+  "real_opencode": {
+    "model": "opencode_cli:opencode/big-pickle",
+    "status": "passed",
+    "selections": [
+      {
+        "enabled_categories": [],
+        "labels": []
+      }
+    ],
+    "reply": "你好！",
+    "message_status": "completed",
+    "write_count": 0,
+    "revision_unchanged": true,
+    "stage_data_unchanged": true,
+    "seconds": 67.97
+  },
+  "packaged_mcp": {
+    "status": "passed",
+    "first_empty_selection": "ok",
+    "version": 1,
+    "active_version": 1,
+    "selection_events": 1,
+    "active_business_categories": [],
+    "available_tools_after_activation": [
+      "set_tool_categories"
+    ],
+    "business_tool_writes": 0,
+    "fixture_projects": 1,
+    "executable_sha256": "9b0fa3fdedc114b0437a13b7869da4df73f1fb4f5faa4485505d86525185a165",
+    "scope": "Frozen MCP in a new isolated app home; no user database or model invocation."
+  },
+  "payload_integrity": {
+    "status": "passed",
+    "all_verified_app_module_count": 622,
+    "fixed_backend_module_count": 13,
+    "frontend_file_count": 136,
+    "executable_sha256": "9b0fa3fdedc114b0437a13b7869da4df73f1fb4f5faa4485505d86525185a165"
+  },
+  "build": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "version": "3.3.13",
+    "built_at": "2026-09-05T21:26:41.3503264+08:00",
+    "bytes": 42501098,
+    "sha256": "a9fcf5445c7e602cefabde0cc433fb1f78ff687f04990c3833ca318263b5a0c2",
+    "scope": "Local unsigned Windows test installer with empty tool category fix and previous fixes. Not published."
+  },
+  "not_fixed": [
+    "Installer auto-launch redirection policy inheritance",
+    "Workspace query fixed byte capacity failure c6a94251"
+  ],
+  "user_configuration_writes": 0,
+  "user_project_writes": 0,
+  "published": false
+}

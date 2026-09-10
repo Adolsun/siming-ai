@@ -6,7 +6,10 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from ...architecture.uow import commit_session
+
 from ...database.models import (
+    AgentRun,
     CatalogingApplyLog,
     CatalogingCandidate,
     CatalogingChapterRun,
@@ -17,6 +20,20 @@ from ...database.models import (
 )
 
 TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "skipped_by_user"}
+TERMINAL_AGENT_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def validate_cataloging_run_source(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> Chapter:
+    """Reject stale or foreign source snapshots before model calls and writes."""
+    if run.job_id != job.id or run.project_id != job.project_id:
+        raise ValueError("建档章节记录不属于当前任务或作品")
+    chapter = db.query(Chapter).filter_by(id=run.chapter_id, project_id=job.project_id).first()
+    if chapter is None:
+        raise ValueError("建档章节不存在或不属于当前作品")
+    if run.chapter_version is not None and int(run.chapter_version) != int(chapter.current_version or 1):
+        raise ValueError("章节正文版本已变化，旧建档候选不能继续写入；请针对当前版本重新启动建档")
+    return chapter
+
 OPERATION_STATUS_BY_JOB_STATUS = {
     "queued": "queued",
     "running": "running",
@@ -122,7 +139,7 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "title": "建档候选等待确认",
                     "message": job.error or "请审阅当前章节的建档候选后继续。",
                     "action_label": "查看建档候选",
-                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "action_url": f"/project/{job.project_id}?view=cataloging&job={job.id}",
                     "blocking": True,
                 }
                 result = {
@@ -137,7 +154,7 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                     "title": "作品建档已暂停",
                     "message": job.error or "请打开作品建档页处理当前章节后继续。",
                     "action_label": "前往处理建档",
-                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "action_url": f"/project/{job.project_id}?view=cataloging&job={job.id}",
                     "blocking": True,
                 }
                 result = {
@@ -199,6 +216,34 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
             )
 
 
+def complete_cataloging_job(db: Session, job: CatalogingJob) -> None:
+    """Complete the authoritative job and its durable UI/Agent projections.
+
+    Callers own the transaction.  Keeping all three records in the same unit
+    of work prevents REST, workspace/MCP, and managed CLI completion from
+    drifting when a helper commits one sidecar before the others.
+    """
+
+    completed_at = job.completed_at or datetime.utcnow()
+    job.status = "completed"
+    job.current_chapter_id = None
+    job.blocked_chapter_id = None
+    job.error = None
+    job.completed_at = completed_at
+    job.updated_at = completed_at
+
+    if job.agent_run_id:
+        agent_run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
+        if agent_run and agent_run.status not in TERMINAL_AGENT_RUN_STATUSES:
+            agent_run.status = "completed"
+            agent_run.current_step = "作品建档完成"
+            agent_run.summary = "作品建档完成"
+            agent_run.updated_at = completed_at
+            agent_run.completed_at = completed_at
+
+    refresh_job_progress(db, job)
+
+
 def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:
     return (
         db.query(CatalogingChapterRun)
@@ -209,7 +254,40 @@ def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun 
     )
 
 
+def first_retryable_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:
+    """Return the current unit accepted by every full-retry transport.
+
+    A paused candidate turn remains ``facts_saved``.  Treating only failures
+    and confirmation waits as retryable made REST reject the same unit that
+    the workspace/MCP tool could reset, and forced users to preserve facts
+    they had explicitly chosen to discard.
+    """
+
+    return (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == job.id)
+        .filter(CatalogingChapterRun.status.in_([
+            "failed",
+            "awaiting_confirmation",
+            "facts_saved",
+        ]))
+        .order_by(CatalogingChapterRun.chapter_order.asc())
+        .first()
+    )
+
+
 def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
+    validate_cataloging_run_source(db, job, run)
+    if job.status in {"completed", "cancelled"} or run.status in TERMINAL_RUN_STATUSES:
+        raise ValueError("已结束的建档任务或章节不能重试")
+    if db.query(CatalogingCandidate.id).filter(
+        CatalogingCandidate.chapter_run_id == run.id,
+        CatalogingCandidate.status == "applied",
+    ).first():
+        # Domain writes have already committed. Retain their audit trail and
+        # source facts, and let the model repair only the outstanding work.
+        reset_run_for_resolution_retry(db, job, run)
+        return
     candidate_ids = [
         row.id
         for row in db.query(CatalogingCandidate.id)
@@ -233,6 +311,7 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     run.review_warning = None
     run.raw_output = None
     job.status = "running"
+    job.completed_at = None
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
     job.error = None
@@ -242,10 +321,19 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
 def reset_run_for_resolution_retry(
     db: Session, job: CatalogingJob, run: CatalogingChapterRun
 ) -> None:
+    from .fact_store import clear_derived_facts_for_run
+
+    validate_cataloging_run_source(db, job, run)
+    if job.status == "cancelled" or run.status == "skipped_by_user":
+        raise ValueError("已取消或跳过的建档章节不能重试")
+
     candidate_ids = [
         row.id
         for row in db.query(CatalogingCandidate.id)
-        .filter(CatalogingCandidate.chapter_run_id == run.id)
+        .filter(
+            CatalogingCandidate.chapter_run_id == run.id,
+            CatalogingCandidate.status != "applied",
+        )
         .all()
     ]
     if candidate_ids:
@@ -255,36 +343,81 @@ def reset_run_for_resolution_retry(
         db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(
             synchronize_session=False
         )
+    has_applied = db.query(CatalogingCandidate.id).filter(
+        CatalogingCandidate.chapter_run_id == run.id,
+        CatalogingCandidate.status == "applied",
+    ).first() is not None
+    if not has_applied:
+        clear_derived_facts_for_run(db, run)
     run.status = "facts_saved"
     run.completed_at = None
     run.error = None
-    run.review_warning = None
+    if not has_applied:
+        run.review_warning = None
     job.status = "running"
+    job.completed_at = None
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
     job.error = None
     refresh_job_progress(db, job)
 
 
-def cancel_job(job: CatalogingJob) -> None:
+def cancel_job(job: CatalogingJob) -> bool:
+    if job.status in {"completed", "cancelled"}:
+        return False
     job.status = "cancelled"
     job.current_chapter_id = None
     job.blocked_chapter_id = None
     job.error = None
     job.completed_at = datetime.utcnow()
     job.updated_at = datetime.utcnow()
+    _schedule_runtime_stop(job, terminal=True)
+    return True
 
 
-def pause_job(job: CatalogingJob) -> None:
+def pause_job(job: CatalogingJob) -> bool:
+    if job.status not in {"queued", "running", "waiting_confirmation"}:
+        return False
     job.status = "paused"
     job.updated_at = datetime.utcnow()
+    _schedule_runtime_stop(job, terminal=False)
+    return True
 
 
-def resume_job(job: CatalogingJob) -> None:
+def _schedule_runtime_stop(job: CatalogingJob, *, terminal: bool) -> None:
+    db = Session.object_session(job)
+    if db is not None:
+        from .runtime_requests import request_cataloging_runtime_stop
+        request_cataloging_runtime_stop(db, job.id, terminal=terminal)
+
+
+def resume_job(job: CatalogingJob) -> bool:
+    if job.status != "paused":
+        return False
     job.status = "running"
     job.error = None
     job.completed_at = None
     job.updated_at = datetime.utcnow()
+    db = Session.object_session(job)
+    if db is not None:
+        db.info.get("cataloging_runtime_stops", {}).pop(job.id, None)
+    return True
+
+
+def set_job_execution_mode(db: Session, job: CatalogingJob, mode: str) -> bool:
+    """Apply the shared mode transition before an explicit command queues work."""
+    if mode not in {"auto", "manual"}:
+        raise ValueError("模式必须是 auto 或 manual")
+    should_resume = job.status == "waiting_confirmation" and mode == "auto"
+    job.execution_mode = mode
+    job.updated_at = datetime.utcnow()
+    if should_resume:
+        job.status = "running"
+        job.error = None
+        job.completed_at = None
+        job.blocked_chapter_id = None
+        refresh_job_progress(db, job)
+    return should_resume
 
 
 def mark_run_skipped(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
@@ -297,3 +430,14 @@ def mark_run_skipped(db: Session, job: CatalogingJob, run: CatalogingChapterRun)
     job.context_integrity = "skipped_chapter"
     job.error = None
     refresh_job_progress(db, job)
+
+
+def start_cataloging_extraction(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun, chapter: Chapter,
+) -> None:
+    run.status = "extracting"
+    run.started_at = run.started_at or datetime.utcnow()
+    job.status = "running"
+    job.current_chapter_id = chapter.id
+    job.blocked_chapter_id = None
+    commit_session(db)

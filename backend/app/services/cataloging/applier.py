@@ -26,6 +26,7 @@ from ..story_granularity import inspect_candidate_coverage_items
 from .candidate_io import candidate_payload, candidate_to_dict
 from .chapter_link_ops import apply_chapter_link
 from .chapter_ops import apply_chapter_summary
+from .character_merge_ops import apply_character_merge_candidate
 from .character_ops import (
     apply_character_create,
     apply_character_relationship,
@@ -33,16 +34,22 @@ from .character_ops import (
     apply_character_timeline,
     apply_character_update,
 )
-from .character_merge_ops import apply_character_merge_candidate
 from .constants import APPLY_ORDER
+from .job_control import validate_cataloging_run_source
 from .outline_ops import apply_outline
+from .reconciliation import (
+    prepare_reconciled_payload,
+    reconcile_successful_run,
+)
 from .worldbuilding_ops import apply_worldbuilding, apply_worldbuilding_timeline
-
 
 ApplyHandler = Callable[[Session, CatalogingCandidate, Chapter, dict[str, Any]], dict[str, Any]]
 
 
 def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> list[dict[str, Any]]:
+    validate_cataloging_run_source(db, job, run)
+    if job.status in {"cancelled", "paused"}:
+        raise ValueError("建档任务已暂停或取消，不能继续写入")
     candidates = (
         db.query(CatalogingCandidate)
         .filter(CatalogingCandidate.chapter_run_id == run.id)
@@ -57,8 +64,19 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
         candidate.updated_at = datetime.utcnow()
         db.flush()
         try:
-            result = apply_candidate(db, candidate)
-            _mark_applied(db, job, run, candidate, result)
+            # A rejected candidate must not leave half-written domain rows or
+            # poison the Session for the remaining candidates in this batch.
+            with db.begin_nested():
+                result = apply_candidate(db, candidate)
+                _mark_applied(db, job, run, candidate, result)
+                db.flush()
+            warning = str(result.get("review_warning") or "").strip()
+            if warning and warning not in str(run.review_warning or ""):
+                run.review_warning = "；".join(
+                    value
+                    for value in (str(run.review_warning or "").strip("； "), warning)
+                    if value
+                )[:4000]
             events.append({
                 "type": "candidate_applied",
                 "candidate": candidate_to_dict(candidate),
@@ -100,6 +118,10 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
                 else "作品建档已显式检查本章叙事状态，本版本未产生结构化治理线索。"
             ),
         )
+    # Reconciliation is part of applying a complete chapter projection.  Keep
+    # the public event stream backward-compatible: callers expect one event per
+    # candidate and do not need an extra synthetic candidate event here.
+    reconcile_successful_run(db, run)
     return events
 
 
@@ -117,10 +139,12 @@ def _candidate_apply_sort_key(candidate: CatalogingCandidate) -> tuple[Any, ...]
 
 
 def apply_candidate(db: Session, candidate: CatalogingCandidate) -> dict[str, Any]:
-    payload = candidate_payload(candidate)
+    payload = prepare_reconciled_payload(db, candidate, candidate_payload(candidate))
     chapter = db.query(Chapter).filter(Chapter.id == candidate.chapter_id).first()
     if not chapter:
         raise ValueError("章节不存在")
+    if chapter.project_id != candidate.project_id:
+        raise ValueError("建档候选不属于章节所在作品")
 
     handler = _handler_for(candidate.item_type)
     return handler(db, candidate, chapter, payload)

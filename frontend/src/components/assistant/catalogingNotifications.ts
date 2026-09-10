@@ -5,7 +5,7 @@ import type { WorkspaceAssistantMessage, WorkspaceAssistantOutcome } from './typ
 const CHAPTER_SAVE_CATALOGING_MODE = 'chapter_save:'
 
 function operationTime(operation: OperationRun) {
-  const value = operation.created_at || operation.updated_at || ''
+  const value = operation.completed_at || operation.updated_at || operation.created_at || ''
   const parsed = apiDateTimeMs(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
@@ -39,15 +39,13 @@ function assistantMessage(
     role: 'assistant',
     content,
     status,
-    // This is a live status message, so order it by the latest task activity.
-    // Using only created_at placed it above the writer's final reply and made
-    // both the reminder and its action button effectively invisible.
+    // One notice per operation, positioned at its latest actual activity.
     created_at: operation.completed_at || operation.updated_at || operation.created_at || undefined,
     navigation_action: {
       label: navigationLabel,
       to: operation.attention?.action_url
         || operation.resume_url
-        || `/project/${encodeURIComponent(projectId)}?view=cataloging`,
+        || `/project/${encodeURIComponent(projectId)}?view=cataloging${operation.source_id ? `&job=${encodeURIComponent(operation.source_id)}` : ''}`,
     },
     data: outcome
       ? {

@@ -1,0 +1,59 @@
+package com.siming.mobile.ui
+
+import com.siming.mobile.data.MobilePendingChapterDraft
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class ChapterDraftSaveStateTest {
+    private val draft = MobilePendingChapterDraft(
+        draftId = "draft-1",
+        projectId = "project-1",
+        title = "雾里的回信",
+        content = "作者准备继续修改的正文。",
+        executionRoute = "android_standalone",
+    )
+
+    @Test
+    fun `a new chapter can be saved without PC while cataloging explains the connection requirement`() {
+        val state = chapterDraftSaveState(draft, draft.title, online = false, busy = false, viewingFormalText = false)
+        assertTrue(state.canSave)
+        assertFalse(state.canCatalog)
+        assertTrue(state.hint.contains("保存到手机"))
+        assertTrue(state.hint.contains("建档需要连接 Gateway"))
+    }
+
+    @Test
+    fun `connecting enables both explicit actions without claiming the draft is saved`() {
+        val state = chapterDraftSaveState(draft, draft.title, online = true, busy = false, viewingFormalText = false)
+        assertTrue(state.canSave)
+        assertTrue(state.canCatalog)
+        assertTrue(state.hint.contains("尚未保存"))
+    }
+
+    @Test
+    fun `disconnected revisions cannot offer a save that the repository rejects`() {
+        val revision = draft.copy(draftKind = "revision", baseChapterVersion = 2, targetChapterCurrentVersion = 2)
+        val state = chapterDraftSaveState(revision, revision.title, online = false, busy = false, viewingFormalText = false)
+        assertFalse(state.canSave)
+        assertFalse(state.canCatalog)
+        assertTrue(state.hint.contains("核对正式章节版本"))
+    }
+
+    @Test
+    fun `conflicts comparison and an in-flight save all disable both write actions with a reason`() {
+        val conflict = draft.copy(draftKind = "revision", baseChapterVersion = 1, targetChapterCurrentVersion = 2)
+        val states = listOf(
+            chapterDraftSaveState(conflict, draft.title, true, false, false),
+            chapterDraftSaveState(draft, draft.title, true, false, true),
+            chapterDraftSaveState(draft, draft.title, true, true, false),
+            chapterDraftSaveState(draft, "  ", true, false, false),
+            chapterDraftSaveState(draft.copy(status = "generating"), draft.title, true, false, false),
+        )
+        states.forEach { state ->
+            assertFalse(state.canSave)
+            assertFalse(state.canCatalog)
+            assertTrue(state.hint.isNotBlank())
+        }
+    }
+}

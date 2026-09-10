@@ -1,0 +1,134 @@
+{
+  "original_failure": {
+    "run_id": "0867c852-4633-4033-af9b-6c4f9192232a",
+    "original_characters": 185,
+    "changed_character_1based": 185,
+    "expected_character": "。",
+    "provided_character": "；",
+    "repeated_attempts": 3
+  },
+  "backend_tests": 304,
+  "final_targeted_tests": 5,
+  "parity_capabilities": 27,
+  "public_retry": {
+    "status": "passed",
+    "mode": "public_retry_current_endpoint",
+    "source_access": "SQLite mode=ro + query_only; never mutated",
+    "isolated_home": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\.build\\cataloging-assets-20260908\\model-b3baa5dc",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "0867c852-4633-4033-af9b-6c4f9192232a",
+    "chapter_id": "56e3c348-b303-4d3f-9a34-a67550bc8b70",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 7251,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 2,
+        "request_characters": 68794,
+        "has_detailed_retry": false
+      },
+      {
+        "index": 3,
+        "request_characters": 86734,
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "candidate_statuses": {
+      "applied": 18
+    },
+    "candidate_count": 18,
+    "complete_coverage": true,
+    "prior_candidates_retained": true,
+    "saved_fact_ids_retained": true,
+    "source_fact_count": 17,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "staging_comparison_exclusions": [
+      "chapters.content_file_path",
+      "chapters.content_hash",
+      "chapters.updated_at"
+    ],
+    "apply_scope": "Private copy only; author database and installed application untouched.",
+    "asset_audit": {
+      "old_length": 185,
+      "new_length": 215,
+      "verbatim_old_retained": true
+    }
+  },
+  "original_failure_repair": {
+    "status": "passed",
+    "mode": "resume_saved_checkpoint",
+    "source_access": "SQLite mode=ro + query_only; never mutated",
+    "isolated_home": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\.build\\cataloging-assets-20260908\\model-1ed685b2",
+    "model": "deepseek:deepseek-v4-flash",
+    "run_id": "0867c852-4633-4033-af9b-6c4f9192232a",
+    "chapter_id": "56e3c348-b303-4d3f-9a34-a67550bc8b70",
+    "model_calls": [
+      {
+        "index": 1,
+        "request_characters": 85526,
+        "source": "recorded_failure",
+        "has_detailed_retry": true
+      },
+      {
+        "index": 2,
+        "request_characters": 86843,
+        "source": "real_model",
+        "has_detailed_retry": true
+      }
+    ],
+    "extraction_status": "awaiting_confirmation",
+    "final_run_status": "completed",
+    "error": null,
+    "review_warning": null,
+    "candidate_statuses": {
+      "applied": 21
+    },
+    "candidate_count": 21,
+    "complete_coverage": true,
+    "prior_candidates_retained": true,
+    "saved_fact_ids_retained": true,
+    "source_fact_count": 18,
+    "formal_data_unchanged_until_apply": true,
+    "chapter_prose_unchanged_after_apply": true,
+    "staging_comparison_exclusions": [
+      "chapters.content_file_path",
+      "chapters.content_hash",
+      "chapters.updated_at"
+    ],
+    "apply_scope": "Private copy only; author database and installed application untouched.",
+    "asset_audit": {
+      "old_length": 185,
+      "new_length": 208,
+      "verbatim_old_retained": true
+    }
+  },
+  "installed_app_updated": false,
+  "source_database_mutated": false,
+  "local_installer": {
+    "branch": "codex/hci-usability-20260905",
+    "base_commit": "dcf46329ed59e36e229bf782dc66068c841b2aef",
+    "includes_uncommitted_worktree": true,
+    "built_at": "2026-09-08T13:01:11.3181879+08:00",
+    "version": "3.3.13",
+    "installer": "D:\\归档_开发编程\\AI\\agent\\NovelWritingAgent\\release\\local-cataloging-assets-fix-20260908\\Siming-Setup.exe",
+    "bytes": 42535379,
+    "sha256": "9eba47332992a45e6b8deee0dee099702401d597fce33454e25c6f2e7fdc48df",
+    "default_packaged_mcp_acceptance": "passed",
+    "scope": "Local unsigned Windows test installer with exact archive preservation feedback, non-truncating asset writes, and previous fixes. Not published.",
+    "payload_integrity": {
+      "status": "passed",
+      "all_verified_app_module_count": 625,
+      "fixed_backend_module_count": 53,
+      "frontend_file_count": 136,
+      "prompt_spec_file_count": 8
+    },
+    "previous_installer_unchanged": true
+  }
+}

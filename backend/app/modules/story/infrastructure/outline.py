@@ -1,4 +1,5 @@
 """SQLAlchemy outline application adapter."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -51,15 +52,15 @@ class SqlAlchemyOutlineWorkspace:
             node_type=payload["node_type"],
             title=payload["title"],
             summary=payload.get("summary"),
+            actual_summary=payload.get("actual_summary"),
+            planned_summary=payload.get("planned_summary"),
             status=payload.get("status"),
             sort_order=payload.get("sort_order", 0),
             metadata_json=payload.get("metadata"),
         )
         self._session.add(node)
         self._session.flush()
-        links = extract_character_links(
-            payload.get("character_ids"), payload.get("characters")
-        )
+        links = extract_character_links(payload.get("character_ids"), payload.get("characters"))
         replace_character_links(self._session, project_id, node, links or [])
         return StoryMutation(
             data=node_to_dict(node),
@@ -103,18 +104,26 @@ class SqlAlchemyOutlineWorkspace:
             ],
         )
 
-    def update(
-        self, project_id: str, node_id: str, payload: dict[str, Any]
-    ) -> StoryMutation:
+    def update(self, project_id: str, node_id: str, payload: dict[str, Any]) -> StoryMutation:
         get_project_or_404(self._session, project_id)
         node = self._node(project_id, node_id)
         if not payload:
             raise ValidationError("未提供任何更新字段")
-        links = extract_character_links(
-            payload.pop("character_ids", None), payload.pop("characters", None)
-        )
+        character_ids = payload.pop("character_ids", None)
+        characters = payload.pop("characters", None)
+        links = extract_character_links(character_ids, characters)
+        if characters is None and links is not None:
+            previous_roles = {
+                link.character_id: link.role_in_scene for link in node.linked_characters
+            }
+            links = [(character_id, previous_roles.get(character_id)) for character_id, _ in links]
         if "metadata" in payload:
-            payload["metadata_json"] = payload.pop("metadata")
+            metadata = payload.pop("metadata")
+            # The editor renders absent metadata as an empty object. Preserve
+            # its stored representation when saving an otherwise unchanged node.
+            if metadata == {} and node.metadata_json is None:
+                metadata = None
+            payload["metadata_json"] = metadata
         if "parent_id" in payload:
             self._parent(project_id, payload["parent_id"])
             ensure_no_cycle(self._session, project_id, node.id, payload["parent_id"])
@@ -122,8 +131,17 @@ class SqlAlchemyOutlineWorkspace:
             setattr(node, field, value)
         replace_character_links(self._session, project_id, node, links)
         self._session.flush()
+        # ``node_to_dict`` deliberately starts with an empty ``children`` list;
+        # returning it directly makes a successful update look as if persisted
+        # descendants were deleted.  Rebuild the authoritative tree projection
+        # and return this node from it so PUT and the following GET agree.
+        updated_node = next(
+            item
+            for item in outline_payload(self._session, project_id)["flat"]
+            if item["id"] == node.id
+        )
         return StoryMutation(
-            data=node_to_dict(node),
+            data=updated_node,
             sync_intents=[
                 ContentSyncIntent(
                     project_id=project_id,

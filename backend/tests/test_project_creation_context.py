@@ -72,7 +72,10 @@ def test_project_tool_and_manifest_expose_authoritative_creation_constraints(tmp
         db.commit()
 
         result = asyncio.run(get_project_info(db, project.id, {}))
-        context = result["data"]["creation"]
+        assert "creation" not in result["data"]
+        brief = asyncio.run(get_project_creation_brief(db, project.id, {}))
+        context = json.loads(brief["data"]["content"])
+        assert not brief["data"]["content_range"]["has_more"]
         assert context["creation_session_id"] == creation.id
         assert context["constraints"]["target_words"] == 2_500_000
         assert context["constraints"]["target_chapters"] == 1_000
@@ -137,7 +140,7 @@ def test_imported_project_can_create_and_update_an_authoritative_creation_brief(
 
         before = asyncio.run(get_project_creation_brief(db, project.id, {}))
         assert before["status"] == "ok"
-        assert before["data"]["creation"] is None
+        assert json.loads(before["data"]["content"]) is None
 
         updated = asyncio.run(update_project_creation_brief(db, project.id, {
             "constraints": {

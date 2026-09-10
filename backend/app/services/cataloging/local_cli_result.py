@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from sqlalchemy.orm import Session
+
 from app.ai.local_cli_adapter import CLIStalledError
 from app.architecture.uow import commit_session
 from app.database.models import AgentRun, AgentRunEvent, CatalogingChapterRun, CatalogingJob
@@ -15,6 +17,34 @@ from app.services.operation_runtime import record_operation_signal
 _MAX_NO_SAVE_ATTEMPTS = 3
 _TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
 TurnAction = Literal["next", "continue", "return"]
+
+
+def _committed_stage_action(db: Session, job: CatalogingJob, run: CatalogingChapterRun, stage: str) -> TurnAction | None:
+    """Database checkpoints outrank a process's late exit status."""
+    if job.status == "completed":
+        return "next"
+    if job.status in {"cancelled", "paused", "failed", "paused_on_failure"}:
+        return "return"
+    advanced = {
+        "facts": {"facts_saved", "awaiting_confirmation", "applying", *_TERMINAL_RUNS},
+        "candidates": {"awaiting_confirmation", "applying", *_TERMINAL_RUNS},
+        "apply": _TERMINAL_RUNS,
+    }
+    if run.status not in advanced.get(stage, set()):
+        if job.status == "waiting_confirmation":
+            return "return"
+        return None
+    if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
+        job.status = "waiting_confirmation"
+        job.blocked_chapter_id = run.chapter_id
+        agent = db.get(AgentRun, job.agent_run_id) if job.agent_run_id else None
+        if agent is not None:
+            agent.status = "waiting_confirmation"
+            agent.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
+        refresh_job_progress(db, job)
+        commit_session(db)
+        return "return"
+    return "next"
 
 
 def agent_tool_event_count(
@@ -54,7 +84,7 @@ def handle_cli_turn_exception(
     stage: str,
     exc: Exception,
     session_factory=SessionLocal,
-) -> None:
+) -> TurnAction:
     db = session_factory()
     try:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
@@ -64,7 +94,10 @@ def handle_cli_turn_exception(
             .first()
         )
         if not job or not run:
-            return
+            return "return"
+        committed = _committed_stage_action(db, job, run, stage)
+        if committed is not None:
+            return committed
         run.status = "failed"
         run.error = str(exc)
         job.status = "paused_on_failure"
@@ -99,6 +132,7 @@ def handle_cli_turn_exception(
                 message=run.error,
                 db=db,
             )
+        return "return"
     finally:
         db.close()
 
@@ -127,6 +161,11 @@ async def handle_cli_turn_result(
         )
         if not job or not run:
             return "return"
+        attempt_key = f"{run.id}:{stage}"
+        committed = _committed_stage_action(db, job, run, stage)
+        if committed is not None:
+            no_save_attempts.pop(attempt_key, None)
+            return committed
         add_event(
             db,
             agent_run_id,
@@ -149,8 +188,8 @@ async def handle_cli_turn_result(
         )
         no_saved = returncode == 0 and _turn_has_no_saved_progress(stage, run.status)
         if no_saved:
-            attempt = no_save_attempts.get(run.id, 0) + 1
-            no_save_attempts[run.id] = attempt
+            attempt = no_save_attempts.get(attempt_key, 0) + 1
+            no_save_attempts[attempt_key] = attempt
             if attempt < _MAX_NO_SAVE_ATTEMPTS:
                 if stage == "facts":
                     run.status = "pending"

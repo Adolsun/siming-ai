@@ -25,8 +25,20 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 
 class DirectApiClientTest {
+    private fun resumePrefix(messages: List<JsonObject>): String {
+        assertFalse(messages.any { it.getValue("role").jsonPrimitive.content == "assistant" })
+        assertEquals("user", messages.last().getValue("content").jsonPrimitive.content)
+        val reference = messages.single {
+            it.getValue("content").jsonPrimitive.content.startsWith("[SERVER_VERIFIED_STREAM_CHECKPOINT]")
+        }
+        assertEquals("user", reference.getValue("role").jsonPrimitive.content)
+        val checkpoint = Json.parseToJsonElement(reference.getValue("content").jsonPrimitive.content.lines()[2]).jsonObject
+        assertEquals("第一段", checkpoint.getValue("committed_text").jsonPrimitive.content)
+        return checkpoint.getValue("required_prefix").jsonPrimitive.content
+    }
+
     @Test
-    fun `direct api task model overrides default without losing provider catalog`() {
+    fun `task model without its own capacity profile uses 256k fallback`() {
         val config = DirectApiConfig(
             displayName = "test",
             baseUrl = "https://api.example.test/v1",
@@ -34,12 +46,37 @@ class DirectApiClientTest {
             model = "general-model",
             availableModels = listOf("general-model", "writer-model"),
             taskModels = mapOf(DirectApiConfig.TASK_WRITING to "writer-model"),
+            contextWindowTokens = 128_000,
         )
 
-        assertEquals("writer-model", config.forTask(DirectApiConfig.TASK_WRITING).model)
-        assertEquals("general-model", config.forTask(DirectApiConfig.TASK_ASSISTANT).model)
+        val writing = config.forTask(DirectApiConfig.TASK_WRITING)
+        assertEquals("writer-model", writing.model)
+        assertEquals(DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS, writing.contextWindowTokens)
+        assertEquals(DirectApiConfig.CONTEXT_CAPACITY_FALLBACK, writing.contextCapacitySource)
+        val assistant = config.forTask(DirectApiConfig.TASK_ASSISTANT)
+        assertEquals("general-model", assistant.model)
+        assertEquals(128_000, assistant.contextWindowTokens)
+        assertEquals(DirectApiConfig.CONTEXT_CAPACITY_CONFIGURED, assistant.contextCapacitySource)
         assertEquals(config.availableModels, config.summary().availableModels)
         assertEquals("writer-model", config.summary().taskModels[DirectApiConfig.TASK_WRITING])
+    }
+
+    @Test
+    fun `explicit profile for the selected model is retained ahead of fallback`() {
+        val config = DirectApiConfig(
+            displayName = "test",
+            baseUrl = "https://api.example.test/v1",
+            apiKey = "secret",
+            model = "writer-model",
+            contextWindowTokens = 96_000,
+            contextCapacitySource = DirectApiConfig.CONTEXT_CAPACITY_CONFIGURED,
+            maxOutputTokens = 8_000,
+        )
+
+        val writing = config.forTask(DirectApiConfig.TASK_WRITING)
+
+        assertEquals(96_000, writing.contextWindowTokens)
+        assertEquals(DirectApiConfig.CONTEXT_CAPACITY_CONFIGURED, writing.contextCapacitySource)
     }
 
     @Test
@@ -157,8 +194,7 @@ class DirectApiClientTest {
                         )
                     } else {
                         val messages = body.getValue("messages").jsonArray.map { it.jsonObject }
-                        val resumeRequest = messages.last().getValue("content").jsonPrimitive.content
-                        val expected = resumeRequest.substringAfter("：\n")
+                        val expected = resumePrefix(messages)
                         sseResponse(
                             """{"choices":[{"delta":{"content":"$expected 第二段"},"finish_reason":"stop"}]}""",
                         )
@@ -196,8 +232,7 @@ class DirectApiClientTest {
                         )
                     } else {
                         val input = body.getValue("input").jsonArray.map { it.jsonObject }
-                        val expected = input.last().getValue("content").jsonPrimitive.content
-                            .substringAfter("：\n")
+                        val expected = resumePrefix(input)
                         sseResponse(
                             """{"type":"response.output_text.delta","delta":"$expected 第二段"}""",
                             """{"type":"response.completed","response":{"status":"completed"}}""",
@@ -261,7 +296,7 @@ class DirectApiClientTest {
                 assertEquals("get_project_info", body.getValue("tools").jsonArray[0]
                     .jsonObject.getValue("function").jsonObject.getValue("name").jsonPrimitive.content)
                 return jsonResponse(
-                    """{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"先读取作品资料","tool_calls":[{"id":"call-1","type":"function","function":{"name":"get_project_info","arguments":"{\"id\":\"project-1\"}"}}]}}],"usage":{"prompt_tokens":37,"completion_tokens":5,"total_tokens":42}}""",
+                    """{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"先读取作品资料","tool_calls":[{"id":"call-1","type":"function","function":{"name":"get_project_info","arguments":"{ \"b\":2, \"id\":\"project-1\", \"a\":1 }"}}]}}],"usage":{"prompt_tokens":37,"completion_tokens":5,"total_tokens":42}}""",
                 )
             }
         },
@@ -276,9 +311,33 @@ class DirectApiClientTest {
         assertEquals("get_project_info", turn.toolCalls.single().name)
         assertEquals("project-1", turn.toolCalls.single().arguments["id"]?.jsonPrimitive?.content)
         assertEquals("call-1", turn.toolCalls.single().id)
+        assertEquals("{ \"b\":2, \"id\":\"project-1\", \"a\":1 }", turn.toolCalls.single().rawArgumentsJson)
+        val replayedArguments = ((turn.assistantMessage.getValue("tool_calls") as JsonArray).single()
+            .jsonObject.getValue("function") as JsonObject).getValue("arguments").jsonPrimitive.content
+        assertEquals(turn.toolCalls.single().rawArgumentsJson, replayedArguments)
         assertEquals(37, turn.promptTokens)
         assertEquals("先读取作品资料", turn.reasoningContent)
         assertEquals("先读取作品资料", turn.assistantMessage["reasoning_content"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `invalid native arguments fail with stable protocol reason`() = withServer(
+        pathDispatcher(
+            "/chat/completions" to jsonResponse(
+                """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-invalid","type":"function","function":{"name":"get_project_info","arguments":"[1,2]"}}]}}]}""",
+            ),
+        ),
+    ) { server ->
+        val error = assertFailsWith<DirectNativeToolProtocolException> {
+            runBlocking {
+                testClient().agentTurn(
+                    config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS),
+                    messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取") }),
+                    tools = singleTool("get_project_info"),
+                )
+            }
+        }
+        assertEquals("native_assistant_transaction_invalid", error.reason)
     }
 
     @Test
@@ -361,6 +420,7 @@ class DirectApiClientTest {
         assertEquals(listOf("先读取"), reasoning)
         assertEquals("get_project_info", turn.toolCalls.single().name)
         assertEquals("project-1", turn.toolCalls.single().arguments["id"]?.jsonPrimitive?.content)
+        assertEquals("{\"id\":\"project-1\"}", turn.toolCalls.single().rawArgumentsJson)
         assertEquals(29, turn.promptTokens)
     }
 
@@ -549,6 +609,52 @@ class DirectApiClientTest {
                 }
             }
             assertEquals(listOf("已输出片段"), content)
+            assertEquals(1, attempts.get())
+        }
+    }
+
+    @Test
+    fun `repeated tool choice rejection is bounded for both native transports`() {
+        listOf(false, true).forEach { streamed ->
+            val attempts = AtomicInteger()
+            withServer(object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                    val count = attempts.incrementAndGet()
+                    assertEquals(count == 1, "tool_choice" in body)
+                    return jsonResponse("""{"error":{"message":"Thinking mode does not support this tool_choice"}}""", 400)
+                }
+            }) { server ->
+                assertFailsWith<DirectApiHttpException> {
+                    runBlocking {
+                        val config = config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS)
+                        val messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取") })
+                        if (streamed) testClient().streamAgentTurn(config, messages, singleTool("get_project_info"), "required")
+                        else testClient().agentTurn(config, messages, singleTool("get_project_info"), "required")
+                    }
+                }
+                assertEquals(2, attempts.get())
+            }
+        }
+    }
+
+    @Test
+    fun `request rejections are not treated as resumable text interruptions`() {
+        val attempts = AtomicInteger()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                attempts.incrementAndGet()
+                return jsonResponse("""{"error":{"message":"reasoning_content must be passed back"}}""", 400)
+            }
+        }) { server ->
+            assertFailsWith<DirectApiHttpException> {
+                runBlocking {
+                    testClient().completeResumable(
+                        config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS), "system", "user",
+                        initialContent = "已有片段", maxResumeAttempts = 8,
+                    )
+                }
+            }
             assertEquals(1, attempts.get())
         }
     }
