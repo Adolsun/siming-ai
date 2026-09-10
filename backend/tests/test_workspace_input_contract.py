@@ -25,7 +25,10 @@ def test_stringified_patch_is_rejected_with_safe_actionable_diagnostic():
     handler.assert_not_awaited()
     projected = model_tool_result_projector.project(registry.get("patch_creation_artifact"), result)
     assert projected.payload["data"]["reason"] == "native_tool_contract_invalid"
-    assert "不能编码成 JSON 字符串" in projected.payload["detail"]
+    assert projected.payload["data"]["path"] == "$.changes"
+    assert projected.payload["data"]["rule"] == "list_type"
+    assert "JSON 数组" in projected.payload["detail"]
+    assert "不能传包含数组文本的字符串" in projected.payload["detail"]
     assert "sk-do-not-reflect-input-values" not in projected.content
     assert isinstance(args["changes"], str)
 

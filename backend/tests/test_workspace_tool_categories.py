@@ -41,9 +41,10 @@ def test_workspace_prompt_delegates_semantics_to_model_category_selection():
     prompt = build_system_prompt(PACK, outline_batch_count=3)
 
     assert TOOL_CATEGORY_CONTROLLER in prompt
-    assert "系统不会使用关键词、正则或界面状态替你路由" in prompt
-    assert "界面当前打开或选中的章节、角色和大纲不会作为 Agent 输入" in prompt
-    assert "结合完整语义自行选择" in prompt
+    assert "自行理解语义并选工具" in prompt
+    assert "最新消息是唯一目标" in prompt
+    assert "界面选中对象不作任务输入" in prompt
+    assert "章号、标题和“下一章”须查询真实章级 ID" in prompt
 
 
 def test_controller_schema_describes_categories_without_a_selection_limit():
