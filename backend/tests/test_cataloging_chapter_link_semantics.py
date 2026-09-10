@@ -95,7 +95,7 @@ def test_chapter_link_normalization_requires_model_classification():
     try:
         normalize_candidate({"type": "chapter_link", "characters": ["罗建群"]})
     except ValueError as exc:
-        assert "name 与 appearance_type" in str(exc)
+        assert "characters" in str(exc) and "object" in str(exc)
     else:
         raise AssertionError("Unclassified chapter character link was accepted")
 

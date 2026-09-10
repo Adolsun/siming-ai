@@ -24,6 +24,7 @@ from app.ai.local_cli_adapter import (
     OPENCODE_FAMILY_PROVIDERS,
     CLILaunch,
     CLITurnTerminal,
+    CLIStalledError,
     CLIQuotaLimitError,
     LocalCLIAdapter,
     communicate_with_cli_quota_detection,
@@ -60,6 +61,9 @@ from app.services.cataloging.local_cli_result import (
     agent_tool_event_count,
     handle_cli_turn_exception,
     handle_cli_turn_result,
+)
+from app.services.cataloging.local_cli_progress import (
+    CandidateProgressProbe, CHECKPOINT_TERMINAL, STALL_PREFIX,
 )
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.tool_category_state import (
@@ -202,9 +206,14 @@ def ensure_local_cli_cataloging_worker(
     commit_session(db)
 
     current = _COORDINATORS.get(job.id)
-    if not current or current.done():
+    if not current or current.done() or current.cancelling():
+        queued_job_id = job.id
+        async def coordinate_after_previous():
+            if current and not current.done():
+                await asyncio.gather(current, return_exceptions=True)
+            await _coordinate_cataloging(queued_job_id, provider)
         _COORDINATORS[job.id] = asyncio.create_task(
-            _coordinate_cataloging(job.id, provider),
+            coordinate_after_previous(),
             name=f"cataloging-cli-{job.id}",
         )
     if job.operation_id:
@@ -226,14 +235,19 @@ def ensure_local_cli_cataloging_worker(
 
 def cancel_local_cli_cataloging_worker(job_id: str, *, terminal: bool = False) -> None:
     process = _PROCESSES.get(job_id)
-    if process and process.returncode is None:
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            pass
     task = _COORDINATORS.get(job_id)
-    if task and not task.done():
-        task.cancel()
+    def stop():
+        if process and process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+        if task and not task.done():
+            task.cancel()
+    if task and task.get_loop().is_running():
+        task.get_loop().call_soon_threadsafe(stop)
+    else:
+        stop()
     db = SessionLocal()
     try:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
@@ -262,7 +276,6 @@ async def _pause_cataloging_operation(job_id: str) -> None:
         commit_session(db)
     finally:
         db.close()
-    cancel_local_cli_cataloging_worker(job_id, terminal=False)
 
 
 async def _continue_cataloging_operation(job_id: str, provider: str) -> None:
@@ -273,7 +286,8 @@ async def _continue_cataloging_operation(job_id: str, provider: str) -> None:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
         if not job or job.status in _TERMINAL_JOBS:
             return
-        resume_job(job)
+        if not resume_job(job):
+            return
         refresh_job_progress(db, job)
         commit_session(db)
         ensure_local_cli_cataloging_worker(db, job, provider=provider)
@@ -294,7 +308,6 @@ async def _cancel_cataloging_operation(job_id: str) -> None:
         commit_session(db)
     finally:
         db.close()
-    cancel_local_cli_cataloging_worker(job_id, terminal=True)
     unregister_operation_actions(job.operation_id if job else None)
 
 
@@ -617,6 +630,10 @@ async def _run_cli_turn(
 
     category_file = create_tool_category_state()
     try:
+        progress_probe = CandidateProgressProbe(
+            category_file=category_file, chapter_run_id=run.id,
+            session_factory=SessionLocal,
+        ) if stage == "candidates" else None
         for _step in range(8):
             state = read_tool_category_state(category_file)
             prompt = _task_prompt(task_file, job, run, chapter, agent_run_id, stage)
@@ -648,8 +665,13 @@ async def _run_cli_turn(
                     project_folder=project_folder, job=job, run=run, chapter=chapter,
                     model=model, agent_run_id=agent_run_id, stage=stage,
                     category_file=category_file,
+                    progress_probe=progress_probe,
                 )
             except CLITurnTerminal as exc:
+                if str(exc).startswith(STALL_PREFIX):
+                    raise CLIStalledError(str(exc)[len(STALL_PREFIX):]) from exc
+                if str(exc) == CHECKPOINT_TERMINAL:
+                    return 0, exc.stdout, exc.stderr
                 if not str(exc).startswith("set_tool_categories:"):
                     raise
                 result = (0, exc.stdout, exc.stderr)
@@ -672,7 +694,7 @@ async def _run_cli_turn(
 async def _execute_cataloging_cli_step(
     *, resolved: str, launch: CLILaunch, env: dict[str, str], project_folder: Path,
     job: CatalogingJob, run: CatalogingChapterRun, chapter: Chapter, model: str,
-    agent_run_id: str, stage: str, category_file: str,
+    agent_run_id: str, stage: str, category_file: str, progress_probe=None,
 ) -> tuple[int, str, str]:
     """Execute one model step; a committed category change stops its process."""
     process = await asyncio.create_subprocess_exec(
@@ -707,6 +729,14 @@ async def _execute_cataloging_cli_step(
             )
         finally:
             operation_db.close()
+    category_probe = LocalCLIAdapter._terminal_turn_probe({
+        "local_cli_mcp_authorized": True,
+        "local_cli_mcp_tool_category_state_file": category_file,
+    })
+
+    def terminal_probe():
+        return (progress_probe() if progress_probe else None) or (category_probe() if category_probe else None)
+
     try:
         stdout, stderr = await communicate_with_cli_quota_detection(
             process,
@@ -714,10 +744,7 @@ async def _execute_cataloging_cli_step(
             timeout_seconds=None,
             operation_id=job.operation_id,
             external_activity_probe=lambda: _latest_agent_event_at(agent_run_id),
-            terminal_probe=LocalCLIAdapter._terminal_turn_probe({
-                "local_cli_mcp_authorized": True,
-                "local_cli_mcp_tool_category_state_file": category_file,
-            }),
+            terminal_probe=terminal_probe,
             poll_seconds=poll_seconds,
             # This worker owns an explicitly authorized, process-scoped MCP
             # configuration. Its stdout/stderr may contain arbitrary novel
@@ -753,6 +780,8 @@ def _finalize_completed_sidecars(db: Session, job: CatalogingJob) -> None:
 
 
 async def _coordinate_cataloging(job_id: str, provider: str) -> None:
+    from .job_control import validate_cataloging_run_source
+
     no_save_attempts: dict[str, int] = {}
     try:
         while True:
@@ -762,11 +791,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                 if not job:
                     return
                 if job.status in _TERMINAL_JOBS:
-                    if job.status == "completed":
-                        _finalize_completed_sidecars(db, job)
-                    else:
-                        refresh_job_progress(db, job)
-                        commit_session(db)
+                    _finalize_terminal_sidecars(db, job)
                     return
                 if job.status == "paused":
                     return
@@ -783,12 +808,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     _finalize_completed_sidecars(db, job)
                     return
                 if run.status == "failed":
-                    job.status = "paused_on_failure"
-                    job.blocked_chapter_id = run.chapter_id
-                    job.error = run.error
-                    refresh_job_progress(db, job)
-                    commit_session(db)
-                    update_run_status(db, agent_run.id, "failed", summary=run.error or "当前章节建档失败")
+                    _pause_failed_run(db, job, run, agent_run)
                     return
                 if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
                     job.status = "waiting_confirmation"
@@ -798,7 +818,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     commit_session(db)
                     return
                 project = db.query(Project).filter(Project.id == job.project_id).first()
-                chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id).first()
+                chapter = validate_cataloging_run_source(db, job, run)
                 if not project or not chapter:
                     raise RuntimeError("建档任务关联的作品或章节不存在")
                 stage = _turn_stage(run, job.execution_mode)
@@ -866,7 +886,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     stage=stage,
                 )
             except Exception as exc:
-                handle_cli_turn_exception(
+                action = handle_cli_turn_exception(
                     job_id=job_id,
                     chapter_run_id=run_snapshot.id,
                     agent_run_id=agent_run_id,
@@ -874,7 +894,9 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     exc=exc,
                     session_factory=SessionLocal,
                 )
-                return
+                if action == "return":
+                    return
+                continue
 
             action = await handle_cli_turn_result(
                 job_id=job_id,
@@ -899,7 +921,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
         db = SessionLocal()
         try:
             job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-            if job and job.status not in _TERMINAL_JOBS:
+            if job and job.status in {"queued", "running"}:
                 job.status = "paused_on_failure"
                 job.error = str(exc)
                 refresh_job_progress(db, job)
@@ -909,4 +931,24 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
         finally:
             db.close()
     finally:
-        _COORDINATORS.pop(job_id, None)
+        if _COORDINATORS.get(job_id) is asyncio.current_task():
+            _COORDINATORS.pop(job_id, None)
+
+
+def _finalize_terminal_sidecars(db: Session, job: CatalogingJob) -> None:
+    if job.status == "completed":
+        _finalize_completed_sidecars(db, job)
+    else:
+        refresh_job_progress(db, job)
+        commit_session(db)
+
+
+def _pause_failed_run(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun, agent_run: AgentRun,
+) -> None:
+    job.status = "paused_on_failure"
+    job.blocked_chapter_id = run.chapter_id
+    job.error = run.error
+    refresh_job_progress(db, job)
+    commit_session(db)
+    update_run_status(db, agent_run.id, "failed", summary=run.error or "当前章节建档失败")

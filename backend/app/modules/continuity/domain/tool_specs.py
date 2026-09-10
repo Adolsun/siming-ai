@@ -1,4 +1,5 @@
 """Typed contracts for cataloging and narrative-ledger tools."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -8,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
 from ...story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from .candidate_contract import candidate_record_schema
 from .cataloging_contract import CatalogingFactType
 
 
@@ -53,7 +55,17 @@ class SaveExternalCatalogingFactsInput(CompatibleInput):
 class SaveExternalCatalogingCandidatesInput(CompatibleInput):
     job_id: str = Field(min_length=1)
     chapter_id: str = Field(min_length=1)
-    candidates: list[dict[str, Any]]
+    candidates: list[dict[str, Any]] = Field(
+        min_length=1,
+        description=(
+            "Native JSON candidate objects with a canonical type and fields at the same level. "
+            "Never encode objects/arrays as strings. A chapter_link is one aggregate record, "
+            "not one record per entity. Managed CLI calls allow at most 3 records. "
+            "After rejection, correct candidate_errors using recovery_context; "
+            "do not resend accepted records."
+        ),
+        json_schema_extra={"items": candidate_record_schema()},
+    )
 
 
 class OutlineProposalNodeInput(CompatibleInput):
@@ -84,7 +96,8 @@ class SaveExternalOutlineDraftInput(CompatibleInput):
     parent_id: str | None = None
     insert_after_id: str | None = None
     nodes: list[OutlineProposalNodeInput] = Field(
-        min_length=1, max_length=OUTLINE_PROPOSAL_MAX_NODES,
+        min_length=1,
+        max_length=OUTLINE_PROPOSAL_MAX_NODES,
         description=(
             "Native node array; length must equal the prepared outline_planning "
             "batch_count. summary describes future plans, not actual events."

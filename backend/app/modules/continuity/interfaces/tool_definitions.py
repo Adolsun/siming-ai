@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
+from app.modules.continuity.domain.candidate_contract import candidate_record_schema
 from app.modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
 from app.modules.story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 from app.services.task_context_delivery import CONTEXT_PAGE_INPUTS
@@ -600,7 +601,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             },
             "candidates": {
                 "type": "array",
-                "items": {"type": "object"},
+                "minItems": 1,
+                "items": candidate_record_schema(),
                 "description": "foreshadowing, causal_edge, narrative_debt, character_state, or quality_metric candidates",
             },
         },
@@ -791,7 +793,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 ),
             },
         },
-        required=["job_id", "chapter_id"],
+        required=["job_id", "chapter_id", "candidates"],
         tool_type="write",
         writes_project_data=True,
         risk_level="low",

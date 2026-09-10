@@ -90,6 +90,7 @@ internal data class MobileTranscriptMessage(
         status = status,
         createdAt = createdAt,
         toolLogs = toolLogs,
+        sequenceNo = sequenceNo,
     )
 
     fun toJson(): JsonObject = buildJsonObject {

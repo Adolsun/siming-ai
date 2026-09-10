@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siming.mobile.data.AssistantModelRoute
+import com.siming.mobile.data.formatApiDateTime
 import com.siming.mobile.data.agent.MobileConversationContextErrorCode
 import kotlinx.coroutines.delay
 
@@ -80,7 +81,6 @@ internal fun AssistantWorkspace(
     onConfigureDirectApi: () -> Unit,
 ) {
     var prompt by rememberSaveable { mutableStateOf("") }
-    var submittedPrompt by rememberSaveable { mutableStateOf("") }
     val ui by viewModel.uiState
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val directApi = ui.directApi
@@ -103,7 +103,6 @@ internal fun AssistantWorkspace(
         val queued = ui.pendingAssistantRequest
         if (!queued.isNullOrBlank() && canUseAi && !ui.assistantRunning) {
             val outgoing = viewModel.takePendingAssistantRequest() ?: return@LaunchedEffect
-            submittedPrompt = outgoing
             viewModel.runAssistant(
                 projectId,
                 outgoing,
@@ -112,8 +111,8 @@ internal fun AssistantWorkspace(
         }
     }
 
-    LaunchedEffect(submittedPrompt, ui.assistantOutput, ui.assistantReasoning, ui.assistantActivity, ui.assistantRunning) {
-        if (submittedPrompt.isNotBlank() || ui.assistantOutput.isNotBlank() || ui.assistantRunning) {
+    LaunchedEffect(ui.assistantLiveTurnId, ui.assistantMessages.lastOrNull()?.id) {
+        if (ui.assistantLiveTurnId != null || ui.assistantMessages.isNotEmpty()) {
             runCatching { listState.animateScrollToItem(maxOf(0, listState.layoutInfo.totalItemsCount - 1)) }
         }
     }
@@ -154,9 +153,9 @@ internal fun AssistantWorkspace(
                 item {
                     StatusBanner(
                         icon = Icons.Outlined.PhoneAndroid,
-                        title = if (standaloneMobile) "在手机执行完整工作区流程" else "PC 工作流使用手机模型",
+                        title = if (standaloneMobile) "手机独立工作区" else "PC 工作流使用手机模型",
                         detail = if (standaloneMobile) {
-                            "使用与 PC 同源的提示词契约和结构化动作；需要落库的结果写入手机副本。"
+                            "可在手机读取资料、生成和保存草稿；当前版本的建档需要连接 Gateway。"
                         } else {
                             "API Key 只在手机持久化；本轮加密交给自己的 Gateway，任务结束后释放。"
                         },
@@ -170,9 +169,9 @@ internal fun AssistantWorkspace(
                         item {
                             AssistChip(
                                 onClick = {
-                                    submittedPrompt = ""
                                     viewModel.newAssistantConversation()
                                 },
+                                enabled = !ui.assistantRunning,
                                 label = { Text("新对话") },
                                 leadingIcon = { Icon(Icons.Outlined.Add, null, Modifier.size(16.dp)) },
                             )
@@ -180,9 +179,9 @@ internal fun AssistantWorkspace(
                         items(ui.assistantConversations, key = { it.id }) { conversation ->
                             AssistChip(
                                 onClick = {
-                                    submittedPrompt = ""
                                     viewModel.loadAssistantConversation(projectId, conversation.id)
                                 },
+                                enabled = !ui.assistantRunning,
                                 label = { Text(conversation.title, maxLines = 1) },
                                 colors = AssistChipDefaults.assistChipColors(
                                     containerColor = if (conversation.id == ui.assistantConversationId) {
@@ -196,7 +195,7 @@ internal fun AssistantWorkspace(
             }
 
             if (
-                submittedPrompt.isBlank() && ui.assistantOutput.isBlank() &&
+                ui.assistantLiveTurnId == null && ui.assistantOutput.isBlank() &&
                 ui.assistantMessages.isEmpty() && !ui.assistantRunning
             ) {
                 item { AssistantBubble("想从哪里开始？你可以直接描述任务，也可以先选一个常用动作。") }
@@ -220,20 +219,30 @@ internal fun AssistantWorkspace(
 
             ui.assistantMessages.forEach { message ->
                 item(key = message.id) {
-                    if (message.role == "user") UserBubble(message.content)
-                    else AssistantBubble(message.content)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        AssistantMessageTime(message.createdAt, message.role == "user")
+                        if (message.role == "user") UserBubble(message.content)
+                        else {
+                            AssistantBubble(message.content)
+                            AssistantToolLogDisclosure(message.toolLogs, message.id)
+                        }
+                    }
                 }
             }
 
             if (
-                submittedPrompt.isNotBlank() &&
-                ui.assistantMessages.lastOrNull { it.role == "user" }?.content != submittedPrompt
+                ui.assistantLiveTurnId != null && ui.assistantCurrentPrompt.isNotBlank()
             ) {
-                item { UserBubble(submittedPrompt) }
+                item(key = "live-user-${ui.assistantLiveTurnId}") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        AssistantMessageTime(ui.assistantCurrentStartedAt, true)
+                        UserBubble(ui.assistantCurrentPrompt)
+                    }
+                }
             }
 
             ui.assistantContextState?.let { contextState ->
-                val retryPrompt = submittedPrompt.ifBlank {
+                val retryPrompt = ui.assistantCurrentPrompt.ifBlank {
                     ui.assistantMessages.lastOrNull { it.role == "user" }?.content.orEmpty()
                 }
                 item(
@@ -256,7 +265,6 @@ internal fun AssistantWorkspace(
                             }
                         },
                         onNewConversation = {
-                            submittedPrompt = ""
                             viewModel.newAssistantConversation()
                         },
                         canRetry = retryPrompt.isNotBlank() && !ui.assistantRunning,
@@ -272,41 +280,22 @@ internal fun AssistantWorkspace(
                 }
             }
 
-            if (ui.assistantReasoning.isNotBlank()) {
+            if (ui.assistantLiveTurnId != null && ui.assistantReasoning.isNotBlank()) {
                 item {
                     AssistantReasoningDisclosure(
                         text = ui.assistantReasoning,
                         streaming = ui.assistantRunning,
-                        runKey = submittedPrompt,
+                        runKey = ui.assistantLiveTurnId.orEmpty(),
                     )
                 }
             }
 
-            if (ui.assistantToolLog.isNotEmpty()) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = SimingPaperWarm),
-                        modifier = Modifier.fillMaxWidth(0.92f),
-                    ) {
-                        Column(
-                            Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text("工具执行记录", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                            ui.assistantToolLog.takeLast(8).forEach { entry ->
-                                Text("• $entry", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
+            if (ui.assistantLiveTurnId != null) {
+                item(key = "live-assistant-${ui.assistantLiveTurnId}") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (ui.assistantOutput.isNotBlank()) AssistantBubble(ui.assistantOutput)
+                        AssistantToolLogDisclosure(ui.assistantToolLog, ui.assistantLiveTurnId.orEmpty())
                     }
-                }
-            }
-
-            if (
-                ui.assistantOutput.isNotBlank() &&
-                (ui.assistantRunning || ui.assistantMessages.lastOrNull { it.role == "assistant" }?.content != ui.assistantOutput)
-            ) {
-                item {
-                    AssistantBubble(ui.assistantOutput)
                 }
             }
         }
@@ -356,7 +345,6 @@ internal fun AssistantWorkspace(
                             onClick = {
                                 val outgoing = prompt.trim()
                                 if (outgoing.isBlank()) return@Button
-                                submittedPrompt = outgoing
                                 prompt = ""
                                 viewModel.runAssistant(
                                     projectId,
@@ -372,6 +360,37 @@ internal fun AssistantWorkspace(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMessageTime(createdAt: String, user: Boolean) {
+    formatApiDateTime(createdAt)?.let { time ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
+            Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun AssistantToolLogDisclosure(entries: List<String>, messageId: String) {
+    if (entries.isEmpty()) return
+    var expanded by rememberSaveable(messageId) { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = SimingPaperWarm),
+        modifier = Modifier.fillMaxWidth(0.92f),
+    ) {
+        Column(Modifier.padding(horizontal = 9.dp, vertical = 4.dp)) {
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
+                Text("工具执行记录（${entries.size}）", Modifier.weight(1f))
+                Icon(if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                    if (expanded) "收起工具记录" else "展开工具记录")
+            }
+            if (expanded) entries.forEach { entry ->
+                Text("• $entry", modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

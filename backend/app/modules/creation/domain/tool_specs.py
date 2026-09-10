@@ -124,6 +124,7 @@ class PatchCreationArtifactInput(CreationArtifactInput):
     changes: list[CreationPatchOperation] = Field(
         min_length=1,
         description=_PATCH_CHANGES_DESCRIPTION,
+        examples=[[{"path": "/brief", "action": "set", "value": "作者确认的创作要求"}]],
     )
 
 
@@ -155,6 +156,7 @@ class PatchCreationEntityInput(CreationEntityInput):
     changes: list[CreationPatchOperation] = Field(
         min_length=1,
         description=_PATCH_CHANGES_DESCRIPTION,
+        examples=[[{"path": "/name", "action": "set", "value": "作者确认的名称"}]],
     )
 
 

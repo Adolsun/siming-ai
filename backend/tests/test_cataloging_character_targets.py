@@ -86,6 +86,118 @@ def test_state_invalid_id_does_not_fall_back_to_matching_name(archive):
     assert character.age == "32"
 
 
+def test_unresolved_state_is_rejected_with_real_targets_for_model_repair(archive):
+    db, _, character, job, run = archive
+    raw = {"type": "character_state_update", "name": "简称", "current_goal": "核对资料"}
+    result = create_candidate_from_raw(db, job, run, raw, 0)
+    assert "bad_line" in result
+    assert result["repair_context"]["characters"] == [{"id": character.id, "name": character.name}]
+    assert db.query(CatalogingCandidate).count() == 0
+    # The model selects the real ID; the application never resolves the alias.
+    result = create_candidate_from_raw(db, job, run, {**raw, "id": character.id}, 0)
+    applied = apply_candidate(db, result["candidate"])
+    assert applied["target_id"] == character.id
+    assert character.current_goal == "核对资料"
+
+
+def test_state_character_id_uses_same_target_for_validation_and_apply(archive):
+    db, chapter, character, _, _ = archive
+    payload = {"character_id": character.id, "name": "简称", "current_goal": "核对资料"}
+    result = apply_character_state(db, staged(archive, "character_state_update", payload), chapter, payload)
+    assert result["target_id"] == character.id
+
+
+def test_incremental_merge_revalidates_guarded_fields_retained_from_previous_candidate(archive):
+    db, _, character, job, run = archive
+    previous = {"id": character.id, "background_before": character.background,
+                "background": character.background + "已确认的补充。"}
+    row = staged(archive, "character_update", previous)
+    character.background = "作者刚刚改写的完整背景。"
+    db.flush()
+    result = create_candidate_from_raw(db, job, run,
+                {"type": "character_update", "id": character.id, "personality": "严谨"}, 1)
+    assert "bad_line" in result
+    assert result["repair_context"]["expected_value"] == character.background
+    assert json.loads(row.raw_payload) == previous
+
+
+def test_model_incremental_repair_cannot_erase_author_candidate_edits(archive):
+    db, _, character, job, run = archive
+    original = {"id": character.id, "current_goal": "模型原值"}
+    row = staged(archive, "character_state_update", original)
+    row.edited_payload = json.dumps({**original, "current_goal": "作者修订"})
+    row.status = "edited"
+    db.flush()
+    result = create_candidate_from_raw(db, job, run,
+                {"type": "character_state_update", "id": character.id, "current_goal": "模型覆盖"}, 1)
+    assert "bad_line" in result
+    assert json.loads(row.edited_payload)["current_goal"] == "作者修订"
+
+
+@pytest.mark.parametrize("resolution_only", [False, True])
+def test_partial_apply_retry_keeps_written_candidates_and_rollback_log(archive, resolution_only):
+    from app.database.models import CatalogingApplyLog, CatalogingFact
+    from app.services.cataloging.applier import apply_candidates_for_run
+    from app.services.cataloging.job_control import reset_run_for_retry, reset_run_for_resolution_retry
+
+    db, chapter, character, job, run = archive
+    written = staged(archive, "character_state_update", {"id": character.id, "current_goal": "已完成目标"})
+    apply_candidates_for_run(db, job, run)
+    db.commit()
+    written_id = written.id
+    log_id = db.query(CatalogingApplyLog).filter_by(candidate_id=written_id).one().id
+    broken = staged(archive, "character_state_update", {"name": "不存在", "current_goal": "待修复"})
+    broken.status = "apply_failed"
+    fact = CatalogingFact(job_id=job.id, chapter_run_id=run.id, project_id=job.project_id,
+                         chapter_id=chapter.id, fact_type="chapter_overview", raw_payload='{}')
+    db.add(fact)
+    run.status = "failed"
+    job.status = "paused_on_failure"
+    db.commit()
+    fact_id = fact.id
+
+    reset = reset_run_for_resolution_retry if resolution_only else reset_run_for_retry
+    reset(db, job, run)
+    db.commit()
+    assert run.status == "facts_saved"
+    assert db.query(CatalogingCandidate).count() == 1
+    assert db.get(CatalogingCandidate, written_id).status == "applied"
+    assert db.get(CatalogingApplyLog, log_id) is not None
+    assert db.get(CatalogingFact, fact_id) is not None
+    assert character.current_goal == "已完成目标"
+    apply_candidates_for_run(db, job, run)
+    assert db.query(CatalogingApplyLog).filter_by(candidate_id=written_id).count() == 1
+
+
+@pytest.mark.parametrize("database_error", [False, True])
+def test_failed_candidate_rolls_back_its_writes_and_next_candidate_can_apply(archive, monkeypatch, database_error):
+    from app.services.cataloging import applier
+    from sqlalchemy import text
+
+    db, _, character, job, run = archive
+    first = staged(archive, "character_state_update", {"id": character.id, "current_goal": "错误目标"})
+    second = staged(archive, "character_state_update", {"id": character.id, "current_goal": "正确目标"})
+    first.sort_order, second.sort_order = 0, 1
+    db.commit()
+    original = applier.apply_candidate
+
+    def fail_after_write(session, candidate):
+        result = original(session, candidate)
+        if candidate.id == first.id:
+            session.flush()
+            if database_error:
+                session.execute(text("INSERT INTO projects (id, title) VALUES (:id, 'duplicate')"), {"id": job.project_id})
+            raise ValueError("写入中途失败")
+        assert result["old_value"]["current_goal"] != "错误目标"
+        return result
+
+    monkeypatch.setattr(applier, "apply_candidate", fail_after_write)
+    events = applier.apply_candidates_for_run(db, job, run)
+    db.commit()
+    assert [event["type"] for event in events] == ["candidate_apply_failed", "candidate_applied"]
+    assert character.current_goal == "正确目标"
+
+
 def test_explicit_aliases_do_not_choose_a_create_target(archive):
     db, chapter, character, _, _ = archive
     payload = {"name": "甲/乙", "aliases": [character.name], "age": "19"}

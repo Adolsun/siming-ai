@@ -56,6 +56,9 @@ data class MobileUiState(
     val assistantReasoning: String = "",
     val assistantActivity: String = "",
     val assistantRunning: Boolean = false,
+    val assistantLiveTurnId: String? = null,
+    val assistantCurrentPrompt: String = "",
+    val assistantCurrentStartedAt: String = "",
     val assistantConversationId: String? = null,
     val assistantRunId: String? = null,
     val assistantOperationId: String? = null,
@@ -285,6 +288,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SimingRepository(application)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private var assistantJob: Job? = null
+    private var assistantHistoryRequest = 0L
+    private val chapterDraftRefreshGuard = PendingChapterDraftRefreshGuard()
     private var assistantCancelRequested = false
     private var catalogingJob: Job? = null
 
@@ -685,6 +690,7 @@ fun startCataloging(projectId: String) {
                 updateCatalogingProgress(projectId, progress, message)
             }
             updateCatalogingProgress(projectId, result, "作品建档已结束")
+            restorePendingChapterDraft(projectId)
             uiState.value = uiState.value.copy(
                 catalogingRunning = false,
                 catalogingActivity = "",
@@ -1027,10 +1033,16 @@ private fun updateCatalogingProgress(
         modelRoute: AssistantModelRoute,
     ) {
         if (prompt.isBlank() || assistantJob?.isActive == true) return
+        assistantHistoryRequest++
+        chapterDraftRefreshGuard.invalidate()
+        val liveTurnId = UUID.randomUUID().toString()
         assistantJob = viewModelScope.launch {
             assistantCancelRequested = false
             uiState.value = uiState.value.copy(
                 assistantRunning = true,
+                assistantLiveTurnId = liveTurnId,
+                assistantCurrentPrompt = prompt,
+                assistantCurrentStartedAt = Instant.now().toString(),
                 assistantOutput = "",
                 assistantReasoning = "",
                 assistantActivity = "正在加载与 PC 同源的工作区流程…",
@@ -1046,14 +1058,13 @@ private fun updateCatalogingProgress(
                     prompt = prompt,
                     modelRoute = modelRoute,
                     conversationId = uiState.value.assistantConversationId,
-                ) { event ->
-                    val current = uiState.value
+                ) assistantEvent@{ event ->
                     val parsedUpdate = parseAssistantEvent(event)
                     val contextState = parsedUpdate.contextState?.let { state ->
                         enrichAssistantContextState(
                             projectId = projectId,
                             conversationId = parsedUpdate.conversationId
-                                ?: current.assistantConversationId,
+                                ?: uiState.value.assistantConversationId,
                             state = state,
                         )
                     }
@@ -1062,6 +1073,9 @@ private fun updateCatalogingProgress(
                     } else {
                         parsedUpdate.copy(contextState = contextState)
                     }
+                    val current = uiState.value
+                    if (current.assistantLiveTurnId != liveTurnId) return@assistantEvent
+                    if (update.draftData != null) chapterDraftRefreshGuard.invalidate()
                     val nextDraft = when {
                         update.draftData != null -> {
                             val parsed = MobilePendingChapterDraft.fromJson(projectId, update.draftData)
@@ -1108,18 +1122,10 @@ private fun updateCatalogingProgress(
                         throw CancellationException("用户取消手机工作区任务")
                     }
                 }
-                val refreshedChapterDraft = if (
-                    uiState.value.pendingChapterDraft?.revision == true
-                ) {
-                    runCatching { repository.pendingChapterDraft(projectId) }.getOrNull()
-                } else {
-                    uiState.value.pendingChapterDraft
-                }
+                refreshPendingChapterDraft(projectId, force = true)
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
-                    pendingChapterDraft = refreshedChapterDraft
-                        ?: uiState.value.pendingChapterDraft,
                     notice = when (route) {
                         AssistantRoute.GatewayPc ->
                             "AI 任务已使用 PC 配置线路执行，相关修改已同步到手机"
@@ -1140,14 +1146,18 @@ private fun updateCatalogingProgress(
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
-                    pendingChapterDraft = uiState.value.pendingChapterDraft?.copy(status = "cancelled"),
+                    pendingChapterDraft = uiState.value.pendingChapterDraft?.let {
+                        if (it.generating) it.copy(status = "cancelled") else it
+                    },
                     notice = "任务已取消；未提交的章节不会写入，已生成草稿可在下次相同请求中恢复",
                 )
             } catch (error: Exception) {
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
-                    pendingChapterDraft = uiState.value.pendingChapterDraft?.copy(status = "error"),
+                    pendingChapterDraft = uiState.value.pendingChapterDraft?.let {
+                        if (it.generating) it.copy(status = "error") else it
+                    },
                 )
                 showError(error)
             } finally {
@@ -1189,18 +1199,28 @@ private fun updateCatalogingProgress(
     }
 
     fun restorePendingChapterDraft(projectId: String) {
-        if (uiState.value.pendingChapterDraft?.projectId == projectId) return
         viewModelScope.launch {
-            try {
-                val draft = repository.pendingChapterDraft(projectId)
-                if (draft != null) uiState.value = uiState.value.copy(pendingChapterDraft = draft)
-            } catch (error: Exception) {
-                showError(error)
+            refreshPendingChapterDraft(projectId)
+        }
+    }
+
+    private suspend fun refreshPendingChapterDraft(projectId: String, force: Boolean = false) {
+        if (!force && uiState.value.assistantRunning && uiState.value.pendingChapterDraft?.generating == true) return
+        val request = chapterDraftRefreshGuard.begin(uiState.value.pendingChapterDraft)
+        try {
+            val draft = repository.pendingChapterDraft(projectId)
+            if (chapterDraftRefreshGuard.accepts(request, uiState.value.pendingChapterDraft)) {
+                uiState.value = uiState.value.copy(pendingChapterDraft = draft)
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            if (chapterDraftRefreshGuard.accepts(request, uiState.value.pendingChapterDraft)) showError(error)
         }
     }
 
     fun hidePendingChapterDraft() {
+        chapterDraftRefreshGuard.invalidate()
         uiState.value = uiState.value.copy(pendingChapterDraft = null)
     }
 
@@ -1218,6 +1238,7 @@ private fun updateCatalogingProgress(
             )
             try {
                 val updated = repository.updatePendingChapterDraft(draft, title, content)
+                chapterDraftRefreshGuard.invalidate()
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
@@ -1248,6 +1269,7 @@ private fun updateCatalogingProgress(
                     content = content,
                     catalogingMode = catalogingMode,
                 )
+                chapterDraftRefreshGuard.invalidate()
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
@@ -1260,17 +1282,10 @@ private fun updateCatalogingProgress(
                 )
                 onSaved(chapterId)
             } catch (error: Exception) {
-                val reconciledDraft = runCatching {
-                    repository.pendingChapterDraft(draft.projectId)
-                }
+                refreshPendingChapterDraft(draft.projectId)
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
-                    pendingChapterDraft = if (reconciledDraft.isSuccess) {
-                        reconciledDraft.getOrNull()
-                    } else {
-                        uiState.value.pendingChapterDraft
-                    },
                 )
                 showError(error)
             }
@@ -1286,6 +1301,7 @@ private fun updateCatalogingProgress(
             )
             try {
                 repository.discardPendingChapterDraft(draft)
+                chapterDraftRefreshGuard.invalidate()
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
@@ -1412,9 +1428,12 @@ private fun updateCatalogingProgress(
     }
 
     fun refreshAssistantConversations(projectId: String, selectCurrent: Boolean = false) {
+        if (uiState.value.assistantRunning) return
+        val request = ++assistantHistoryRequest
         viewModelScope.launch {
             runCatching { repository.assistantConversations(projectId) }
                 .onSuccess { conversations ->
+                    if (request != assistantHistoryRequest || uiState.value.assistantRunning) return@onSuccess
                     val current = uiState.value.assistantConversationId
                     val selected = when {
                         current != null && conversations.any { it.id == current } -> current
@@ -1431,6 +1450,11 @@ private fun updateCatalogingProgress(
     }
 
     fun loadAssistantConversation(projectId: String, conversationId: String) {
+        if (uiState.value.assistantRunning) return
+        val request = ++assistantHistoryRequest
+        if (uiState.value.assistantConversationId != conversationId) {
+            uiState.value = uiState.value.withAssistantHistory(conversationId, emptyList(), null)
+        }
         viewModelScope.launch {
             runCatching {
                 val messages = repository.assistantMessages(projectId, conversationId)
@@ -1442,23 +1466,23 @@ private fun updateCatalogingProgress(
                 messages to context
             }
                 .onSuccess { (messages, context) ->
-                    uiState.value = uiState.value.copy(
-                        assistantConversationId = conversationId,
-                        assistantMessages = messages,
-                        assistantOutput = messages.lastOrNull { it.role == "assistant" }?.content.orEmpty(),
-                        assistantToolLog = messages.lastOrNull { it.role == "assistant" }?.toolLogs.orEmpty(),
-                        assistantContextState = context,
-                    )
+                    if (request != assistantHistoryRequest || uiState.value.assistantRunning) return@onSuccess
+                    uiState.value = uiState.value.withAssistantHistory(conversationId, messages, context)
                 }
-                .onFailure(::showError)
+                .onFailure { if (request == assistantHistoryRequest) showError(it) }
         }
     }
 
     fun newAssistantConversation() {
+        if (uiState.value.assistantRunning) return
+        assistantHistoryRequest++
         uiState.value = uiState.value.copy(
             assistantConversationId = null,
             assistantMessages = emptyList(),
             assistantOutput = "",
+            assistantLiveTurnId = null,
+            assistantCurrentPrompt = "",
+            assistantCurrentStartedAt = "",
             assistantReasoning = "",
             assistantToolLog = emptyList(),
             assistantContextState = null,

@@ -11,6 +11,7 @@ from ...database.models import (
     CatalogingCandidate,
     CatalogingChapterRun,
     CatalogingJob,
+    Character,
     WorldbuildingEntry,
 )
 from ...database.query_filters import (
@@ -18,8 +19,6 @@ from ...database.query_filters import (
     is_current_worldbuilding_status,
 )
 from ...modules.continuity.domain.cataloging_contract import (
-    CHAPTER_LINK_REPLACE_FIELDS,
-    CHAPTER_LINK_REPLACE_LIST_FIELDS,
     validate_coverage_manifest_relationships,
 )
 from ..story_granularity import (
@@ -29,6 +28,7 @@ from ..story_granularity import (
     has_chapter_narrative_state,
 )
 from .candidate_io import float_or_none
+from .candidate_merge import _merge_candidate_payload, _positive_int
 from .fact_store import load_facts_for_run
 from .candidate_validation import (
     inspect_candidate_coverage,
@@ -52,7 +52,6 @@ from .repair_identity import has_stable_profile_evidence, is_anonymous_character
 from .targeted_context import worldbuilding_identity_review_candidates
 from .scene_contract import (
     is_scene_replacement,
-    replace_scene_candidates,
     scene_repair_context,
     source_overview_scene_count,
     validate_scene_candidate,
@@ -707,146 +706,12 @@ def _validate_worldbuilding_create_identity_review(
     return None
 
 
-def _merge_unique_values(existing: list[Any], incoming: list[Any]) -> list[Any]:
-    merged = list(existing)
-    signatures = {
-        json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-        for item in merged
-    }
-    for item in incoming:
-        signature = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-        if signature not in signatures:
-            merged.append(item)
-            signatures.add(signature)
-    return merged
 
 
-def _positive_int(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return parsed if parsed > 0 else 0
 
 
-def _merge_coverage_manifest(
-    existing: dict[str, Any],
-    incoming: dict[str, Any],
-) -> dict[str, Any]:
-    """Only add to an accepted manifest; a retry cannot shrink its contract."""
-
-    merged = dict(existing)
-    for key, value in incoming.items():
-        old_value = merged.get(key)
-        if key == "scene_count":
-            merged[key] = max(_positive_int(old_value), _positive_int(value)) or value
-        elif isinstance(old_value, list) and isinstance(value, list):
-            merged[key] = _merge_unique_values(old_value, value)
-        elif key not in merged or old_value in (None, "", [], {}):
-            merged[key] = value
-    return merged
 
 
-def _merge_candidate_payload(
-    existing: dict[str, Any],
-    incoming: dict[str, Any],
-    *,
-    item_type: str = "",
-) -> dict[str, Any]:
-    coverage_manifest_mode = (
-        str(incoming.get("coverage_manifest_mode") or "").strip().lower()
-        if item_type == "chapter_summary"
-        else ""
-    )
-    if coverage_manifest_mode == "replace":
-        # A managed retry may discover that the first summary listed two names
-        # for one logical entity. Treat the explicit replacement as a narrow
-        # control operation: keep the accepted prose and narrative ledger, and
-        # replace only the complete manifest. The workspace tool validates the
-        # full shape and source scene count before this reaches the store.
-        merged = dict(existing)
-        old_manifest = existing.get("coverage_manifest")
-        new_manifest = incoming.get("coverage_manifest")
-        if isinstance(new_manifest, dict):
-            replacement = dict(new_manifest)
-            if isinstance(old_manifest, dict):
-                old_scene_count = _positive_int(old_manifest.get("scene_count"))
-                new_scene_count = _positive_int(replacement.get("scene_count"))
-                if old_scene_count or new_scene_count:
-                    replacement["scene_count"] = max(old_scene_count, new_scene_count)
-            merged["coverage_manifest"] = replacement
-        merged.pop("coverage_manifest_mode", None)
-        return merged
-
-    chapter_link_mode = (
-        str(incoming.get("chapter_link_mode") or "").strip().lower()
-        if item_type == "chapter_link"
-        else ""
-    )
-    if chapter_link_mode == "replace":
-        # The workspace tool accepts this only for a one-record managed repair
-        # containing every aggregate collection. Clear all identity-bearing
-        # link fields first so an earlier alias or wrong endpoint cannot remain
-        # active after the model explicitly corrects the record.
-        missing = [
-            key for key in CHAPTER_LINK_REPLACE_LIST_FIELDS
-            if not isinstance(incoming.get(key), list)
-        ]
-        if missing:
-            raise ValueError(
-                "chapter_link replacement requires all aggregate list fields; "
-                "missing or non-array fields: " + ", ".join(missing)
-                + ". Resubmit this chapter_link with complete characters, worldbuilding_titles, "
-                "locations, items, events arrays; preserve existing links, use [] only when empty."
-            )
-        merged = dict(existing)
-        for key in CHAPTER_LINK_REPLACE_FIELDS:
-            merged.pop(key, None)
-        for key, value in incoming.items():
-            if key != "chapter_link_mode":
-                merged[key] = value
-        merged.pop("chapter_link_mode", None)
-        return merged
-
-    merged = dict(existing)
-    for key, value in incoming.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_candidate_payload(merged[key], value)
-            continue
-        if (
-            item_type == "chapter_link"
-            and isinstance(value, list)
-            and isinstance(merged.get(key), list)
-        ):
-            # One run owns one aggregate chapter link, but managed CLI turns
-            # send candidates in small batches.  A later repair must be able
-            # to add identities that the completeness gate reports missing
-            # without creating a second link or erasing fields already staged.
-            merged[key] = _merge_unique_values(merged[key], value)
-            continue
-        # Explicit empty arrays/objects still matter when the old payload did
-        # not declare the field.  Do not let a later empty value erase richer
-        # data that was already staged.
-        if key not in merged or value not in (None, "", [], {}):
-            merged[key] = value
-    if item_type == "chapter_summary":
-        old_manifest = existing.get("coverage_manifest")
-        new_manifest = incoming.get("coverage_manifest")
-        if isinstance(old_manifest, dict) and isinstance(new_manifest, dict):
-            merged["coverage_manifest"] = _merge_coverage_manifest(
-                old_manifest,
-                new_manifest,
-            )
-        old_scene_count = _positive_int(existing.get("scene_count"))
-        new_scene_count = _positive_int(incoming.get("scene_count"))
-        if old_scene_count or new_scene_count:
-            merged["scene_count"] = max(old_scene_count, new_scene_count)
-        # This is a write-control marker, never archival chapter metadata.
-        merged.pop("coverage_manifest_mode", None)
-    if item_type == "chapter_link":
-        # This is a write-control marker, never chapter metadata.
-        merged.pop("chapter_link_mode", None)
-    return merged
 
 
 def try_create_candidate(
@@ -973,20 +838,22 @@ def _preview_response_records(
     records: list[dict[str, Any]],
     *,
     source_task: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     valid_records: list[dict[str, Any]] = []
     preview: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     for record in records:
-        normalized = _preview_candidate_from_raw(
-            run,
-            record,
-            source_task=source_task,
-        )
+        try:
+            normalized = _preview_candidate_from_raw(run, record, source_task=source_task)
+        except ValueError as exc:
+            errors.append({"bad_line": json.dumps(record, ensure_ascii=False),
+                           "error": str(exc), "error_kind": "candidate_validation"})
+            continue
         if normalized is None:
             continue
         valid_records.append(record)
         preview.append(normalized)
-    return valid_records, preview
+    return valid_records, preview, errors
 
 
 def recover_candidates_from_response_text(
@@ -1015,7 +882,9 @@ def recover_candidates_from_response_text(
             targets, sections, _, _ = validate_scene_replacement(db, run, records[0])
         except ValueError:
             return {"results": [], "coverage": current_coverage, "record_count": 1}
-        _, scene_preview = _preview_response_records(run, sections, source_task=source_task)
+        _, scene_preview, preview_errors = _preview_response_records(run, sections, source_task=source_task)
+        if preview_errors:
+            return {"results": preview_errors, "coverage": current_coverage, "record_count": 1}
         replaced_ids = {row.id for row in targets}
         proposed = [*[row for row in existing if row.id not in replaced_ids], *scene_preview]
         coverage = inspect_candidate_coverage(proposed, db=db, project_id=job.project_id)
@@ -1029,7 +898,7 @@ def recover_candidates_from_response_text(
             ),
             "record_count": 1,
         }
-    valid_records, preview = _preview_response_records(
+    valid_records, preview, preview_errors = _preview_response_records(
         run,
         records,
         source_task=source_task,
@@ -1048,7 +917,7 @@ def recover_candidates_from_response_text(
     )
     if not valid_records or not coverage.is_complete:
         return {
-            "results": [],
+            "results": preview_errors,
             "coverage": coverage,
             "record_count": len(records),
         }
@@ -1073,7 +942,7 @@ def recover_candidates_from_response_text(
         project_id=job.project_id,
     )
     return {
-        "results": results,
+        "results": [*preview_errors, *results],
         "coverage": final_coverage,
         "record_count": len(records),
     }
@@ -1104,11 +973,15 @@ def recover_candidates_from_raw_output(
                 recovered["attempt_from_end"] = reverse_index
                 return recovered
             continue
-        _, preview = _preview_response_records(
+        _, preview, preview_errors = _preview_response_records(
             run,
             records,
             source_task="raw_output_recovery",
         )
+        if preview_errors:
+            # A replay cannot silently turn invalid model fields into a complete
+            # archive; the same model must correct the rejected records first.
+            continue
         attempt_items = list(preview)
         combined_items = [*existing, *preview]
         attempt_coverage = inspect_candidate_coverage(
@@ -1166,59 +1039,9 @@ def create_candidate_from_raw(
 ) -> dict[str, Any]:
     if is_scene_replacement(raw):
         return replace_scene_candidates(db, job, run, raw, sort_order)
-    try:
-        normalized = normalize_candidate(raw)
-    except ValueError as exc:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
-    _normalize_character_role_payload(normalized)
-    _ensure_narrative_assessment_contract(
-        normalized,
-        source_task=source_task or normalized.get("source_task"),
-    )
-    _ensure_outline_identity(normalized, run)
-    try:
-        validate_scene_candidate(db, run, normalized)
-    except ValueError as exc:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
-                "scene_repair": scene_repair_context(db, run)}
-    if normalized["item_type"] not in VALID_ITEM_TYPES:
-        return {
-            "bad_line": json.dumps(raw, ensure_ascii=False),
-            "error": _unknown_type_message(raw, normalized),
-        }
-    skip_reason = _skip_reason_for_candidate(normalized)
-    if skip_reason:
-        return {"skipped": True, "reason": skip_reason}
-    source_titles_error = _validate_worldbuilding_source_fact_titles(normalized)
-    if source_titles_error:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": source_titles_error}
-    target_error = _validate_worldbuilding_existing_target(
-        db,
-        job.project_id,
-        normalized,
-    )
-    if target_error:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": target_error}
-    try:
-        validate_coverage_manifest_relationships(normalized["payload"])
-        validate_character_state_target(
-            db,
-            job.project_id,
-            normalized["item_type"],
-            normalized["payload"],
-            chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
-        )
-        validate_candidate_source_character_grounding(
-            db,
-            job.project_id,
-            run,
-            normalized,
-        )
-    except ArchiveValueMismatch as exc:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
-                "repair_context": exc.repair_context}
-    except ValueError as exc:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
+    normalized, error = _prepare_candidate(db, job, run, raw, source_task)
+    if error is not None:
+        return error
     matching = _matching_candidate(db, job, run, normalized)
     if matching is None:
         identity_review_error = _validate_worldbuilding_create_identity_review(
@@ -1234,6 +1057,14 @@ def create_candidate_from_raw(
             }
     if matching and _payload_from_candidate(matching) == normalized["payload"]:
         return {"duplicate": True}
+    if matching and matching.status == "applied":
+        return {"bad_line": json.dumps(raw, ensure_ascii=False),
+                "error": "该候选已写入，不能在重试中修改已应用记录；请只修复未完成候选",
+                "repair_context": {"applied_candidate_id": matching.id}}
+    if matching and (matching.edited_payload is not None or matching.status in {"edited", "approved"}):
+        return {"bad_line": json.dumps(raw, ensure_ascii=False),
+                "error": "该候选已由作者编辑或确认，模型修复不能覆盖作者内容；请保留并修复其他缺项",
+                "repair_context": {"author_candidate_id": matching.id}}
     try:
         validate_character_profile_target(
             db, job.project_id, normalized["item_type"], normalized["payload"],
@@ -1289,6 +1120,21 @@ def create_candidate_from_raw(
                     merged_payload[key] = old_payload[key]
         if merged_payload == old_payload:
             return {"duplicate": True}
+        try:
+            # Validate the complete record that will actually be applied.
+            # A valid delta can retain stale guarded fields from an earlier
+            # candidate, so validating only the incoming fragment is insufficient.
+            validate_character_profile_target(db, job.project_id, merged_item_type, merged_payload)
+            validate_character_state_target(
+                db, job.project_id, merged_item_type, merged_payload,
+                chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
+            )
+            validate_coverage_manifest_relationships(merged_payload)
+        except ArchiveValueMismatch as exc:
+            return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                    "repair_context": exc.repair_context}
+        except ValueError as exc:
+            return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
         matching.raw_payload = json.dumps(merged_payload, ensure_ascii=False)
         matching.edited_payload = None
         matching.item_type = merged_item_type
@@ -1348,3 +1194,116 @@ def _unknown_type_message(raw: dict[str, Any], normalized: dict[str, Any]) -> st
         "未知 type: <empty>，无法从字段推断候选类型"
         f"（raw_fields: {raw_keys or 'none'}, payload_fields: {payload_keys or 'none'}, snippet: {snippet}）"
     )
+
+
+def replace_scene_candidates(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun,
+    raw: dict[str, Any], sort_order: int,
+) -> dict[str, Any]:
+    try:
+        targets, sections, marker, duplicate = validate_scene_replacement(db, run, raw)
+        if duplicate:
+            return {"duplicate": True}
+        with db.begin_nested():
+            for row in targets:
+                row.status = "rejected"
+            db.flush()
+            replacements = []
+            for index, section in enumerate(sections):
+                result = create_candidate_from_raw(db, job, run, section, sort_order + index)
+                if not result.get("candidate"):
+                    raise ValueError(result.get("error") or "替换场景未通过候选校验")
+                replacements.append(result["candidate"])
+            receipt = marker + ",".join(row.id for row in replacements)
+            for row in targets:
+                row.error = receipt
+            db.flush()
+        return {"candidates": replacements, "scene_plan_replaced": True}
+    except ValueError as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "scene_repair": scene_repair_context(db, run)}
+
+
+def _prepare_candidate(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun,
+    raw: dict[str, Any], source_task: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    try:
+        normalized = normalize_candidate(raw)
+    except ValueError as exc:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
+    _normalize_character_role_payload(normalized)
+    _ensure_narrative_assessment_contract(
+        normalized,
+        source_task=source_task or normalized.get("source_task"),
+    )
+    _ensure_outline_identity(normalized, run)
+    try:
+        validate_scene_candidate(db, run, normalized)
+    except ValueError as exc:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "scene_repair": scene_repair_context(db, run)}
+    if normalized["item_type"] not in VALID_ITEM_TYPES:
+        return None, {
+            "bad_line": json.dumps(raw, ensure_ascii=False),
+            "error": _unknown_type_message(raw, normalized),
+        }
+    skip_reason = _skip_reason_for_candidate(normalized)
+    if skip_reason:
+        return None, {"skipped": True, "reason": skip_reason}
+    source_titles_error = _validate_worldbuilding_source_fact_titles(normalized)
+    if source_titles_error:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": source_titles_error}
+    target_error = _validate_worldbuilding_existing_target(
+        db,
+        job.project_id,
+        normalized,
+    )
+    if target_error:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": target_error}
+    try:
+        validate_coverage_manifest_relationships(normalized["payload"])
+        state_target = validate_character_state_target(
+            db,
+            job.project_id,
+            normalized["item_type"],
+            normalized["payload"],
+            chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
+        )
+        if normalized["item_type"] == "character_state_update" and state_target is None:
+            payload = normalized["payload"]
+            # A not-yet-created character can only reference the exact name
+            # explicitly selected by the model in this run's create candidate.
+            staged_names = {
+                _payload_from_candidate(row).get("name")
+                for row in db.query(CatalogingCandidate).filter(
+                    CatalogingCandidate.chapter_run_id == run.id,
+                    CatalogingCandidate.item_type == "character_create",
+                    CatalogingCandidate.status.notin_(["rejected", "apply_failed"]),
+                ).all()
+            }
+            if (payload.get("id") or payload.get("character_id")
+                    or (payload.get("name") or payload.get("character_name")) not in staged_names):
+                return None, {
+                    "bad_line": json.dumps(raw, ensure_ascii=False),
+                    "error": "角色状态目标不存在；请从当前作品角色目录选择真实 id。新角色须先提交 character_create，再以相同完整 name 提交状态，不按别名猜测目标。",
+                    "repair_context": {
+                        "characters": [
+                            {"id": row.id, "name": row.name}
+                            for row in db.query(Character).filter(Character.project_id == job.project_id).all()
+                        ],
+                        "staged_character_names": sorted(name for name in staged_names if isinstance(name, str)),
+                    },
+                }
+        validate_candidate_source_character_grounding(
+            db,
+            job.project_id,
+            run,
+            normalized,
+        )
+    except ArchiveValueMismatch as exc:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
+                "repair_context": exc.repair_context}
+    except ValueError as exc:
+        return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
+    return normalized, None

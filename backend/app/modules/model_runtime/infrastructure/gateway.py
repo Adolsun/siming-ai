@@ -891,29 +891,12 @@ class LLMGateway:
                     else:
                         yield chunk
 
-                has_usage = _validate_tool_stream_completion(
-                    done_event,
-                    buffered_tool_events,
-                    handshake,
-                    content_seen,
-                    usage_totals,
-                    has_usage,
-                )
-
-                for tool_event in buffered_tool_events:
-                    yield tool_event
-                if done_event is not None:
-                    # Deltas from interrupted attempts may already have been
-                    # shown as progress. Only the completed attempt's native
-                    # reasoning belongs to the accepted tool transaction.
-                    if not isinstance(done_event.get("reasoning_content"), str):
-                        done_event["reasoning_content"] = "".join(attempt_reasoning)
-                    if has_usage:
-                        done_event["usage"] = dict(usage_totals)
-                    if resume_attempt:
-                        notes.append(f"流式响应已从检查点续传 {resume_attempt} 次")
-                    done_event.setdefault("request_meta", request_meta(provider, model_name, notes))
-                    yield done_event
+                for event in _complete_tool_stream(
+                    done_event, buffered_tool_events, handshake, content_seen,
+                    usage_totals, has_usage, attempt_reasoning, resume_attempt,
+                    notes, provider, model_name,
+                ):
+                    yield event
                 return
             except TimeoutError as exc:
                 last_error = LLMError(f"流式请求超时（{timeout_seconds or '未限制'}秒）")
@@ -980,3 +963,33 @@ class LLMGateway:
             if error_cause is not None:
                 raise final_error from error_cause
             raise final_error
+
+
+def _complete_tool_stream(
+    done_event: dict | None, buffered_tool_events: list[dict],
+    handshake: _ResumeHandshake | None, content_seen: bool,
+    usage_totals: dict[str, int], has_usage: bool, attempt_reasoning: list[str],
+    resume_attempt: int, notes: list[str], provider: str, model_name: str,
+):
+    has_usage = _validate_tool_stream_completion(
+        done_event,
+        buffered_tool_events,
+        handshake,
+        content_seen,
+        usage_totals,
+        has_usage,
+    )
+
+    yield from buffered_tool_events
+    if done_event is not None:
+        # Deltas from interrupted attempts may already have been
+        # shown as progress. Only the completed attempt's native
+        # reasoning belongs to the accepted tool transaction.
+        if not isinstance(done_event.get("reasoning_content"), str):
+            done_event["reasoning_content"] = "".join(attempt_reasoning)
+        if has_usage:
+            done_event["usage"] = dict(usage_totals)
+        if resume_attempt:
+            notes.append(f"流式响应已从检查点续传 {resume_attempt} 次")
+        done_event.setdefault("request_meta", request_meta(provider, model_name, notes))
+        yield done_event

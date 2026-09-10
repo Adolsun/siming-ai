@@ -212,6 +212,11 @@ describe('WriterPage manual writing actions', () => {
     act(() => message.destroy())
     expect(screen.getByRole('alert')).toHaveTextContent('模型当前不可用')
     expect(screen.getByRole('alert')).toHaveTextContent('不会重新生成或丢失已保存正文')
+    await waitFor(() => {
+      const retry = screen.getByRole('button', { name: '开始建档' })
+      expect(retry).toBeEnabled()
+      expect(retry).not.toHaveClass('ant-btn-loading')
+    })
     fireEvent.click(screen.getByRole('button', { name: '开始建档' }))
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
     expect(api.post).toHaveBeenLastCalledWith('/projects/project-1/chapters/chapter-1/cataloging', {})

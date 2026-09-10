@@ -11,7 +11,6 @@ from ...database.models import (
     CatalogingCandidate,
     CatalogingChapterRun,
     CatalogingFact,
-    CatalogingJob,
 )
 from ..story_granularity import SECTION_SCENE_STATE_FIELDS, normalize_node_type
 from .candidate_io import candidate_payload
@@ -187,33 +186,3 @@ def validate_scene_replacement(db: Session, run: CatalogingChapterRun, raw: dict
     if any(row.status != "pending" or row.edited_payload is not None for row in targets):
         raise ValueError("只能重排未编辑的 pending 场景候选，不能覆盖作者修改或已应用记录")
     return targets, sections, marker, False
-
-
-def replace_scene_candidates(
-    db: Session, job: CatalogingJob, run: CatalogingChapterRun,
-    raw: dict[str, Any], sort_order: int,
-) -> dict[str, Any]:
-    from .candidate_store import create_candidate_from_raw
-
-    try:
-        targets, sections, marker, duplicate = validate_scene_replacement(db, run, raw)
-        if duplicate:
-            return {"duplicate": True}
-        with db.begin_nested():
-            for row in targets:
-                row.status = "rejected"
-            db.flush()
-            replacements = []
-            for index, section in enumerate(sections):
-                result = create_candidate_from_raw(db, job, run, section, sort_order + index)
-                if not result.get("candidate"):
-                    raise ValueError(result.get("error") or "替换场景未通过候选校验")
-                replacements.append(result["candidate"])
-            receipt = marker + ",".join(row.id for row in replacements)
-            for row in targets:
-                row.error = receipt
-            db.flush()
-        return {"candidates": replacements, "scene_plan_replaced": True}
-    except ValueError as exc:
-        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
-                "scene_repair": scene_repair_context(db, run)}

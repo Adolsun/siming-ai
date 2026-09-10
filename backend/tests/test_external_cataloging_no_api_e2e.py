@@ -1081,9 +1081,9 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
             },
         ))
         self.assertEqual(wrapped["status"], "skipped")
-        self.assertEqual(wrapped["data"]["candidates_saved"], 0)
-        self.assertTrue(wrapped["data"]["warnings"])
-        self.assertIn("No candidates were stored", wrapped["detail"])
+        self.assertTrue(wrapped["data"]["validation_errors"])
+        self.assertIn("标准枚举", wrapped["detail"])
+        self.assertEqual(self.db.query(CatalogingCandidate).filter_by(chapter_run_id=run.id).count(), 0)
 
         partial = _run(save_external_cataloging_candidates(
             self.db,

@@ -23,23 +23,18 @@ from ....services.cataloging.job_control import (
     first_blocking_run,
     first_retryable_run,
     pause_job,
+    refresh_job_progress,
     reset_run_for_resolution_retry,
     reset_run_for_retry,
     resume_job,
     set_job_execution_mode,
-)
-from ....services.cataloging.local_cli_agent import (
-    cancel_local_cli_cataloging_worker,
 )
 from ....services.cataloging.launcher import (
     create_and_queue_cataloging_job,
     queue_managed_cataloging_job,
 )
 from ....services.cataloging.manual_ops import apply_pending_cataloging_run
-from ....services.cataloging.orchestrator import (
-    job_to_dict,
-    run_to_dict,
-)
+from ....services.cataloging.projection import job_to_dict, run_to_dict
 
 
 def _get_job(db: Session, project_id: str, args: dict[str, Any]) -> CatalogingJob | None:
@@ -380,9 +375,8 @@ async def pause_cataloging_job(db: Session, project_id: str, args: dict[str, Any
     if not job:
         return {"tool": "pause_cataloging_job", "status": "skipped", "detail": "未找到建档任务"}
     pause_job(job)
+    refresh_job_progress(db, job)
     db.flush()
-    if job.execution_backend == "local_cli_agent":
-        cancel_local_cli_cataloging_worker(job.id)
     return {"tool": "pause_cataloging_job", "status": "ok", "detail": "建档任务已暂停", "data": job_to_dict(job)}
 
 
@@ -390,9 +384,10 @@ async def resume_cataloging_job(db: Session, project_id: str, args: dict[str, An
     job = _get_job(db, project_id, args)
     if not job:
         return {"tool": "resume_cataloging_job", "status": "skipped", "detail": "未找到建档任务"}
-    resume_job(job)
+    resumed = resume_job(job)
+    refresh_job_progress(db, job)
     db.flush()
-    if bool(args.get("run_now", True)):
+    if resumed and bool(args.get("run_now", True)):
         queue_managed_cataloging_job(job)
     return {"tool": "resume_cataloging_job", "status": "ok", "detail": "建档任务已继续", "data": job_to_dict(job)}
 
@@ -402,7 +397,6 @@ async def cancel_cataloging_job(db: Session, project_id: str, args: dict[str, An
     if not job:
         return {"tool": "cancel_cataloging_job", "status": "skipped", "detail": "未找到建档任务"}
     cancel_job(job)
+    refresh_job_progress(db, job)
     db.flush()
-    if job.execution_backend == "local_cli_agent":
-        cancel_local_cli_cataloging_worker(job.id, terminal=True)
     return {"tool": "cancel_cataloging_job", "status": "ok", "detail": "建档任务已取消", "data": job_to_dict(job)}

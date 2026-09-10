@@ -174,6 +174,7 @@ data class MobileAssistantMessage(
     val status: String = "completed",
     val createdAt: String = "",
     val toolLogs: List<String> = emptyList(),
+    val sequenceNo: Long? = null,
 )
 
 private fun JsonObject.string(name: String): String =

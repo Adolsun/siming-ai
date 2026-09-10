@@ -12,10 +12,11 @@ from contextlib import nullcontext
 from functools import wraps
 from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from ...ai.local_cli_adapter import is_local_cli_provider
-from ...architecture.uow import commit_session
+from ...architecture.uow import commit_session, session_commits_deferred
 from ...database.models import (
     CatalogingChapterRun,
     CatalogingJob,
@@ -36,7 +37,8 @@ from .local_cli_agent import (
     ensure_local_cli_cataloging_worker,
 )
 from .model_selection import cataloging_model_selection
-from .orchestrator import create_cataloging_job, job_to_dict, stream_cataloging_job
+from .orchestrator import create_cataloging_job, stream_cataloging_job
+from .projection import job_to_dict
 
 CHAPTER_SAVE_SOURCE = "chapter_save"
 _LAUNCH_TASKS: dict[str, asyncio.Task[None]] = {}
@@ -66,7 +68,26 @@ def _serialized_cataloging_launch(function):
     return wrapped
 
 
-def cancel_cataloging_runtime(job_ids: list[str]) -> None:
+
+
+@event.listens_for(Session, "after_commit")
+def _dispatch_cataloging_stops(db: Session) -> None:
+    if db.in_nested_transaction():
+        return
+    for job_id, terminal in db.info.pop("cataloging_runtime_stops", {}).items():
+        cancel_cataloging_runtime([job_id], terminal=terminal)
+    for job_id in db.info.pop("cataloging_runtime_starts", set()):
+        queue_cataloging_job(job_id)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_cataloging_stops(db: Session) -> None:
+    if not db.in_nested_transaction():
+        db.info.pop("cataloging_runtime_stops", None)
+        db.info.pop("cataloging_runtime_starts", None)
+
+
+def cancel_cataloging_runtime(job_ids: list[str], *, terminal: bool = True) -> None:
     """Stop committed cataloging jobs without opening another transaction.
 
     Chapter rollback marks jobs cancelled inside its owning database
@@ -80,12 +101,16 @@ def cancel_cataloging_runtime(job_ids: list[str]) -> None:
         task = _LAUNCH_TASKS.get(job_id)
         if task is not None and not task.done():
             loop = task.get_loop()
-            if loop.is_running():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if loop.is_running() and current_loop is not loop:
                 loop.call_soon_threadsafe(task.cancel)
             else:
                 task.cancel()
         try:
-            cancel_local_cli_cataloging_worker(job_id, terminal=True)
+            cancel_local_cli_cataloging_worker(job_id, terminal=terminal)
         except Exception:
             logger.exception("Failed to cancel cataloging runtime %s", job_id)
 
@@ -116,7 +141,6 @@ def cancel_superseded_chapter_cataloging_jobs(
         cancelled.append(job.id)
     if cancelled:
         commit_session(db)
-        cancel_cataloging_runtime(cancelled)
     return cancelled
 
 
@@ -251,7 +275,7 @@ def mark_cataloging_worker_failure(
     db = SessionLocal()
     try:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-        if not job or job.status in _TERMINAL_JOB_STATUSES:
+        if not job or job.status not in {"queued", "running"}:
             return False
         message = str(error or "作品建档后台任务意外停止").strip()[:2000]
         _pause_failed_worker(db, job, message, failure_class)
@@ -556,10 +580,14 @@ async def run_cataloging_job(job_id: str) -> None:
 
 def queue_cataloging_job(job_id: str) -> asyncio.Task[None]:
     existing = _LAUNCH_TASKS.get(job_id)
-    if existing and not existing.done():
+    if existing and not existing.done() and not existing.cancelling():
         return existing
+    async def launch_after_previous() -> None:
+        if existing and not existing.done():
+            await asyncio.gather(existing, return_exceptions=True)
+        await run_cataloging_job(job_id)
     task = asyncio.create_task(
-        run_cataloging_job(job_id),
+        launch_after_previous(),
         name=f"cataloging-launch-{job_id}",
     )
     _LAUNCH_TASKS[job_id] = task
@@ -585,6 +613,10 @@ def queue_managed_cataloging_job(
 
     if not run_now or job.execution_backend == "external_agent":
         return False
+    db = Session.object_session(job)
+    if db is not None and session_commits_deferred(db):
+        db.info.setdefault("cataloging_runtime_starts", set()).add(job.id)
+        return True
     queue_cataloging_job(job.id)
     return True
 

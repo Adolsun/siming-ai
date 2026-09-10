@@ -48,9 +48,25 @@ internal class MobileWorkspaceAgent(
     private val json = Json { ignoreUnknownKeys = true }
     private val contextManifests = LinkedHashMap<String, MobileContextManifest>()
 
-    suspend fun pendingChapterDraft(projectId: String): JsonObject? {
-        val run = chapterWriteStore.latestGenerated(projectId) ?: return null
-        return buildJsonObject {
+    suspend fun pendingChapterDraft(projectId: String): JsonObject? =
+        pendingChapterDraft(projectId, loadSnapshot(projectId))
+
+    private suspend fun pendingChapterDraft(projectId: String, snapshot: List<ReplicaEntity>): JsonObject? {
+        while (true) {
+            val run = chapterWriteStore.latestGenerated(projectId) ?: break
+            val draft = chapterDraftData(run)
+            if (isPendingMobileChapterDraft(projectId, snapshot, draft)) return draft
+            chapterWriteStore.markSuperseded(run.id, "对应大纲已关联正式章节；旧草稿已释放。")
+        }
+        return mobileImportedChapterDraft(projectId, snapshot)
+    }
+
+    private suspend fun chapterWritingState(projectId: String): JsonObject {
+        val snapshot = loadSnapshot(projectId)
+        return mobileChapterWritingState(projectId, snapshot, pendingChapterDraft(projectId, snapshot))
+    }
+
+    private fun chapterDraftData(run: MobileChapterWriteRun): JsonObject = buildJsonObject {
             put("draft_id", run.id)
             put("project_id", run.projectId)
             put("content_ref", run.id)
@@ -67,7 +83,6 @@ internal class MobileWorkspaceAgent(
                 add(JsonPrimitive("save_and_catalog"))
                 add(JsonPrimitive("discard"))
             })
-        }
     }
 
     suspend fun markChapterDraftSaved(draftId: String) {
@@ -549,7 +564,7 @@ internal class MobileWorkspaceAgent(
         extraBody: JsonObject? = null,
     ): MobilePreparedConversationRequest {
         val systemPrompt = listOf(
-            contract.workspaceRuntimeSystem(project, pendingChapterDraft(projectId)),
+            contract.workspaceRuntimeSystem(project, chapterWritingState(projectId)),
             extraRuntimeInstruction.trim().takeIf(String::isNotBlank)?.let { instruction ->
                 "[SERVER_RUNTIME_INSTRUCTION]\n$instruction\n[/SERVER_RUNTIME_INSTRUCTION]"
             },
@@ -1446,24 +1461,8 @@ internal class MobileWorkspaceAgent(
             .filter { it.entity.entityType == "chapter" }
             .map(LocalRecord::payload)
             .toList()
-        val pendingRun = chapterWriteStore.latestGenerated(projectId)
-        val activePendingRun = if (pendingRun == null) {
-            null
-        } else {
-            val pendingFormalChapterId = existingMobileChapterIdForOutline(
-                chapterPayloads,
-                pendingRun.manifest.request.outlineNodeId,
-            )
-            if (pendingFormalChapterId == null) {
-                pendingRun
-            } else {
-                chapterWriteStore.markSuperseded(
-                    pendingRun.id,
-                    "对应大纲已关联正式章节；旧草稿已释放。",
-                )
-                null
-            }
-        }
+        val writingState = chapterWritingState(projectId)
+        val activePendingDraft = writingState["pending_draft"] as? JsonObject
         val existingChapterId = existingMobileChapterIdForOutline(
             chapterPayloads,
             request.outlineNodeId,
@@ -1478,14 +1477,14 @@ internal class MobileWorkspaceAgent(
                 },
             )
         }
-        if (activePendingRun != null && activePendingRun.id != requestedSourceDraftId) {
+        if (activePendingDraft != null && activePendingDraft.string("id") != requestedSourceDraftId) {
             return result(
                 "chapter_writer",
                 "blocked",
                 "当前章节草稿尚未处理，本轮未生成下一章；可以指定该草稿继续修改。",
                 buildJsonObject {
-                    put("blocking_draft_id", activePendingRun.id)
-                    put("outline_node_id", activePendingRun.manifest.request.outlineNodeId)
+                    put("blocking_draft_id", activePendingDraft.string("id"))
+                    put("outline_node_id", activePendingDraft.string("outline_node_id"))
                     put("allowed_actions", buildJsonArray {
                         add(JsonPrimitive("revise_draft"))
                         add(JsonPrimitive("save_and_catalog"))
@@ -1495,12 +1494,16 @@ internal class MobileWorkspaceAgent(
                 },
             )
         }
-        if (requestedSourceDraftId.isNotBlank() && activePendingRun == null) {
+        if (requestedSourceDraftId.isNotBlank() && activePendingDraft == null) {
             return skipped(
                 "chapter_writer",
                 "source_draft_id 必须是当前作品正在编辑的未保存章节草稿",
                 buildJsonObject { put("source_draft_id", requestedSourceDraftId) },
             )
+        }
+        mobileCatalogingBlockReason(writingState, requestedSourceDraftId)?.let { reason ->
+            return result("chapter_writer", "blocked", reason,
+                buildJsonObject { put("chapter_writing_state", writingState) })
         }
         val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
         val validation = engine.validate(cachedManifest, inputs)
@@ -1729,6 +1732,18 @@ internal class MobileWorkspaceAgent(
                     put("draft_stored", false)
                 },
             )
+        }
+        val finalSnapshot = loadSnapshot(projectId)
+        val finalWritingState = mobileChapterWritingState(projectId, finalSnapshot, pendingChapterDraft(projectId, finalSnapshot))
+        val finalBlockReason = mobileCatalogingBlockReason(finalWritingState, requestedSourceDraftId)
+        val candidate = chapterDraftData(checkpointRun).let {
+            JsonObject(it + ("draft_status" to JsonPrimitive("pending")))
+        }
+        if (finalBlockReason != null || !isPendingMobileChapterDraft(projectId, finalSnapshot, candidate)) {
+            val reason = finalBlockReason ?: "生成期间对应大纲已保存正式章节；迟到结果保留在检查点，未覆盖正文。"
+            chapterWriteStore.transition(checkpointRun.copy(content = content), MobileChapterWriteState.SUPERSEDED, reason)
+            return result("chapter_writer", "blocked", reason,
+                buildJsonObject { put("chapter_writing_state", finalWritingState) })
         }
         val generated = if (requestedSourceDraftId.isNotBlank()) {
             val currentSource = chapterWriteStore.load(requestedSourceDraftId)

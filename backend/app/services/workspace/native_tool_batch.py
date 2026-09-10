@@ -30,6 +30,14 @@ class ValidatedNativeToolBatch:
         return tuple(str(call["function"]["name"]) for call in self.calls)
 
 
+def is_cataloging_mutation(definition: Any | None) -> bool:
+    """Read-only preparation must not inherit cataloging control boundaries."""
+    return (
+        getattr(definition, "agent_category", "") == "cataloging"
+        and getattr(definition, "tool_type", "read") != "read"
+    )
+
+
 def validate_workspace_native_tool_batch(
     raw_calls: list[Any],
     *,
@@ -174,11 +182,11 @@ def _validate_batch_semantics(
             call_count=len(names),
             draft_tool=terminal_names[0],
         )
-    cataloging = [name for name in names if "cataloging" in name]
+    cataloging = [name for name in names if is_cataloging_mutation(resolve_tool(name))]
     if singleton_cataloging_tools and cataloging and len(names) != 1:
         raise NativeToolBatchValidationError(
             "cataloging_tool_must_be_only_call",
-            "建档状态工具必须是模型步骤中唯一的业务调用，整批未执行。",
+            "建档写入或控制工具必须是模型步骤中唯一的业务调用，整批未执行。",
             call_count=len(names),
             cataloging_tool=cataloging[0],
         )

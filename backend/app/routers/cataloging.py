@@ -50,11 +50,8 @@ from ..services.cataloging.launcher import (
     create_and_queue_cataloging_job,
     queue_managed_cataloging_job,
 )
-from ..services.cataloging.orchestrator import job_to_dict, run_to_dict
+from ..services.cataloging.projection import job_to_dict, run_to_dict
 from ..services.cataloging.progress import observe_cataloging_job
-from ..services.cataloging.local_cli_agent import (
-    cancel_local_cli_cataloging_worker,
-)
 from ..services.character_merge_service import build_character_merge_preview
 
 router = APIRouter(tags=["cataloging"])
@@ -340,7 +337,10 @@ async def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Ses
     run = first_retryable_run(db, job)
     if not run:
         raise ValidationError("当前没有可重试的章节")
-    reset_run_for_retry(db, job, run)
+    try:
+        reset_run_for_retry(db, job, run)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     commit_session(db)
     worker_queued = queue_managed_cataloging_job(job)
     message = "当前章节已重置并开始重试" if worker_queued else "当前章节已重置，等待外部 Agent 重试"
@@ -365,7 +365,10 @@ async def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: 
         raise ValidationError("当前没有可重跑第二阶段的章节")
     if not load_facts_for_run(db, run):
         raise ValidationError("当前章节没有已保存事实，请使用完整重试")
-    reset_run_for_resolution_retry(db, job, run)
+    try:
+        reset_run_for_resolution_retry(db, job, run)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     commit_session(db)
     worker_queued = queue_managed_cataloging_job(job)
     message = "已保留事实并开始重跑第二阶段" if worker_queued else "已保留事实，等待外部 Agent 重跑第二阶段"
@@ -425,11 +428,9 @@ def recover_current_cataloging_chapter(project_id: str, job_id: str, db: Session
 def pause_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    if job.status not in {"completed", "cancelled", "failed"}:
-        pause_job(job)
+    if pause_job(job):
+        refresh_job_progress(db, job)
         commit_session(db)
-        if job.execution_backend == "local_cli_agent":
-            cancel_local_cli_cataloging_worker(job.id)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已暂停")
 
 
@@ -437,9 +438,8 @@ def pause_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get
 async def resume_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    should_resume = job.status == "paused"
-    if should_resume:
-        resume_job(job)
+    if resume_job(job):
+        refresh_job_progress(db, job)
         commit_session(db)
         queue_managed_cataloging_job(job)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已继续")
@@ -452,7 +452,6 @@ def cancel_cataloging_job(project_id: str, job_id: str, db: Session = Depends(ge
     if job.status in {"completed", "cancelled"}:
         return ApiResponse.success(data={"job": job_to_dict(job)}, message="任务已结束")
     cancel_job(job)
+    refresh_job_progress(db, job)
     commit_session(db)
-    if job.execution_backend == "local_cli_agent":
-        cancel_local_cli_cataloging_worker(job.id, terminal=True)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已取消")

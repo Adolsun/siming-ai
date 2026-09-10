@@ -803,6 +803,70 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         )
         self.assertNotIn("不应自动注入的角色", prompt)
 
+    def test_current_writing_state_overrides_old_unsaved_history_on_api_and_cli(self):
+        from app.database.models import CatalogingChapterRun, CatalogingJob
+
+        for native in (True, False):
+            with self.subTest(native=native):
+                project_id = self.create_project(f"Saved chapter state {native}")
+                suffix = "api" if native else "cli"
+                conversation_id, chapter_id = f"conversation-{suffix}", f"chapter-{suffix}"
+                with SessionLocal() as db:
+                    db.add_all([
+                        AssistantConversation(id=conversation_id, project_id=project_id, title="History"),
+                        Chapter(id=chapter_id, project_id=project_id, title="绣坊惊变", content="Saved", cataloging_required=False),
+                        CatalogingJob(id=f"job-{suffix}", project_id=project_id, status="completed", model_source="chapter_save:explicit"),
+                    ])
+                    db.flush()
+                    db.add_all([
+                        AssistantMessage(id=f"old-user-{suffix}", conversation_id=conversation_id, role="user", content="写这一章", status="completed", sequence_no=1),
+                        AssistantMessage(id=f"old-reply-{suffix}", conversation_id=conversation_id, role="assistant", content="章节草稿已生成，尚未保存。建档完成前不能继续下一章。", status="completed", sequence_no=2),
+                        ChapterDraft(id=f"draft-{suffix}", project_id=project_id, title="绣坊惊变", content="Saved", status="saved", saved_chapter_id=chapter_id),
+                        CatalogingChapterRun(id=f"cataloging-{suffix}", job_id=f"job-{suffix}", project_id=project_id, chapter_id=chapter_id, chapter_version=1, status="completed"),
+                    ])
+                    db.commit()
+                snapshots = []
+
+                def model_step(**kwargs):
+                    messages = kwargs["messages"]
+                    system = messages[0]["content"]
+                    runtime_text = system.split("[SERVER_WORKSPACE_RUNTIME_DATA]", 1)[1].split("[/SERVER_WORKSPACE_RUNTIME_DATA]", 1)[0]
+                    runtime = json.loads(next(line for line in runtime_text.splitlines() if line.startswith("{")))
+                    snapshots.append(runtime)
+                    self.assertIsNone(runtime["active_chapter_draft"])
+                    self.assertIsNone(runtime["chapter_writing_state"]["pending_draft"])
+                    self.assertIsNone(runtime["chapter_writing_state"]["blocking_cataloging_job"])
+                    if len(snapshots) == 1:
+                        self.assertIsNone(runtime["chapter_writing_state"]["cataloging_required_chapter"])
+                        self.assertIn("尚未保存", json.dumps(messages, ensure_ascii=False))
+                        # A concurrent author edit must be seen at the next model step.
+                        with SessionLocal() as db:
+                            chapter = db.get(Chapter, chapter_id)
+                            chapter.current_version, chapter.cataloging_required = 2, True
+                            db.commit()
+                        if native:
+                            self.assertEqual([item["function"]["name"] for item in kwargs["tools"]], ["set_tool_categories"])
+                            return async_dict_chunks(
+                                {"type": "tool_call_delta", "index": 0, "id": "state-categories", "name": "set_tool_categories", "arguments_delta": json.dumps({"enabled_categories": ["writing_context"]})},
+                                {"type": "done", "finish_reason": "tool_calls"},
+                            )
+                        replace_tool_categories(kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"], ["writing_context"])
+                        return async_chunks("")
+                    self.assertEqual(runtime["chapter_writing_state"]["cataloging_required_chapter"]["current_version"], 2)
+                    if native:
+                        return async_dict_chunks({"type": "content_delta", "delta": "已读取最新状态"}, {"type": "done", "finish_reason": "stop"})
+                    return async_chunks("已读取最新状态")
+
+                stream_name = "stream_chat_completion_with_tools" if native else "stream_chat_completion"
+                with patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=native), patch(f"app.routers.ai_writer.LLMGateway.{stream_name}", side_effect=model_step):
+                    response = self.client.post(
+                        f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+                        json={"message": "继续下一章", "conversation_id": conversation_id, "model": "openai:gpt-test" if native else "opencode_cli:opencode/big-pickle"},
+                    )
+                self.assertEqual(len(snapshots), 2, response.text)
+                events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines() if line.startswith("data: {")]
+                self.assertTrue(any(event.get("type") == "complete" for event in events), response.text)
+
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
     def test_cli_chapter_turn_uses_unified_agent_pack_and_terminal_probe(

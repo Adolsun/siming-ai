@@ -72,7 +72,7 @@ function CatalogingJobControlCard({
     outcome = completed ? 'partial_success' : 'blocked'
     outcomeTitle = '当前章节遇到问题，任务已停在最近检查点'
     result = {
-      summary: job.error || '可重试当前章节、使用已有候选确认，或显式跳过当前章节。',
+      summary: `${job.error || '当前章节建档未完成。'} 已写入的档案会保留，重试只补未完成部分；尚未写入时会重新生成。`,
       completed: completed ? [`${completed} 章已完成`] : [],
       incomplete: [`${Math.max(0, total - completed)} 章尚未完成`],
     }

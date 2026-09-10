@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator
 from sqlalchemy.orm import Session
 
 from ...ai.local_cli_adapter import is_local_cli_provider
-from ...core.utils import utc_isoformat
+from ...core.provider_errors import provider_http_status, provider_protocol_rejected
 from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
@@ -39,16 +39,15 @@ from .candidate_retry import (
 )
 from .candidate_validation import candidate_coverage_error_message, inspect_candidate_coverage
 from .constants import (
-    CATALOGING_FACTS_PROMPT_LIMIT,
     CATALOGING_MAX_TOKENS,
     CATALOGING_STAGE_MAX_ATTEMPTS,
     CATALOGING_TIMEOUT_SECONDS,
 )
 from .context import ordered_chapters
-from .facts import facts_text, parse_fact_response, try_parse_fact_line
+from .facts import facts_to_jsonl, parse_fact_response
 from .fact_store import clear_facts_for_run, create_fact, load_facts_for_run
 from .jsonl import clean_jsonl_text
-from .job_control import refresh_job_progress
+from .job_control import refresh_job_progress, start_cataloging_extraction, validate_cataloging_run_source
 from .model_selection import cataloging_extra_body
 from .staged_prompts import (
     CATALOGING_RESOLUTION_SYSTEM_PROMPT,
@@ -57,99 +56,25 @@ from .staged_prompts import (
     build_resolution_prompt,
 )
 from .targeted_context import build_targeted_context
+from .projection import _promote_legacy_review_warning, job_to_dict, run_to_dict, sse_event
 
 
-LOCAL_FACT_EXTRACTION_SYSTEM_PROMPT = """你是作品建档事实抽取器。只读当前章节正文，输出 JSONL。
-每行一个 JSON 对象，不要 Markdown，不要解释，不要输出数组。
-必须先输出 1 行 chapter_overview；再按正文内容输出 1-6 行 outline_fact、character_fact、worldbuilding_fact、relationship_fact 或 identity_hint。
-明示的亲属、师徒、盟友、敌对、主从、合作或情感关系必须单独输出 relationship_fact，payload 含 source_name、target_name、relationship_type、description。
-角色稳定动机、信念、表里人格、禁忌、口吻、行动习惯或创伤触发点有正文依据时，写入 character_fact.payload.profile_clues；不得臆测补齐。
-格式：{"fact_type":"chapter_overview","confidence":0.8,"evidence":"短依据","payload":{"summary":"本章发生了什么","key_events":["事件"]}}
-如果信息不完整，也要根据正文输出最低可用事实；不确定内容写入 payload.uncertainty。"""
+class CatalogingStopped(Exception):
+    """The author changed durable control state while a provider was running."""
 
 
-def sse_event(data: dict[str, Any]) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+def _provider_rejected_request(error: BaseException) -> bool:
+    status = provider_http_status(error)
+    return (
+        status is not None and 400 <= status < 500
+        and status not in {408, 409, 425, 429}
+    ) or provider_protocol_rejected(error)
 
 
-_COVERAGE_REVIEW_PREFIX = "候选已保留，需要核对模型抽取的原文线索："
-
-
-def _job_review_warning(job: CatalogingJob) -> str | None:
-    chapter_id = job.blocked_chapter_id or job.current_chapter_id
-    if not chapter_id:
-        return None
-    run = next((item for item in job.chapter_runs if item.chapter_id == chapter_id), None)
-    return str(getattr(run, "review_warning", "") or "").strip() or None
-
-
-def _promote_legacy_review_warning(run: CatalogingChapterRun) -> bool:
-    """Move review-only diagnostics out of the hard-error channel."""
-
-    error = str(run.error or "").strip()
-    if not error.startswith(_COVERAGE_REVIEW_PREFIX):
-        return False
-    run.review_warning = error
-    run.error = None
-    return True
-
-
-def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
-    operation = job.operation if job.operation_id else None
-    process_metrics = (
-        operation.process_metrics_json
-        if operation is not None and isinstance(operation.process_metrics_json, dict)
-        else {}
-    )
-    return {
-        "id": job.id,
-        "project_id": job.project_id,
-        "status": job.status,
-        "execution_mode": job.execution_mode,
-        "execution_backend": job.execution_backend or "internal_llm",
-        "agent_run_id": job.agent_run_id,
-        "operation_id": job.operation_id,
-        "current_chapter_id": job.current_chapter_id,
-        "last_completed_chapter_id": job.last_completed_chapter_id,
-        "blocked_chapter_id": job.blocked_chapter_id,
-        "context_integrity": job.context_integrity,
-        "total_chapters": job.total_chapters or 0,
-        "completed_chapters": job.completed_chapters or 0,
-        "failed_chapters": job.failed_chapters or 0,
-        "model": job.model,
-        "effective_model": job.model,
-        "model_source": job.model_source,
-        "provider": job.provider,
-        "error": job.error,
-        "review_warning": _job_review_warning(job),
-        "current_stage": operation.phase if operation is not None else None,
-        "current_message": operation.current_message if operation is not None else None,
-        "process_alive": process_metrics.get("alive"),
-        "heartbeat_at": utc_isoformat(operation.heartbeat_at) if operation is not None else None,
-        "last_activity_at": (
-            utc_isoformat(operation.last_activity_at) if operation is not None else None
-        ),
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-    }
-
-
-def run_to_dict(run: CatalogingChapterRun) -> dict[str, Any]:
-    chapter = run.chapter
-    return {
-        "id": run.id,
-        "job_id": run.job_id,
-        "chapter_id": run.chapter_id,
-        "chapter_title": chapter.title if chapter else "",
-        "status": run.status,
-        "chapter_order": run.chapter_order,
-        "chapter_version": run.chapter_version,
-        "error": run.error,
-        "review_warning": run.review_warning,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-    }
+def _check_active_job(db: Session, job: CatalogingJob) -> None:
+    db.refresh(job)
+    if job.status not in {"queued", "running"}:
+        raise CatalogingStopped(job.status)
 
 
 def _recover_complete_candidate_response(
@@ -191,14 +116,6 @@ def _is_local_runtime_provider(provider: str) -> bool:
     return provider == "local_llama_cpp"
 
 
-def _chapter_prompt_content(content: str, *, local_runtime: bool) -> str:
-    text = (content or "").strip()
-    limit = 7000 if local_runtime else 24000
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n\n【系统截断提示】章节过长，已先截取前半部分用于本地建档；请基于可见正文输出最低可用事实。"
-
-
 def _fact_prompt_messages(
     *,
     chapter_title: str,
@@ -207,7 +124,6 @@ def _fact_prompt_messages(
     model: str | None,
 ) -> list[dict[str, str]]:
     provider = _model_provider(model)
-    local_runtime = _is_local_runtime_provider(provider)
     if chapter_file and is_local_cli_provider(provider):
         user_content = (
             f"当前章节标题：{chapter_title}\n\n"
@@ -215,19 +131,13 @@ def _fact_prompt_messages(
             "请完整读取附件中的章节正文，按系统规则输出事实 JSONL。"
             "先输出 chapter_overview，再输出角色、关系、世界观、大纲和身份线索事实。"
         )
-    elif local_runtime:
-        user_content = (
-            f"当前章节标题：{chapter_title}\n\n"
-            f"当前章节正文：\n{_chapter_prompt_content(chapter_content, local_runtime=True)}\n\n"
-            "请输出 2-7 行事实 JSONL。"
-        )
     else:
         user_content = build_fact_extraction_prompt(
             chapter_title,
-            _chapter_prompt_content(chapter_content, local_runtime=False),
+            chapter_content,
         )
     return [
-        {"role": "system", "content": LOCAL_FACT_EXTRACTION_SYSTEM_PROMPT if local_runtime else FACT_EXTRACTION_SYSTEM_PROMPT},
+        {"role": "system", "content": FACT_EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
@@ -386,40 +296,24 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
 
 
 async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
+    _check_active_job(db, job)
     provider = _model_provider(job.model)
-    chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id, Chapter.project_id == job.project_id).first()
-    if not chapter:
-        run.status = "failed"
-        run.error = "章节不存在"
+    chapter = validate_cataloging_run_source(db, job, run)
+    candidates = db.query(CatalogingCandidate).filter_by(chapter_run_id=run.id).all()
+    if candidates and all(row.status in {"applied", "rejected"} for row in candidates) and not _candidate_coverage_error(db, run):
+        run.status = "awaiting_confirmation"
+        run.error = None
         commit_session(db)
-        yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
+        yield sse_event({"type": "chapter_extracted", "run": run_to_dict(run), "candidate_count": len(candidates)})
         return
-    project = db.query(Project).filter(Project.id == job.project_id).first()
-    project_folder = ""
-    chapter_file = ""
-    if project:
-        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
-        project_folder = str(folder)
-        chapter_file = str(path)
-    chapter_text = chapter.content or ""
-    if not chapter_text and chapter_file:
-        try:
-            chapter_text = Path(chapter_file).read_text(encoding="utf-8")
-        except Exception:
-            chapter_text = ""
+    project_folder, chapter_file, chapter_text = _chapter_source(db, job, run, chapter)
 
-    run.status = "extracting"
-    run.started_at = run.started_at or datetime.utcnow()
-    job.status = "running"
-    job.current_chapter_id = chapter.id
-    job.blocked_chapter_id = None
-    commit_session(db)
+    start_cataloging_extraction(db, job, run, chapter)
     yield sse_event({"type": "chapter_started", "job": job_to_dict(job), "run": run_to_dict(run)})
 
     raw_fact_parts: list[str] = []
     raw_candidate_parts: list[str] = []
     facts: list[dict[str, Any]] = []
-    fact_buffer = ""
     candidate_count = db.query(CatalogingCandidate).filter(CatalogingCandidate.chapter_run_id == run.id).count()
     has_summary = db.query(CatalogingCandidate).filter(
         CatalogingCandidate.chapter_run_id == run.id,
@@ -437,24 +331,27 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
             })
         else:
             yield sse_event({"type": "cataloging_stage", "message": "第一阶段：裸读章节，抽取事实线索", "run": run_to_dict(run)})
+            previous_fact_error = ""
             for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
-                fact_buffer = ""
-                fact_rows = []
                 attempt_fact_parts: list[str] = []
                 if attempt > 1:
                     facts = []
                     raw_fact_parts.append(f"\n\n=== FACT EXTRACTION RETRY {attempt} ===\n")
                 try:
+                    messages = _fact_prompt_messages(
+                        chapter_title=chapter.title, chapter_content=chapter_text,
+                        chapter_file=chapter_file, model=job.model,
+                    )
+                    if previous_fact_error:
+                        messages[-1]["content"] += (
+                            "\n\n上次事实响应未通过校验：" + previous_fact_error
+                            + "\n请修正上述结构错误，重新输出覆盖完整正文的全部事实；上次的部分结果未保存。"
+                        )
                     fact_stream = LLMGateway.stream_chat_completion(
-                        messages=_fact_prompt_messages(
-                            chapter_title=chapter.title,
-                            chapter_content=chapter_text,
-                            chapter_file=chapter_file,
-                            model=job.model,
-                        ),
+                        messages=messages,
                         model=job.model,
                         temperature=0.1,
-                        max_tokens=1600 if local_runtime else min(CATALOGING_MAX_TOKENS, 12000),
+                        max_tokens=min(CATALOGING_MAX_TOKENS, 12000),
                         timeout=CATALOGING_TIMEOUT_SECONDS,
                         retry=1,
                         extra_body=cataloging_extra_body(
@@ -464,76 +361,35 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         ),
                     )
                     async for chunk in fact_stream:
+                        _check_active_job(db, job)
                         raw_fact_parts.append(chunk)
                         attempt_fact_parts.append(chunk)
-                        fact_buffer += chunk
-                        lines = fact_buffer.splitlines(keepends=True)
-                        if lines and not lines[-1].endswith(("\n", "\r")):
-                            fact_buffer = lines.pop()
-                        else:
-                            fact_buffer = ""
-                        for line in lines:
-                            parsed = try_parse_fact_line(line)
-                            if parsed.get("bad_line"):
-                                yield sse_event({"type": "fact_parse_warning", "run": run_to_dict(run), "line": parsed["bad_line"][:500], "error": parsed["error"]})
-                            fact = parsed.get("fact")
-                            if fact:
-                                facts.append(fact)
-                                fact_rows.append(
-                                    create_fact(db, job, run, fact, len(facts) - 1)
-                                )
-                                commit_session(db)
-                                yield sse_event({
-                                    "type": "fact_extracted",
-                                    "message": f"已抽取事实: {fact.get('fact_type')}",
-                                    "fact": fact,
-                                    "run": run_to_dict(run),
-                                })
-                    tail = clean_jsonl_text(fact_buffer)
-                    if tail:
-                        parsed = try_parse_fact_line(tail)
-                        if parsed.get("fact"):
-                            facts.append(parsed["fact"])
-                            fact_rows.append(
-                                create_fact(db, job, run, parsed["fact"], len(facts) - 1)
-                            )
-                            commit_session(db)
-                    # Line parsing is provisional. Validate the complete response
-                    # even when some lines succeeded; otherwise one valid tail
-                    # could hide every earlier malformed/multiline record.
-                    complete_facts = parse_fact_response("".join(attempt_fact_parts))
-                    saved_rows: dict[str, list[Any]] = {}
-                    for fact, row in zip(facts, fact_rows, strict=True):
-                        key = json.dumps(fact, ensure_ascii=False, sort_keys=True)
-                        saved_rows.setdefault(key, []).append(row)
-                    for index, fact in enumerate(complete_facts):
-                        key = json.dumps(fact, ensure_ascii=False, sort_keys=True)
-                        existing = saved_rows.get(key)
-                        if existing:
-                            existing.pop(0).sort_order = index
-                        else:
-                            create_fact(db, job, run, fact, index)
-                            commit_session(db)
-                            yield sse_event({
-                                "type": "fact_extracted",
-                                "message": f"已解析完整事实: {fact.get('fact_type')}",
-                                "fact": fact,
-                                "run": run_to_dict(run),
-                            })
-                    if any(saved_rows.values()):
-                        raise ValueError(
-                            "流式事实与完整响应不一致，不能使用部分事实继续建档"
-                        )
-                    facts = complete_facts
+                    # Source facts are one validated checkpoint, never a set of
+                    # independently reusable prefixes from an interrupted stream.
+                    facts = parse_fact_response("".join(attempt_fact_parts))
+                    _check_active_job(db, job)
+                    for index, fact in enumerate(facts):
+                        create_fact(db, job, run, fact, index)
+                    run.status = "facts_saved"
                     commit_session(db)
+                    for fact in facts:
+                        yield sse_event({
+                            "type": "fact_extracted", "fact": fact,
+                            "message": f"已保存完整事实: {fact.get('fact_type')}",
+                            "run": run_to_dict(run),
+                        })
                     break
+                except CatalogingStopped:
+                    raise
                 except Exception as exc:
+                    db.rollback()
+                    _check_active_job(db, job)
+                    previous_fact_error = str(exc)[:2000]
                     clear_facts_for_run(db, run)
                     commit_session(db)
                     facts = []
-                    fact_buffer = ""
                     raw_fact_parts.append(f"\n[FACT EXTRACTION FAILED: {exc}]\n")
-                    if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                    if _provider_rejected_request(exc) or attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                         raise
                     yield sse_event({
                         "type": "cataloging_retry",
@@ -576,7 +432,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 raw_candidate_parts.append(f"\n\n=== CANDIDATE RESOLUTION RETRY {attempt} ===\n")
             try:
                 resolution_prompt = build_resolution_prompt(
-                    facts_text(facts, limit=CATALOGING_FACTS_PROMPT_LIMIT),
+                    facts_to_jsonl(facts),
                     json.dumps(targeted_context, ensure_ascii=False, separators=(",", ":")),
                     chapter.title,
                 )
@@ -592,7 +448,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     ],
                     model=job.model,
                     temperature=0.1,
-                    max_tokens=4096 if local_runtime else CATALOGING_MAX_TOKENS,
+                    max_tokens=CATALOGING_MAX_TOKENS,
                     timeout=CATALOGING_TIMEOUT_SECONDS,
                     retry=1,
                     extra_body=cataloging_extra_body(
@@ -601,6 +457,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     ),
                 )
                 async for chunk in candidate_stream:
+                    _check_active_job(db, job)
                     raw_candidate_parts.append(chunk)
                     attempt_parts.append(chunk)
                     candidate_buffer += chunk
@@ -672,7 +529,11 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                             "recovered": True,
                         })
                     coverage_reason = _candidate_coverage_error(db, run)
-                    if recovery["coverage"].is_complete and not coverage_reason:
+                    recovered_errors = [result for result in recovery.get("results", []) if result.get("bad_line")]
+                    if recovered_errors:
+                        bad_lines = [result["bad_line"] for result in recovered_errors]
+                        candidate_issues = [candidate_issue(result) for result in recovered_errors]
+                    elif recovery["coverage"].is_complete and not coverage_reason:
                         bad_lines = []
                         candidate_issues = []
 
@@ -706,7 +567,11 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     "error": retry_reason,
                     "run": run_to_dict(run),
                 })
+            except CatalogingStopped:
+                raise
             except Exception as exc:
+                db.rollback()
+                _check_active_job(db, job)
                 recovery, recovered_candidates = _recover_complete_candidate_response(
                     db,
                     job,
@@ -714,7 +579,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     "".join(attempt_parts),
                     source_task="resolution_interrupted_response_recovery",
                 )
-                if recovery["coverage"].is_complete:
+                recovered_errors = [result for result in recovery.get("results", []) if result.get("bad_line")]
+                if recovery["coverage"].is_complete and not recovered_errors:
                     for candidate in recovered_candidates:
                         candidate_count += 1
                         has_summary = has_summary or candidate_has_usable_summary(candidate)
@@ -727,6 +593,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     bad_lines = []
                     candidate_issues = []
                     break
+                if _provider_rejected_request(exc):
+                    raise
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
                     yield sse_event({
                         "type": "cataloging_warning",
@@ -742,7 +610,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 candidate_issues = []
                 previous_retry_reason = candidate_retry_reason(
                     db, run,
-                    [{"kind": "candidate_processing", "message": str(exc)}],
+                    [candidate_issue(result) for result in recovered_errors]
+                    or [{"kind": "candidate_processing", "message": str(exc)}],
                     _candidate_coverage_error(db, run),
                 )
                 raw_candidate_parts.append(f"\n[CANDIDATE RESOLUTION FAILED: {exc}]\n")
@@ -755,7 +624,15 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     "error": str(exc),
                     "run": run_to_dict(run),
                 })
+    except CatalogingStopped:
+        yield sse_event({"type": job.status, "job": job_to_dict(job)})
+        return
     except Exception as exc:
+        db.rollback()
+        db.refresh(job)
+        if job.status not in {"queued", "running"}:
+            yield sse_event({"type": job.status, "job": job_to_dict(job)})
+            return
         run.status = "failed"
         run.error = str(exc)
         run.raw_output = _combined_raw_output(raw_fact_parts, raw_candidate_parts)
@@ -811,12 +688,6 @@ def _combined_raw_output(raw_fact_parts: list[str], raw_candidate_parts: list[st
 
 def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
     """Keep staged resolution prompts small enough for managed local models."""
-    def clip(value: Any, limit: int) -> str | None:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        return text[:limit]
-
     def aliases(value: Any, limit: int = 6) -> list[Any]:
         if not isinstance(value, list):
             return []
@@ -824,11 +695,11 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
         for item in value[:limit]:
             if isinstance(item, dict):
                 compacted.append({
-                    "alias": clip(item.get("alias"), 80),
-                    "alias_type": clip(item.get("alias_type"), 40),
+                    "alias": _clip_local_context(item.get("alias"), 80),
+                    "alias_type": _clip_local_context(item.get("alias_type"), 40),
                 })
             else:
-                compacted.append(clip(item, 80))
+                compacted.append(_clip_local_context(item, 80))
         return [item for item in compacted if item]
 
     def character(item: dict[str, Any]) -> dict[str, Any]:
@@ -841,41 +712,41 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             "role_type": item.get("role_type"),
             "age": item.get("age"),
             "appearance": item.get("appearance"),
-            "personality": clip(item.get("personality"), 180),
+            "personality": _clip_local_context(item.get("personality"), 180),
             "background": item.get("background"),
             "abilities": (item.get("abilities") or [])[:8] if isinstance(item.get("abilities"), list) else [],
             "life_status": item.get("life_status"),
-            "current_location": clip(item.get("current_location"), 120),
-            "realm_or_level": clip(item.get("realm_or_level"), 120),
-            "physical_state": clip(item.get("physical_state"), 140),
-            "mental_state": clip(item.get("mental_state"), 140),
-            "current_goal": clip(item.get("current_goal"), 160),
-            "active_conflict": clip(item.get("active_conflict"), 160),
-            "abilities_state": clip(item.get("abilities_state"), 160),
+            "current_location": _clip_local_context(item.get("current_location"), 120),
+            "realm_or_level": _clip_local_context(item.get("realm_or_level"), 120),
+            "physical_state": _clip_local_context(item.get("physical_state"), 140),
+            "mental_state": _clip_local_context(item.get("mental_state"), 140),
+            "current_goal": _clip_local_context(item.get("current_goal"), 160),
+            "active_conflict": _clip_local_context(item.get("active_conflict"), 160),
+            "abilities_state": _clip_local_context(item.get("abilities_state"), 160),
             "items_or_assets": item.get("items_or_assets"),
             # Stable writing locks and speech style are continuity data too.
             # Dropping them only for local runtimes made the CLI route unable
             # to distinguish an already-complete card from a missing field.
             "profile": {
-                key: clip(profile.get(key), 220)
+                key: _clip_local_context(profile.get(key), 220)
                 for key in CHARACTER_PROFILE_FIELDS
                 if profile.get(key) not in (None, "", [], {})
             },
             "ai_style": {
-                "tone_style": clip(ai_style.get("tone_style"), 100),
+                "tone_style": _clip_local_context(ai_style.get("tone_style"), 100),
                 "catchphrases": (
                     ai_style.get("catchphrases", [])[:6]
                     if isinstance(ai_style.get("catchphrases"), list)
                     else []
                 ),
-                "verbosity": clip(ai_style.get("verbosity"), 50),
-                "emotion_tendency": clip(ai_style.get("emotion_tendency"), 100),
-                "custom_system_prompt": clip(ai_style.get("custom_system_prompt"), 500),
+                "verbosity": _clip_local_context(ai_style.get("verbosity"), 50),
+                "emotion_tendency": _clip_local_context(ai_style.get("emotion_tendency"), 100),
+                "custom_system_prompt": _clip_local_context(ai_style.get("custom_system_prompt"), 500),
             },
             "recent_timeline": [
                 {
                     "event_type": event.get("event_type"),
-                    "event_description": clip(event.get("event_description"), 140),
+                    "event_description": _clip_local_context(event.get("event_description"), 140),
                 }
                 for event in (item.get("recent_timeline") or [])[:2]
                 if isinstance(event, dict)
@@ -888,11 +759,11 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             "dimension": item.get("dimension"),
             "title": item.get("title"),
             "status": item.get("status"),
-            "content": clip(item.get("content"), 320),
+            "content": _clip_local_context(item.get("content"), 320),
             "recent_timeline": [
                 {
                     "event_type": event.get("event_type"),
-                    "event_description": clip(event.get("event_description"), 140),
+                    "event_description": _clip_local_context(event.get("event_description"), 140),
                 }
                 for event in (item.get("recent_timeline") or [])[:2]
                 if isinstance(event, dict)
@@ -905,7 +776,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
         "recent_chapter_summaries": [
             {
                 "title": item.get("title"),
-                "summary": clip(item.get("summary"), 280),
+                "summary": _clip_local_context(item.get("summary"), 280),
                 "key_events": (item.get("key_events") or [])[:4] if isinstance(item.get("key_events"), list) else [],
             }
             for item in (context.get("recent_chapter_summaries") or [])[-4:]
@@ -933,7 +804,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
                 "source_name": item.get("source_name"),
                 "target_name": item.get("target_name"),
                 "relationship_type": item.get("relationship_type"),
-                "description": clip(item.get("description"), 140),
+                "description": _clip_local_context(item.get("description"), 140),
             }
             for item in (context.get("relevant_relationships") or [])[:16]
             if isinstance(item, dict)
@@ -959,9 +830,9 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
             {
                 "title": item.get("title"),
                 "node_type": item.get("node_type"),
-                "summary": clip(item.get("summary"), 180),
-                "actual_summary": clip(item.get("actual_summary"), 180),
-                "planned_summary": clip(item.get("planned_summary"), 180),
+                "summary": _clip_local_context(item.get("summary"), 180),
+                "actual_summary": _clip_local_context(item.get("actual_summary"), 180),
+                "planned_summary": _clip_local_context(item.get("planned_summary"), 180),
             }
             for item in (context.get("nearby_outline_nodes") or [])[:18]
             if isinstance(item, dict)
@@ -975,6 +846,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
+    _check_active_job(db, job)
     job_id = job.id
     run_id = run.id
     run.status = "applying"
@@ -984,6 +856,7 @@ async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun)
     events: list[dict[str, Any]] = []
     for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
         try:
+            _check_active_job(db, job)
             events = apply_candidates_for_run(db, job, run)
             break
         except DatabaseWriteLockTimeout:
@@ -1071,3 +944,29 @@ def _get_job(db: Session, project_id: str, job_id: str) -> CatalogingJob:
     if not job:
         raise ValueError("作品建档任务不存在")
     return job
+
+
+def _chapter_source(
+    db: Session, job: CatalogingJob, run: CatalogingChapterRun, chapter: Chapter,
+) -> tuple[str, str, str]:
+    project = db.query(Project).filter(Project.id == job.project_id).first()
+    project_folder = ""
+    chapter_file = ""
+    if project:
+        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
+        project_folder = str(folder)
+        chapter_file = str(path)
+    chapter_text = chapter.content or ""
+    if not chapter_text and chapter_file:
+        try:
+            chapter_text = Path(chapter_file).read_text(encoding="utf-8")
+        except Exception:
+            chapter_text = ""
+    return project_folder, chapter_file, chapter_text
+
+
+def _clip_local_context(value: Any, limit: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:limit]

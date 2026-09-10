@@ -57,7 +57,8 @@ from app.services.cataloging.job_control import (
     resume_job,
 )
 from app.services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
-from app.services.cataloging.orchestrator import create_cataloging_job, job_to_dict
+from app.services.cataloging.orchestrator import create_cataloging_job
+from app.services.cataloging.projection import job_to_dict
 from app.services.cataloging import orchestrator as cataloging_orchestrator
 from app.services.cataloging.jsonl import (
     candidate_response_attempts,
@@ -487,12 +488,13 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
-    def test_try_create_candidate_infers_empty_type_from_character_state_fields(self):
+    def test_try_create_candidate_rejects_missing_type_without_inference(self):
         db = self.Session()
         try:
             project = Project(title="Inferred Candidate Project")
             db.add(project)
             db.flush()
+            db.add(Character(project_id=project.id, name="张三"))
             chapter = Chapter(project_id=project.id, title="第1章", content="张三来到青云宗。")
             db.add(chapter)
             db.commit()
@@ -508,9 +510,9 @@ class CatalogingServiceTestCase(unittest.TestCase):
 
             created = try_create_candidate(db, job, run, line, 0)
 
-            self.assertIn("candidate", created)
-            self.assertEqual(created["candidate"].item_type, "character_state_update")
-            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+            self.assertIn("bad_line", created)
+            self.assertIn("type", created["error"])
+            self.assertEqual(db.query(CatalogingCandidate).count(), 0)
         finally:
             db.close()
 
@@ -520,6 +522,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             project = Project(title="Appearance State Project")
             db.add(project)
             db.flush()
+            db.add(Character(project_id=project.id, name="张三", appearance="黑衣少年，袖口有新烧痕。"))
             chapter = Chapter(project_id=project.id, title="第9章", content="张三换上黑衣。")
             db.add(chapter)
             db.commit()
@@ -540,12 +543,13 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
-    def test_try_create_candidate_accepts_common_noncanonical_type_aliases(self):
+    def test_try_create_candidate_rejects_noncanonical_type_aliases(self):
         db = self.Session()
         try:
             project = Project(title="Alias Candidate Project")
             db.add(project)
             db.flush()
+            db.add(Character(project_id=project.id, name="张三"))
             chapter = Chapter(project_id=project.id, title="第1章", content="张三来到青云宗。")
             db.add(chapter)
             db.commit()
@@ -558,14 +562,14 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 {"type": "new_worldbuilding", "title": "青云宗", "category": "宗门", "content": "修仙宗门。"},
             ]):
                 created = try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
-                self.assertIn("candidate", created)
+                self.assertIn("bad_line", created)
 
             item_types = [item.item_type for item in db.query(CatalogingCandidate).order_by(CatalogingCandidate.sort_order).all()]
-            self.assertEqual(item_types, ["character_state_update", "character_create", "worldbuilding_create"])
+            self.assertEqual(item_types, [])
         finally:
             db.close()
 
-    def test_try_create_candidate_accepts_plotpilot_style_chapter_state(self):
+    def test_try_create_candidate_accepts_explicit_chapter_summary_narrative_fields(self):
         db = self.Session()
         try:
             project = Project(title="Narrative State Candidate Project")
@@ -578,7 +582,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             job = create_cataloging_job(db, project.id, "auto", None, [])
             run = job.chapter_runs[0]
             created = try_create_candidate(db, job, run, json.dumps({
-                "type": "chapter_state",
+                "type": "chapter_summary",
                 "events": [{"description": "The relay opens."}],
                 "advanced_storylines": [{"description": "Network arc advances."}],
                 "unresolved_actions": [{"description": "Trace the source."}],
@@ -667,7 +671,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
-    def test_try_create_candidate_infers_relationship_and_worldbuilding_without_type(self):
+    def test_try_create_candidate_rejects_relationship_and_worldbuilding_without_type(self):
         db = self.Session()
         try:
             project = Project(title="Inferred Relationship Project")
@@ -691,10 +695,9 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 "content": "A mountain gate used by cultivators.",
             }, ensure_ascii=False), 1)
 
-            self.assertIn("candidate", relationship)
-            self.assertEqual(relationship["candidate"].item_type, "character_relationship")
-            self.assertIn("candidate", worldbuilding)
-            self.assertEqual(worldbuilding["candidate"].item_type, "worldbuilding_create")
+            self.assertIn("bad_line", relationship)
+            self.assertIn("bad_line", worldbuilding)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 0)
         finally:
             db.close()
 
@@ -836,6 +839,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             project = Project(title="Typed Aggregate API Project")
             db.add(project)
             db.flush()
+            db.add(Character(project_id=project.id, name="主角", appearance="三岁幼童", age="三岁"))
             chapter = Chapter(project_id=project.id, title="第一章 穿越", content="主角介入家族议事。")
             db.add(chapter)
             db.commit()
@@ -855,7 +859,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     "events": ["主角指出阵法账目异常。"],
                     "unresolved_actions": ["调查石狮子闪光。"],
                 },
-                "narrative_review": "本章已完成叙事治理检查并记录未决行动。",
+                "narrative_review": {"source": "provided", "outcome": "assessed", "evidence": "本章已完成叙事治理检查并记录未决行动。"},
                 "character_state_updates": [{
                     "character_name": "主角",
                     "appearance": "三岁幼童",
@@ -1067,7 +1071,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
-    def test_try_create_candidate_recovers_candidate_type_misplaced_in_node_type(self):
+    def test_try_create_candidate_rejects_candidate_type_misplaced_in_node_type(self):
         """DeepSeek may use node_type for the candidate type itself.
 
         This mirrors the packaged-app incident where scenes were stored as
@@ -1115,18 +1119,8 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 for index, raw in enumerate(raw_candidates)
             ]
 
-            self.assertTrue(all("candidate" in result for result in results))
-            candidates = [result["candidate"] for result in results]
-            self.assertEqual(
-                [candidate.item_type for candidate in candidates],
-                ["outline_create", "worldbuilding_create", "worldbuilding_create"],
-            )
-            outline_payload = json.loads(candidates[0].raw_payload)
-            self.assertEqual(outline_payload["node_type"], "section")
-            self.assertEqual(outline_payload["title"], "议事厅对峙")
-            world_payload = json.loads(candidates[1].raw_payload)
-            self.assertEqual(world_payload["title"], "陆家护族大阵")
-            self.assertEqual(world_payload["content"], "与陆家血脉绑定的祖传防护阵法。")
+            self.assertTrue(all("bad_line" in result for result in results))
+            self.assertEqual(db.query(CatalogingCandidate).count(), 0)
         finally:
             db.close()
 
@@ -1143,58 +1137,10 @@ class CatalogingServiceTestCase(unittest.TestCase):
             job = create_cataloging_job(db, project.id, "auto", None, [])
             run = job.chapter_runs[0]
             samples = [
-                {
-                    "completed_beat": {
-                        "beat": "特昂糖当众揭露账目问题",
-                        "chapter": 1,
-                        "evidence": "陆承宇拿出证据证实",
-                    }
-                },
-                {
-                    "revealed_clue": {
-                        "clue": "石狮子眉心闪光",
-                        "chapter": 1,
-                        "evidence": "眉心闪了一下",
-                    }
-                },
-                {
-                    "narrative_promise": {
-                        "promise": "特昂糖的回归之路",
-                        "chapter": 1,
-                        "description": "必须回到原来的世界",
-                        "status": "open",
-                    }
-                },
-                {
-                    "storyline_state": {
-                        "storyline": "主脉与旁支的矛盾",
-                        "chapter": 1,
-                        "state": "矛盾暂时平息但未解决",
-                    }
-                },
-                {
-                    "worldbuilding_timeline": {
-                        "event": "议事厅账目对峙",
-                        "description": "周氏被迫退让",
-                        "related_worldbuilding": ["陆家", "护族大阵"],
-                    }
-                },
-                {
-                    "chapter_link": {
-                        "source": "第一章 穿越·着陆",
-                        "target": "护族大阵",
-                        "relation": "introduces",
-                        "description": "第一章引入护族大阵",
-                    }
-                },
-                {
-                    "chapter_link": {
-                        "source": "陆老爷子",
-                        "target": "特昂糖",
-                        "relation": "grandfather_of",
-                        "description": "陆老爷子是特昂糖的爷爷",
-                    }
-                },
+                {"worldbuilding_timeline": {"title": "陆家", "event_description": "周氏被迫退让"}},
+                {"chapter_link": {"worldbuilding_titles": ["护族大阵"]}},
+                {"character_relationship": {"source_name": "陆老爷子", "target_name": "特昂糖",
+                                            "relationship_type": "grandfather_of", "description": "祖孙"}},
             ]
 
             created = [
@@ -1204,106 +1150,13 @@ class CatalogingServiceTestCase(unittest.TestCase):
 
             self.assertTrue(all("candidate" in result for result in created), created)
             candidates = [result["candidate"] for result in created]
-            self.assertEqual(
-                [candidate.item_type for candidate in candidates],
-                [
-                    "chapter_summary",
-                    "chapter_summary",
-                    "chapter_summary",
-                    "chapter_summary",
-                    "worldbuilding_timeline",
-                    "chapter_link",
-                    "character_relationship",
-                ],
-            )
-            narrative_payloads = [json.loads(candidate.raw_payload) for candidate in candidates[:4]]
-            self.assertTrue(all(payload.get("narrative_state") for payload in narrative_payloads))
-            timeline_payload = json.loads(candidates[4].raw_payload)
-            self.assertEqual(timeline_payload["title"], "陆家")
-            self.assertEqual(timeline_payload["event_description"], "周氏被迫退让")
-            relationship_payload = json.loads(candidates[6].raw_payload)
-            self.assertEqual(relationship_payload["relationship_type"], "grandfather_of")
+            self.assertEqual([candidate.item_type for candidate in candidates],
+                             ["worldbuilding_timeline", "chapter_link", "character_relationship"])
+            self.assertEqual(json.loads(candidates[0].raw_payload)["event_description"], "周氏被迫退让")
+            self.assertEqual(json.loads(candidates[2].raw_payload)["relationship_type"], "grandfather_of")
         finally:
             db.close()
 
-    def test_typed_ledger_candidates_populate_structured_narrative_governance(self):
-        db = self.Session()
-        try:
-            project = Project(title="Typed Ledger Project")
-            db.add(project)
-            db.flush()
-            chapter = Chapter(
-                project_id=project.id,
-                title="第一章 穿越·着陆",
-                content="石狮异动，特昂糖决定追查回归之路。",
-            )
-            db.add(chapter)
-            db.commit()
-
-            job = create_cataloging_job(db, project.id, "auto", None, [])
-            run = job.chapter_runs[0]
-            samples = [
-                {"type": "completed_beat", "beat": "特昂糖确认自己已经穿越", "evidence": "她认出陌生院落"},
-                {"type": "revealed_clue", "clue": "石狮眉心会发光", "evidence": "石狮眉心闪了一下"},
-                {
-                    "type": "narrative_promise",
-                    "promise": "寻找返回原世界的方法",
-                    "status": "open",
-                    "evidence": "特昂糖决定追查穿越原因",
-                },
-                {"type": "storyline_state", "storyline": "回归主线", "state": "开始调查"},
-                {
-                    "type": "narrative_promise",
-                    "promise": "石狮异动已经解释",
-                    "status": "fulfilled",
-                    "evidence": "只有标题相似，没有原治理项 ID",
-                },
-                {
-                    "type": "chapter_summary",
-                    "summary_text": "特昂糖确认穿越，并开始调查石狮与回归线索。",
-                    "narrative_state": {
-                        "unresolved_actions": [
-                            {"title": "查明石狮异动原因", "evidence": "本章尚未查明"},
-                        ],
-                    },
-                },
-            ]
-            created = [
-                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
-                for index, raw in enumerate(samples)
-            ]
-
-            self.assertTrue(all("candidate" in result for result in created), created)
-            payloads = [json.loads(result["candidate"].raw_payload) for result in created]
-            self.assertEqual(payloads[0]["narrative_state"]["events"][0]["title"], "特昂糖确认自己已经穿越")
-            self.assertEqual(payloads[1]["narrative_state"]["reader_known_facts"][0]["title"], "石狮眉心会发光")
-            self.assertEqual(payloads[2]["narrative_state"]["foreshadowing_planted"][0]["title"], "寻找返回原世界的方法")
-            self.assertEqual(payloads[3]["narrative_state"]["storyline_progress"][0]["title"], "回归主线")
-            self.assertEqual(payloads[4]["narrative_state"]["foreshadowing_resolved"][0]["status"], "pending_review")
-
-            events = apply_candidates_for_run(db, job, run)
-
-            self.assertTrue(all(event["type"] == "candidate_applied" for event in events), events)
-            hooks = db.query(Foreshadowing).all()
-            debts = db.query(NarrativeDebt).all()
-            self.assertEqual(len(hooks), 1)
-            self.assertEqual(hooks[0].title, "寻找返回原世界的方法")
-            self.assertEqual(hooks[0].status, "open")
-            self.assertEqual(len(debts), 1)
-            self.assertEqual(debts[0].title, "查明石狮异动原因")
-            self.assertEqual(debts[0].status, "open")
-            self.assertTrue(any(
-                "unlinked_foreshadowing_resolution"
-                in event["data"]["new_value"]["narrative_governance"]["warnings"]
-                for event in events
-                if event.get("data", {}).get("new_value", {}).get("narrative_governance")
-            ))
-            review = db.query(ChapterGovernanceReview).one()
-            self.assertEqual(review.status, "assessed")
-            self.assertEqual(review.source, "provided")
-            self.assertEqual(review.findings_count, 3)
-        finally:
-            db.close()
 
     def test_missing_chapter_outline_title_falls_back_to_source_chapter(self):
         db = self.Session()
@@ -1349,10 +1202,9 @@ class CatalogingServiceTestCase(unittest.TestCase):
             result = try_create_candidate(db, job, run, json.dumps({"foo": "bar"}, ensure_ascii=False), 0)
 
             self.assertIn("error", result)
-            self.assertIn("<empty>", result["error"])
-            self.assertIn("raw_fields", result["error"])
-            self.assertIn("snippet", result["error"])
-            self.assertNotEqual(result["error"].strip(), "未知 type:")
+            self.assertIn("type", result["error"])
+            self.assertIn("标准枚举", result["error"])
+            self.assertIn("foo", result["bad_line"])
         finally:
             db.close()
 
@@ -2305,7 +2157,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertIn("事实抽取器", calls[0][0][0]["content"])
             self.assertIn("第二阶段决策器", calls[1][0][0]["content"])
             self.assertNotIn("single_stage_cataloging", calls[1][0][1]["content"])
-            self.assertEqual(calls[1][1]["max_tokens"], 4096)
+            self.assertEqual(calls[1][1]["max_tokens"], cataloging_orchestrator.CATALOGING_MAX_TOKENS)
             self.assertEqual(db.query(CatalogingFact).count(), 1)
             self.assertEqual(db.query(CatalogingCandidate).count(), 2)
             self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
@@ -2443,7 +2295,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
 
         self.assertIn("张三来到青云宗", messages[1]["content"])
         self.assertNotIn("镜像文件", messages[1]["content"])
-        self.assertLess(len(messages[0]["content"]), 600)
+        self.assertEqual(messages[0]["content"], cataloging_orchestrator.FACT_EXTRACTION_SYSTEM_PROMPT)
 
     def test_extract_run_local_runtime_pauses_when_fact_stage_is_empty(self):
         db = self.Session()

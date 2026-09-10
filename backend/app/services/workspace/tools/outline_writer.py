@@ -178,21 +178,7 @@ async def outline_writer(
         insert_after_id=insert_after_id,
     )
     if not usable:
-        return _result(
-            (
-                manifest.status
-                if manifest.status in {"stale", "blocked_rebuild"}
-                else "needs_confirmation"
-            ),
-            detail,
-            {
-                "context_manifest_id": manifest.id,
-                "context_manifest": orchestrator.manifest_payload(
-                    manifest,
-                    include_content=False,
-                ),
-            },
-        )
+        return _selection_failure_result(orchestrator, manifest, detail)
     try:
         batch_count = outline_proposal_batch_count(manifest)
     except ValidationError as exc:
@@ -306,3 +292,23 @@ async def outline_writer(
 
 
 __all__ = ["OUTLINE_PROPOSAL_TOOL", "outline_writer"]
+
+
+def _selection_failure_result(
+    orchestrator: ContextOrchestrator, manifest: Any, detail: str,
+) -> dict[str, Any]:
+    return _result(
+        (
+            manifest.status
+            if manifest.status in {"stale", "blocked_rebuild"}
+            else "needs_confirmation"
+        ),
+        detail,
+        {
+            "context_manifest_id": manifest.id,
+            "context_manifest": orchestrator.manifest_payload(
+                manifest,
+                include_content=False,
+            ),
+        },
+    )

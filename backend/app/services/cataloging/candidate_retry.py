@@ -61,6 +61,16 @@ def candidate_retry_reason(
     coverage_reason: str,
 ) -> str:
     """Give the same model the rejected fields AND the cumulative missing work."""
+    return json.dumps({
+        "candidate_errors": issues, "coverage_error": coverage_reason,
+        **candidate_recovery_context(db, run),
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
+def candidate_recovery_context(
+    db: Session, run: CatalogingChapterRun, *, include_payloads: bool = True,
+) -> dict[str, Any]:
+    """API JSONL needs full records; tool callers can page through their bodies."""
     accepted = []
     candidates = db.query(CatalogingCandidate).filter(
         CatalogingCandidate.chapter_run_id == run.id,
@@ -68,16 +78,29 @@ def candidate_retry_reason(
     ).order_by(CatalogingCandidate.sort_order, CatalogingCandidate.id).all()
     for row in candidates:
         payload = _cataloging_candidate_payload(row)
-        accepted.append({"candidate_id": row.id, "item_type": row.item_type,
+        retained = {key: payload[key] for key in (
+            "id", "name", "title", "source_name", "target_name", "relationship_type",
+            "scene_number", "node_type", "source_fact_titles", "coverage_manifest",
+        ) if key in payload}
+        if row.item_type == "chapter_link":
+            retained.update({key: payload[key] for key in (
+                "characters", "worldbuilding_titles", "locations", "items", "events", "outline_title",
+            ) if key in payload})
+        if include_payloads:
+            retained = payload
+        accepted.append({"candidate_id": row.id, "item_type": row.item_type, "status": row.status,
                          "target_id": row.target_id, "target_name": row.target_name,
-                         "scene_number": payload.get("scene_number"), "payload": payload})
-    return json.dumps({
-        "candidate_errors": issues,
-        "coverage_error": coverage_reason,
+                         "scene_number": payload.get("scene_number"), "payload": retained})
+    coverage = inspect_candidate_coverage(candidates, db=db, project_id=run.project_id)
+    return {
+        "missing_required_items": list(coverage.cli_parity_missing),
         "coverage_repairs": declared_worldbuilding_reference_repairs(candidates),
         "accepted_candidates": accepted,
         "scene_repair": scene_repair_context(db, run),
-    }, ensure_ascii=False, separators=(",", ":"))
+        "read_full_candidates": {"tool": "list_cataloging_candidates", "arguments": {
+            "job_id": run.job_id, "chapter_run_id": run.id, "limit": 2,
+        }},
+    }
 
 
 def declared_worldbuilding_reference_repairs(
@@ -159,6 +182,7 @@ def append_incremental_candidate_retry(prompt: str, reason: str) -> str:
         "只输出错误信息明确指出的缺失候选，以及上一轮解析失败、身份不一致或结构错误候选的修正版。\n"
         "chapter_summary 仅在缺失或明确纠正错误覆盖清单时输出；chapter_outline 仅在缺失时输出；"
         "不要重复任何已通过候选，也不要重发完整候选集。\n"
+        "status=applied 的候选已正式写入，必须保留；只补未完成部分，不能修改已应用候选或重复创建已有实体。\n"
         "仅当 scene_repair.required_repair_type=scene_outline_replace，或 candidate_errors "
         "明确指出场景编号越界/错位时，启用下述完整重排规则；"
         "该字段为 null 且没有场景错误时，禁止重排已有场景，须修复实际报错的角色或世界观等缺项。"

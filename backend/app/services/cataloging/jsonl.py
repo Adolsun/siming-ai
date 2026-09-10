@@ -1,4 +1,4 @@
-"""Helpers for forgiving JSONL parsing and candidate normalization."""
+"""JSONL transport parsing and validation of model-selected candidate types."""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,7 @@ from typing import Any
 from ...modules.continuity.domain.cataloging_contract import (
     canonical_chapter_link_characters,
 )
+from ...modules.continuity.domain.candidate_contract import validate_candidate_fields
 from ..story_granularity import (
     CHARACTER_STABLE_FIELDS,
     CHARACTER_STATE_FIELDS,
@@ -23,30 +24,7 @@ from ..story_granularity import (
 from .constants import VALID_ITEM_TYPES
 
 
-_LEDGER_WRAPPER_FIELDS = {
-    "completed_beat": "events",
-    "revealed_clue": "reader_known_facts",
-    "storyline_state": "storyline_progress",
-}
-_WRAPPED_CANDIDATE_TYPES = set(VALID_ITEM_TYPES) | set(_LEDGER_WRAPPER_FIELDS) | {
-    "narrative_promise",
-}
-_CHARACTER_RELATION_NAMES = {
-    "allies_with",
-    "brother_of",
-    "child_of",
-    "conflicts_with",
-    "enemy_of",
-    "father_of",
-    "friend_of",
-    "grandfather_of",
-    "grandmother_of",
-    "mother_of",
-    "parent_of",
-    "rival_of",
-    "sibling_of",
-    "sister_of",
-}
+_WRAPPED_CANDIDATE_TYPES = set(VALID_ITEM_TYPES)
 
 _AGGREGATE_CANDIDATE_KEYS = {
     "chapter_summary",
@@ -389,7 +367,8 @@ def normalize_candidate(raw: dict[str, Any]) -> dict[str, Any]:
     payload = _payload_from_raw(raw)
     raw_type = _raw_type(raw, payload)
     action = _raw_action(raw, payload)
-    item_type = _canonical_candidate_type(raw_type, action, payload)
+    item_type = _canonical_candidate_type(raw_type)
+    validate_candidate_fields(item_type, payload)
     operation = _operation_for(item_type, action)
     _normalize_payload_fields(payload, raw, item_type, operation)
     return {
@@ -417,7 +396,7 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         raw = wrapped
     wrapper_type, wrapper_payload = _single_candidate_wrapper(raw)
     if wrapper_payload is not None and not isinstance(raw.get("payload"), dict) and not isinstance(raw.get("data"), dict):
-        return _normalize_wrapper_payload(wrapper_type, wrapper_payload)
+        return dict(wrapper_payload)
     payload = raw.get("payload")
     if not isinstance(payload, dict):
         payload = raw.get("data")
@@ -559,112 +538,11 @@ def _single_candidate_wrapper(raw: dict[str, Any]) -> tuple[str, dict[str, Any] 
     return matches[0]
 
 
-def _normalize_wrapper_payload(wrapper_type: str, value: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(value)
-    if wrapper_type in _LEDGER_WRAPPER_FIELDS or wrapper_type == "narrative_promise":
-        label_key = {
-            "completed_beat": "beat",
-            "revealed_clue": "clue",
-            "narrative_promise": "promise",
-            "storyline_state": "storyline",
-        }[wrapper_type]
-        entry = dict(payload)
-        label = entry.get(label_key)
-        if label and not entry.get("title"):
-            entry["title"] = label
-        if wrapper_type == "narrative_promise":
-            canonical = (
-                "foreshadowing_resolved"
-                if str(entry.get("status") or "").strip().lower() in {"fulfilled", "resolved", "closed"}
-                else "foreshadowing_planted"
-            )
-            if canonical == "foreshadowing_resolved" and not _has_stable_governance_reference(entry):
-                entry["requested_status"] = entry.get("status")
-                entry["status"] = "pending_review"
-        else:
-            canonical = _LEDGER_WRAPPER_FIELDS[wrapper_type]
-        normalized: dict[str, Any] = {canonical: [entry]}
-        for key in ("chapter", "chapter_id", "chapter_title", "confidence", "evidence"):
-            if payload.get(key) not in (None, ""):
-                normalized[key] = payload[key]
-        return normalized
-    if wrapper_type == "worldbuilding_timeline":
-        related = payload.get("related_worldbuilding")
-        if not payload.get("title") and isinstance(related, list) and related:
-            payload["title"] = related[0]
-        if not payload.get("event_description"):
-            payload["event_description"] = payload.get("description") or payload.get("event") or ""
-    return payload
-
-
 def _has_stable_governance_reference(payload: dict[str, Any]) -> bool:
     return bool(
         payload.get("resolves_item_id")
         or payload.get("governance_item_id")
         or payload.get("resolves_dedupe_key")
-    )
-
-
-def _normalize_typed_ledger_payload(payload: dict[str, Any], raw: dict[str, Any]) -> None:
-    """Convert legacy top-level ledger candidate types into narrative state.
-
-    The wrapper form (``{"completed_beat": {...}}``) was already supported,
-    while API models commonly emit ``{"type":"completed_beat", ...}``.
-    Canonical type mapping alone turned the latter into an empty
-    ``chapter_summary`` and silently dropped it.  Normalize both shapes to the
-    same chapter narrative-state contract before validation.
-    """
-
-    semantic_type = _norm(_raw_type(raw, payload))
-    if semantic_type not in {*_LEDGER_WRAPPER_FIELDS, "narrative_promise"}:
-        return
-    if has_chapter_narrative_state(payload):
-        return
-
-    label_key = {
-        "completed_beat": "beat",
-        "revealed_clue": "clue",
-        "narrative_promise": "promise",
-        "storyline_state": "storyline",
-    }[semantic_type]
-    metadata_keys = {
-        "type",
-        "item_type",
-        "candidate_type",
-        "kind",
-        "card_type",
-        "action",
-        "operation",
-        "narrative_state",
-        "narrative_review",
-        "governance_candidates",
-    }
-    entry = {key: value for key, value in payload.items() if key not in metadata_keys}
-    label = entry.get(label_key)
-    if label and not entry.get("title"):
-        entry["title"] = label
-
-    if semantic_type == "narrative_promise":
-        is_resolution = str(entry.get("status") or "").strip().lower() in {
-            "fulfilled",
-            "resolved",
-            "closed",
-        }
-        canonical = "foreshadowing_resolved" if is_resolution else "foreshadowing_planted"
-        if is_resolution and not _has_stable_governance_reference(entry):
-            entry["requested_status"] = entry.get("status")
-            entry["status"] = "pending_review"
-    else:
-        canonical = _LEDGER_WRAPPER_FIELDS[semantic_type]
-
-    payload["narrative_state"] = {canonical: [entry]}
-    payload.setdefault(
-        "narrative_review",
-        {
-            "source": "provided",
-            "outcome": "assessed",
-            "evidence": f"模型提供了 {semantic_type} 叙事账本候选。",
-        },
     )
 
 
@@ -703,14 +581,6 @@ def _raw_type(raw: dict[str, Any], payload: dict[str, Any]) -> str:
     if not value:
         wrapper_type, _ = _single_candidate_wrapper(raw)
         value = wrapper_type
-    if not value:
-        # A few API models put the candidate type in ``payload.node_type``
-        # even though that field is reserved for outline granularity.  Accept
-        # it only when it is an actual candidate type; values such as
-        # chapter/section/volume must continue to mean outline node types.
-        node_type_hint = _norm(str(payload.get("node_type") or ""))
-        if node_type_hint in VALID_ITEM_TYPES:
-            value = node_type_hint
     return str(value).strip()
 
 
@@ -729,162 +599,13 @@ def _norm(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def _canonical_candidate_type(raw_type: str, action: str, payload: dict[str, Any]) -> str:
-    text = _norm(raw_type)
-    op = _norm(action)
-    if text in VALID_ITEM_TYPES:
-        if text == "chapter_link" and _looks_like_character_relationship(payload):
-            payload.setdefault("source_name", payload.get("source"))
-            payload.setdefault("target_name", payload.get("target"))
-            payload.setdefault("relationship_type", payload.get("relation"))
-            return "character_relationship"
-        return text
-    aliases = {
-        "summary": "chapter_summary",
-        "chapter": "chapter_summary",
-        "chapter_overview": "chapter_summary",
-        "chapter_state": "chapter_summary",
-        "chapter_narrative_state": "chapter_summary",
-        "narrative_state": "chapter_summary",
-        "章节摘要": "chapter_summary",
-        "章节概览": "chapter_summary",
-        "outline": "outline_create",
-        "outline_node": "outline_create",
-        "chapter_outline": "outline_create",
-        "scene_outline": "outline_create",
-        "大纲": "outline_create",
-        "大纲节点": "outline_create",
-        "new_character": "character_create",
-        "create_character": "character_create",
-        "character_new": "character_create",
-        "character": "character_update" if op in {"update", "upsert", "merge"} else "character_create",
-        "角色": "character_update" if op in {"update", "upsert", "merge"} else "character_create",
-        "update_character": "character_update",
-        "character_profile": "character_update",
-        "character_card": "character_update",
-        "角色档案": "character_update",
-        "character_state": "character_state_update",
-        "state": "character_state_update",
-        "character_status": "character_state_update",
-        "角色状态": "character_state_update",
-        "relationship": "character_relationship",
-        "relation": "character_relationship",
-        "character_relation": "character_relationship",
-        "relationship_update": "character_relationship",
-        "角色关系": "character_relationship",
-        "timeline": "character_timeline",
-        "character_event": "character_timeline",
-        "character_timeline_event": "character_timeline",
-        "角色时间线": "character_timeline",
-        "character_merge": "character_merge_candidate",
-        "duplicate_character": "character_merge_candidate",
-        "merge_character": "character_merge_candidate",
-        "角色合并": "character_merge_candidate",
-        "new_worldbuilding": "worldbuilding_create",
-        "create_worldbuilding": "worldbuilding_create",
-        "worldbuilding": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "worldbuilding_entry": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "world": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "setting": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "lore": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "设定": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "世界观": "worldbuilding_update" if op in {"update", "upsert"} else "worldbuilding_create",
-        "update_worldbuilding": "worldbuilding_update",
-        "worldbuilding_event": "worldbuilding_timeline",
-        "world_timeline": "worldbuilding_timeline",
-        "setting_timeline": "worldbuilding_timeline",
-        "世界观时间线": "worldbuilding_timeline",
-        "link": "chapter_link",
-        "chapter_link": "chapter_link",
-        "章节关联": "chapter_link",
-        "completed_beat": "chapter_summary",
-        "revealed_clue": "chapter_summary",
-        "narrative_promise": "chapter_summary",
-        "storyline_state": "chapter_summary",
-    }
-    if text in aliases:
-        item_type = aliases[text]
-        if item_type == "outline_create" and op == "update":
-            return "outline_update"
-        return item_type
-    return _infer_candidate_type(payload, op)
-
-
-def _looks_like_character_relationship(payload: dict[str, Any]) -> bool:
-    if not payload.get("source") or not payload.get("target"):
-        return False
-    relation = _norm(str(payload.get("relationship_type") or payload.get("relation") or ""))
-    if not relation:
-        return False
-    return (
-        relation in _CHARACTER_RELATION_NAMES
-        or relation.endswith("_of")
-        or any(marker in relation for marker in ("亲属", "父子", "父女", "母子", "母女", "兄弟", "姐妹", "敌对", "冲突"))
-    )
-
-
-def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
-    keys = {str(key) for key in payload}
-    if {"primary_name", "secondary_name"} <= keys:
-        return "character_merge_candidate"
-    if (
-        {"source_name", "target_name"} <= keys
-        or {"character_a", "character_b"} <= keys
-        or ("relationship_type" in keys and keys & {"source", "target", "from_name", "to_name"})
-    ):
-        return "character_relationship"
-    if "character_names" in keys or "worldbuilding_titles" in keys or "outline_title" in keys:
-        return "chapter_link"
-    state_keys = set(CHARACTER_STATE_FIELDS)
-    # Prefer explicit domain fields over the generic ``name`` key.  Otherwise
-    # malformed-but-recoverable worldbuilding cards such as
-    # {name, dimension, description} become characters.
-    if keys & {"dimension", "category", "entry_title", "worldbuilding_title", "world_title", "setting_title"}:
-        if "event_description" in keys and keys & {"title", "entry_title", "name"}:
-            return "worldbuilding_timeline"
-        return "worldbuilding_update" if action == "update" else "worldbuilding_create"
-    # Scene fields are stronger evidence than narrative-state fields.  Some
-    # providers include entry/exit state on an outline scene, which previously
-    # caused it to be misclassified as a chapter summary.
-    if "parent_title" in keys or "related_characters" in keys or "scene_number" in keys:
-        return "outline_update" if action == "update" else "outline_create"
-    if keys & set(SECTION_SCENE_STATE_FIELDS):
-        return "outline_update" if action == "update" else "outline_create"
-    if "name" in keys or "character_name" in keys or "target_name" in keys:
-        if "event_description" in keys or "event" in keys:
-            return "character_timeline"
-        if keys & state_keys:
-            return "character_state_update"
-        if action in {"create", "new"}:
-            return "character_create"
-        return "character_update"
-    if keys & {"role_type", "appearance", "personality", "background", "abilities", "tone_style", "catchphrases"}:
-        return "character_create" if action in {"create", "new"} else "character_update"
-    if keys & state_keys:
-        return "character_state_update"
-    narrative_keys = set(NARRATIVE_STATE_FIELDS) | {
-        "narrative_state",
-        "chapter_events",
-        "advanced_storylines",
-        "revealed_facts",
-        "facts_reader_known",
-        "facts_character_known",
-    }
-    if keys & narrative_keys:
-        return "chapter_summary"
-    if "event_description" in keys and ("title" in keys or "entry_title" in keys or "dimension" in keys):
-        return "worldbuilding_timeline"
-    if "node_type" in keys or "parent_title" in keys or "related_characters" in keys:
-        return "outline_update" if action == "update" else "outline_create"
-    if "summary_text" in keys or "key_events" in keys:
-        return "chapter_summary"
-    if "title" in keys and "summary" in keys:
-        return "outline_update" if action == "update" else "outline_create"
-    if "summary" in keys and not keys & {"content", "dimension", "category"}:
-        return "chapter_summary"
-    if "title" in keys and "content" in keys:
-        return "worldbuilding_update" if action == "update" else "worldbuilding_create"
-    return "unknown"
+def _canonical_candidate_type(raw_type: str) -> str:
+    if raw_type not in VALID_ITEM_TYPES:
+        raise ValueError(
+            "候选 type 必须由模型明确选择标准枚举，不能根据字段或关系描述推断："
+            + "、".join(sorted(VALID_ITEM_TYPES))
+        )
+    return raw_type
 
 
 def _operation_for(item_type: str, action: str) -> str:
@@ -908,8 +629,6 @@ def _normalize_payload_fields(
     item_type: str,
     operation: str,
 ) -> None:
-    if item_type == "chapter_summary":
-        _normalize_typed_ledger_payload(payload, raw)
     target_id = payload.get("id") or payload.get("target_id") or raw.get("target_id")
     if target_id:
         payload["id"] = target_id
@@ -946,7 +665,6 @@ def _normalize_payload_fields(
                 or payload.get("significance")
                 or ""
             )
-        _normalize_dimension_alias(payload)
     if item_type == "chapter_link":
         payload["characters"] = canonical_chapter_link_characters(payload)
         payload.pop("character_names", None)
@@ -1012,15 +730,3 @@ def _looks_like_uuid(value: str) -> bool:
         all(char in "0123456789abcdefABCDEF" for char in part)
         for part in parts
     )
-
-
-def _normalize_dimension_alias(payload: dict[str, Any]) -> None:
-    category = str(payload.get("dimension") or payload.get("category") or "").strip().lower()
-    if category in {"creature", "species", "race", "妖兽", "生物", "种族"}:
-        payload["dimension"] = "races"
-    elif category in {"item", "technique", "artifact", "magic", "power", "cultivation", "物品", "技术", "功法", "修炼", "规则"}:
-        payload["dimension"] = "power_system"
-    elif category in {"location", "place", "geography", "地点", "地理", "区域"}:
-        payload["dimension"] = "geography"
-    elif category in {"faction", "organization", "sect", "势力", "组织", "宗门", "门派", "家族"}:
-        payload["dimension"] = "factions"

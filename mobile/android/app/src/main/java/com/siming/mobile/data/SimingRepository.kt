@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.agent.MobileWorkspaceAgent
+import com.siming.mobile.data.agent.mobileChapterPayloadForSave
 import com.siming.mobile.data.agent.MobileAssistantConversationStore
 import com.siming.mobile.data.agent.MobileAssistantTurnContext
 import com.siming.mobile.data.agent.MobileConversationContextErrorCode
@@ -676,12 +677,17 @@ class SimingRepository(context: Context) {
         payload: JsonObject,
     ): String {
         val key = ReplicaEntity.key(projectId, entityType, entityId)
-        val encoded = json.encodeToString(payload)
-        val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
-            ?: error("同步写入缺少 payload")
         val now = Instant.now().toString()
         database.withTransaction {
             val current = dao.entity(key)
+            val storedPayload = if (entityType == "chapter") {
+                mobileChapterPayloadForSave(
+                    current?.payloadJson?.let { json.parseToJsonElement(it) as? JsonObject }, payload,
+                )
+            } else payload
+            val encoded = json.encodeToString(storedPayload)
+            val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
+                ?: error("同步写入缺少 payload")
             val existingPending = dao.pendingMutation(projectId, entityType, entityId)
             dao.saveEntity(
                 ReplicaEntity(
@@ -1029,7 +1035,7 @@ suspend fun runCataloging(
     val finalData = api.getCatalogingJob(connection, projectId, latest.jobId)
     val finalJob = finalData["job"] as? JsonObject
     if (finalJob != null) latest = finalJob.toMobileCatalogingProgress()
-    runCatching { pullAll(connection, listOf(projectId)) }
+    pullAll(connection, listOf(projectId))
     return latest
 }
 
@@ -1833,9 +1839,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     suspend fun pendingChapterDraft(projectId: String): MobilePendingChapterDraft? {
         val connection = dao.connection()
         val value = if (connection != null) {
-            api.pendingChapterDraft(connection, projectId) ?: importedPendingChapterDraft(projectId)
+            api.pendingChapterDraft(connection, projectId)
         } else {
-            mobileWorkspaceAgent.pendingChapterDraft(projectId) ?: importedPendingChapterDraft(projectId)
+            mobileWorkspaceAgent.pendingChapterDraft(projectId)
         } ?: return null
         return MobilePendingChapterDraft.fromJson(projectId, value)
     }
@@ -2211,30 +2217,6 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
     }
 
-    private suspend fun importedPendingChapterDraft(projectId: String): JsonObject? =
-        dao.projectSnapshot(projectId)
-            .asSequence()
-            .filter { it.entityType == "chapter_draft" && it.operation == "upsert" }
-            .mapNotNull { entity ->
-                val payload = entity.payloadJson
-                    ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
-                    ?: return@mapNotNull null
-                if (payload.string("status") !in setOf("pending", "generated", "generating")) {
-                    return@mapNotNull null
-                }
-                buildJsonObject {
-                    put("draft_id", entity.entityId)
-                    put("project_id", projectId)
-                    put("content_ref", entity.entityId)
-                    put("title", payload.string("title").ifBlank { "未保存章节草稿" })
-                    payload.string("outline_node_id").takeIf(String::isNotBlank)?.let { put("outline_node_id", it) }
-                    put("draft_status", payload.string("status"))
-                    put("content", payload.string("content"))
-                    put("execution_route", "project_package")
-                }
-            }
-            .firstOrNull()
-
     private suspend fun markChapterDraftConsumed(draft: MobilePendingChapterDraft) {
         mobileWorkspaceAgent.markChapterDraftSaved(draft.draftId)
         markChapterDraftReplicaStatus(draft, "saved")
@@ -2405,6 +2387,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 content = item.string("content"),
                 status = item.string("status").ifBlank { "completed" },
                 createdAt = item.string("created_at"),
+                sequenceNo = (item["sequence_no"] as? JsonPrimitive)?.longOrNull,
                 toolLogs = ((item["payload"] as? JsonObject)?.get("tool_logs") as? JsonArray)
                     .orEmpty()
                     .mapNotNull logs@{ rawLog ->

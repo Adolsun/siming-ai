@@ -325,13 +325,15 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
     ),
     "save_external_cataloging_candidates": ModelResultContract(
         policy=ModelResultPolicy.STATUS_ONLY,
-        max_json_bytes=16 * 1024,
+        max_json_bytes=64 * 1024,
         data_fields=(
             "job_id", "project_id", "chapter_id", "candidates_saved", "duplicates_skipped",
             "candidates_total", "candidate_set_complete", "missing_required_items",
             "chapter_run_status", "auto_applied", "apply_status", "coverage",
             "candidate_generation_allowed", "blocking_run", "next_tool", "next_arguments",
             "validation_errors", "validation_error_count", "validation_errors_has_more",
+            "candidate_errors", "coverage_repairs", "scene_repair", "recovery_context",
+            "submission_contract", "warnings",
         ),
     ),
     "list_imported_files": ModelResultContract(max_json_bytes=16 * 1024),

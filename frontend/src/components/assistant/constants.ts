@@ -132,6 +132,25 @@ export const sortWorkspaceMessages = (items: WorkspaceAssistantMessage[]) =>
     return String(a.id || '').localeCompare(String(b.id || ''))
   })
 
+/** Insert live notices by time while retaining the durable transcript order. */
+export const mergeWorkspaceTimeline = (
+  messages: WorkspaceAssistantMessage[],
+  notices: WorkspaceAssistantMessage[],
+): WorkspaceAssistantMessage[] => {
+  const dialogue = sortWorkspaceMessages(messages)
+  const notifications = sortWorkspaceMessages(notices)
+  const timeline: WorkspaceAssistantMessage[] = []
+  let nextNotice = 0
+  for (const item of dialogue) {
+    while (nextNotice < notifications.length
+      && messageTime(notifications[nextNotice]) <= messageTime(item)) {
+      timeline.push(notifications[nextNotice++])
+    }
+    timeline.push(item)
+  }
+  return [...timeline, ...notifications.slice(nextNotice)]
+}
+
 export const toWorkspaceMessage = (
   item: WorkspacePersistedMessage,
 ): WorkspaceAssistantMessage => ({

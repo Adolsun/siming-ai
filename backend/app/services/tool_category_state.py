@@ -511,6 +511,8 @@ def record_creation_turn_write_result(
         status not in CREATION_WRITE_SUCCESS_STATUSES
         and failed_writes >= CREATION_TURN_MAX_FAILED_WRITES
     ):
+        from app.services.workspace.tool_result_projection import sanitize_diagnostic_tool_result
+
         return {
             "type": "tool_completed",
             "message": "写入连续失败已达上限，本轮已停止自动重试",
@@ -519,6 +521,7 @@ def record_creation_turn_write_result(
                 "status": "denied",
                 "turn_boundary": "failed_write_limit",
                 "failed_writes": failed_writes,
+                "last_failure": sanitize_diagnostic_tool_result(tool_name, result),
             },
         }
     return None

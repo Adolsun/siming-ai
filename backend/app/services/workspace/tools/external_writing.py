@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..external_results import external_tool_failure
+
 from sqlalchemy.orm import Session
 
 from ....core.utils import count_words
@@ -112,9 +114,8 @@ def _external_writing_context_result(
         else:
             page = build_context_page(document, args)
     except ValueError as error:
-        return {"tool": "prepare_external_writing_context", "status": "skipped",
-                "detail": str(error),
-                "data": {"context_manifest_id": manifest.id}}
+        return external_tool_failure("prepare_external_writing_context", str(error),
+                                     {"context_manifest_id": manifest.id})
     db.flush()
     delivery_ready = selection_ready and context_delivery_ready(manifest, selection_token)
     page_arguments = context_page_arguments(manifest.id, "writing", page)
@@ -130,23 +131,7 @@ def _external_writing_context_result(
             page_arguments["target_chapter_id"] = target_chapter.id
         if source_draft:
             page_arguments["source_draft_id"] = source_draft.id
-    detail = (
-        f"Compact writing anchors prepared: {manifest.estimated_input_tokens}/"
-        f"{manifest.input_budget_tokens} available input tokens; "
-        f"{TASK_CONTEXT_SOFT_TARGET_TOKENS} is a non-blocking soft target"
-    )
-    if status == "needs_confirmation":
-        detail += (
-            ". Required context is missing; author confirmation is required "
-            "before generation."
-        )
-    elif not selection_ready:
-        detail += ". The Agent must now search and finalize exact evidence before drafting."
-    elif not delivery_ready:
-        detail += (
-            ". Exact evidence was selected, but its remaining pages must be read in order; "
-            "the selection token is withheld until the final page."
-        )
+    detail = _external_writing_context_detail(manifest, status, selection_ready, delivery_ready)
     next_tools = [
         {
             "tool": "search_task_context",
@@ -238,21 +223,11 @@ async def prepare_external_writing_context(
     try:
         args = normalize_writing_arguments(args)
     except ValueError as error:
-        return {
-            "tool": "prepare_external_writing_context",
-            "status": "skipped",
-            "detail": str(error),
-            "data": None,
-        }
+        return external_tool_failure("prepare_external_writing_context", str(error))
 
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
-        return {
-            "tool": "prepare_external_writing_context",
-            "status": "skipped",
-            "detail": "Project not found",
-            "data": None,
-        }
+        return external_tool_failure("prepare_external_writing_context", "Project not found")
 
     outline_node_id = str(args.get("outline_node_id") or "").strip()
     if not outline_node_id:
@@ -640,12 +615,7 @@ async def save_external_chapter_draft(
 
     content = str(args.get("content") or "").strip()
     if not content:
-        return {
-            "tool": "save_external_chapter_draft",
-            "status": "skipped",
-            "detail": "content is required",
-            "data": None,
-        }
+        return external_tool_failure("save_external_chapter_draft", "content is required")
 
     context_manifest_id = str(args.get("context_manifest_id") or "").strip() or None
     source_agent = str(args.get("source_agent") or "external").strip()
@@ -1013,21 +983,11 @@ async def get_external_chapter_draft(
                 "detail": "Current pending chapter draft retrieved.",
                 "data": chapter_draft_result_data(pending, db=db),
             }
-        return {
-            "tool": "get_external_chapter_draft",
-            "status": "skipped",
-            "detail": "No pending chapter draft exists in this project.",
-            "data": None,
-        }
+        return external_tool_failure("get_external_chapter_draft", "No pending chapter draft exists in this project.")
 
     draft_content = get_chapter_draft(project_id, draft_id, db=db)
     if not draft_content:
-        return {
-            "tool": "get_external_chapter_draft",
-            "status": "skipped",
-            "detail": f"Draft not found: {draft_id}",
-            "data": None,
-        }
+        return external_tool_failure("get_external_chapter_draft", f"Draft not found: {draft_id}")
 
     content = draft_content if isinstance(draft_content, str) else str(draft_content)
 
@@ -1066,12 +1026,7 @@ async def record_external_quality_review(
 
     # Validate input
     if not draft_id and not chapter_id:
-        return {
-            "tool": "record_external_quality_review",
-            "status": "skipped",
-            "detail": "draft_id or chapter_id is required",
-            "data": None,
-        }
+        return external_tool_failure("record_external_quality_review", "draft_id or chapter_id is required")
 
     # Build review record
     review = {
@@ -1160,3 +1115,26 @@ async def record_external_quality_review(
         + (f" (total: {review.get('total_score', '?')})" if scores else ""),
         "data": review,
     }
+
+
+def _external_writing_context_detail(
+    manifest: Any, status: str, selection_ready: bool, delivery_ready: bool,
+) -> str:
+    detail = (
+        f"Compact writing anchors prepared: {manifest.estimated_input_tokens}/"
+        f"{manifest.input_budget_tokens} available input tokens; "
+        f"{TASK_CONTEXT_SOFT_TARGET_TOKENS} is a non-blocking soft target"
+    )
+    if status == "needs_confirmation":
+        detail += (
+            ". Required context is missing; author confirmation is required "
+            "before generation."
+        )
+    elif not selection_ready:
+        detail += ". The Agent must now search and finalize exact evidence before drafting."
+    elif not delivery_ready:
+        detail += (
+            ". Exact evidence was selected, but its remaining pages must be read in order; "
+            "the selection token is withheld until the final page."
+        )
+    return detail

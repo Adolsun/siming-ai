@@ -35,6 +35,7 @@ from .character_ops import (
     apply_character_update,
 )
 from .constants import APPLY_ORDER
+from .job_control import validate_cataloging_run_source
 from .outline_ops import apply_outline
 from .reconciliation import (
     prepare_reconciled_payload,
@@ -46,6 +47,9 @@ ApplyHandler = Callable[[Session, CatalogingCandidate, Chapter, dict[str, Any]],
 
 
 def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> list[dict[str, Any]]:
+    validate_cataloging_run_source(db, job, run)
+    if job.status in {"cancelled", "paused"}:
+        raise ValueError("建档任务已暂停或取消，不能继续写入")
     candidates = (
         db.query(CatalogingCandidate)
         .filter(CatalogingCandidate.chapter_run_id == run.id)
@@ -60,8 +64,12 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
         candidate.updated_at = datetime.utcnow()
         db.flush()
         try:
-            result = apply_candidate(db, candidate)
-            _mark_applied(db, job, run, candidate, result)
+            # A rejected candidate must not leave half-written domain rows or
+            # poison the Session for the remaining candidates in this batch.
+            with db.begin_nested():
+                result = apply_candidate(db, candidate)
+                _mark_applied(db, job, run, candidate, result)
+                db.flush()
             warning = str(result.get("review_warning") or "").strip()
             if warning and warning not in str(run.review_warning or ""):
                 run.review_warning = "；".join(
@@ -135,6 +143,8 @@ def apply_candidate(db: Session, candidate: CatalogingCandidate) -> dict[str, An
     chapter = db.query(Chapter).filter(Chapter.id == candidate.chapter_id).first()
     if not chapter:
         raise ValueError("章节不存在")
+    if chapter.project_id != candidate.project_id:
+        raise ValueError("建档候选不属于章节所在作品")
 
     handler = _handler_for(candidate.item_type)
     return handler(db, candidate, chapter, payload)

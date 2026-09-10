@@ -28,7 +28,7 @@ def test_android_prompt_contract_has_no_pc_source_drift():
     assert committed == generated
     assert committed["source_sha256"]
     assert committed["source_versions"] == {
-        "workspace": "assistant.workspace.quality@3.2.5",
+        "workspace": "assistant.workspace.quality@3.2.6",
         "chapter_quality": "assistant.chapter.quality@3.1.0",
         "novel_creation": "creation.novel.stage@3.1.0",
     }
@@ -50,6 +50,15 @@ def test_android_prompt_contract_contains_full_nested_writer_pipeline():
     assert "只调用本轮实际提供的工具" in contract["workspace_system_template"]
     assert "质量模式宁可多检查一次因果" in contract["chapter"]["quality_system_template"]
     assert set(contract["writer_output_tools"]) == {"character", "outline", "world"}
+
+
+def test_mobile_uses_the_same_live_writing_state_instruction_as_pc():
+    from app.prompts.workspace_assistant import CHAPTER_WRITING_STATE_INSTRUCTION
+
+    contract = json.loads(ASSET.read_text(encoding="utf-8"))
+    assert contract["chapter_writing_state_instruction"] == CHAPTER_WRITING_STATE_INSTRUCTION
+    assert "不得据此要求重复保存建档" in CHAPTER_WRITING_STATE_INSTRUCTION
+    assert "不能推断已经建档" in CHAPTER_WRITING_STATE_INSTRUCTION
 
 
 def test_android_prompt_contract_contains_pc_novel_creation_pipeline():

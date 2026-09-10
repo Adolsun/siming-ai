@@ -121,7 +121,7 @@ def apply_character_update(db: Session, candidate: CatalogingCandidate, chapter:
 
 
 def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    validate_character_state_target(
+    character = validate_character_state_target(
         db,
         chapter.project_id,
         "character_state_update",
@@ -129,11 +129,6 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
         chapter_content=str(chapter.content or ""),
     )
     name, aliases = _identity_from_payload(payload)
-    target_id = payload.get("id")
-    character = db.query(Character).filter(
-        Character.project_id == chapter.project_id,
-        Character.id == target_id if target_id is not None else Character.name == name,
-    ).first()
     if not character:
         raise ValueError("角色状态更新引用的角色不存在；必须先生成 character_create 或 character_update")
     old = character_snapshot(character)

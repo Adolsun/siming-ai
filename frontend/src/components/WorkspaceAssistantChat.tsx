@@ -29,6 +29,7 @@ import {
   assistantOutcomeToRunLog,
   createEmptyWorkspaceResponse,
   runStepToLog,
+  mergeWorkspaceTimeline,
   sortWorkspaceMessages,
   toWorkspaceMessage,
   MessageList,
@@ -283,13 +284,7 @@ function WorkspaceAssistantChat({
     [operations, projectId],
   )
   const displayedMessages = useMemo(
-    // Task notices are a live status lane rather than persisted dialogue.
-    // Keep them after the conversation so a notice created during tool
-    // execution cannot disappear above the writer's final response.
-    () => [
-      ...sortWorkspaceMessages(messages),
-      ...sortWorkspaceMessages(catalogingMessages),
-    ],
+    () => mergeWorkspaceTimeline(messages, catalogingMessages),
     [messages, catalogingMessages],
   )
 

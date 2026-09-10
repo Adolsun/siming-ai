@@ -613,6 +613,54 @@ class TestOutlineDraftReview(OutlineTestCase):
             ).json()["data"]
         )
 
+    def test_editor_noop_save_preserves_cataloged_roles_and_draft_confirmation(self):
+        project_id = self.create_project()
+        character = self.create_character(project_id)
+        node = self.create_node(project_id, "Chapter One", character_ids=[character["id"]])
+        with SessionLocal() as db:
+            link = db.query(OutlineNodeCharacter).filter_by(outline_node_id=node["id"]).one()
+            link.role_in_scene = "建档关联"
+            db.commit()
+        draft_id = self.create_draft(project_id, insert_after_id=node["id"])
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{node['id']}",
+            json={"title": "Chapter One", "character_ids": [character["id"]], "metadata": {}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline-drafts/{draft_id}/confirm",
+            json={"write_after_confirm": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        with SessionLocal() as db:
+            formal = db.get(OutlineNode, node["id"])
+            self.assertIsNone(formal.metadata_json)
+            self.assertEqual(formal.linked_characters[0].role_in_scene, "建档关联")
+
+    def test_explicit_link_role_and_metadata_edits_still_invalidate_proposal(self):
+        project_id = self.create_project()
+        character = self.create_character(project_id)
+        node = self.create_node(project_id, "Chapter One", character_ids=[character["id"]], metadata={"purpose": "clue"})
+        with SessionLocal() as db:
+            db.query(OutlineNodeCharacter).filter_by(outline_node_id=node["id"]).one().role_in_scene = "建档关联"
+            db.commit()
+        draft_id = self.create_draft(project_id, insert_after_id=node["id"])
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{node['id']}",
+            json={"characters": [{"character_id": character["id"], "role_in_scene": None}], "metadata": {}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        with SessionLocal() as db:
+            formal = db.get(OutlineNode, node["id"])
+            self.assertEqual(formal.metadata_json, {})
+            self.assertIsNone(formal.linked_characters[0].role_in_scene)
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline-drafts/{draft_id}/confirm",
+            json={"write_after_confirm": False},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("正式大纲在提案生成后已变化", response.json()["message"])
+
     def test_confirm_rejects_outline_changed_after_proposal_and_keeps_draft(self):
         project_id = self.create_project()
         first = self.create_node(project_id, "Chapter One", "chapter", sort_order=0)

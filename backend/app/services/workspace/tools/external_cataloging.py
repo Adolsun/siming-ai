@@ -20,6 +20,8 @@ import os
 from datetime import datetime
 from typing import Any
 
+from ..external_results import external_tool_failure
+
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
@@ -347,12 +349,7 @@ async def start_external_cataloging_job(
     Does not call LLMGateway.
     """
     if not str(project_id or "").strip():
-        return {
-            "tool": "start_external_cataloging_job",
-            "status": "skipped",
-            "detail": "project_id is required to start an external cataloging job",
-            "data": None,
-        }
+        return external_tool_failure("start_external_cataloging_job", "project_id is required to start an external cataloging job")
 
     chapter_ids = [
         str(item)
@@ -364,12 +361,7 @@ async def start_external_cataloging_job(
         chapter_query = chapter_query.filter(Chapter.id.in_(chapter_ids))
     chapter_count = chapter_query.count()
     if not chapter_count:
-        return {
-            "tool": "start_external_cataloging_job",
-            "status": "skipped",
-            "detail": "No chapters found for this project",
-            "data": None,
-        }
+        return external_tool_failure("start_external_cataloging_job", "No chapters found for this project")
 
     job, launch = create_and_queue_cataloging_job(
         db,
@@ -429,36 +421,16 @@ async def get_next_external_cataloging_chapter(
     include_prompt_pack = bool(args.get("include_prompt_pack", True))
     include_context_indexes = bool(args.get("include_context_indexes", True))
     if phase not in {"facts", "candidates"}:
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "skipped",
-            "detail": "phase must be 'facts' or 'candidates'",
-            "data": None,
-        }
+        return external_tool_failure("get_next_external_cataloging_chapter", "phase must be 'facts' or 'candidates'")
     if not job_id:
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "skipped",
-            "detail": "job_id is required",
-            "data": None,
-        }
+        return external_tool_failure("get_next_external_cataloging_chapter", "job_id is required")
 
     job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
     if not job:
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "skipped",
-            "detail": "Job not found",
-            "data": None,
-        }
+        return external_tool_failure("get_next_external_cataloging_chapter", "Job not found")
     effective_project_id, mismatch = _job_project_id(job, project_id)
     if mismatch:
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "skipped",
-            "detail": mismatch,
-            "data": None,
-        }
+        return external_tool_failure("get_next_external_cataloging_chapter", mismatch)
     binding_error = _managed_binding_error(
         project_id=effective_project_id,
         job_id=job_id,
@@ -557,12 +529,7 @@ async def get_next_external_cataloging_chapter(
 
         chapter = db.query(Chapter).filter(Chapter.id == candidate_run.chapter_id).first()
         if not chapter:
-            return {
-                "tool": "get_next_external_cataloging_chapter",
-                "status": "skipped",
-                "detail": "Chapter not found",
-                "data": None,
-            }
+            return external_tool_failure("get_next_external_cataloging_chapter", "Chapter not found")
         chapter_run = candidate_run
     else:
         chapter_run = _earliest_unfinished_run(db, job_id)
@@ -637,12 +604,7 @@ async def get_next_external_cataloging_chapter(
 
         chapter = db.query(Chapter).filter(Chapter.id == chapter_run.chapter_id).first()
         if not chapter:
-            return {
-                "tool": "get_next_external_cataloging_chapter",
-                "status": "skipped",
-                "detail": "Chapter not found",
-                "data": None,
-            }
+            return external_tool_failure("get_next_external_cataloging_chapter", "Chapter not found")
 
     if managed_binding:
         if managed_binding["chapter_run_id"] and chapter_run.id != managed_binding["chapter_run_id"]:
@@ -740,6 +702,8 @@ async def get_next_external_cataloging_chapter(
         project_folder = str(folder)
         content_file_path = str(file_path)
 
+    from app.services.cataloging.candidate_retry import candidate_recovery_context
+
     return {
         "tool": "get_next_external_cataloging_chapter",
         "status": "ok",
@@ -761,6 +725,7 @@ async def get_next_external_cataloging_chapter(
             "worldbuilding_title_index": wb_index,
             "worldbuilding_identity_review_required": worldbuilding_identity_review_required,
             "outline_neighborhood": outline_neighborhood,
+            "recovery_context": candidate_recovery_context(db, chapter_run, include_payloads=False) if phase == "candidates" else None,
             "outline_granularity_policy": get_outline_granularity_rules(),
             "prompt_pack": prompt_pack_data,
             "next_tool": "save_external_cataloging_facts" if phase == "facts" else "save_external_cataloging_candidates",
@@ -1167,12 +1132,14 @@ async def save_external_cataloging_candidates(
     """
     from app.services.cataloging.candidate_retry import (
         candidate_issue,
+        candidate_recovery_context,
         declared_worldbuilding_reference_repairs,
     )
     from app.services.cataloging.candidate_store import (
         create_candidate_from_raw,
     )
     from app.services.cataloging.candidate_validation import inspect_candidate_coverage
+    from app.modules.continuity.domain.candidate_contract import MANAGED_CATALOGING_MAX_CANDIDATES
     from app.services.cataloging.jsonl import expand_candidate_records
 
     job_id = str(args.get("job_id") or "").strip()
@@ -1180,41 +1147,21 @@ async def save_external_cataloging_candidates(
     candidates = args.get("candidates", [])
 
     if not job_id or not chapter_id:
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": "job_id and chapter_id are required",
-            "data": None,
-        }
+        return external_tool_failure("save_external_cataloging_candidates", "job_id and chapter_id are required")
 
     job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
     if not job:
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": "Job not found",
-            "data": None,
-        }
+        return external_tool_failure("save_external_cataloging_candidates", "Job not found")
     effective_project_id, mismatch = _job_project_id(job, project_id)
     if mismatch:
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": mismatch,
-            "data": None,
-        }
+        return external_tool_failure("save_external_cataloging_candidates", mismatch)
     binding_error = _managed_binding_error(
         project_id=effective_project_id,
         job_id=job_id,
         chapter_id=chapter_id,
     )
     if binding_error:
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": binding_error,
-            "data": None,
-        }
+        return external_tool_failure("save_external_cataloging_candidates", binding_error)
 
     chapter_run = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
@@ -1222,12 +1169,7 @@ async def save_external_cataloging_candidates(
     ).first()
 
     if not chapter_run:
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": "Chapter run not found",
-            "data": None,
-        }
+        return external_tool_failure("save_external_cataloging_candidates", "Chapter run not found")
 
     managed_binding = _managed_cataloging_binding(
         project_id=effective_project_id,
@@ -1236,40 +1178,9 @@ async def save_external_cataloging_candidates(
     )
     allowed, blocking_run, gate_note = _candidate_gate(db, chapter_run)
     if not allowed:
-        if chapter_run.status == "awaiting_confirmation":
-            next_tool = "apply_pending_cataloging"
-            next_arguments = {"job_id": job_id}
-        elif blocking_run and blocking_run.get("status") == "facts_saved":
-            next_tool = "get_next_external_cataloging_chapter"
-            next_arguments = {"job_id": job_id, "phase": "candidates"}
-        elif blocking_run and blocking_run.get("status") == "awaiting_confirmation":
-            next_tool = "apply_pending_cataloging"
-            next_arguments = {"job_id": job_id}
-        else:
-            next_tool = "get_next_external_cataloging_chapter"
-            next_arguments = {"job_id": job_id, "phase": "facts"}
-        return {
-            "tool": "save_external_cataloging_candidates",
-            "status": "skipped",
-            "detail": gate_note,
-            "data": {
-                "job_id": job_id,
-                "project_id": effective_project_id,
-                "chapter_id": chapter_id,
-                "chapter_run_status": chapter_run.status,
-                "candidate_generation_allowed": False,
-                "blocking_run": blocking_run,
-                "next_tool": next_tool,
-                "next_arguments": next_arguments,
-                "workflow_reminder": _workflow_reminder(
-                    next_tool,
-                    note=(
-                        "Candidate generation is serialized. Process and apply the earliest chapter first, "
-                        "then ask for phase='candidates' again."
-                    ),
-                ),
-            },
-        }
+        return _candidate_gate_failure(
+            job_id, effective_project_id, chapter_id, chapter_run, blocking_run, gate_note,
+        )
 
     validation_errors = (
         ["candidates must be a JSON array of objects, not a JSON-encoded string"]
@@ -1337,7 +1248,7 @@ async def save_external_cataloging_candidates(
         from app.services.cataloging.jsonl import normalize_candidate
 
         normalized_batch = [normalize_candidate(record) for record in expanded_candidates]
-        if len(normalized_batch) > 3:
+        if len(normalized_batch) > MANAGED_CATALOGING_MAX_CANDIDATES:
             validation_errors.append(
                 "Siming-managed cataloging accepts at most 3 candidate records per call; "
                 "submit only the next missing items"
@@ -1598,6 +1509,12 @@ async def save_external_cataloging_candidates(
                 "next_tool": "save_external_cataloging_candidates",
                 "candidate_errors": candidate_errors[:12],
                 "scene_repair": scene_repair_context(db, chapter_run),
+                "recovery_context": candidate_recovery_context(db, chapter_run, include_payloads=False),
+                "submission_contract": {
+                    "max_records": MANAGED_CATALOGING_MAX_CANDIDATES if managed_cli_job else None,
+                    "chapter_link": "one_aggregate_record",
+                    "repair": "Correct rejected fields using recovery_context; do not resend accepted candidates.",
+                },
             },
         }
 
@@ -1621,6 +1538,7 @@ async def save_external_cataloging_candidates(
             )
             if created.get("bad_line"):
                 warnings.append(str(created.get("error") or "Unsupported candidate"))
+                candidate_errors.append(candidate_issue(created))
                 continue
             if created.get("skipped"):
                 warnings.append(str(created.get("reason") or "Candidate skipped because it lacks usable content"))
@@ -1754,6 +1672,8 @@ async def save_external_cataloging_candidates(
             "candidate_set_complete": candidate_set_complete,
             "missing_required_items": missing_required_items,
             "coverage_repairs": declared_worldbuilding_reference_repairs(stored_candidates),
+            "candidate_errors": candidate_errors,
+            "recovery_context": candidate_recovery_context(db, chapter_run, include_payloads=False) if not candidate_set_complete else None,
             "scene_repair": scene_repair_context(db, chapter_run),
             "chapter_run_status": chapter_run.status,
             "auto_applied": auto_applied,
@@ -1783,29 +1703,14 @@ async def verify_external_cataloging_progress(
     """
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
-        return {
-            "tool": "verify_external_cataloging_progress",
-            "status": "skipped",
-            "detail": "job_id is required",
-            "data": None,
-        }
+        return external_tool_failure("verify_external_cataloging_progress", "job_id is required")
 
     job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
     if not job:
-        return {
-            "tool": "verify_external_cataloging_progress",
-            "status": "skipped",
-            "detail": "Job not found",
-            "data": None,
-        }
+        return external_tool_failure("verify_external_cataloging_progress", "Job not found")
     effective_project_id, mismatch = _job_project_id(job, project_id)
     if mismatch:
-        return {
-            "tool": "verify_external_cataloging_progress",
-            "status": "skipped",
-            "detail": mismatch,
-            "data": None,
-        }
+        return external_tool_failure("verify_external_cataloging_progress", mismatch)
 
     total_runs = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
@@ -1926,5 +1831,45 @@ async def verify_external_cataloging_progress(
             "next_arguments": next_arguments,
             "workflow_reminder": _workflow_reminder(next_tool, note=note),
             "warnings": warnings,
+        },
+    }
+
+
+def _candidate_gate_failure(
+    job_id: str, effective_project_id: str, chapter_id: str,
+    chapter_run: CatalogingChapterRun, blocking_run: dict[str, Any] | None, gate_note: str,
+) -> dict[str, Any]:
+    if chapter_run.status == "awaiting_confirmation":
+        next_tool = "apply_pending_cataloging"
+        next_arguments = {"job_id": job_id}
+    elif blocking_run and blocking_run.get("status") == "facts_saved":
+        next_tool = "get_next_external_cataloging_chapter"
+        next_arguments = {"job_id": job_id, "phase": "candidates"}
+    elif blocking_run and blocking_run.get("status") == "awaiting_confirmation":
+        next_tool = "apply_pending_cataloging"
+        next_arguments = {"job_id": job_id}
+    else:
+        next_tool = "get_next_external_cataloging_chapter"
+        next_arguments = {"job_id": job_id, "phase": "facts"}
+    return {
+        "tool": "save_external_cataloging_candidates",
+        "status": "skipped",
+        "detail": gate_note,
+        "data": {
+            "job_id": job_id,
+            "project_id": effective_project_id,
+            "chapter_id": chapter_id,
+            "chapter_run_status": chapter_run.status,
+            "candidate_generation_allowed": False,
+            "blocking_run": blocking_run,
+            "next_tool": next_tool,
+            "next_arguments": next_arguments,
+            "workflow_reminder": _workflow_reminder(
+                next_tool,
+                note=(
+                    "Candidate generation is serialized. Process and apply the earliest chapter first, "
+                    "then ask for phase='candidates' again."
+                ),
+            ),
         },
     }

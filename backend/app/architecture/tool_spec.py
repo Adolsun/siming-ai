@@ -1,4 +1,5 @@
 """Typed workspace tool specification."""
+
 from __future__ import annotations
 
 import json
@@ -64,6 +65,31 @@ def _validate_exported_schema(schema: dict[str, Any], value: Any) -> None:
         path = raw_path[1:] if raw_path and raw_path[0] == "data" else raw_path
         rule = str(getattr(exc, "rule", "") or "")
         expected = getattr(exc, "rule_definition", None)
+        # Preserve the actual field error for an explicitly typed union record.
+        # The model already selected `type`; this only diagnoses its schema
+        # branch and never changes the selected business operation or value.
+        if (
+            rule in {"anyOf", "oneOf"}
+            and isinstance(expected, list)
+            and isinstance(exc.value, dict)
+        ):
+            selected = [
+                branch
+                for branch in expected
+                if isinstance(branch, dict)
+                and "type" in branch.get("required", [])
+                and exc.value.get("type")
+                in branch.get("properties", {}).get("type", {}).get("enum", [])
+            ]
+            if len(selected) == 1:
+                try:
+                    _validate_exported_schema(selected[0], exc.value)
+                except ToolInputSchemaValidationError as field_error:
+                    raise ToolInputSchemaValidationError(
+                        path=(*path, *field_error.path),
+                        rule=field_error.rule,
+                        expected=field_error.expected,
+                    ) from exc
         if rule == "required" and isinstance(expected, list) and isinstance(exc.value, dict):
             expected = [field for field in expected if field not in exc.value]
         raise ToolInputSchemaValidationError(
@@ -121,9 +147,7 @@ class ToolSpec(Generic[InputT, OutputT]):
 
     def validate_input(self, value: InputT | dict[str, Any]) -> InputT:
         validated = (
-            value
-            if isinstance(value, self.input_model)
-            else self.input_model.model_validate(value)
+            value if isinstance(value, self.input_model) else self.input_model.model_validate(value)
         )
         raw_value = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
         _validate_exported_schema(self.parameters_schema(), raw_value)

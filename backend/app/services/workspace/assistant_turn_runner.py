@@ -71,6 +71,7 @@ from app.services.workspace.conversation_context_adapter import (
     workspace_checkpoint_source_turns,
     workspace_execution_ledger_from_run_steps,
 )
+from app.services.workspace.chapter_writing_state import load_chapter_writing_state
 from app.services.workspace.run_log import (
     create_assistant_run,
     mark_assistant_run,
@@ -392,15 +393,6 @@ class WorkspaceAssistantTurnRunner:
             )
             if draft is None or str(draft.status or "") != "pending":
                 raise ValidationError("当前编辑器章节草稿已保存、丢弃或失效，请刷新后重试")
-            state.active_chapter_draft = {
-                "id": str(draft.id),
-                "title": str(draft.title or ""),
-                "outline_node_id": str(draft.outline_node_id or "") or None,
-                "draft_kind": str(draft.draft_kind or "new"),
-                "target_chapter_id": str(draft.target_chapter_id or "") or None,
-                "status": "pending",
-                "instruction_priority": "none",
-            }
         state.authorized_tool_names = set(select_workspace_tool_names())
         if state.local_cli_mcp_enabled:
             state.authorized_tool_names = {
@@ -646,6 +638,17 @@ class WorkspaceAssistantTurnRunner:
             *build_workspace_tool_schemas(state.workspace_tool_names),
         ]
         state.workspace_tool_schemas = schemas
+        # Re-read after every model step. Saving or finishing cataloging in
+        # another request must supersede historical "unsaved draft" receipts.
+        state.db.expire_all()
+        writing_state = load_chapter_writing_state(state.db, state.project_id)
+        pending_draft = writing_state["pending_draft"]
+        state.active_chapter_draft = (
+            pending_draft
+            if pending_draft is not None
+            and pending_draft["id"] == state.payload.active_chapter_draft_id
+            else None
+        )
         system_prompt = build_workspace_assistant_runtime_system_prompt(
             base_system_prompt=state.base_system_prompt,
             category_instruction=workspace_category_instruction(
@@ -659,6 +662,7 @@ class WorkspaceAssistantTurnRunner:
             reference_context=durable_reference,
             outline_batch_count=state.payload.outline_batch_count,
             active_chapter_draft=state.active_chapter_draft,
+            chapter_writing_state=writing_state,
         )
         return system_prompt, schemas, "required" if not state.category_selected else "auto"
 

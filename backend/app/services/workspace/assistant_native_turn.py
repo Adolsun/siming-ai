@@ -25,6 +25,7 @@ from app.services.workspace.assistant_turn_state import WorkspaceAssistantTurnSt
 from app.services.workspace.assistant_turn_support import workspace_category_result
 from app.services.workspace.native_tool_batch import (
     NativeToolBatchValidationError,
+    is_cataloging_mutation,
     validate_workspace_native_tool_batch,
 )
 from app.services.workspace.run_log import finish_run_step, start_run_step
@@ -635,7 +636,7 @@ class WorkspaceNativeTurn:
 
     def _record_terminal(self, name: str, result: dict[str, Any], is_write: bool) -> str:
         del is_write
-        if "cataloging" in name:
+        if is_cataloging_mutation(self.registry.get(name)):
             self.state.turn_terminal_result = result
             return "cataloging_status"
         if is_terminal_tool_result(result):

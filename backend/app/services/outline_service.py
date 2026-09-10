@@ -128,10 +128,10 @@ def ensure_no_cycle(
 
 def extract_character_links(
     character_ids: Optional[list[str]],
-    characters: Optional[list],
+    characters: Optional[list[dict]],
 ) -> Optional[list[tuple[str, Optional[str]]]]:
     if characters is not None:
-        raw_links = [(item.character_id, item.role_in_scene) for item in characters]
+        raw_links = [(item["character_id"], item.get("role_in_scene")) for item in characters]
     elif character_ids is not None:
         raw_links = [(character_id, None) for character_id in character_ids]
     else:

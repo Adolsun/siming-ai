@@ -495,12 +495,20 @@ def sanitize_diagnostic_tool_result(
     if isinstance(retryable, bool):
         safe_data.setdefault("retryable", retryable)
 
+    detail = _DIAGNOSTIC_REASON_DETAILS.get(
+        safe_data.get("reason"), _DIAGNOSTIC_DETAILS[status],
+    )
+    if safe_data.get("reason") == "native_tool_contract_invalid" and safe_data.get("path"):
+        detail = f"参数 {safe_data['path']} 校验失败（{safe_data.get('rule', 'schema')}）。" + detail
+        if safe_data.get("rule") == "list_type":
+            detail = (
+                f"参数 {safe_data['path']} 必须直接传 JSON 数组（[...]），不能传包含数组文本的字符串。"
+                "请修正该字段的类型；只改字符串内容或转义不能解决问题。本次未执行写入。"
+            )
     return {
         "tool": tool_name,
         "status": status,
-        "detail": _DIAGNOSTIC_REASON_DETAILS.get(
-            safe_data.get("reason"), _DIAGNOSTIC_DETAILS[status],
-        ),
+        "detail": detail,
         "data": safe_data or None,
     }
 

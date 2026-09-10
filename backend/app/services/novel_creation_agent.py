@@ -398,9 +398,17 @@ def _direct_mcp_boundary_reply(event: dict[str, Any]) -> str:
             "本轮已完成一次写入，后续自动写入已被系统拦截。"
             "请先确认本次结果；下一步要处理哪个单一对象？"
         )
+    from app.services.workspace.tool_result_projection import sanitize_diagnostic_tool_result
+
+    failure = data.get("last_failure")
+    detail = ""
+    if isinstance(failure, dict):
+        safe = sanitize_diagnostic_tool_result(str(data.get("tool") or "creation_tool"), failure)
+        detail = str(safe.get("detail") or "")
     return (
-        "本轮没有继续自动重试：写入连续失败已达三次，系统已关闭本轮写工具。"
-        "请检查当前资料结构；下一次要先修改哪个单一对象？"
+        "本轮写入尝试已失败三次，已停止自动重试。"
+        + (f"最后一次失败原因：{detail}" if detail else "未记录具体失败原因，需检查工具调用记录。")
+        + "本轮没有成功写入新资料。"
     )
 
 
@@ -490,14 +498,7 @@ async def _run_direct_mcp_steps(
                 on_event,
                 progress_events,
                 "model_step_started",
-                (
-                    "正在判断需要哪些立项能力…"
-                    if observed_version == 0
-                    else (
-                        "正在使用已准备的能力处理立项资料…"
-                        if active_categories else "正在整理回复…"
-                    )
-                ),
+                _direct_mcp_step_message(observed_version, active_categories),
                 {"iteration": iteration + 1, "active_categories": list(active_categories)},
             )
             scoped_schemas = _tool_schemas(
@@ -737,3 +738,9 @@ __all__ = [
     "CREATION_AGENT_TURN_SCHEMA",
     "run_creation_agent",
 ]
+
+
+def _direct_mcp_step_message(observed_version: int, active_categories: tuple[str, ...]) -> str:
+    return (
+        '正在判断需要哪些立项能力…' if observed_version == 0 else '正在使用已准备的能力处理立项资料…' if active_categories else '正在整理回复…'
+    )

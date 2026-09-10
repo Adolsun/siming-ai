@@ -182,14 +182,24 @@ def list_mcp_tools(
         allowed_defs = filter_tools(all_defs, allowed_tiers=allowed_tiers)
 
     result: list[McpTool] = []
+    from app.modules.continuity.domain.candidate_contract import MANAGED_CATALOGING_MAX_CANDIDATES
+    from app.services.workspace.tools.external_cataloging import _managed_cataloging_binding
+
+    managed_cataloging = permission_pack == "cataloging_worker" and _managed_cataloging_binding()
     for td in allowed_defs:
         spec = registry.get_spec(td.name)
         if spec is None:
             continue
+        schema = spec.parameters_schema()
+        if managed_cataloging and td.name == "save_external_cataloging_candidates":
+            # Advertise the process-scoped batch limit that this worker's
+            # transactional handler already enforces. Unbound API tools keep
+            # their own batch-size contract and share all record field schemas.
+            schema["properties"]["candidates"]["maxItems"] = MANAGED_CATALOGING_MAX_CANDIDATES
         result.append(_add_project_id_argument(McpTool(
             name=td.name,
             description=td.description,
-            input_schema=spec.parameters_schema(),
+            input_schema=schema,
         ), required=_requires_project_id(td)))
     return result
 

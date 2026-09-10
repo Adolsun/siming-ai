@@ -23,7 +23,7 @@ from app.architecture.tool_categories import (
     tool_category_controller_schema,
 )
 from app.database.models import NovelCreationSession
-from app.modules.assistant.infrastructure.runtime import render_prompt
+from app.modules.assistant.infrastructure.runtime import get_compiled_prompt, render_prompt
 from app.modules.creation.interfaces.agent_scope import (
     CREATION_AGENT_REVISION_TOOL_NAMES,
     CREATION_AGENT_WRITE_TOOL_NAMES,
@@ -40,6 +40,7 @@ from app.prompts.outline_writer_prompts import (
 )
 from app.prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK
 from app.prompts.style_prompts import build_style_context
+from app.prompts.workspace_assistant import CHAPTER_WRITING_STATE_INSTRUCTION
 from app.prompts.worldbuilding_writer_prompts import (
     build_worldbuilding_writer_messages,
 )
@@ -367,9 +368,12 @@ def build_contract() -> dict:
     contract = {
         "schema_version": 3,
         "source_versions": {
-            "workspace": "assistant.workspace.quality@3.2.5",
-            "chapter_quality": "assistant.chapter.quality@3.1.0",
-            "novel_creation": "creation.novel.stage@3.1.0",
+            name: f"{spec_id}@{get_compiled_prompt(spec_id).version}"
+            for name, spec_id in {
+                "workspace": "assistant.workspace.quality",
+                "chapter_quality": "assistant.chapter.quality",
+                "novel_creation": "creation.novel.stage",
+            }.items()
         },
         "tool_names": sorted({*tool_names, TOOL_CATEGORY_CONTROLLER}),
         "tool_schemas": [
@@ -378,6 +382,7 @@ def build_contract() -> dict:
         ],
         "tool_categories": tool_category_contract(),
         "workspace_system_template": workspace_system,
+        "chapter_writing_state_instruction": CHAPTER_WRITING_STATE_INSTRUCTION,
         "workspace_current_user_contract": {
             "source": "conversation_context_frame.current_user_message",
             "content": "verbatim",

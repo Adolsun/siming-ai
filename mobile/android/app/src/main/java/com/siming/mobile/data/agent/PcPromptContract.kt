@@ -45,27 +45,9 @@ internal class PcPromptContract(context: Context) {
 
     fun workspaceRuntimeSystem(
         project: JsonObject,
-        activeChapterDraft: JsonObject? = null,
+        chapterWritingState: JsonObject,
     ): String {
-        val runtime = buildJsonObject {
-            put("schema", "workspace_assistant_runtime.v1")
-            put("data_only", true)
-            put("project", buildJsonObject {
-                put("id", project.string("id"))
-                put("title", project.string("title"))
-            })
-            put("editor_selection", kotlinx.serialization.json.JsonNull)
-            put("active_chapter_draft", activeChapterDraft?.let { draft ->
-                buildJsonObject {
-                    put("id", draft.string("draft_id"))
-                    put("title", draft.string("title"))
-                    put("outline_node_id", draft["outline_node_id"] ?: kotlinx.serialization.json.JsonNull)
-                    put("status", "pending")
-                    put("instruction_priority", "none")
-                }
-            } ?: kotlinx.serialization.json.JsonNull)
-            put("outline_batch_count", 3)
-        }
+        val runtime = mobileWorkspaceRuntimeData(project, chapterWritingState)
         return listOf(
             workspaceSystem().trim(),
             listOf(
@@ -75,6 +57,7 @@ internal class PcPromptContract(context: Context) {
                 mobileCanonicalJson(runtime),
                 "[/SERVER_WORKSPACE_RUNTIME_DATA]",
             ).joinToString("\n"),
+            root.string("chapter_writing_state_instruction"),
         ).joinToString("\n\n")
     }
 

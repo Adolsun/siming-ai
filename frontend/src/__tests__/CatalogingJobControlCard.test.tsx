@@ -119,7 +119,8 @@ describe('CatalogingJobControlCard', () => {
     )
 
     expect(screen.getByText('当前章节遇到问题，任务已停在最近检查点')).toBeInTheDocument()
-    expect(screen.getAllByText('第13章候选格式不完整')).toHaveLength(1)
+    expect(screen.getAllByText(/第13章候选格式不完整/)).toHaveLength(1)
+    expect(screen.getByText(/已写入的档案会保留，重试只补未完成部分/)).toBeInTheDocument()
     expect(screen.getByText('未完成：8 章尚未完成')).toBeInTheDocument()
   })
 

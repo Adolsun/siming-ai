@@ -578,6 +578,47 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_stale_chapter_is_rejected_before_starting_cli(self):
+        job_id = self._create_job("auto")
+        with self.Session() as db:
+            job = db.get(CatalogingJob, job_id)
+            run = job.chapter_runs[0]
+            chapter = db.get(Chapter, run.chapter_id)
+            run.chapter_version = chapter.current_version
+            chapter.current_version = (chapter.current_version or 0) + 1
+            db.commit()
+        with (
+            patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session),
+            patch("app.services.cataloging.local_cli_agent._run_cli_turn") as turn,
+        ):
+            asyncio.run(_coordinate_cataloging(job_id, "opencode_cli"))
+        turn.assert_not_called()
+        with self.Session() as db:
+            job = db.get(CatalogingJob, job_id)
+            self.assertEqual(job.status, "paused_on_failure")
+            self.assertIn("版本", job.error)
+
+    def test_no_save_budget_is_independent_for_each_stage(self):
+        job_id = self._create_job("auto")
+        attempts = {"facts": 0, "candidates": 0}
+
+        async def flaky_cli_turn(**kwargs):
+            stage = kwargs["stage"]
+            attempts[stage] += 1
+            if attempts[stage] < 3:
+                return 0, "no committed checkpoint", ""
+            return await self._fake_cli_turn(**kwargs)
+
+        with (
+            patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session),
+            patch("app.services.cataloging.local_cli_agent._run_cli_turn", side_effect=flaky_cli_turn),
+        ):
+            asyncio.run(_coordinate_cataloging(job_id, "opencode_cli"))
+        with self.Session() as db:
+            job = db.get(CatalogingJob, job_id)
+            self.assertEqual(job.status, "completed", job.error)
+        self.assertEqual(attempts, {"facts": 3, "candidates": 3})
+
     def test_no_save_turn_pauses_without_a_non_mcp_fallback(self):
         job_id = self._create_job("auto")
         attempts = 0
@@ -1456,6 +1497,56 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 3)
         finally:
             db.close()
+
+
+    def test_candidate_stall_preserves_checkpoint_and_does_not_auto_retry(self):
+        from app.ai.local_cli_monitor import CLIStalledError
+        from app.services.cataloging.local_cli_progress import CandidateProgressProbe
+
+        job_id = self._create_job("auto")
+        attempts = []
+
+        async def stalled_turn(**kwargs):
+            attempts.append(kwargs["stage"])
+            if kwargs["stage"] == "facts":
+                return await self._fake_cli_turn(**kwargs)
+            with self.Session() as db:
+                job = db.get(CatalogingJob, job_id)
+                run = job.chapter_runs[0]
+                db.add(CatalogingCandidate(
+                    job_id=job.id, chapter_run_id=run.id,
+                    project_id=job.project_id, chapter_id=run.chapter_id,
+                    item_type="worldbuilding_create", raw_payload='{"title":"保留候选"}',
+                ))
+                db.commit()
+                probe = CandidateProgressProbe(category_file="", chapter_run_id=run.id,
+                                               session_factory=self.Session)
+                terminal, checkpoint = probe._checkpoint()
+                self.assertFalse(terminal)
+                self.assertEqual(len(checkpoint), 1)
+                # Auto-apply intermediate states must not kill its transaction.
+                for status in ("awaiting_confirmation", "applying"):
+                    run.status = status
+                    db.commit()
+                    self.assertFalse(probe._checkpoint()[0])
+                run.status = "facts_saved"
+                db.commit()
+            raise CLIStalledError("候选连续三次提交未产生有效进展：chapter_link 必须聚合为一条")
+
+        with (
+            patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session),
+            patch("app.services.cataloging.local_cli_agent._run_cli_turn", side_effect=stalled_turn),
+        ):
+            asyncio.run(_coordinate_cataloging(job_id, "opencode_cli"))
+        self.assertEqual(attempts, ["facts", "candidates"])
+        with self.Session() as db:
+            job = db.get(CatalogingJob, job_id)
+            self.assertEqual(job.status, "paused_on_failure")
+            self.assertIn("chapter_link", job.error)
+            self.assertGreater(db.query(CatalogingFact).filter_by(job_id=job_id).count(), 0)
+            candidate = db.query(CatalogingCandidate).filter_by(job_id=job_id).one()
+            self.assertEqual(candidate.status, "pending")
+            self.assertEqual(json.loads(candidate.raw_payload), {"title": "保留候选"})
 
 
 if __name__ == "__main__":

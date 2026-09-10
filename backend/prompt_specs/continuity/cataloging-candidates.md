@@ -1,6 +1,6 @@
 ---
 id: continuity.cataloging.candidates
-version: 3.1.21
+version: 3.1.22
 scope: continuity
 visibility: both
 inputs: []
@@ -45,7 +45,7 @@ golden_cases:
 
 【角色状态与档案】
 - 同一身份始终使用角色卡稳定主名，别名只进 aliases；禁止组合展示名或在主名、昵称、称谓间切换。
-- 每个出场稳定角色输出 character_state_update。未变化或未交代的字段必须省略，司命保留原值；没有变化时可逐字沿用一个已知状态。可更新 life_status、current_location、realm_or_level、physical_state、mental_state、current_goal、active_conflict、abilities_state 等。
+- 每个出场稳定角色输出 character_state_update。已有角色必须从当前作品角色目录选择真实 id，不以简称或别名代替目标 ID；新角色先输出 character_create，再使用完全相同的完整 name 输出状态。未变化或未交代的字段必须省略，司命保留原值；没有变化时可逐字沿用一个已知状态。可更新 life_status、current_location、realm_or_level、physical_state、mental_state、current_goal、active_conflict、abilities_state 等。
 - appearance、age 仅在正文确认变化时提交；修改旧值必须分别携带 appearance_before、appearance_evidence、age_before、age_evidence，before 逐字复制旧值，evidence 是本章逐字证据。电话或消息参与不证明人物身处通话另一端；未明确地点就省略 current_location。
 - items_or_assets 是整字段替换。更新已有非空值时带 items_or_assets_before，并在新值中逐字包含旧值后再追加变化；空串不清除。物品须有该人物持有、控制或经手的证据，同场另一人物的物品不得错记。
 - 只有不存在现存卡片的稳定身份用 character_create。character_update 必须带真实 id，只提交有依据的变化；personality、background、custom_system_prompt 一旦提交就是完整替换值。修改 background 时，background_before 须逐字复制当前完整背景，新 background 须逐字包含该完整旧值后仅追加稳定事实；自动建档禁止改写、缩短或删除旧背景。profile 只更新有证据的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger；日常行动进状态或时间线。
@@ -62,7 +62,8 @@ golden_cases:
 - coverage_manifest.characters、worldbuilding、character_profiles、relationships 中的每个身份分别须有同身份状态/设定或关联/档案/关系候选；重复卡不能凑数，缺项则不通过。
 
 【候选缺项自动修复】
-- 用户消息含“上一轮校验未通过”时，本节优先：系统会保留上一轮已通过候选；只补错误明确列出的缺失身份，或重发解析失败、身份不一致、结构错误的候选，不要重发完整候选集。
+- 用户消息含“上一轮校验未通过”，或工具返回 validation_errors、candidate_errors、missing_required_items 时，本节优先：系统会保留上一轮已通过候选；只补错误明确列出的缺失身份，或重发解析失败、身份不一致、结构错误的候选，不要重发完整候选集。
+- 按 recovery_context.accepted_candidates 核对检查点并修正字段；工具可用 read_full_candidates 分页读原候选，API JSONL 已含完整记录。数组/对象不得编码成字符串。
 - 若别名、近义词或说明性标题被误列成多个实体，单独输出 type="chapter_summary"、coverage_manifest_mode="replace" 及五个完整清单；不覆盖已存摘要和账本。既有设定须解析到一个精确 id/title，不能因事实标签不同新建重复卡。
 - 聚合关联有旧错误时单独提交 chapter_link_mode="replace" 及 characters、worldbuilding_titles、locations、items、events 完整数组；仅缺项则普通增补。
 - chapter_summary 或 chapter_outline 只在错误明确说缺失时补。错误指出缺少状态、设定、档案、关系或章节关联时逐项补齐；结束前核对清单、名称、数量，不删除或重写已有正确卡。

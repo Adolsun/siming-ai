@@ -5,11 +5,12 @@ import { useEffect } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { mockDelete, mockGet, mockPost, mockPut } = vi.hoisted(() => ({
+const { mockDelete, mockGet, mockPost, mockPut, mockOperations } = vi.hoisted(() => ({
   mockDelete: vi.fn(),
   mockGet: vi.fn(),
   mockPost: vi.fn(),
   mockPut: vi.fn(),
+  mockOperations: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -17,7 +18,7 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('../shared/operations/queries', () => ({
-  useOperations: () => ({ data: [], refetch: vi.fn() }),
+  useOperations: mockOperations,
 }))
 
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
@@ -158,6 +159,30 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     mockDelete.mockResolvedValue({ data: { data: null } })
     mockPost.mockResolvedValue({ data: { data: { status: 'cancelled' } } })
     mockPut.mockResolvedValue({ data: { data: null } })
+    mockOperations.mockReturnValue({ data: [], refetch: vi.fn() })
+  })
+
+  it('shows older cataloging between historical dialogue and the newest user message', async () => {
+    mockOperations.mockReturnValue({ data: [{
+      id: 'done-job', project_id: 'project-1', source_kind: 'cataloging', source_id: 'job-1',
+      tool_mode: 'chapter_save:internal_llm', title: '《绣坊惊变》章节建档', status: 'completed',
+      created_at: '2026-09-09T12:44:00Z', completed_at: '2026-09-10T03:04:02Z',
+    }], refetch: vi.fn() })
+    const conversation = { id: 'conversation-1', project_id: 'project-1', title: '原来的对话' }
+    mockGet.mockImplementation((url: string) => Promise.resolve({ data: { data:
+      url.endsWith('/conversations') ? { items: [conversation] }
+        : url.endsWith('/conversations/conversation-1') ? { conversation, messages: [
+          { id: 'old', role: 'assistant', content: '草稿刚刚生成', sequence_no: 10, created_at: '2026-09-09T12:07:07Z', status: 'completed' },
+          { id: 'latest-user', role: 'user', content: '继续下一章', sequence_no: 11, created_at: '2026-09-10T03:27:21Z', status: 'completed' },
+          { id: 'latest-reply', role: 'assistant', content: '现在读取下一章', sequence_no: 12, created_at: '2026-09-10T03:27:21Z', status: 'completed' },
+        ] } : {},
+    } }))
+    renderChat()
+    const latest = await screen.findByText('继续下一章')
+    const notice = screen.getByText(/绣坊惊变.*建档已完成/)
+    expect(screen.getByText('草稿刚刚生成').compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(notice.compareDocumentPosition(latest) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(latest.compareDocumentPosition(screen.getByText('现在读取下一章')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('submits only one cancellation and exposes the pending state', async () => {

@@ -53,6 +53,10 @@ def safe_creation_tool_result(
         return result
     raw_data = result.get("data") if isinstance(result.get("data"), dict) else {}
     raw_reason = str(raw_data.get("reason") or "").strip()
+    if raw_reason == "native_tool_contract_invalid" or raw_data.get("failure_class") == "invalid_tool_arguments":
+        from app.services.workspace.tool_result_projection import sanitize_diagnostic_tool_result
+
+        return sanitize_diagnostic_tool_result(name, result)
     if status == "conflict" and not raw_reason:
         raw_reason = "revision_conflict"
     default_reason = {

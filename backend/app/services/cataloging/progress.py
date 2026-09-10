@@ -22,6 +22,7 @@ from ..operation_runtime import add_operation_event
 from .candidate_io import candidate_to_dict
 from .fact_store import fact_to_dict
 from .job_control import TERMINAL_RUN_STATUSES
+from .projection import job_to_dict, run_to_dict, sse_event
 
 POLL_SECONDS = 0.5
 _PROGRESS_EVENT = "cataloging_progress"
@@ -59,7 +60,6 @@ def record_cataloging_progress(db: Session, job: CatalogingJob, raw: str) -> Non
 
 async def observe_cataloging_job(project_id: str, job_id: str):
     """Observe committed state only; reconnecting never starts or resumes work."""
-    from .orchestrator import job_to_dict, run_to_dict, sse_event
 
     seen_runs: dict[str, dict[str, Any]] = {}
     seen_facts: dict[str, dict[str, Any]] = {}
@@ -106,71 +106,9 @@ async def observe_cataloging_job(project_id: str, job_id: str):
                         .first()
                     )
                     last_progress_sequence = latest[0] if latest else 0
-                for run in runs:
-                    data = run_to_dict(run)
-                    if seen_runs.get(run.id) == data:
-                        continue
-                    previous_status = (seen_runs.get(run.id) or {}).get("status")
-                    seen_runs[run.id] = data
-                    event_type = "chapter_state"
-                    if previous_status != run.status:
-                        if run.status in {"in_progress", "extracting"}:
-                            event_type = "chapter_started"
-                        elif run.status in TERMINAL_RUN_STATUSES:
-                            event_type = "chapter_completed"
-                        elif run.status == "failed":
-                            event_type = "chapter_failed"
-                        elif run.status == "applying":
-                            event_type = "chapter_applying"
-                        elif run.status == "awaiting_confirmation":
-                            event_type = "chapter_extracted"
-                    events.append(
-                        {
-                            "type": event_type,
-                            "job": job_data,
-                            "run": data,
-                            "message": f"第 {run.chapter_order + 1} 章：{run.status}",
-                        }
-                    )
-
-                # Replay the current chapter's durable records on first connect
-                # as well as reconnect. IDs let clients upsert, never duplicate.
-                current_chapter = (
-                    job.blocked_chapter_id
-                    or job.current_chapter_id
-                    or job.last_completed_chapter_id
-                )
-                if current_chapter:
-                    for model, seen, serialize, kind, field in (
-                        (CatalogingFact, seen_facts, fact_to_dict, "fact_extracted", "fact"),
-                        (
-                            CatalogingCandidate,
-                            seen_candidates,
-                            candidate_to_dict,
-                            "candidate_created",
-                            "candidate",
-                        ),
-                    ):
-                        rows = (
-                            db.query(model)
-                            .filter_by(job_id=job_id, chapter_id=current_chapter)
-                            .order_by(model.created_at.asc(), model.id.asc())
-                            .all()
-                        )
-                        for row in rows:
-                            data = serialize(row)
-                            if seen.get(row.id) == data:
-                                continue
-                            seen[row.id] = data
-                            events.append(
-                                {
-                                    "type": kind,
-                                    field: data,
-                                    "job": job_data,
-                                    "run": run_to_dict(row.chapter_run),
-                                }
-                            )
-
+                events.extend(_chapter_progress_events(
+                    db, job, runs, job_data, seen_runs, seen_facts, seen_candidates,
+                ))
                 if job.agent_run_id != last_agent_id:
                     last_agent_id = job.agent_run_id
                     last_agent_sequence = 0
@@ -245,3 +183,78 @@ async def observe_cataloging_job(project_id: str, job_id: str):
             return
         first = False
         await asyncio.sleep(POLL_SECONDS)
+
+
+def _chapter_progress_events(
+    db: Session, job: CatalogingJob, runs: list[CatalogingChapterRun],
+    job_data: dict[str, Any], seen_runs: dict[str, dict[str, Any]],
+    seen_facts: dict[str, dict[str, Any]], seen_candidates: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    job_id = job.id
+    for run in runs:
+        data = run_to_dict(run)
+        if seen_runs.get(run.id) == data:
+            continue
+        previous_status = (seen_runs.get(run.id) or {}).get("status")
+        seen_runs[run.id] = data
+        event_type = "chapter_state"
+        if previous_status != run.status:
+            if run.status in {"in_progress", "extracting"}:
+                event_type = "chapter_started"
+            elif run.status in TERMINAL_RUN_STATUSES:
+                event_type = "chapter_completed"
+            elif run.status == "failed":
+                event_type = "chapter_failed"
+            elif run.status == "applying":
+                event_type = "chapter_applying"
+            elif run.status == "awaiting_confirmation":
+                event_type = "chapter_extracted"
+        events.append(
+            {
+                "type": event_type,
+                "job": job_data,
+                "run": data,
+                "message": f"第 {run.chapter_order + 1} 章：{run.status}",
+            }
+        )
+
+    # Replay the current chapter's durable records on first connect
+    # as well as reconnect. IDs let clients upsert, never duplicate.
+    current_chapter = (
+        job.blocked_chapter_id
+        or job.current_chapter_id
+        or job.last_completed_chapter_id
+    )
+    if current_chapter:
+        for model, seen, serialize, kind, field in (
+            (CatalogingFact, seen_facts, fact_to_dict, "fact_extracted", "fact"),
+            (
+                CatalogingCandidate,
+                seen_candidates,
+                candidate_to_dict,
+                "candidate_created",
+                "candidate",
+            ),
+        ):
+            rows = (
+                db.query(model)
+                .filter_by(job_id=job_id, chapter_id=current_chapter)
+                .order_by(model.created_at.asc(), model.id.asc())
+                .all()
+            )
+            for row in rows:
+                data = serialize(row)
+                if seen.get(row.id) == data:
+                    continue
+                seen[row.id] = data
+                events.append(
+                    {
+                        "type": kind,
+                        field: data,
+                        "job": job_data,
+                        "run": run_to_dict(row.chapter_run),
+                    }
+                )
+
+    return events

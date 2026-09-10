@@ -6,6 +6,10 @@ this module instead of maintaining separate long prompt copies.
 """
 from __future__ import annotations
 
+import json
+
+from app.modules.continuity.domain.candidate_contract import candidate_contract_examples
+
 from .prompt_source import get_naming_resolution_rules, get_time_tracking_rules
 
 
@@ -82,8 +86,8 @@ def get_cataloging_candidate_schema() -> str:
 除首次生成回合的首个必填骨架对象外，每一行顶层都必须包含标准字段 type，例如 {"type":"worldbuilding_create", ...}。type 决定候选类别；不要把候选类别写进 node_type。
 node_type 只用于 outline_create/outline_update 的层级，而且只能是 chapter、section 或 volume；世界观、角色等候选不得输出 node_type。
 - chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "coverage_manifest":{"scene_count":1,"characters":["..."],"worldbuilding":["..."],"relationships":[{"source_name":"...","target_name":"...","relationship_type":"..."}],"character_profiles":["本章新建或稳定档案发生变化的角色名"]}, "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}, "narrative_review":{"source":"provided", "outcome":"assessed", "evidence":"本章叙事治理检查依据"}}
-- outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
-- character_create: {"name":"...", "aliases":["..."], "role_type":"protagonist|supporting|antagonist|mentor|other", "age":"...", "appearance":"...", "personality":"...", "background":"正文确认的稳定身份和经历", "abilities":["..."], "profile":{"core_motivation":"...","inner_lack":"...","core_belief":"...","public_persona":"...","hidden_persona":"...","reveal_chapter":3,"moral_taboo":"...","voice":"...","action_habit":"...","trauma_trigger":"..."}, "tone_style":"...", "catchphrases":["..."], "verbosity":"brief|moderate|verbose", "emotion_tendency":"...", "custom_system_prompt":"..."}。仅用于新角色，禁止传入已有角色 id。
+- outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
+- character_create: {"name":"...", "aliases":["..."], "role_type":"supporting", "age":"...", "appearance":"...", "personality":"...", "background":"正文确认的稳定身份和经历", "abilities":["..."], "profile":{"core_motivation":"...","inner_lack":"...","core_belief":"...","public_persona":"...","hidden_persona":"...","reveal_chapter":3,"moral_taboo":"...","voice":"...","action_habit":"...","trauma_trigger":"..."}, "tone_style":"...", "catchphrases":["..."], "verbosity":"moderate", "emotion_tendency":"...", "custom_system_prompt":"..."}。仅用于新角色，禁止传入已有角色 id。
 """
         '- character_update: {"id":"从 relevant_characters、character_name_index 或 '
         'character_alias_index 逐字复制的真实角色 ID，必填", "name":"已有稳定主名", '
@@ -92,14 +96,14 @@ node_type 只用于 outline_create/outline_update 的层级，而且只能是 ch
         '"profile":{"本章变化的档案字段":"新值"}}。其余可修改字段与 character_create 相同，'
         '只提交本章确有变化的字段；不修改 background 就同时省略 background 与 background_before，'
         '不能照抄示例占位内容。\n'
-        """- character_state_update: {"name":"...", "aliases":["..."], "appearance_before":"修改外貌时逐字复制当前值", "appearance_evidence":"本章正文逐字摘录", "appearance":"...", "age_before":"修改年龄时逐字复制当前值", "age_evidence":"本章正文逐字摘录", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets_before":"修改物品时逐字复制当前完整值", "items_or_assets":"逐字保留旧值并追加本章变化后的完整状态"}
+        """- character_state_update: {"name":"...", "aliases":["..."], "appearance_before":"修改外貌时逐字复制当前值", "appearance_evidence":"本章正文逐字摘录", "appearance":"...", "age_before":"修改年龄时逐字复制当前值", "age_evidence":"本章正文逐字摘录", "age":"...", "life_status":"alive", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets_before":"修改物品时逐字复制当前完整值", "items_or_assets":"逐字保留旧值并追加本章变化后的完整状态"}
 - character_timeline: {"name":"...", "event_description":"...", "event_type":"appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change":"..."}
 - character_relationship: {"source_name":"...", "target_name":"...", "relationship_type":"...", "description":"..."}
 - character_merge_candidate: {"primary_name":"...", "secondary_name":"...", "canonical_name":"...", "aliases":["..."], "confidence_reason":"...", "evidence_points":["..."], "background_append":"..."}
-- worldbuilding_create: {"dimension":"geography|history|factions|power_system|races|culture", "title":"...", "content":"...", "status":"active", "source_fact_titles":["该设定对应的原事实称呼；无称呼差异可省略此字段"], "identity_resolution":{"decision":"create", "reviewed_existing_ids":["逐字复制 worldbuilding_identity_review_required 中的全部 ID；列表为空时至少复制完整标题索引中最接近的一个 ID"], "reason":"逐项说明为何不是这些旧条目的更新"}}
-- worldbuilding_update: {"id":"从 worldbuilding_title_index 或 relevant_worldbuilding 逐字复制的已有条目ID", "dimension":"geography|history|factions|power_system|races|culture", "title":"沿用已有稳定标题", "content":"...", "status":"active", "source_fact_titles":["归入该卡的原事实称呼"]}
+- worldbuilding_create: {"dimension":"power_system", "title":"...", "content":"...", "status":"active", "source_fact_titles":["该设定对应的原事实称呼；无称呼差异可省略此字段"], "identity_resolution":{"decision":"create", "reviewed_existing_ids":["逐字复制 worldbuilding_identity_review_required 中的全部 ID；列表为空时至少复制完整标题索引中最接近的一个 ID"], "reason":"逐项说明为何不是这些旧条目的更新"}}
+- worldbuilding_update: {"id":"从 worldbuilding_title_index 或 relevant_worldbuilding 逐字复制的已有条目ID", "dimension":"power_system", "title":"沿用已有稳定标题", "content":"...", "status":"active", "source_fact_titles":["归入该卡的原事实称呼"]}
 - worldbuilding_timeline: {"id":"已有设定时复制其ID；新设定可省略", "title":"...", "dimension":"...", "event_description":"...", "event_type":"introduced|confirmed|changed|damaged|used|limited", "evidence":"...", "source_fact_titles":["归入该卡的原事实称呼"]}
-- chapter_link: {"characters":[{"name":"...","appearance_type":"出场|提及|回忆"}], "worldbuilding_titles":["..."], "outline_title":"...", "description":"...", "locations":["..."], "items":["..."], "events":["..."], "importance":"major|normal|minor", "appearance_order":1}"""
+- chapter_link: {"characters":[{"name":"...","appearance_type":"出场"}], "worldbuilding_titles":["..."], "outline_title":"...", "description":"...", "locations":["..."], "items":["..."], "events":["..."], "importance":"normal", "appearance_order":1}"""
     )
 
 
@@ -166,7 +170,7 @@ def get_cataloging_candidate_rules() -> str:
 
 def get_incremental_cataloging_repair_rules() -> str:
     return """【候选缺项自动修复】
-1. 当用户消息包含“上一轮校验未通过”时，这是增量修复回合，本节规则优先于首次生成规则。系统已经保留上一轮通过的候选；只输出错误信息明确指出的缺失候选，或解析失败、身份不一致、结构错误候选的修正版。
+1. 当用户消息包含“上一轮校验未通过”，或工具返回 validation_errors、candidate_errors、missing_required_items 时，这是增量修复回合，本节规则优先于首次生成规则。读取 recovery_context.accepted_candidates 核对检查点，必要时按 read_full_candidates 分页读取完整候选。系统已经保留上一轮通过的候选；只输出错误信息明确指出的缺失候选，或解析失败、身份不一致、结构错误候选的修正版。数组与对象须直接传入，type、role_type、dimension 须直接使用标准枚举，程序不会猜测替换。
 2. 不要重发完整候选集，不得重复、删除、缩减或改写已有正确候选。chapter_outline 只有在缺失时输出；chapter_summary 在缺失或明确纠正错误覆盖清单时输出。
 3. 增量修复不得减少 scene_count。先核对已保留候选与事实，缺项就补齐候选；若 coverage_manifest 误列了同一身份的不同称呼，或把 stable_profile_change=false 且无稳定档案变化的已有角色误列为档案更新对象，可以输出一条 chapter_summary，设置 coverage_manifest_mode="replace"，提供完整纠正清单。不得为补齐错误清单而虚构档案变化或新建近义卡；也不能删掉事实中确实存在的角色、设定、关系或稳定档案变化来绕过校验。已有事实归入精确 ID 的世界观卡时，摘要清单只列规范卡稳定标题；另行输出该世界观候选，在其 payload.source_fact_titles 字符串数组中声明原事实标签。source_fact_titles 禁止放进 chapter_summary、coverage_manifest 或 chapter_link，禁止写成 {"worldbuilding":[...]} 对象；摘要修复和世界观来源映射是两类候选，分别输出。若返回 coverage_repairs，按其中 candidate_id、field 和 required_mode 修正摘要清单或章节关联，使用模型已声明的规范标题并保留其他内容；mapping_candidate_id 指向的世界观候选已经保存，仅重发它不能修复摘要或关联。
 4. 错误若列出缺失场景编号，逐个输出对应 scene_number 的 section outline_create，并填写 purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions；不要用重写摘要代替场景卡。
@@ -251,48 +255,14 @@ def get_external_cataloging_system_prompt() -> str:
 
 
 def get_candidate_format_examples() -> str:
-    return """【候选类型格式】
-save_external_cataloging_candidates 的 candidates 数组中，每个候选的格式：
-
-1. 章节摘要（尽量详细，不要只写一句话）：
-{“type”: “chapter_summary”, “summary”: “详细摘要，包含本章目标、冲突、关键转折、结尾钩子、涉及角色，至少200字”}
-
-2. 大纲节点（summary 要写清楚：本章目标、冲突、关键转折、结尾钩子、涉及角色）：
-{“type”: “outline_create”, “title”: “第一章 穿越”, “node_type”: “chapter”, “summary”: “张三穿越到修仙世界，发现自己是废柴体质，但意外获得神秘功法。冲突是身份暴露的风险，转折是发现功法来源，结尾钩子是有人在追查他。”, “related_characters”: [“张三”]}
-
-2.1 大纲场景节点（本章有多个重要场景时必须输出 2-6 条，parent_title 指向本章 chapter 节点）：
-{“type”: “outline_create”, “title”: “第一章 穿越 / 石狮异动”, “node_type”: “section”, “parent_title”: “第一章 穿越”, “summary”: “陆家院内，张三观察石狮眉心异动，确认这不是普通装饰，而是后续阵法线索。场景目标是建立异常感知，冲突是信息不足，结果是埋下石狮伏笔。”, “related_characters”: [“张三”]}
-
-3. 新角色（必须用 character_create，所有字段都要尽量填写完整）：
-重要：appearance、personality、background、abilities 都必须详细描写，不要只写一两个词。
-background 必须是完整的背景档案，不是本章新增片段。
-{“type”: “character_create”, “name”: “特昂糖”, “aliases”: [“糖糖”, “陆糖”], “role_type”: “protagonist”, “age”: “3岁”, “appearance”: “3岁幼女，矮小但步伐稳健，眼神中带着不属于这个年龄的冷静与洞察”, “personality”: “冷静理性、分析能力强、成熟超越年龄、偶尔流露前世成人的思维方式”, “background”: “前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维，能用数据分析方法理解修炼体系。”, “abilities”: [“感知灵气波动”, “优化修炼路径”, “数据分析”], “tone_style”: “简洁冷静，偶尔用科学术语”, “catchphrases”: “数据不会说谎”, “emotion_tendency”: “表面冷静内心温暖”, “custom_system_prompt”: “你是特昂糖，3岁幼女身体里住着一个成年科学家的灵魂。你用数据分析的方式理解修仙世界，说话简洁但精准。你关心家人但不善表达。你有强烈的求知欲和探索精神。在危险面前你保持冷静分析，但内心深处害怕失去来之不易的家人。300-800字，包含身份、已知经历、性格动机、说话方式、当前立场、关系网、行动边界和禁止违背的设定。”}
-
-4. 角色状态更新（每个出场角色都必须输出，用 character_state_update）：
-只提交本章有依据的变化字段，未变化的 appearance、age 和 items_or_assets 必须省略。修改已有 appearance 或 age 时，必须提交对应的 *_before 当前值和 *_evidence 本章逐字证据。
-{“type”: “character_state_update”, “name”: “特昂糖”, “current_location”: “陆家后院”, “current_goal”: “找到回家的方法”, “life_status”: “alive”, “physical_state”: “左臂受伤，行动受限”, “mental_state”: “冷静分析中带着迷茫”, “active_conflict”: “身份暴露的风险”, “realm_or_level”: “未修炼”, “abilities_state”: “感知灵气波动”}
-
-5. 角色档案更新（有新信息时必须输出！用 character_update，与 character_state_update 是两个不同的候选）：
-已有角色必须复制真实 id；修改 background 时用 background_before 逐字复制当前完整背景，新 background 逐字保留旧背景并追加稳定信息。custom_system_prompt 要提供可完整替换的合并版本。
-{“type”: “character_update”, “id”: “existing-character-id”, “name”: “特昂糖”, “aliases”: [“糖糖”, “陆糖”, “陆家小妹”], “personality”: “冷静理性、分析能力强、本章展现出对哥哥的依赖和信任”, “background_before”: “前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维。”, “background”: “前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维。本章确认她遭遇周氏袭击后更加信任哥哥。”, “custom_system_prompt”: “你是特昂糖，3岁幼女身体里住着一个成年科学家的灵魂...（完整300-800字）”}
-
-5. 新世界观条目（content 必须具体：定义、规则、限制、代价、来源、影响范围、与角色/剧情的关系）：
-{“type”: “worldbuilding_create”, “title”: “护族大阵”, “dimension”: “power_system”, “content”: “陆家祖传防护阵法，由历代家主灵力维持。激活需要消耗大量灵石，可抵御筑基期以下攻击。阵法核心在祖祠地下，与陆家血脉绑定。本章中被旁支周氏暗中破坏了东侧节点。”}
-
-5.1 更新已有世界观条目（必须复制上下文中的精确 ID，并沿用稳定标题）：
-{“type”: “worldbuilding_update”, “id”: “existing-worldbuilding-id”, “title”: “护族大阵”, “dimension”: “power_system”, “content”: “合并已有定义与本章确认的新限制后的完整条目内容。”}
-
-6. 角色关系（描述要说明关系的来源和表现）：
-{“type”: “character_relationship”, “source_name”: “陆景珩”, “target_name”: “特昂糖”, “relationship_type”: “兄妹”, “description”: “陆景珩是特昂糖的哥哥，对她保护有加。在修炼中主动帮妹妹挡危险，教她基础吐纳法。”}
-
-重要规则：
-- character_create 的 name 字段是必填的
-- character_state_update 用于更新角色当前状态（位置、目标等），不是创建新角色
-- character_update 用于更新角色基本信息（外貌、性格等），需要 name 字段
-- 不要使用 new_character、new_worldbuilding 等非标准类型
-- 所有字段都要尽量详细，不要只写一两个词
-- 已有角色的 background 必须逐字保留 background_before，再追加稳定信息
-- custom_system_prompt 要写300-800字，帮助AI扮演该角色"""
+    return (
+        "【候选类型格式】\n"
+        "以下为原生 JSON 结构示例；占位名称必须由模型替换成已读取的真实数据。\n"
+        "候选的 type 和字段位于同一层，不能把数组或对象编码成字符串。\n"
+        "摘要与章级大纲属于首次骨架；已有候选时只补缺项。chapter_link 为全章一条聚合关联，"
+        "characters 内每个角色只出现一次，appearance_type 必须从出场、提及、回忆中选一个。\n"
+        + "\n".join(json.dumps(row, ensure_ascii=False) for row in candidate_contract_examples())
+    )
 
 
 def get_merge_rules() -> str:

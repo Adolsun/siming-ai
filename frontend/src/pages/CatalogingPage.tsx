@@ -17,6 +17,7 @@ import type {
 } from './catalogingTypes'
 import { safeStringify } from './catalogingTypes'
 import { createLatestRequestGate } from '../shared/latestRequest'
+import { useCatalogingVisibility } from '../features/cataloging/useCatalogingVisibility'
 
 interface CatalogingPageProps {
   projectId: string
@@ -552,20 +553,10 @@ function CatalogingPage({ projectId, focusJobId, active = true }: CatalogingPage
     }
   }, [fetchChapters, fetchJobs, stopProgressStream])
 
-  useEffect(() => {
-    if (active) {
-      const target = focusJobId || lastOpenedJobIdRef.current
-      if (target) void loadJob(target)
-    }
-    return () => {
-      loadJobRequestGate.current.invalidate()
-      jobLoadAbortRef.current?.abort()
-      activeJobIdRef.current = null
-      stopProgressStream()
-      setStreaming(false)
-      setJobLoading(false)
-    }
-  }, [active, focusJobId, loadJob, stopProgressStream])
+  useCatalogingVisibility({
+    active, focusJobId, lastOpenedJobIdRef, activeJobIdRef, jobLoadAbortRef,
+    loadJobRequestGate, loadJob, stopProgressStream, setStreaming, setJobLoading,
+  })
 
   return (
     <div>
