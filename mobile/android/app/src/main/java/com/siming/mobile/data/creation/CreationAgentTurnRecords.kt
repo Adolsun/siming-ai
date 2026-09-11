@@ -69,6 +69,8 @@ internal object CreationAgentTurnRecords {
         createdProjectId: String? = null,
         progressEvents: JsonArray = JsonArray(emptyList()),
         promptMetrics: JsonArray = JsonArray(emptyList()),
+        replyStatus: String? = null,
+        replyDiagnostics: JsonArray = JsonArray(emptyList()),
     ): JsonObject = JsonObject(pending.toMutableMap().apply {
         put("updated_at", JsonPrimitive(Instant.now().toString()))
         put("status", JsonPrimitive(status))
@@ -79,6 +81,10 @@ internal object CreationAgentTurnRecords {
         put("execution_route", JsonPrimitive(executionRoute))
         put("progress_events", progressEvents)
         put("prompt_metrics", promptMetrics)
+        replyStatus?.let {
+            put("reply_status", JsonPrimitive(it))
+            put("reply_diagnostics", replyDiagnostics)
+        }
         createdProjectId?.takeIf(String::isNotBlank)?.let {
             put("created_project_id", JsonPrimitive(it))
         }

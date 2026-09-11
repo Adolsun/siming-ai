@@ -7,7 +7,7 @@ from typing import Any
 
 from app.database.models import NovelCreationSession
 from app.services.novel_creation_authoring import _author_context
-from app.services.novel_creation_entities import ENTITY_COLLECTIONS
+from app.modules.creation.domain.entity_contract import ENTITY_COLLECTIONS
 from app.services.novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,

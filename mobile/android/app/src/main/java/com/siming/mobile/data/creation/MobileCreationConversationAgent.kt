@@ -45,6 +45,8 @@ internal data class MobileCreationConversationResult(
     val status: String,
     val createdProjectId: String? = null,
     val promptMetrics: JsonArray = JsonArray(emptyList()),
+    val replyStatus: String = "model",
+    val replyDiagnostics: JsonArray = JsonArray(emptyList()),
 )
 
 /**
@@ -111,10 +113,23 @@ internal class MobileCreationConversationAgent(
         var categorySelected = false
         var successfulWriteCount = 0
         var failedWriteCount = 0
-        val streamedReply = StringBuilder()
+        var replyStatus = "model"
+        val replyDiagnostics = mutableListOf<JsonElement>()
+        suspend fun rejectReply(reason: String) {
+            val diagnostic = buildJsonObject {
+                put("reason", reason)
+                put("attempt", replyDiagnostics.size + 1)
+            }
+            replyDiagnostics += diagnostic
+            onProgress(CreationAgentProgressEvent(
+                type = "reply_rejected",
+                message = "模型总结未通过校验，已保留真实执行结果",
+                status = "warning",
+                data = diagnostic,
+            ))
+        }
         suspend fun emitReplyDelta(delta: String) {
             if (delta.isEmpty()) return
-            streamedReply.append(delta)
             onProgress(CreationAgentProgressEvent(
                 type = "reply_delta",
                 message = "",
@@ -123,23 +138,16 @@ internal class MobileCreationConversationAgent(
             ))
         }
         while (finalReply.isBlank()) {
+            if (successfulWriteCount >= contract.maxSuccessfulWritesPerTurn ||
+                failedWriteCount >= contract.maxFailedWritesPerTurn
+            ) break
             onProgress(CreationAgentProgressEvent(
                 type = "model_step_started",
                 message = if (iteration == 0) "正在判断需要哪些立项能力…" else "正在根据真实工具结果继续处理…",
                 data = buildJsonObject { put("iteration", iteration + 1) },
             ))
-            val writesClosed = successfulWriteCount >= contract.maxSuccessfulWritesPerTurn ||
-                failedWriteCount >= contract.maxFailedWritesPerTurn
-            val scopedTools = if (categorySelected && writesClosed) {
-                JsonArray(emptyList())
-            } else {
-                contract.toolSchemas(activeCategories)
-            }
-            val requestToolChoice = when {
-                !categorySelected -> "required"
-                writesClosed -> null
-                else -> "auto"
-            }
+            val scopedTools = contract.toolSchemas(activeCategories)
+            val requestToolChoice = if (categorySelected) "auto" else "required"
             val prepared = conversationContextRuntime.prepare(
                 resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
                 storageId = storageId,
@@ -190,7 +198,6 @@ internal class MobileCreationConversationAgent(
                 toolChoice = requestToolChoice,
                 maxOutputTokens = 6_000,
                 temperature = 0.25,
-                onContentDelta = ::emitReplyDelta,
             )
             if (deliveredTransactions.isNotEmpty()) {
                 val consumed = conversationStore.markDeliveredToolTransactionsConsumed(
@@ -218,6 +225,12 @@ internal class MobileCreationConversationAgent(
                     "模型没有调用本步骤唯一开放的 set_tool_categories，本轮未接受文字回复"
                 }
                 finalReply = turn.content.trim()
+                if (finalReply.isNotBlank()) {
+                    contract.replyError(finalReply)?.let { reason ->
+                        rejectReply(reason)
+                        finalReply = ""
+                    }
+                }
                 break
             }
 
@@ -450,84 +463,111 @@ internal class MobileCreationConversationAgent(
             iteration += 1
         }
 
-        if (finalReply.isBlank() && toolResults.isNotEmpty()) {
-            onProgress(CreationAgentProgressEvent(
-                type = "model_step_started",
-                message = "正在根据真实写入结果整理回复…",
-            ))
-            val summarySystem = contract.systemPrompt(source.string("id")) +
-                "\n\n[SERVER_RUNTIME_INSTRUCTION]\n" +
-                "工具已关闭。根据服务端验证的本轮回执，用两到四句中文说明实际完成的读取或写入；" +
-                "不要声称失败的写入已保存，并提出一个基于当前数据缺口的后续问题。\n" +
-                "[/SERVER_RUNTIME_INSTRUCTION]"
-            val summaryExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
-                put("thinking", buildJsonObject { put("type", "disabled") })
-            } else null
-            val prepared = conversationContextRuntime.prepare(
-                resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
-                storageId = storageId,
-                currentUserPrompt = message,
-                config = config,
-                conversation = currentConversation,
-                turnContext = turnContext,
-                systemPrompt = summarySystem,
-                scopedTools = JsonArray(emptyList()),
-                taskType = DirectApiConfig.TASK_PLANNING,
-                maxOutputTokens = 1_200,
-                temperature = 0.2,
-                extraBody = summaryExtraBody,
-                currentTurnLedger = executionLedger,
-                pendingTransactions = deliveredTransactions,
-            )
-            MobileToolProtocolValidator.validate(
-                messages = prepared.rendered.messages,
-                supportsNativeToolCalling = true,
-                toolsOffered = false,
-                currentUserMessageId = prepared.rendered.currentUserMessageId,
-                checkpointMessageId = prepared.rendered.checkpointMessageId,
-            )
-            val summaryTurn = directApi.streamAgentTurn(
-                config = config,
-                messages = providerMessages(prepared.rendered.messages),
-                tools = JsonArray(emptyList()),
-                maxOutputTokens = 1_200,
-                temperature = 0.2,
-                extraBody = summaryExtraBody,
-                onContentDelta = ::emitReplyDelta,
-            )
-            require(summaryTurn.toolCalls.isEmpty()) { "工具关闭后的立项总结不得返回函数调用" }
-            if (deliveredTransactions.isNotEmpty()) {
-                val consumed = conversationStore.markDeliveredToolTransactionsConsumed(storageId, turnContext)
-                deliveredTransactions.clear()
-                executionLedger.clear()
-                executionLedger += consumed.executionLedger
+        if (finalReply.isBlank() && toolResults.isNotEmpty() && createdProjectId == null) {
+            for (attempt in replyDiagnostics.size until contract.maxReplyAttempts) {
+                onProgress(CreationAgentProgressEvent(
+                    type = "model_step_started",
+                    message = "正在根据真实执行结果整理回复…",
+                    data = buildJsonObject { put("phase", "summary"); put("attempt", attempt + 1) },
+                ))
+                val summarySystem = contract.systemPrompt(source.string("id")) +
+                    "\n\n[SERVER_RUNTIME_INSTRUCTION]\n" +
+                    contract.replyInstruction +
+                    (if (replyDiagnostics.isNotEmpty()) contract.replyRepairInstruction else "") + "\n" +
+                    "[/SERVER_RUNTIME_INSTRUCTION]"
+                val summaryExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
+                    put("thinking", buildJsonObject { put("type", "disabled") })
+                } else null
+                val prepared = conversationContextRuntime.prepare(
+                    resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
+                    storageId = storageId,
+                    currentUserPrompt = message,
+                    config = config,
+                    conversation = currentConversation,
+                    turnContext = turnContext,
+                    systemPrompt = summarySystem,
+                    scopedTools = JsonArray(emptyList()),
+                    taskType = DirectApiConfig.TASK_PLANNING,
+                    maxOutputTokens = 1_200,
+                    temperature = 0.2,
+                    extraBody = summaryExtraBody,
+                    currentTurnLedger = executionLedger,
+                    pendingTransactions = deliveredTransactions,
+                )
+                currentConversation = prepared.conversation
+                MobileToolProtocolValidator.validate(
+                    messages = prepared.rendered.messages,
+                    supportsNativeToolCalling = true,
+                    toolsOffered = false,
+                    currentUserMessageId = prepared.rendered.currentUserMessageId,
+                    checkpointMessageId = prepared.rendered.checkpointMessageId,
+                )
+                val summaryTurn = try {
+                    directApi.streamAgentTurn(
+                        config = config,
+                        messages = providerMessages(prepared.rendered.messages),
+                        tools = JsonArray(emptyList()),
+                        maxOutputTokens = 1_200,
+                        temperature = 0.2,
+                        extraBody = summaryExtraBody,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: MobileConversationContextException) {
+                    throw error
+                } catch (_: Exception) {
+                    rejectReply("summary_request_failed")
+                    break
+                }
+                if (deliveredTransactions.isNotEmpty()) {
+                    val consumed = conversationStore.markDeliveredToolTransactionsConsumed(storageId, turnContext)
+                    deliveredTransactions.clear()
+                    deliveredTransactions += consumed.activeTransactions
+                    executionLedger.clear()
+                    executionLedger += consumed.executionLedger
+                    currentConversation = conversationStore.snapshot(storageId, turnContext.conversationId)
+                        ?: error("立项总结消费工具事务后会话丢失")
+                }
+                promptMetrics += promptMetric(
+                    iteration = promptMetrics.size + 1,
+                    phase = "summary",
+                    activeCategories = activeCategories,
+                    messages = prepared.rendered.messages,
+                    tools = JsonArray(emptyList()),
+                    promptTokens = summaryTurn.promptTokens,
+                )
+                val reason = contract.replyError(summaryTurn.content, summaryTurn.toolCalls.isNotEmpty())
+                if (reason == null) {
+                    finalReply = summaryTurn.content.trim()
+                    break
+                }
+                rejectReply(reason)
             }
-            promptMetrics += promptMetric(
-                iteration = promptMetrics.size + 1,
-                phase = "summary",
-                activeCategories = activeCategories,
-                messages = prepared.rendered.messages,
-                tools = JsonArray(emptyList()),
-                promptTokens = summaryTurn.promptTokens,
-            )
-            finalReply = summaryTurn.content.trim()
         }
         if (createdProjectId != null) {
+            replyStatus = "project_created"
             finalReply = "正式作品已创建并进入作品库。请点击下方按钮进入正式作品；进入后项目助手会自动展开，后续正文与项目资料都在那里继续。"
         }
         if (finalReply.isBlank()) {
+            replyStatus = "receipt_only"
             val writes = toolResults.mapNotNull { it as? JsonObject }
                 .filter { it.string("tool") in contract.writeToolNames && it.string("status") in setOf("ok", "running") }
-                .map { it.string("detail") }
-                .filter(String::isNotBlank)
-                .take(3)
             finalReply = if (writes.isNotEmpty()) {
-                "本轮已完成：${writes.joinToString("；")}。接下来你最想补充哪一部分？"
+                val receipt = if (writes.any { it.string("status") == "running" }) {
+                    "本轮任务已启动，请在任务状态中查看结果。"
+                } else "本轮修改已保存，请在立项资料中查看结果。"
+                val details = writes.take(3).map { it.string("detail") }
+                    .filter { contract.replyError(it) == null }
+                receipt + if (details.isNotEmpty()) "回执：${details.joinToString("；")}。" else ""
             } else truthfulNoWrite(toolResults)
+            if (replyDiagnostics.isNotEmpty()) finalReply += contract.replyFailureNotice
         }
-        if (!streamedReply.toString().endsWith(finalReply)) {
-            emitReplyDelta(finalReply)
+        // A terminal server receipt can close the turn without another model request.
+        if (deliveredTransactions.any { it.state == MobileToolTransactionState.DELIVERED }) {
+            conversationStore.markDeliveredToolTransactionsConsumed(storageId, turnContext)
         }
+        // Buffer provider content until its native-call and plain-reply checks pass.
+        finalReply.chunked(240).forEach { emitReplyDelta(it) }
         val modelMessages = buildJsonArray {
             add(userMessage)
             turnProtocolMessages.forEach(::add)
@@ -542,6 +582,8 @@ internal class MobileCreationConversationAgent(
             status = "completed",
             createdProjectId = createdProjectId,
             promptMetrics = JsonArray(promptMetrics),
+            replyStatus = replyStatus,
+            replyDiagnostics = JsonArray(replyDiagnostics),
         )
     }
 
@@ -669,7 +711,10 @@ internal class MobileCreationConversationAgent(
         val failures = results
             .filter { it.string("status") !in setOf("ok", "running") }
             .map { it.string("detail").ifBlank { "工具未完成" } }
-        if (failures.isNotEmpty()) return "本轮没有保存任何修改：${failures.last()}。请调整要求后重试。"
+        if (failures.isNotEmpty()) {
+            val detail = failures.last().takeIf { contract.replyError(it) == null } ?: "工具未完成"
+            return "本轮没有保存任何修改：$detail。请调整要求后重试。"
+        }
         val readSucceeded = results.any {
             it.string("status") == "ok" && it.string("tool") !in contract.writeToolNames
         }
@@ -876,11 +921,28 @@ internal class MobileCreationConversationAgent(
         }
         val target = if (entityId.isNotBlank()) resolveEntity(source, entityId) else null
         if (entityId.isNotBlank() && (target == null || target.artifact != artifact)) {
-            return ToolExecution(source, result(tool, "error", "目标实体不存在或不属于当前立项对象"))
+            val reason = if (target == null) "creation_target_entity_unavailable" else "creation_target_artifact_mismatch"
+            val path = if (target == null) "$.entity_id" else "$.artifact"
+            return ToolExecution(source, contract.referenceError(tool, reason, path))
         }
         val mapping = if (entityType.isNotBlank()) entityFieldMapping(artifact, entityType) else null
         if (entityType.isNotBlank() && mapping == null) {
-            return ToolExecution(source, result(tool, "error", "目标实体类型不属于当前立项对象"))
+            return ToolExecution(source, contract.referenceError(tool, "creation_entity_type_invalid", "$.entity_type"))
+        }
+        val contextEntities = mutableListOf<JsonObject>()
+        (args["context_entity_ids"] as? JsonArray).orEmpty().forEachIndexed { index, value ->
+            val id = (value as? JsonPrimitive)?.contentOrNull.orEmpty()
+            if (id == entityId && id.isNotBlank()) return@forEachIndexed
+            val reference = resolveEntity(source, id)
+                ?: return ToolExecution(source, contract.referenceError(
+                    tool, "creation_context_entity_unavailable", "$.context_entity_ids[$index]",
+                ))
+            contextEntities += reference.descriptor
+        }
+        if ((args["context_artifacts"] as? JsonArray).orEmpty().any {
+                (it as? JsonPrimitive)?.contentOrNull !in contract.stageOrder
+            }) {
+            return ToolExecution(source, contract.referenceError(tool, "creation_context_artifact_invalid", "$.context_artifacts"))
         }
         val targetField = target?.field ?: mapping?.first
         val entityTarget = targetField?.let { field ->
@@ -903,7 +965,7 @@ internal class MobileCreationConversationAgent(
             })
         }
         val generated = try {
-            stageAgent.generateStage(source, artifact, instruction, config, entityTarget, entityBaseline)
+            stageAgent.generateStage(source, artifact, instruction, config, entityTarget, entityBaseline, contextEntities)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -1232,6 +1294,7 @@ internal class MobileCreationConversationAgent(
             "list_creation_entities",
         )
         val CREATION_RECEIPT_FIELDS = setOf(
+            "reason", "path", "retryable",
             "session_id",
             "revision",
             "artifact",

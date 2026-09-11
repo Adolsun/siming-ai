@@ -10,23 +10,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.database.models_support import generate_uuid
+from app.modules.creation.domain.entity_contract import ENTITY_COLLECTIONS, CreationReferenceError
 from app.modules.creation.infrastructure.models import NovelCreationEntity, NovelCreationSession
-
-ENTITY_COLLECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
-    "world_style": (("worldbuilding", "worldbuilding"),),
-    "characters": (("characters", "character"), ("relationships", "relationship")),
-    "locations": (("entries", "place"), ("relations", "world_relation")),
-    "macro_outline": (("volumes", "volume"),),
-    "opening_outline": (("chapters", "chapter_outline"), ("sections", "scene_outline")),
-}
-
-ENTITY_TYPES_BY_ARTIFACT: dict[str, frozenset[str]] = {
-    "world_style": frozenset({"worldbuilding"}),
-    "characters": frozenset({"character", "relationship"}),
-    "locations": frozenset({"location", "faction", "world_relation"}),
-    "macro_outline": frozenset({"volume"}),
-    "opening_outline": frozenset({"chapter_outline", "scene_outline"}),
-}
 
 
 def _text(value: Any) -> str:
@@ -406,6 +391,7 @@ def patch_creation_entity(
         scoped,
         source=source,
         validator=validator,
+        entity_binding=(prefix, entity.id),
     )
     refreshed = next((item for item in session.entities if item.id == entity.id), entity)
     return {
@@ -414,6 +400,31 @@ def patch_creation_entity(
         "changes": result["changes"],
         "affected_artifacts": result["affected_artifacts"],
     }
+
+
+def rebind_creation_entity_patch(
+    session: NovelCreationSession,
+    artifact: str,
+    data: dict[str, Any],
+    binding: tuple[str, str],
+    changes: list[dict[str, Any]],
+) -> None:
+    """Keep the explicitly addressed entity ID when its editable key changes."""
+    pointer, entity_id = binding
+    if any(change["path"] == pointer and change["action"] == "remove" for change in changes):
+        return
+    entity = next(item for item in session.entities if item.id == entity_id and item.artifact_key == artifact)
+    record = next((item for item in _extract_records(artifact, data)
+                   if f"/{item['field']}/{item['index']}" == pointer), None)
+    if record is None:
+        return
+    if record["entity_type"] != entity.entity_type:
+        raise CreationReferenceError("creation_entity_type_invalid", "$.changes")
+    if any(item.id != entity_id and item.artifact_key == artifact
+           and item.entity_type == entity.entity_type and item.entity_key == record["entity_key"]
+           for item in session.entities):
+        raise CreationReferenceError("creation_entity_identity_conflict", "$.changes")
+    entity.entity_key = record["entity_key"]
 
 
 def delete_creation_entity(
@@ -447,8 +458,6 @@ def delete_creation_entity(
 
 
 __all__ = [
-    "ENTITY_COLLECTIONS",
-    "ENTITY_TYPES_BY_ARTIFACT",
     "delete_creation_entity",
     "ensure_creation_entities",
     "get_creation_entity",

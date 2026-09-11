@@ -16,6 +16,7 @@ from hashlib import sha256
 from typing import Any, Protocol
 
 from app.services.conversation_context.budget import RequestBudgetEnvelope
+from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS
 
 from ...architecture.tool_result_policy import (
     ModelResultContract,
@@ -103,6 +104,7 @@ _DIAGNOSTIC_DETAILS = {
     "canceled": "工具执行已取消。",
 }
 _DIAGNOSTIC_REASON_DETAILS = {
+    **CREATION_REFERENCE_DETAILS,
     "native_assistant_transaction_invalid": (
         "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
     ),
@@ -132,6 +134,7 @@ _DIAGNOSTIC_REASON_DETAILS = {
 # ``data``.  Only deterministic protocol codes produced by this repository may
 # survive into a model, MCP client, run step, checkpoint receipt, REST or SSE.
 _SAFE_DIAGNOSTIC_REASONS = frozenset({
+    *CREATION_REFERENCE_DETAILS,
     "failed_write_limit",
     "history_sequence_gap",
     "invalid_turn_state",
@@ -453,6 +456,11 @@ def sanitize_diagnostic_tool_result(
         reason = source_data.get("reason")
         if isinstance(reason, str) and reason in _SAFE_DIAGNOSTIC_REASONS:
             safe_data["reason"] = reason
+        if isinstance(reason, str) and reason in CREATION_REFERENCE_DETAILS:
+            path = source_data.get("path")
+            if (isinstance(path, str) and 0 < len(path) <= 256 and path.startswith("$")
+                    and all(char.isalnum() or char in "$._-[]" for char in path)):
+                safe_data["path"] = path
 
         # Runtime schema failures originate at the authoritative executor and
         # contain only repository-owned field locations and validation rules.

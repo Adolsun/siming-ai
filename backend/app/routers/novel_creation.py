@@ -22,6 +22,7 @@ from ..modules.assistant.interfaces.system_conversation_dependencies import (
     get_system_conversation_store,
 )
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
+from ..modules.creation.domain.entity_contract import ENTITY_TYPES_BY_ARTIFACT
 from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..schemas.ai_writer import MobileProviderEnvelope
 from ..schemas.novel_creation import (
@@ -42,7 +43,6 @@ from ..services.novel_creation_claims import (
     get_creation_claim_by_idempotency_key,
 )
 from ..services.novel_creation_entities import (
-    ENTITY_TYPES_BY_ARTIFACT,
     get_creation_entity,
 )
 from ..services.novel_creation_retry import select_creation_retry_input

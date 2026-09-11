@@ -1,0 +1,4 @@
+# Local diagnostic tooling only; never included in the production installer.
+arize-phoenix==20.9.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
