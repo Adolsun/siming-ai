@@ -2707,6 +2707,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                         createdProjectId = result.createdProjectId,
                         progressEvents = JsonArray(capturedProgress),
                         promptMetrics = result.promptMetrics,
+                        replyStatus = result.replyStatus,
+                        replyDiagnostics = result.replyDiagnostics,
                     )
                     CreationAgentTurnRecords.withTurns(
                         result.session,

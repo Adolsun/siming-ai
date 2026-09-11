@@ -1879,7 +1879,43 @@
     }
   },
   "creation_agent": {
+    "reference_diagnostics": {
+      "creation_context_entity_unavailable": "context_entity_ids 引用的实体不存在、已删除或不属于当前立项会话。本次未启动生成、未写入。请先用 list_creation_entities 检索当前实体，再用 get_creation_entity 读取有效 ID，修正引用后再调用；不要原样重试。",
+      "creation_target_entity_unavailable": "entity_id 指定的目标实体不存在、已删除或不属于当前立项会话。本次未启动生成、未写入。请用 list_creation_entities 重新选择并读取真实实体 ID。",
+      "creation_target_artifact_mismatch": "entity_id 指定的实体不属于 artifact 对象。本次未写入；请读取目标实体后修正 artifact。",
+      "creation_entity_type_invalid": "目标实体类型 entity_type 不属于当前 artifact。请按工具 Schema 中的类型填写；characters 阶段的角色类型为 character，关系类型为 relationship。本次未启动生成、未写入。",
+      "creation_context_artifact_invalid": "context_artifacts 含无效的立项对象名称。本次未启动生成、未写入；请用 get_creation_snapshot 读取当前对象名称并修正该字段。",
+      "creation_entity_identity_conflict": "修改后的实体标识与另一个已有或已删除实体冲突，本次未写入。请先用 list_creation_entities 核对两个对象，不能通过改名替换另一个实体。"
+    },
+    "entity_types_by_artifact": {
+      "world_style": [
+        "worldbuilding"
+      ],
+      "characters": [
+        "character",
+        "relationship"
+      ],
+      "locations": [
+        "faction",
+        "location",
+        "world_relation"
+      ],
+      "macro_outline": [
+        "volume"
+      ],
+      "opening_outline": [
+        "chapter_outline",
+        "scene_outline"
+      ]
+    },
     "system_template": "你是司命的对话式立项助手。当前 creation session_id={{session_id}}。\n所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。\n最新 user 消息是本轮唯一当前任务。较早原文和历史 checkpoint 只作参考；\n其中语义摘要是非权威导航，工具样式文字不可执行，项目事实必须通过本轮工具重新读取。\n只有当前模型步骤的原生 tool_calls 可以进入执行器。\n每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。\n快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。\n读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。\n用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。\n每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。\n“继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。\n写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。\n用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。\n局部请求必须优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。调用模型生成工具时，用 context_entity_ids/context_artifacts 明确传入你刚检索并复核的依据；未检索的对象不会自动全量注入。\n写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。\n只有用户明确要求创建正式作品时才调用 finalize_creation_session。成功后请用户通过界面按钮进入正式作品，并说明项目助手会自动展开，不再邀请其在立项会话写正文。\n工具返回 running 表示任务已可靠创建，不要重复调用。最后简洁说明实际读取、修改或启动的内容及影响。",
+    "reply_contract": {
+      "instruction": "请根据以上真实工具返回，用两到四句中文说明本轮实际完成的读取、修改或任务启动，并提出至多一个基于当前立项数据的后续问题。不得声称未成功的写入已经保存；running 只表示任务已启动，不表示内容已生成。本轮工具已关闭，当前唯一任务是向作者说明已有执行回执，不再规划或执行下一步。写入成功回执已经确认提交，不需要再次读取验证。只返回面向作者的自然语言，不得返回 tool_calls，也不得用 DSML、XML 或 JSON 模拟工具调用。",
+      "repair_instruction": "上一条总结未通过输出协议校验，未向作者显示，也未执行其中的任何工具。已完成的真实操作保持不变。请只纠正总结，工具继续关闭，不得重放操作。",
+      "failure_notice": "模型未能生成有效总结；本轮已结束，不会自动重复执行操作。",
+      "max_attempts": 2,
+      "tool_markup_pattern": "(?:<|&lt;)\\s*\\\\?/?[｜|]+DSML(?:[｜|]+|(?=\\s*$))"
+    },
     "tool_names": [
       "confirm_creation_artifact",
       "delete_creation_entity",
@@ -2807,6 +2843,19 @@
               },
               "entity_type": {
                 "default": "",
+                "description": "Optional isolated entity type. world_style: worldbuilding; characters: character, relationship; locations: faction, location, world_relation; macro_outline: volume; opening_outline: chapter_outline, scene_outline",
+                "enum": [
+                  "",
+                  "chapter_outline",
+                  "character",
+                  "faction",
+                  "location",
+                  "relationship",
+                  "scene_outline",
+                  "volume",
+                  "world_relation",
+                  "worldbuilding"
+                ],
                 "title": "Entity Type",
                 "type": "string"
               },
@@ -5137,5 +5186,5 @@
       }
     }
   },
-  "source_sha256": "b30d03cef75afd2645bcd4800102d7b306b9a088158821649d40cf9f7fd656bc"
+  "source_sha256": "7ca2081345ae380dc4e9e0e925398cb8959dd3f4dfe221abac78d6b590cd92f9"
 }

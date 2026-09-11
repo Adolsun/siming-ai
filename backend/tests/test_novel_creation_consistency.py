@@ -158,8 +158,11 @@ def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
     assert current["relationships"] == baseline["relationships"]
 
 
-@pytest.mark.parametrize("target", [{"context_entity_ids": ["not-a-real-entity"]}, {"entity_id": "not-a-real-entity"}])
-def test_stage_preparation_failure_finishes_the_durable_run(target):
+@pytest.mark.parametrize(("target", "reason", "path"), [
+    ({"context_entity_ids": ["not-a-real-entity"]}, "creation_context_entity_unavailable", "$.context_entity_ids[0]"),
+    ({"entity_id": "not-a-real-entity"}, "creation_target_entity_unavailable", "$.entity_id"),
+])
+def test_stage_preparation_failure_finishes_the_durable_run(target, reason, path):
     db = _db()
     session = _ready_session(db)
     request = {"stage": "opening_outline", "model": "openai:test", "use_model": True, **target}
@@ -171,11 +174,13 @@ def test_stage_preparation_failure_finishes_the_durable_run(target):
             **request, "session_id": session.id, "_run_id": run.id,
         }))
     assert result["status"] == "error"
+    assert result["data"] == {"reason": reason, "path": path, "retryable": True}
     model.assert_not_called()
     db.refresh(run)
     assert run.status == "failed"
     assert run.completed_at is not None
-    assert "不存在或已删除" in run.current_message
+    assert run.current_message == result["detail"]
+    assert "list_creation_entities" in run.current_message
     assert db.get(OperationRun, run.operation_id).status == "failed"
     assert session.revision == before_revision
 

@@ -23,6 +23,7 @@ from app.architecture.tool_categories import (
     tool_category_controller_schema,
 )
 from app.database.models import NovelCreationSession
+from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS, ENTITY_TYPES_BY_ARTIFACT
 from app.modules.assistant.infrastructure.runtime import get_compiled_prompt, render_prompt
 from app.modules.creation.interfaces.agent_scope import (
     CREATION_AGENT_REVISION_TOOL_NAMES,
@@ -46,6 +47,13 @@ from app.prompts.worldbuilding_writer_prompts import (
 )
 from app.services.agent.prompt_builder import (
     compose_chapter_writer_messages,
+)
+from app.services.creation_agent_reply import (
+    CREATION_REPLY_FAILURE_NOTICE,
+    CREATION_REPLY_INSTRUCTION,
+    CREATION_REPLY_MAX_ATTEMPTS,
+    CREATION_REPLY_REPAIR_INSTRUCTION,
+    CREATION_REPLY_TOOL_MARKUP_PATTERN,
 )
 from app.services.novel_creation_agent import (
     _domain_tool_schemas as creation_agent_domain_tool_schemas,
@@ -406,7 +414,16 @@ def build_contract() -> dict:
             "world": WORLDBUILDING_ENTRY_TOOL,
         },
         "creation_agent": {
+            "reference_diagnostics": CREATION_REFERENCE_DETAILS,
+            "entity_types_by_artifact": {key: sorted(value) for key, value in ENTITY_TYPES_BY_ARTIFACT.items()},
             "system_template": creation_agent_system_prompt("{{session_id}}"),
+            "reply_contract": {
+                "instruction": CREATION_REPLY_INSTRUCTION,
+                "repair_instruction": CREATION_REPLY_REPAIR_INSTRUCTION,
+                "failure_notice": CREATION_REPLY_FAILURE_NOTICE,
+                "max_attempts": CREATION_REPLY_MAX_ATTEMPTS,
+                "tool_markup_pattern": CREATION_REPLY_TOOL_MARKUP_PATTERN,
+            },
             "tool_names": sorted({*mobile_creation_names, TOOL_CATEGORY_CONTROLLER}),
             "excluded_pc_tool_names": sorted(MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES),
             "revision_tool_names": sorted(
