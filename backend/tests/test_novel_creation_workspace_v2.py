@@ -1052,7 +1052,7 @@ def test_agent_artifact_generation_returns_a_structured_error_for_an_invalid_ent
     assert result["tool"] == "generate_creation_artifact"
     assert result["status"] == "error"
     assert "目标实体类型" in result["detail"]
-    assert result["data"] is None
+    assert result["data"]["reason"] == "creation_entity_type_invalid"
 
 
 def test_quick_run_fails_without_writing_when_model_returns_no_output():

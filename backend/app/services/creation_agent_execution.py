@@ -43,6 +43,14 @@ from app.services.creation_agent_native_protocol import (
     safe_creation_tool_result,
     validate_native_call_batch,
 )
+from app.services.creation_agent_reply import (
+    CREATION_REPLY_FAILURE_NOTICE,
+    CREATION_REPLY_INSTRUCTION,
+    CREATION_REPLY_MAX_ATTEMPTS,
+    CREATION_REPLY_REPAIR_INSTRUCTION,
+    creation_receipt_reply,
+    creation_reply_error,
+)
 from app.services.creation_agent_turn_records import (
     CREATION_AGENT_TURN_SCHEMA,
     record_prompt_metric,
@@ -103,6 +111,8 @@ class CreationTurnState:
     seen_write_calls: set[str] = field(default_factory=set)
     active_read_calls: set[str] = field(default_factory=set)
     final_reply: str = ""
+    reply_status: str = "model"
+    reply_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     progress_events: list[dict[str, Any]] = field(default_factory=list)
     prompt_metrics: list[dict[str, Any]] = field(default_factory=list)
     direct_mcp_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -166,7 +176,7 @@ def _consume_delivered_transactions(state: CreationTurnState) -> bool:
 
 
 def _archive_consumed_transactions(state: CreationTurnState) -> None:
-    """Create audit receipts only after the final model response is complete."""
+    """Create audit receipts only after the final reply is complete."""
 
     pending = []
     for transaction in state.tool_transactions:
@@ -239,6 +249,8 @@ def _durable_runtime_snapshot(
         "successful_read_count": state.successful_read_count,
         "reference_context": state.reference_context,
         "turn_execution_id": state.turn_execution_id,
+        "reply_status": state.reply_status,
+        "reply_diagnostics": list(state.reply_diagnostics),
     })
 
 
@@ -641,6 +653,12 @@ async def _run_native_step(
     bindings: CreationExecutionBindings,
     iteration: int,
 ) -> bool:
+    if creation_turn_writes_closed(
+        successful_writes=state.successful_write_count,
+        failed_writes=state.failed_write_count,
+    ):
+        # All tool-free completion uses _complete_reply and its output contract.
+        return False
     requires_category_selection = not any(
         item.get("tool") == TOOL_CATEGORY_CONTROLLER and item.get("status") == "ok"
         for item in state.tool_results
@@ -652,14 +670,7 @@ async def _run_native_step(
         "正在判断需要哪些立项能力…" if iteration == 0 else "正在根据真实工具结果继续处理…",
         {"iteration": iteration + 1, "active_categories": list(state.active_categories)},
     )
-    writes_closed = creation_turn_writes_closed(
-        successful_writes=state.successful_write_count,
-        failed_writes=state.failed_write_count,
-    )
-    # Once the deterministic mutation boundary closes, ask for the final text
-    # with no tools. This prevents a compliant model from spending another
-    # planning step on reads or downstream writes.
-    state.schemas = [] if writes_closed else bindings.tool_schemas(state.active_categories)
+    state.schemas = bindings.tool_schemas(state.active_categories)
     state.messages = await state.prepare_model_messages(
         system_prompt=state.system_prompt,
         current_tools=state.schemas,
@@ -774,50 +785,70 @@ def _created_project_id(state: CreationTurnState) -> str | None:
     return candidate or None
 
 
-def truthful_no_write_reply(state: CreationTurnState) -> str:
-    failures = [
-        str(item.get("detail") or "工具未完成")
-        for item in state.tool_results
-        if item.get("status") not in {"ok", "running"}
-    ]
-    reads = [
-        item for item in state.tool_results
-        if item.get("status") == "ok" and item.get("tool") not in WRITE_TOOLS
-    ]
-    if failures:
-        return f"本轮没有保存任何修改：{failures[-1]}。请调整要求后重试。"
-    if reads:
-        return "本轮只完成了立项工具读取，没有保存任何修改。请明确要写入的对象和内容后重试。"
-    if state.tool_mode == "direct_mcp":
-        return "本轮没有获得可验证的 MCP 结果，因此无法确认读取或修改了立项数据。请重试。"
-    if state.tool_results:
-        return "本轮执行了立项工具，但没有产生可确认的写入。请调整要求后重试。"
-    return "本轮未执行任何立项工具，因此没有读取或修改立项数据。请重试。"
-
-
 async def _complete_reply(
     state: CreationTurnState,
     bindings: CreationExecutionBindings,
     created_project_id: str | None,
 ) -> None:
     if created_project_id:
+        state.reply_status = "project_created"
         state.final_reply = (
             "正式作品已创建并进入作品库。请点击下方按钮进入正式作品；"
             "进入后项目助手会自动展开，后续正文与项目资料都在那里继续。"
         )
         return
+    reply_error = creation_reply_error(state.final_reply) if state.final_reply else None
+    if reply_error:
+        await _reject_reply(state, bindings, reply_error)
+        state.final_reply = ""
     if not state.final_reply and state.tool_results and state.tool_mode != "direct_mcp":
-        summary_instruction = (
-            "请根据以上真实工具返回，用两到四句中文说明本轮实际修改了什么、"
-            "哪些内容没有修改，并提出一个基于当前立项数据的后续问题。"
-            "不得声称未成功的写入已经保存。"
+        await _summarize_reply(state, bindings)
+    if not state.final_reply:
+        state.reply_status = "receipt_only"
+        state.final_reply = creation_receipt_reply(
+            state.tool_results, state.write_results, tool_mode=state.tool_mode,
+        )
+        if state.reply_diagnostics:
+            state.final_reply += CREATION_REPLY_FAILURE_NOTICE
+
+
+async def _reject_reply(
+    state: CreationTurnState,
+    bindings: CreationExecutionBindings,
+    reason: str,
+) -> None:
+    diagnostic = {"reason": reason, "attempt": len(state.reply_diagnostics) + 1}
+    state.reply_diagnostics.append(diagnostic)
+    await bindings.emit_progress(
+        state.on_event,
+        state.progress_events,
+        "reply_rejected",
+        "模型总结未通过校验，已保留真实执行结果",
+        diagnostic,
+    )
+    await state.persist_runtime_state(_durable_runtime_snapshot(state))
+
+
+async def _summarize_reply(
+    state: CreationTurnState,
+    bindings: CreationExecutionBindings,
+) -> None:
+    state.schemas = []
+    for _ in range(max(0, CREATION_REPLY_MAX_ATTEMPTS - len(state.reply_diagnostics))):
+        instruction = CREATION_REPLY_INSTRUCTION
+        if state.reply_diagnostics:
+            instruction += CREATION_REPLY_REPAIR_INSTRUCTION
+        await bindings.emit_progress(
+            state.on_event, state.progress_events, "model_step_started",
+            "正在根据真实执行结果整理回复…",
+            {"phase": "summary", "attempt": len(state.reply_diagnostics) + 1},
         )
         state.messages = await state.prepare_model_messages(
             system_prompt=state.system_prompt,
             current_tools=(),
             current_ledger=tuple(state.current_ledger),
             delivered_transactions=tuple(state.tool_transactions),
-            extra_runtime_instruction=summary_instruction,
+            extra_runtime_instruction=instruction,
         )
 
         async def report_resume(payload: dict[str, Any]) -> None:
@@ -825,40 +856,28 @@ async def _complete_reply(
 
         try:
             summary = await bindings.complete_tool_turn(
-                messages=state.messages,
-                tools=[],
-                model=state.model,
-                temperature=0.2,
-                max_tokens=state.provider_max_tokens(),
-                timeout=300,
-                retry=0,
-                resume=8,
-                on_resume=report_resume,
+                messages=state.messages, tools=[], model=state.model,
+                temperature=0.2, max_tokens=state.provider_max_tokens(),
+                timeout=300, retry=0, resume=8, on_resume=report_resume,
+                extra_body=state.extra_body, tool_choice=None,
             )
-            record_prompt_metric(
-                state.prompt_metrics,
-                iteration=len(state.prompt_metrics) + 1,
-                phase="summary",
-                active_categories=state.active_categories,
-                messages=state.messages,
-                schemas=[],
-                result=summary,
-            )
-            consumed_delivered = _consume_delivered_transactions(state)
-            if consumed_delivered:
-                await state.persist_runtime_state(_durable_runtime_snapshot(state))
-            state.final_reply = str(summary.get("content") or "").strip()
+        except ConversationContextError:
+            raise
         except Exception:
-            state.final_reply = ""
-    if not state.final_reply:
-        if state.write_results:
-            details = [
-                str(item.get("detail") or item.get("tool") or "已更新立项数据")
-                for item in state.write_results[:3]
-            ]
-            state.final_reply = f"本轮已完成：{'；'.join(details)}。接下来你最想补充哪一部分？"
-        else:
-            state.final_reply = truthful_no_write_reply(state)
+            await _reject_reply(state, bindings, "summary_request_failed")
+            return
+        record_prompt_metric(
+            state.prompt_metrics, iteration=len(state.prompt_metrics) + 1,
+            phase="summary", active_categories=state.active_categories,
+            messages=state.messages, schemas=[], result=summary,
+        )
+        if _consume_delivered_transactions(state):
+            await state.persist_runtime_state(_durable_runtime_snapshot(state))
+        reason = creation_reply_error(summary.get("content"), summary.get("tool_calls"))
+        if reason is None:
+            state.final_reply = summary["content"].strip()
+            return
+        await _reject_reply(state, bindings, reason)
 
 
 async def _present_active_run(state: CreationTurnState) -> dict[str, Any] | None:
@@ -895,6 +914,9 @@ async def finish_creation_turn(
 ) -> dict[str, Any]:
     created_project_id = _created_project_id(state)
     await _complete_reply(state, bindings, created_project_id)
+    # A deterministic terminal receipt also closes delivery; no model is needed
+    # after project creation or when summary generation is unavailable.
+    _consume_delivered_transactions(state)
     _archive_consumed_transactions(state)
     await state.persist_runtime_state(_durable_runtime_snapshot(state, status="completed"))
     for offset in range(0, len(state.final_reply), 240):
@@ -942,6 +964,8 @@ async def finish_creation_turn(
         ],
         "outcome": {
             "status": "completed",
+            "reply_status": state.reply_status,
+            "reply_diagnostics": list(state.reply_diagnostics),
             "tool_count": len(state.tool_results),
             "write_count": len(state.write_results),
             "created_project_id": created_project_id,

@@ -32,6 +32,56 @@ import okhttp3.mockwebserver.RecordedRequest
 
 class MobileCreationConversationAgentTest {
     @Test
+    fun `standalone generation returns reference diagnostics without calling the generator`() {
+        val cases = listOf(
+            Triple("context_entity_ids", JsonArray(listOf(JsonPrimitive("world_style:worldbuilding:99"))), "creation_context_entity_unavailable"),
+            Triple("context_artifacts", JsonArray(listOf(JsonPrimitive("unknown_artifact"))), "creation_context_artifact_invalid"),
+            Triple("entity_type", JsonPrimitive("characters"), "creation_entity_type_invalid"),
+        )
+        cases.forEach { (field, value, reason) ->
+            val requests = AtomicInteger()
+            var modelReceipt = ""
+            fun tool(name: String, args: JsonObject): MockResponse = chatStreamResponse(buildJsonObject {
+                put("choices", JsonArray(listOf(buildJsonObject { put("message", buildJsonObject {
+                    put("role", "assistant")
+                    put("tool_calls", JsonArray(listOf(buildJsonObject {
+                        put("id", "call-$name")
+                        put("type", "function")
+                        put("function", buildJsonObject { put("name", name); put("arguments", args.toString()) })
+                    })))
+                }) })))
+            }.toString())
+            withServer(object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (requests.getAndIncrement()) {
+                    0 -> tool("set_tool_categories", buildJsonObject {
+                        put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_flow"))))
+                    })
+                    1 -> tool("generate_creation_artifact", buildJsonObject {
+                        put("artifact", "characters"); put("expected_revision", 1); put(field, value)
+                    })
+                    else -> {
+                        check(requests.get() == 3)
+                        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                        modelReceipt = body.getValue("messages").jsonArray.map { it.jsonObject }
+                            .last { it.string("role") == "tool" }.string("content")
+                        chatStreamResponse("""{"choices":[{"message":{"role":"assistant","content":"引用无效，本轮未写入。"}}]}""")
+                    }
+                }
+            }) { server ->
+                val initial = session()
+                val outcome = runBlocking { agent().run(initial, "生成主角档案", config(server)) }
+                assertEquals(3, requests.get())
+                assertTrue(modelReceipt.contains(reason), modelReceipt)
+                assertTrue(modelReceipt.contains("$.$field"), modelReceipt)
+                assertEquals(1, outcome.session.getValue("revision").jsonPrimitive.content.toInt())
+                assertEquals(initial.getValue("draft"), outcome.session.getValue("draft"))
+                val receipt = outcome.toolResults.map { it.jsonObject }.last()
+                assertEquals(reason, receipt.getValue("data").jsonObject.string("reason"))
+            }
+        }
+    }
+
+    @Test
     fun `standalone entity refinement replaces only the selected second entity`() {
         exerciseEntityRefinement(valid = true)
     }
@@ -41,7 +91,12 @@ class MobileCreationConversationAgentTest {
         exerciseEntityRefinement(valid = false)
     }
 
-    private fun exerciseEntityRefinement(valid: Boolean) {
+    @Test
+    fun `standalone generation passes explicitly selected context entities to the provider`() {
+        exerciseEntityRefinement(valid = true, includeContext = true)
+    }
+
+    private fun exerciseEntityRefinement(valid: Boolean, includeContext: Boolean = false) {
         val calls = AtomicInteger()
         val first = buildJsonObject {
             put("title", "不应变动的条目")
@@ -100,12 +155,14 @@ class MobileCreationConversationAgentTest {
                         put("entity_id", "world_style:worldbuilding:1")
                         put("instruction", "修订所选实体")
                         put("expected_revision", 1)
+                        if (includeContext) put("context_entity_ids", JsonArray(listOf(JsonPrimitive("world_style:worldbuilding:0"))))
                     })
                     2, 3 -> if (index == 2 || !valid) {
                         if (index == 2) {
                             val prompt = body.getValue("messages").jsonArray.last().jsonObject.string("content")
                             assertTrue(prompt.contains("world_style:worldbuilding:1"))
-                            assertFalse(prompt.contains("保持这条原始内容"))
+                            assertEquals(includeContext, prompt.contains("保持这条原始内容"))
+                            if (includeContext) assertTrue(prompt.contains("retrieved_entities"))
                         }
                         buildJsonObject {
                             put("role", "assistant")
@@ -537,6 +594,178 @@ class MobileCreationConversationAgentTest {
         }
     }
 
+    @Test
+    fun `standalone summary rejects DSML before displaying any provider delta`() {
+        listOf(
+            DSML,
+            "已经保存。\n$DSML",
+            DSML.replace("｜｜", "｜"),
+            DSML.replace("｜", "|"),
+            DSML.replace("<", "&lt;"),
+            "<｜｜DSML  ",
+        ).forEach { invalid -> exerciseSummary(invalid, persistentFailure = false) }
+    }
+
+    @Test
+    fun `standalone summary stops after one correction and retains committed data`() {
+        exerciseSummary(DSML, persistentFailure = true)
+    }
+
+    @Test
+    fun `standalone summary never executes an unexpected native call`() {
+        exerciseSummary("", persistentFailure = false, nativeCall = true)
+    }
+
+    @Test
+    fun `standalone empty summary is corrected without replaying a write`() {
+        exerciseSummary("", persistentFailure = false)
+    }
+
+    @Test
+    fun `standalone summary request failure preserves the successful write`() {
+        exerciseSummary("", persistentFailure = false, transportFailure = true)
+    }
+
+    @Test
+    fun `standalone failed write limit enters summary without another tool step`() {
+        val requests = AtomicInteger()
+        val expectedReply = "修改未保存，请检查当前资料版本。"
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                return when (requests.getAndIncrement()) {
+                    0 -> chatStreamResponse(
+                        """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                    )
+                    1 -> {
+                        val calls = (1..4).joinToString(",") { index ->
+                            """{"id":"write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"expected_revision\":999,\"changes\":{\"genre\":\"玄幻\"}}"}}"""
+                        }
+                        chatStreamResponse("""{"choices":[{"message":{"role":"assistant","tool_calls":[$calls]}}]}""")
+                    }
+                    else -> {
+                        check(requests.get() == 3)
+                        assertTrue(body.getValue("tools").jsonArray.isEmpty())
+                        assertFalse("tool_choice" in body)
+                        assertTrue(body.getValue("messages").jsonArray.first().jsonObject.string("content").contains("工具已关闭"))
+                        chatStreamResponse("""{"choices":[{"message":{"role":"assistant","content":"$expectedReply"}}]}""")
+                    }
+                }
+            }
+        }) { server ->
+            val outcome = runBlocking { agent().run(session(), "把题材设为玄幻", config(server)) }
+            assertEquals(3, requests.get())
+            assertEquals(1, outcome.session.getValue("revision").jsonPrimitive.content.toInt())
+            assertEquals(expectedReply, outcome.reply)
+            assertEquals(listOf("error", "error", "error", "denied"), outcome.toolResults.map { it.jsonObject }
+                .filter { it.string("tool") == "patch_creation_session" }.map { it.string("status") })
+            assertEquals("summary", outcome.promptMetrics.last().jsonObject.string("phase"))
+        }
+    }
+
+    private fun exerciseSummary(
+        invalid: String,
+        persistentFailure: Boolean,
+        nativeCall: Boolean = false,
+        transportFailure: Boolean = false,
+    ) {
+        val requests = AtomicInteger()
+        val persisted = AtomicInteger()
+        val progress = mutableListOf<CreationAgentProgressEvent>()
+        val expectedReply = "题材已更新为玄幻。主角有什么目标？"
+        fun response(content: String, call: String? = null): MockResponse = chatStreamResponse(
+            buildJsonObject {
+                put("choices", JsonArray(listOf(buildJsonObject {
+                    put("message", buildJsonObject {
+                        put("role", "assistant")
+                        put("content", content)
+                        if (call != null) put("tool_calls", JsonArray(listOf(Json.parseToJsonElement(call))))
+                    })
+                })))
+            }.toString(),
+        )
+        fun call(id: String, name: String, arguments: String): String = buildJsonObject {
+            put("id", id)
+            put("type", "function")
+            put("function", buildJsonObject { put("name", name); put("arguments", arguments) })
+        }.toString()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("/chat/completions", request.path)
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                assertEquals("deepseek-flash", body.string("model"))
+                return when (val step = requests.getAndIncrement()) {
+                    0 -> response("", call("categories", "set_tool_categories", """{"enabled_categories":["creation_data"]}"""))
+                    1 -> response("", call("read", "get_creation_snapshot", "{}"))
+                    2 -> response("", call("write", "patch_creation_session", """{"changes":{"genre":"玄幻"}}"""))
+                    else -> {
+                        check(step in 3..4) { "Summary correction must be bounded" }
+                        assertTrue(body.getValue("tools").jsonArray.isEmpty())
+                        assertFalse("tool_choice" in body)
+                        val messages = body.getValue("messages").jsonArray.map { it.jsonObject }
+                        val system = messages.first().string("content")
+                        assertTrue(system.contains("[SERVER_RUNTIME_INSTRUCTION]"))
+                        assertTrue(system.contains("工具已关闭"))
+                        assertEquals("把题材设为玄幻", messages.last { it.string("role") == "user" }.string("content"))
+                        assertTrue(messages.any { it.string("role") == "tool" && it.string("tool_call_id") == "write" })
+                        assertFalse(progress.any { it.type == "reply_delta" })
+                        if (step == 4) assertTrue(system.contains("上一条总结未通过输出协议校验"))
+                        if (transportFailure) {
+                            MockResponse().setResponseCode(401).setBody("""{"error":{"message":"summary request unavailable"}}""")
+                        } else if (step == 3 && nativeCall) {
+                            response("", call("unoffered-write", "patch_creation_session", """{"changes":{"genre":"科幻"}}"""))
+                        } else response(if (step == 3 || persistentFailure) invalid else expectedReply)
+                    }
+                }
+            }
+        }) { server ->
+            val client = DirectApiClient(allowCleartextForTests = true, retryDelaysMillis = emptyList())
+            val contract = contractJson()
+            val store = MobileAssistantConversationStore(Files.createTempDirectory("creation-summary-test").toFile())
+            val standalone = MobileCreationConversationAgent(
+                contract = PcCreationAgentContract(contract),
+                stageAgent = MobileCreationAgent(contract, client),
+                directApi = client,
+                conversationStore = store,
+                persistSession = { persisted.incrementAndGet() },
+                finalizeSession = { source -> source to "project-1" },
+            )
+            val outcome = runBlocking { AgentHarness(standalone, store).run(
+                source = session(), message = "把题材设为玄幻",
+                config = config(server).copy(model = "deepseek-flash"),
+                onProgress = { progress += it },
+            ) }
+            assertEquals(if (transportFailure) 4 else 5, requests.get())
+            assertEquals(1, persisted.get())
+            assertEquals(2, outcome.session.getValue("revision").jsonPrimitive.content.toInt())
+            assertEquals(1, outcome.toolResults.count { it.jsonObject.string("tool") == "patch_creation_session" })
+            if (!transportFailure) {
+                assertEquals(listOf("summary", "summary"), outcome.promptMetrics.takeLast(2).map { it.jsonObject.string("phase") })
+            }
+            assertEquals(if (persistentFailure || transportFailure) "receipt_only" else "model", outcome.replyStatus)
+            assertEquals(if (persistentFailure) 2 else 1, outcome.replyDiagnostics.size)
+            if (persistentFailure || transportFailure) {
+                assertTrue(outcome.reply.contains("已保存"))
+                assertTrue(outcome.reply.contains("模型未能生成有效总结"))
+            } else assertEquals(expectedReply, outcome.reply)
+            assertFalse(outcome.reply.contains("DSML"))
+            assertFalse(outcome.modelMessages.toString().contains("DSML"))
+            assertEquals(outcome.reply, progress.filter { it.type == "reply_delta" }.joinToString("") { it.data.string("delta") })
+            val record = CreationAgentTurnRecords.complete(
+                pending = CreationAgentTurnRecords.pending("把题材设为玄幻"),
+                reply = outcome.reply,
+                modelMessages = outcome.modelMessages,
+                toolResults = outcome.toolResults,
+                replayable = outcome.replayable,
+                executionRoute = "mobile",
+                replyStatus = outcome.replyStatus,
+                replyDiagnostics = outcome.replyDiagnostics,
+            )
+            assertEquals(outcome.replyStatus, record.string("reply_status"))
+            assertEquals(outcome.replyDiagnostics, record["reply_diagnostics"])
+        }
+    }
+
     private data class AgentHarness(
         val agent: MobileCreationConversationAgent,
         val store: MobileAssistantConversationStore,
@@ -563,6 +792,7 @@ class MobileCreationConversationAgentTest {
         source: JsonObject,
         message: String,
         config: DirectApiConfig,
+        onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
     ): MobileCreationConversationResult {
         val storageId = "creation-session-1"
         val conversationId = storageId
@@ -589,6 +819,7 @@ class MobileCreationConversationAgentTest {
             conversation = conversation,
             turnContext = turnContext,
             config = config,
+            onProgress = onProgress,
         )
     }
 
@@ -626,6 +857,12 @@ class MobileCreationConversationAgentTest {
             File("app/src/main/assets/pc_workspace_prompt_contract.json"),
         )
         return candidates.first(File::isFile).readText(Charsets.UTF_8)
+    }
+
+    private companion object {
+        const val DSML = "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"get_creation_entity\">" +
+            "<｜｜DSML｜｜ parameter name=\"entity_id\" string=\"true\">entity-1" +
+            "</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
     }
 
     private fun chatStreamResponse(body: String): MockResponse {

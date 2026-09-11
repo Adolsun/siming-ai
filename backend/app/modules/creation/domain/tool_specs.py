@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
+from .entity_contract import ENTITY_TYPES_BY_ARTIFACT
 
 
 class CompatibleInput(BaseModel):
@@ -191,7 +192,12 @@ class ModelBackedCreationArtifactInput(CreationArtifactInput):
 
 class GenerateCreationArtifactInput(ModelBackedCreationArtifactInput):
     expected_revision: int
-    entity_type: str = ""
+    entity_type: str = Field(default="", json_schema_extra={
+        "enum": ["", *sorted(set().union(*ENTITY_TYPES_BY_ARTIFACT.values()))],
+    }, description="Optional isolated entity type. " + "; ".join(
+        f"{artifact}: {', '.join(sorted(types))}"
+        for artifact, types in ENTITY_TYPES_BY_ARTIFACT.items()
+    ))
     instruction: str = ""
 
 

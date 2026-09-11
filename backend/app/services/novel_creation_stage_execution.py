@@ -11,6 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 from app.database.models import NovelCreationSession, NovelCreationStageRun
+from app.modules.creation.domain.entity_contract import (
+    ENTITY_COLLECTIONS,
+    ENTITY_TYPES_BY_ARTIFACT,
+    CreationReferenceError,
+)
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.novel_creation_authoring import (
     _validate_stage,
@@ -20,8 +25,6 @@ from app.services.novel_creation_contract import (
     OPENING_OUTLINE_CHAPTER_COUNT,
 )
 from app.services.novel_creation_entities import (
-    ENTITY_COLLECTIONS,
-    ENTITY_TYPES_BY_ARTIFACT,
     _extract_records,
     get_creation_entity,
     serialize_creation_entity,
@@ -144,9 +147,9 @@ def _resolve_entity_target(
     if entity_id:
         entity = get_creation_entity(db, entity_id)
         if not entity or entity.session_id != session.id or entity.status == "deleted":
-            raise ValueError("目标实体不存在或已删除")
+            raise CreationReferenceError("creation_target_entity_unavailable", "$.entity_id")
         if entity.artifact_key != stage:
-            raise ValueError("目标实体不属于当前立项对象")
+            raise CreationReferenceError("creation_target_artifact_mismatch", "$.artifact")
         return {
             "id": entity.id,
             "entity_type": entity.entity_type,
@@ -156,7 +159,7 @@ def _resolve_entity_target(
     if not entity_type:
         return None, ""
     if entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(stage, frozenset()):
-        raise ValueError("目标实体类型不属于当前立项对象")
+        raise CreationReferenceError("creation_entity_type_invalid", "$.entity_type")
     return {
         "entity_type": entity_type,
         "mode": "new",
@@ -176,17 +179,17 @@ def _resolve_context_references(
     target_entity_id: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     entities: list[dict[str, Any]] = []
-    for entity_id in _unique_strings(args.get("context_entity_ids"), limit=24):
+    for index, entity_id in enumerate(_unique_strings(args.get("context_entity_ids"), limit=24)):
         if entity_id == target_entity_id:
             continue
         entity = get_creation_entity(db, entity_id)
         if not entity or entity.session_id != session.id or entity.status == "deleted":
-            raise ValueError(f"上下文实体不存在或已删除：{entity_id}")
+            raise CreationReferenceError("creation_context_entity_unavailable", f"$.context_entity_ids[{index}]")
         entities.append(serialize_creation_entity(entity))
     artifacts = _unique_strings(args.get("context_artifacts"), limit=6)
     invalid = [name for name in artifacts if name not in STAGE_ORDER]
     if invalid:
-        raise ValueError("上下文立项对象不存在：" + "、".join(invalid))
+        raise CreationReferenceError("creation_context_artifact_invalid", "$.context_artifacts")
     return entities, artifacts
 
 
@@ -825,7 +828,11 @@ async def execute_creation_artifact_generation(
         if run and run.session_id == _text(args.get("session_id")):
             fail_run(db, run, exc, failed_stage=run.stage)
             commit_session(db)
+            if isinstance(exc, CreationReferenceError):
+                return exc.tool_result("generate_creation_artifact")
             return stage_tool_result("error", str(exc), run, run.session)
+        if isinstance(exc, CreationReferenceError):
+            return exc.tool_result("generate_creation_artifact")
         return {
             "tool": "generate_creation_artifact",
             "status": "error",

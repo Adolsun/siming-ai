@@ -116,13 +116,14 @@ internal class MobileCreationAgent(
     config: DirectApiConfig,
     entityTarget: JsonObject? = null,
     entityBaseline: JsonObject? = null,
+    contextEntities: List<JsonObject> = emptyList(),
 ): JsonObject {
     require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
     val stageBaseline = entityBaseline ?: baseline(source, stage)
     val (system, user) = if (stage == "concepts") {
         contract.conceptMessages(source, instruction)
     } else {
-        contract.stageMessages(source, stage, stageBaseline, instruction, entityTarget)
+        contract.stageMessages(source, stage, stageBaseline, instruction, entityTarget, contextEntities)
     }
     val maxTokens = if (stage == "concepts") 3_200 else 6_000
     val temperature = if (stage == "concepts") 0.8 else 0.65

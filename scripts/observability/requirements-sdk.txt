@@ -1,0 +1,3 @@
+# Add only these to a backend development/test environment, not the Phoenix server.
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0

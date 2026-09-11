@@ -17,7 +17,9 @@ from app.services.novel_creation_contract import (
 )
 from app.services.novel_creation_failures import clear_stage_failure
 from app.services.novel_creation_conflicts import artifact_conflict_projection
-from app.services.novel_creation_patch import normalize_patch_operation
+from app.services.novel_creation_patch import (
+    normalize_patch_operation, patch_parent, path_is_locked, pointer_parts,
+)
 from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run  # noqa: F401
 from app.services.novel_creation_runs import create_run, fail_run, serialize_run  # noqa: F401
 
@@ -592,43 +594,6 @@ def _soft_dependencies(draft: dict[str, Any], stage: str) -> list[dict[str, str]
     return missing
 
 
-def _pointer_parts(path: str) -> list[str]:
-    if path in {"", "/"}:
-        return []
-    if not path.startswith("/"):
-        raise ValueError(f"patch path must be a JSON Pointer: {path}")
-    return [part.replace("~1", "/").replace("~0", "~") for part in path[1:].split("/")]
-
-
-def _path_is_locked(path: str, locked_paths: list[str]) -> bool:
-    normalized = path.rstrip("/") or "/"
-    return any(
-        normalized == lock.rstrip("/")
-        or normalized.startswith(lock.rstrip("/") + "/")
-        or lock.rstrip("/").startswith(normalized + "/")
-        for lock in locked_paths
-    )
-
-
-def _patch_parent(document: Any, parts: list[str]) -> tuple[Any, str]:
-    if not parts:
-        raise ValueError("the artifact root cannot be removed or appended")
-    cursor = document
-    for part in parts[:-1]:
-        if isinstance(cursor, dict):
-            if part not in cursor:
-                cursor[part] = {}
-            cursor = cursor[part]
-        elif isinstance(cursor, list):
-            try:
-                cursor = cursor[int(part)]
-            except (ValueError, IndexError) as exc:
-                raise ValueError(f"invalid list path segment: {part}") from exc
-        else:
-            raise ValueError(f"patch path crosses a scalar value: {part}")
-    return cursor, parts[-1]
-
-
 def patch_creation_artifact(
     session: NovelCreationSession,
     stage: str,
@@ -636,6 +601,7 @@ def patch_creation_artifact(
     *,
     source: str = "author",
     validator: Callable[[str, dict[str, Any]], None] | None = None,
+    entity_binding: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """Atomically apply validated, lock-aware operations to one artifact."""
     artifact = serialize_creation_artifact(session, stage)
@@ -648,9 +614,9 @@ def patch_creation_artifact(
         path, action = normalize_patch_operation(change)
         if action not in {"set", "replace", "append", "remove", "resize"}:
             raise ValueError(f"unsupported patch action: {action}")
-        if _path_is_locked(path, locked_paths):
+        if path_is_locked(path, locked_paths):
             raise ValueError(f"字段已锁定，不能修改：{path}")
-        parts = _pointer_parts(path)
+        parts = pointer_parts(path)
         if not parts and action in {"set", "replace"}:
             value = change.get("value")
             if not isinstance(value, dict):
@@ -658,7 +624,7 @@ def patch_creation_artifact(
             document = deepcopy(value)
             summary.append({"path": path or "/", "action": action})
             continue
-        parent, key = _patch_parent(document, parts)
+        parent, key = patch_parent(document, parts)
         if action in {"set", "replace"}:
             if isinstance(parent, dict):
                 parent[key] = deepcopy(change.get("value"))
@@ -697,6 +663,10 @@ def patch_creation_artifact(
         summary.append({"path": path, "action": action})
     if validator:
         validator(stage, document)
+    if entity_binding is not None:
+        from app.services.novel_creation_entities import rebind_creation_entity_patch
+
+        rebind_creation_entity_patch(session, stage, document, entity_binding, summary)
     affected = creation_artifact_dependencies(session, stage)["affected_artifacts"]
     preserve_author_confirmation = (
         source == "author" and artifact.get("status") == "confirmed"

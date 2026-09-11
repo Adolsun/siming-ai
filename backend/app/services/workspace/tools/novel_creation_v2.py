@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
+from app.modules.creation.domain.entity_contract import CreationReferenceError
 
 from ....core.json_repair import parse_json_object_detailed
 from ....core.model_limits import MAX_CONFIGURABLE_LIMIT, default_output_token_limit
@@ -26,11 +27,7 @@ from ....modules.operations.interfaces.dependencies import get_operation_service
 from ....services.context_orchestrator import activate_context_manifest
 from ....services.novel_creation_actions import (
     delete_creation_entity as delete_creation_entity_record,
-)
-from ....services.novel_creation_actions import (
     patch_creation_entity as patch_creation_entity_record,
-)
-from ....services.novel_creation_actions import (
     restore_artifact_version as restore_creation_artifact_version_record,
 )
 from ....services.novel_creation_authoring import (
@@ -937,6 +934,9 @@ async def patch_creation_entity_tool(db: Session, project_id: str, args: dict[st
         )
         commit_session(db)
         return {"tool": "patch_creation_entity", "status": "ok", "detail": "Creation entity patched", "data": result}
+    except CreationReferenceError as exc:
+        db.rollback()
+        return exc.tool_result("patch_creation_entity")
     except Exception as exc:
         db.rollback()
         return {"tool": "patch_creation_entity", "status": "error", "detail": str(exc), "data": None}
