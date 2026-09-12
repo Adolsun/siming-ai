@@ -296,6 +296,7 @@ def bootstrap_database(
             backup_path = backup_sqlite_database(
                 url,
                 reason=f"pre-{APP_VERSION}-retired-revision",
+                automatic=True,
             )
             _normalize_retired_revision(
                 target_engine,
@@ -322,6 +323,7 @@ def bootstrap_database(
             backup_path = backup_sqlite_database(
                 url,
                 reason=f"pre-{APP_VERSION}",
+                automatic=True,
             )
         relax_sqlite_foreign_keys = (
             target_engine.dialect.name == "sqlite" and SQLITE_FK_RELAXED_REVISION in migration_path
