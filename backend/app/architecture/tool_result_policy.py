@@ -34,6 +34,17 @@ class ModelResultListProjection:
 
 
 @dataclass(frozen=True)
+class ModelResultObjectProjection:
+    """Select metadata from a nested object without copying its document body.
+
+    A scalar variant is retained only when also declared in ``data_fields``.
+    """
+
+    source_field: str
+    fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ModelResultPreview:
     """Explicit preview of one persisted artifact field.
 
@@ -98,6 +109,7 @@ class ModelResultContract:
     result_fields: tuple[str, ...] = ()
     data_fields: tuple[str, ...] = ()
     list_projections: tuple[ModelResultListProjection, ...] = ()
+    object_projections: tuple[ModelResultObjectProjection, ...] = ()
     reference_fields: tuple[str, ...] = ()
     preview: ModelResultPreview | None = None
     page_budget: ModelResultPageBudget | None = None
@@ -134,6 +146,7 @@ __all__ = [
     "DEFAULT_MODEL_RESULT_CONTRACT",
     "ModelResultContract",
     "ModelResultListProjection",
+    "ModelResultObjectProjection",
     "ModelResultPageBudget",
     "ModelResultPolicy",
     "ModelResultPreview",

@@ -124,6 +124,7 @@ def model_rows():
     return [
         {"type": "chapter_summary", "payload": summary},
         {
+            "character_ids": [],
             "type": "outline_create",
             "node_type": "chapter",
             "title": "核验",

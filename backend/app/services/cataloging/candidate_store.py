@@ -39,6 +39,7 @@ from .character_targets import (
     validate_character_profile_target,
     validate_character_state_target,
 )
+from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 from .constants import VALID_ITEM_TYPES
 from .jsonl import (
     candidate_response_attempts,
@@ -1100,6 +1101,8 @@ def create_candidate_from_raw(
                 normalized["payload"],
                 item_type=merged_item_type,
             )
+            if merged_item_type in {"outline_create", "outline_update"}:
+                outline_character_ids(merged_payload)
             if (merged_item_type == "chapter_summary"
                     and normalized["payload"].get("coverage_manifest_mode") == "replace"):
                 source_count = source_overview_scene_count(db, run)
@@ -1240,6 +1243,8 @@ def _prepare_candidate(
     _ensure_outline_identity(normalized, run)
     try:
         validate_scene_candidate(db, run, normalized)
+        if normalized["item_type"] in {"outline_create", "outline_update"}:
+            outline_character_ids(normalized["payload"])
     except ValueError as exc:
         return None, {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc),
                 "scene_repair": scene_repair_context(db, run)}

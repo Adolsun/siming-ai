@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,7 +13,10 @@ from app.core.exceptions import LLMError
 from app.services.agent_tool_stream import collect_tool_turn
 from app.services.creation_agent_reply import creation_receipt_reply, creation_reply_error
 from app.services.novel_creation_agent import run_creation_agent
+from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
 from app.services.workspace.executor import execute_workspace_action
+from app.services.workspace.registry import registry
+from app.services.workspace.tools import novel_creation_v2
 from tests.test_novel_creation_agent import _stream_completion, _test_context_preparer
 from tests.test_novel_creation_workspace_v2 import _db, _ready_session
 from tests.tool_budget_helpers import request_budget
@@ -84,6 +88,116 @@ def test_successful_write_enters_explicit_summary_without_replanning():
     assert "[SERVER_RUNTIME_INSTRUCTION]" in contexts[-1]["messages"][0]["content"]
     assert contexts[-1]["current_tools"] == ()
     assert result["_turn_trace"]["prompt_metrics"][-1]["phase"] == "summary"
+
+
+def test_large_entity_patch_delivers_success_to_summary_without_replaying_write():
+    db = _db()
+    session = _ready_session(db)
+    characters = serialize_creation_artifact(session, "characters")["data"]
+    characters["characters"][0]["background"] = "完整角色背景。" * 500
+    save_stage(session, "characters", characters)
+    db.commit()
+    entity = next(item for item in session.entities if item.entity_type == "character")
+    entity_id = entity.id
+    baseline = session.revision
+    limit = registry.get("patch_creation_entity").model_result_contract.max_json_bytes
+    reply = "角色姓名已更新为林遥，原有背景已保留。"
+    steps = iter([
+        _call("set_tool_categories", {"enabled_categories": ["creation_data"]}),
+        _call("get_creation_entity", {"entity_id": entity_id}),
+        _call("patch_creation_entity", {
+            "entity_id": entity_id,
+            "changes": [{"action": "set", "path": "/name", "value": "林遥"}],
+        }),
+    ])
+
+    def response(**kwargs):
+        if kwargs["tools"]:
+            return next(steps)
+        receipt_message = kwargs["messages"][-1]
+        assert receipt_message["role"] == "tool"
+        receipt = json.loads(receipt_message["content"])
+        assert receipt["status"] == "ok"
+        assert receipt["data"]["entity"]["id"] == entity_id
+        assert receipt["data"]["entity"]["revision"] == baseline + 1
+        assert "data" not in receipt["data"]["artifact"]
+        assert len(receipt_message["content"].encode("utf-8")) <= limit
+        return {"content": reply}
+
+    completion = _stream_completion(response)
+    executor = AsyncMock(wraps=execute_workspace_action)
+    try:
+        with (
+            patch("app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools", new=completion),
+            patch("app.services.creation_agent_execution.execute_workspace_action", new=executor),
+        ):
+            result = asyncio.run(run_creation_agent(
+                db, session=session, message="把主角改名为林遥", model="deepseek:deepseek-flash",
+                provider_request_budget=request_budget,
+                prepare_model_messages=_test_context_preparer("把主角改名为林遥"),
+            ))
+        assert result["reply"] == reply
+        assert result["_turn_trace"]["outcome"]["reply_diagnostics"] == []
+        assert result["write_count"] == 1
+        assert completion.call_count == 4
+        assert executor.await_count == 2
+        db.refresh(session)
+        assert session.revision == baseline + 1
+        raw_write = next(item for item in result["tool_results"] if item["tool"] == "patch_creation_entity")
+        assert len(json.dumps(raw_write["data"]["artifact"], ensure_ascii=False).encode("utf-8")) > limit
+        assert db.get(type(entity), entity_id).data_json["background"] == "完整角色背景。" * 500
+        assert result["_turn_trace"]["pending_tool_transactions"] == []
+    finally:
+        db.close()
+
+
+def test_generated_outline_delivers_saved_facts_to_summary_once(monkeypatch):
+    with _db() as db:
+        session = _ready_session(db)
+        outline = deepcopy(session.draft_json["stages"]["macro_outline"]["data"])
+        draft = deepcopy(session.draft_json)
+        draft["stages"]["macro_outline"] = {"status": "pending", "data": None}
+        session.draft_json = draft
+        db.commit()
+        baseline = session.revision
+        reply = "全书主线与卷纲已生成并保存，等待审阅确认。"
+        steps = iter([
+            _call("set_tool_categories", {"enabled_categories": ["creation_data", "creation_flow"]}),
+            _call("get_creation_snapshot", {}),
+            _call("generate_creation_artifact", {"artifact": "macro_outline", "entity_type": "volume"}),
+        ])
+
+        def response(**kwargs):
+            if kwargs["tools"]:
+                return next(steps)
+            receipt_message = kwargs["messages"][-1]
+            receipt = json.loads(receipt_message["content"])
+            assert receipt["data"]["saved"] is True
+            assert receipt["data"]["requires_confirmation"] is True
+            assert receipt["data"]["status"] == "generated"
+            assert receipt["data"]["revision"] == baseline + 1
+            assert receipt["data"]["collection_counts"] == {"volumes": len(outline["volumes"])}
+            assert "session" not in receipt["data"] and "run" not in receipt["data"]
+            return {"content": reply}
+
+        def generate(**kwargs):
+            async def stream():
+                yield json.dumps({"data": outline}, ensure_ascii=False)
+            return stream()
+
+        monkeypatch.setattr(novel_creation_v2.LLMGateway, "stream_chat_completion", generate)
+        completion = _stream_completion(response)
+        with patch("app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools", new=completion):
+            result = asyncio.run(run_creation_agent(
+                db, session=session, message="生成首版卷纲", model="openai:test",
+                provider_request_budget=request_budget,
+                prepare_model_messages=_test_context_preparer("生成首版卷纲"),
+            ))
+        assert result["reply"] == reply
+        assert result["write_count"] == 1
+        assert completion.call_count == 4
+        assert session.revision == baseline + 1
+        assert result["_turn_trace"]["pending_tool_transactions"] == []
 
 
 @pytest.mark.parametrize("bad_summary", [

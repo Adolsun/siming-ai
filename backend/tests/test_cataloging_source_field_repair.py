@@ -60,7 +60,7 @@ def test_saved_summary_can_be_repaired_separately_from_worldbuilding_source_mapp
     )
     for index, row in enumerate([
         {"type": "chapter_summary", "payload": original},
-        {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "完成复核。"},
+        {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "完成复核。"},
     ]):
         assert "candidate" in create_candidate_from_raw(db, job, run, row, index)
     db.commit()
@@ -142,7 +142,7 @@ def test_retry_points_to_wrong_manifest_and_link_not_the_already_saved_worldbuil
     summary["summary_text"] = "本章核验了馆藏卷宗，确认现有记录与原始凭证一致，并将核验过程记录在案。" * 3
     rows = [
         {"type": "chapter_summary", "payload": summary},
-        {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "完成核验。"},
+        {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "完成核验。"},
         {"type": "worldbuilding_timeline", "id": entry.id, "title": entry.title,
          "event_type": "confirmed", "event_description": "核验现有卷宗。", "source_fact_titles": ["001号卷"]},
         {"type": "chapter_link", "worldbuilding_titles": ["001号卷"]},

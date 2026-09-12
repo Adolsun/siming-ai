@@ -97,7 +97,7 @@ def test_staged_model_corrects_punctuation_using_retry_feedback(archive, monkeyp
         if len(calls) == 2:
             rows = [
                 {"type": "chapter_summary", "payload": summary_payload(characters=[character.name])},
-                {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": chapter.content},
+                {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": chapter.content},
                 {"type": "chapter_link", "characters": [{"name": character.name, "appearance_type": "出场"}]},
                 state,
             ]

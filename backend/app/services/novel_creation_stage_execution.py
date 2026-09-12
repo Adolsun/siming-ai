@@ -16,6 +16,7 @@ from app.modules.creation.domain.entity_contract import (
     ENTITY_TYPES_BY_ARTIFACT,
     CreationReferenceError,
 )
+from app.modules.creation.domain.generation_contract import CreationGenerationError
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.novel_creation_authoring import (
     _validate_stage,
@@ -338,6 +339,8 @@ def _artifact_prompt_baseline(
     stage: str,
     storage_baseline: dict[str, Any],
 ) -> dict[str, Any]:
+    if stage == "opening_outline" and storage_baseline:
+        return deepcopy(storage_baseline)
     prompt_baseline = _generation_shape_baseline(context, stage)
     collection_fields = {field for field, _kind in ENTITY_COLLECTIONS.get(stage, ())}
     for key, value in storage_baseline.items():
@@ -434,11 +437,18 @@ def _prepare_execution(
     working_draft = deepcopy(current_draft) if is_resume else (
         deepcopy(snapshot) if isinstance(snapshot, dict) else deepcopy(current_draft)
     )
+    if stage == "opening_outline":
+        from app.services.novel_creation_entities import creation_character_index, creation_volume_index
+
+        working_draft["_volume_index"] = creation_volume_index(session)
+        working_draft["_character_index"] = creation_character_index(session)
     instruction = _text(args.get("instruction"))
     if instruction:
         working_draft["_refinement_instruction"] = instruction
     entity_target, entity_id = _resolve_entity_target(db, session, stage, args)
     if entity_target:
+        stage_state = (working_draft.get("stages") or {}).get(stage) or {}
+        entity_target["initialize_stage"] = not bool(stage_state.get("data"))
         working_draft["_entity_target"] = deepcopy(entity_target)
     context_entities, context_artifacts = _resolve_context_references(
         db,
@@ -507,6 +517,8 @@ def _merge_entity_generation(
     """Keep unrelated rows byte-for-byte stable during entity-level generation."""
     target = context.entity_target
     if not target:
+        if stage == "opening_outline":
+            return generated, None
         for field, _entity_type in ENTITY_COLLECTIONS.get(stage, ()):
             existing = baseline.get(field)
             if isinstance(existing, list) and existing:
@@ -520,6 +532,12 @@ def _merge_entity_generation(
         raise ValueError(f"模型没有返回可用的 {entity_type} 实体")
 
     merged = deepcopy(baseline)
+    if target.get("initialize_stage"):
+        target_field = candidates[0]["field"]
+        merged.update({
+            key: deepcopy(value) for key, value in generated.items()
+            if key != target_field
+        })
     if target["mode"] == "existing":
         current = next(
             (
@@ -697,6 +715,11 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         )
         context.run.current_message = f"正在生成{label}"
         commit_session(context.db)
+        if name == "opening_outline":
+            from app.services.novel_creation_entities import creation_character_index, creation_volume_index
+
+            context.working_draft["_volume_index"] = creation_volume_index(context.session)
+            context.working_draft["_character_index"] = creation_character_index(context.session)
         existing_stage = ((context.working_draft.get("stages") or {}).get(name) or {})
         existing_data = (
             deepcopy(existing_stage.get("data"))
@@ -860,6 +883,8 @@ async def execute_creation_artifact_generation(
         if run and session:
             fail_run(db, run, exc, failed_stage=context.active_stage)
             commit_session(db)
+            if isinstance(exc, CreationGenerationError):
+                return exc.tool_result("generate_creation_artifact")
             return stage_tool_result("error", str(exc), run, session)
         return {
             "tool": "generate_creation_artifact",

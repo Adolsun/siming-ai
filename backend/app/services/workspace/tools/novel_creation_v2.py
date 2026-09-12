@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from contextlib import nullcontext
@@ -13,6 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 from app.modules.creation.domain.entity_contract import CreationReferenceError
+from app.modules.creation.domain.generation_contract import (
+    CreationGenerationError,
+    validate_generated_entity,
+)
 
 from ....core.json_repair import parse_json_object_detailed
 from ....core.model_limits import MAX_CONFIGURABLE_LIMIT, default_output_token_limit
@@ -27,7 +32,11 @@ from ....modules.operations.interfaces.dependencies import get_operation_service
 from ....services.context_orchestrator import activate_context_manifest
 from ....services.novel_creation_actions import (
     delete_creation_entity as delete_creation_entity_record,
+)
+from ....services.novel_creation_actions import (
     patch_creation_entity as patch_creation_entity_record,
+)
+from ....services.novel_creation_actions import (
     restore_artifact_version as restore_creation_artifact_version_record,
 )
 from ....services.novel_creation_authoring import (
@@ -52,12 +61,11 @@ from ....services.novel_creation_context_projection import (
 )
 from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
 from ....services.novel_creation_entities import (
-    _extract_records,
-    query_creation_entities,
-    serialize_creation_entity,
+    get_creation_entity as get_creation_entity_record,
 )
 from ....services.novel_creation_entities import (
-    get_creation_entity as get_creation_entity_record,
+    query_creation_entities,
+    serialize_creation_entity,
 )
 from ....services.novel_creation_entity_normalization import (
     normalize_characters as _normalize_characters,
@@ -216,103 +224,11 @@ def _normalize_macro_outline(data: dict[str, Any], baseline: dict[str, Any]) -> 
     return normalized
 
 
-def _chapter_number(value: Any, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        numbers = re.findall(r"\d+", _text(value))
-        return int(numbers[0]) if numbers else fallback
-
-
-def _normalize_section(
-    section: dict[str, Any],
-    base: dict[str, Any],
-    *,
-    chapter_id: str,
-    chapter_number: int,
-    scene_number: int,
-) -> dict[str, Any]:
-    item = {**deepcopy(base), **deepcopy(section)}
-    item["client_id"] = _text(item.get("client_id")) or f"{chapter_id}-section-{scene_number}"
-    item["parent_client_id"] = chapter_id
-    item["node_type"] = "section"
-    item["sort_order"] = _chapter_number(item.get("sort_order"), scene_number)
-    item["title"] = _text(item.get("title")) or f"第{chapter_number}章 · 场景{scene_number}"
-    item["summary"] = _text(item.get("summary") or item.get("planned_summary") or item.get("purpose"))
-    item["planned_summary"] = _text(item.get("planned_summary") or item.get("summary"))
-    base_metadata = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
-    source_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    metadata = {**deepcopy(base_metadata), **deepcopy(source_metadata)}
-    metadata["scene_number"] = _chapter_number(metadata.get("scene_number"), scene_number)
-    metadata["purpose"] = _text(metadata.get("purpose") or item.get("purpose") or item.get("summary")) or "推进本章目标"
-    metadata["location"] = _text(metadata.get("location")) or "地点待定"
-    metadata["timeline"] = _text(metadata.get("timeline")) or f"第{chapter_number}章第{scene_number}场"
-    metadata["pov_character"] = _text(metadata.get("pov_character")) or "主角"
-    metadata["characters"] = metadata.get("characters") if isinstance(metadata.get("characters"), list) else [metadata["pov_character"]]
-    metadata["entry_state"] = _text(metadata.get("entry_state")) or "承接上一场景"
-    metadata["exit_state"] = _text(metadata.get("exit_state")) or "产生新的行动压力"
-    metadata["emotional_residue"] = _text(metadata.get("emotional_residue")) or "情绪推动下一场景"
-    metadata["unresolved_actions"] = metadata.get("unresolved_actions") if isinstance(metadata.get("unresolved_actions"), list) else ["追踪本场景产生的新问题"]
-    item["metadata"] = metadata
-    return item
-
-
-def _normalize_opening_outline(data: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
-    source_chapters = _dict_rows(data.get("chapters"), name_field="title")
-    base_chapters = _dict_rows(baseline.get("chapters"), name_field="title")
-    if base_chapters:
-        source_chapters = (source_chapters + [{} for _ in range(len(base_chapters))])[:len(base_chapters)]
-    chapters: list[dict[str, Any]] = []
-    sections: list[dict[str, Any]] = []
-    top_sections = _dict_rows(data.get("sections"), name_field="title")
-    base_sections = _dict_rows(baseline.get("sections"), name_field="title")
-    for index, source in enumerate(source_chapters):
-        base = base_chapters[index] if index < len(base_chapters) else {}
-        original_id = _text(source.get("client_id"))
-        chapter_number = _chapter_number(source.get("chapter_number") or source.get("chapter") or source.get("number"), index + 1)
-        chapter_id = original_id or _text(base.get("client_id")) or f"chapter-{chapter_number:02d}"
-        chapter = {**deepcopy(base), **deepcopy(source)}
-        nested_sections = _dict_rows(chapter.pop("sections", None), name_field="title")
-        chapter["client_id"] = chapter_id
-        chapter["chapter_number"] = chapter_number
-        chapter["node_type"] = "chapter"
-        chapter["sort_order"] = _chapter_number(chapter.get("sort_order"), chapter_number)
-        chapter["title"] = _text(chapter.get("title")) or f"第{chapter_number}章 未命名事件"
-        chapter["summary"] = _text(chapter.get("summary") or chapter.get("planned_summary") or chapter.get("beat"))
-        chapter["planned_summary"] = _text(chapter.get("planned_summary") or chapter.get("summary"))
-        chapters.append(chapter)
-
-        chapter_aliases = {chapter_id, str(chapter_number), f"chapter-{chapter_number:02d}"}
-        if original_id:
-            chapter_aliases.add(original_id)
-        matching = nested_sections or [
-            item for item in top_sections
-            if _text(item.get("parent_client_id")) in chapter_aliases
-        ]
-        base_chapter_id = _text(base.get("client_id")) or chapter_id
-        fallback_sections = [item for item in base_sections if _text(item.get("parent_client_id")) == base_chapter_id]
-        if len(matching) not in range(2, 7) and fallback_sections:
-            matching = fallback_sections
-        for scene_index, raw_section in enumerate(matching[:6], start=1):
-            base_section = fallback_sections[scene_index - 1] if scene_index <= len(fallback_sections) else {}
-            sections.append(_normalize_section(
-                raw_section,
-                base_section,
-                chapter_id=chapter_id,
-                chapter_number=chapter_number,
-                scene_number=scene_index,
-            ))
-    return {
-        **deepcopy(baseline),
-        **deepcopy(data),
-        "opening_chapter_count": len(chapters),
-        "chapters": chapters,
-        "sections": sections,
-        "section_rule": "每章2至6个场景事件",
-    }
-
-
 def _normalize_stage_data(stage: str, data: dict[str, Any], baseline: dict[str, Any] | None = None) -> dict[str, Any]:
+    if stage == "opening_outline":
+        from app.modules.creation.domain.opening_outline_contract import normalize_opening_outline
+
+        return normalize_opening_outline(data)
     base = deepcopy(baseline) if isinstance(baseline, dict) else {}
     source = {} if _looks_like_cli_metadata(data) else deepcopy(data)
     normalized = {**base, **source}
@@ -326,8 +242,6 @@ def _normalize_stage_data(stage: str, data: dict[str, Any], baseline: dict[str, 
         normalized = _normalize_locations(source, base)
     elif stage == "macro_outline":
         normalized = _normalize_macro_outline(source, base)
-    elif stage == "opening_outline":
-        normalized = _normalize_opening_outline(source, base)
     return normalized
 
 
@@ -545,24 +459,6 @@ async def _generate_compact_concepts(
             ) from repair_error
 
 
-def _validate_generated_entity(
-    stage: str,
-    data: dict[str, Any],
-    target: dict[str, Any] | None,
-) -> None:
-    if not target:
-        return
-    target_type = _text(target.get("entity_type"))
-    candidates = [
-        record for record in _extract_records(stage, data)
-        if record["entity_type"] == target_type
-    ]
-    if not candidates:
-        raise ValueError(f"模型没有在阶段集合中返回可用的 {target_type} 实体；不能用旧资料代替生成结果")
-    if target.get("mode") == "existing" and len(candidates) != 1:
-        raise ValueError("指定实体修订必须恰好返回一个目标对象")
-
-
 async def _enhance_with_model(
     session: NovelCreationSession,
     stage: str,
@@ -577,13 +473,23 @@ async def _enhance_with_model(
         if isinstance(input_snapshot, dict)
         else (session.draft_json if isinstance(session.draft_json, dict) else {})
     )
+    if stage == "opening_outline":
+        from app.services.novel_creation_entities import creation_character_index, creation_volume_index
+
+        draft = {**draft, "_volume_index": creation_volume_index(session), "_character_index": creation_character_index(session)}
     context, entity_target = build_stage_generation_context(draft, baseline)
     instruction = _text(context.get("refinement_instruction"))
     opening_chapter_count = _opening_outline_chapter_count(baseline) if stage == "opening_outline" else None
     stage_contract = _stage_contract(
         stage,
         opening_chapter_count=opening_chapter_count or OPENING_OUTLINE_CHAPTER_COUNT,
+        entity_target=entity_target,
     )
+    opening_locks = ((draft.get("artifact_locks") or {}).get("opening_outline") or [])
+    if stage == "opening_outline":
+        stage_contract += "\nvolume_index=" + json.dumps(context["volume_index"], ensure_ascii=False)
+        stage_contract += "\ncharacter_index=" + json.dumps(context["character_index"], ensure_ascii=False)
+        stage_contract += "\n必须保持原值的 locked_paths=" + json.dumps(opening_locks, ensure_ascii=False)
     messages = build_creation_stage_messages(
         stage=stage,
         stage_label=STAGE_LABELS.get(stage, stage),
@@ -621,9 +527,13 @@ async def _enhance_with_model(
         if not isinstance(parsed, dict):
             raise ValueError("模型返回的阶段 JSON 格式不合法")
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
-        _validate_generated_entity(stage, data, entity_target)
+        validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
         data = _normalize_stage_data(stage, data, baseline)
-        if not entity_target:
+        if stage == "opening_outline" and not entity_target:
+            from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
+
+            validate_opening_locks(data, baseline, opening_locks)
+        if not entity_target or entity_target.get("initialize_stage"):
             _validate_stage(stage, data)
         metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
         if parse_method != "direct":
@@ -655,9 +565,15 @@ async def _enhance_with_model(
                 raise ValueError("结构修复没有返回 JSON 对象")
             data = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
             _raise_if_task_cancelled()
-            _validate_generated_entity(stage, data, entity_target)
+            validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
             data = _normalize_stage_data(stage, data, baseline)
-            if not entity_target:
+            if stage == "opening_outline" and not entity_target:
+                from app.modules.creation.domain.opening_outline_contract import (
+                    validate_opening_locks,
+                )
+
+                validate_opening_locks(data, baseline, opening_locks)
+            if not entity_target or entity_target.get("initialize_stage"):
                 _validate_stage(stage, data)
             metadata = {
                 "attempt": attempt + repair_attempt,
@@ -667,6 +583,9 @@ async def _enhance_with_model(
                 metadata["repair_method"] = "model_json+deterministic_json"
             return data, metadata
         except Exception as repair_error:
+            if isinstance(repair_error, CreationGenerationError):
+                repair_error.attempt = attempt + 1
+                raise
             raise StageModelResponseError(
                 f"{parse_error}；同模型结构修复失败：{repair_error}",
                 attempt=attempt + 1,

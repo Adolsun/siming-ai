@@ -99,6 +99,7 @@ def base_rows(db, job, run, chapter, **manifest):
             chapter,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "chapter",
                 "title": chapter.title,
                 "summary": "本章结构摘要。",
@@ -643,6 +644,7 @@ def test_incremental_section_retry_updates_same_scene_number_instead_of_duplicat
             job,
             run,
             {
+                "character_ids": [],
                 "type": "outline_create",
                 "node_type": "section",
                 "scene_number": 4,
@@ -659,6 +661,7 @@ def test_incremental_section_retry_updates_same_scene_number_instead_of_duplicat
             job,
             run,
             {
+                "character_ids": [],
                 "type": "outline_create",
                 "node_type": "section",
                 "scene_number": 4,
@@ -736,6 +739,7 @@ def test_section_apply_reuses_cataloged_scene_number_when_retry_changes_title():
             chapter,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "section",
                 "scene_number": 4,
                 "title": "第一章 / 播发与补发函",
@@ -1135,6 +1139,7 @@ def test_scene_gap_reports_the_exact_scene_number_for_incremental_repair():
                 chapter,
                 "outline_create",
                 {
+                    "character_ids": [],
                     "node_type": "section",
                     "title": f"第一章 / 场景{scene_number}",
                     "summary": f"场景 {scene_number}",
@@ -1180,6 +1185,7 @@ def test_scene_numbers_must_be_explicit_before_identity_and_apply():
         run = job.chapter_runs[0]
         raw_sections = [
             {
+                "character_ids": [],
                 "type": "outline_create",
                 "node_type": "section",
                 "title": f"第三十八章·七分钟的位置 / 场景{number}",
@@ -1261,6 +1267,7 @@ def test_candidate_coverage_rejects_more_sections_than_declared_scenes():
                 chapter,
                 "outline_create",
                 {
+                    "character_ids": [],
                     "node_type": "section",
                     "title": f"第一章 / 场景{scene_number}",
                     "summary": f"场景 {scene_number}",

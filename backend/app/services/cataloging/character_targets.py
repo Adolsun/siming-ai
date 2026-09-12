@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -56,6 +57,15 @@ def validate_character_profile_target(
             raise ValueError("character_create 不接受已有角色 id；已有角色必须使用 character_update")
         if not name:
             raise ValueError("character_create 必须填写角色 name")
+        client_id = payload.get("client_id")
+        if client_id is not None:
+            try:
+                if not isinstance(client_id, str) or str(UUID(client_id)) != client_id:
+                    raise ValueError
+            except (ValueError, AttributeError):
+                raise ValueError("新角色 client_id 必须是规范 UUID，供同批大纲 character_ids 引用") from None
+            if db.get(Character, client_id) is not None:
+                raise ValueError("新角色 client_id 已存在；已有角色必须使用 character_update")
         existing = db.query(Character).filter(
             Character.project_id == project_id, Character.name == name,
         ).first()

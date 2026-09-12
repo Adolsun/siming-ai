@@ -27,6 +27,11 @@ internal class PcCreationAgentContract private constructor(
         ?: error("手机内置契约缺少 creation_agent；请重新生成移动端 Prompt 契约")
     private val replyContract = agent["reply_contract"] as? JsonObject
         ?: error("手机内置契约缺少立项 reply_contract；请重新生成移动端 Prompt 契约")
+    private val writeResultContract = agent["write_result_contract"] as? JsonObject
+        ?: error("手机内置契约缺少立项 write_result_contract；请重新生成移动端 Prompt 契约")
+    val writeResultMaxBytes = writeResultContract.string("max_json_bytes").toInt().also {
+        require(it > 0) { "立项写入回执容量无效" }
+    }
     val replyInstruction = requiredReplyString("instruction")
     val replyRepairInstruction = requiredReplyString("repair_instruction")
     val replyFailureNotice = requiredReplyString("failure_notice")
@@ -35,6 +40,7 @@ internal class PcCreationAgentContract private constructor(
     }
     private val replyToolMarkup = Regex(requiredReplyString("tool_markup_pattern"))
     private val creation: JsonObject = root["creation"] as? JsonObject ?: JsonObject(emptyMap())
+    val entities = PcCreationEntityContract(creation)
     private val allToolSchemas: JsonArray = agent["tool_schemas"] as? JsonArray ?: JsonArray(emptyList())
     val toolCategories = PcToolCategoryContract(root)
     val categoryController: String = toolCategories.controller
@@ -73,6 +79,27 @@ internal class PcCreationAgentContract private constructor(
         content.isBlank() -> "empty_reply"
         replyToolMarkup.containsMatchIn(content) -> "tool_protocol_text"
         else -> null
+    }
+
+    fun projectWriteResultData(data: JsonObject?): JsonObject = buildJsonObject {
+        val source = data ?: return@buildJsonObject
+        val fields = writeResultContract["data_fields"] as JsonArray
+        fields.forEach { field ->
+            val name = (field as JsonPrimitive).content
+            source[name]?.let { put(name, it) }
+        }
+        val objects = writeResultContract["object_projections"] as JsonArray
+        objects.forEach { item ->
+            val projection = item as JsonObject
+            val name = projection.string("source_field")
+            val nested = source[name] as? JsonObject ?: return@forEach
+            put(name, buildJsonObject {
+                (projection["fields"] as JsonArray).forEach { field ->
+                    val member = (field as JsonPrimitive).content
+                    nested[member]?.let { put(member, it) }
+                }
+            })
+        }
     }
 
     fun referenceError(tool: String, reason: String, path: String): JsonObject = buildJsonObject {

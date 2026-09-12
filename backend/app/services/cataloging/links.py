@@ -17,7 +17,7 @@ from ...database.models import (
 from ...modules.continuity.domain.cataloging_contract import (
     CHAPTER_CHARACTER_APPEARANCE_TYPES,
 )
-from .lookups import find_character_by_name_or_id
+from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 
 
 def link_chapter_character(
@@ -67,21 +67,28 @@ def link_chapter_worldbuilding(db: Session, chapter: Chapter, entry: Worldbuildi
     ))
 
 
+def resolve_outline_characters(db: Session, project_id: str, character_ids: Any) -> list[Character]:
+    ids = outline_character_ids({"character_ids": character_ids})
+    by_id = {row.id: row for row in db.query(Character).filter(
+        Character.project_id == project_id, Character.id.in_(ids),
+    ).all()}
+    missing = [value for value in ids if value not in by_id]
+    if missing:
+        raise ValueError("大纲 character_ids 不属于当前作品角色：" + "、".join(missing))
+    return [by_id[value] for value in ids]
+
+
 def link_outline_characters(
     db: Session,
     project_id: str,
     node: OutlineNode,
-    names: Any,
+    character_ids: Any,
     *,
     replace: bool = False,
 ) -> None:
-    if not isinstance(names, list):
-        return
-    characters = [
-        character
-        for name in names
-        if (character := find_character_by_name_or_id(db, project_id, name)) is not None
-    ]
+    if node.project_id != project_id:
+        raise ValueError("大纲人物绑定目标不属于当前作品")
+    characters = resolve_outline_characters(db, project_id, character_ids)
     wanted_ids = {character.id for character in characters}
     if replace:
         # Scene nodes created by cataloging are a current-version projection.

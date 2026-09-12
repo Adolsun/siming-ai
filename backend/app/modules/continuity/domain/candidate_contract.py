@@ -156,7 +156,7 @@ _OUTLINE = {
     "node_type": _enum("chapter", "section", "volume"),
     "scene_number": {"type": "integer", "minimum": 1},
     "characters": _strings(),
-    "related_characters": _strings(),
+    "character_ids": {**_strings(), "uniqueItems": True},
     "unresolved_actions": {"type": "array"},
 }
 
@@ -190,7 +190,14 @@ CANDIDATE_FIELDS = {
     },
     "outline_create": _OUTLINE,
     "outline_update": _OUTLINE,
-    "character_create": _PROFILE,
+    "character_create": {
+        **_PROFILE,
+        "client_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Unused canonical UUID for the new character and outline references.",
+        },
+    },
     "character_update": _PROFILE,
     "character_state_update": _STATE,
     "character_timeline": {"name": TEXT, "event_description": TEXT},
@@ -214,8 +221,8 @@ _REQUIRED_FIELDS = {
     "character_update": ("id",),
     "worldbuilding_create": ("title", "dimension"),
     "worldbuilding_update": ("id",),
-    "outline_create": ("title", "node_type", "summary"),
-    "outline_update": ("id", "title", "node_type", "summary"),
+    "outline_create": ("title", "node_type", "summary", "character_ids"),
+    "outline_update": ("id", "title", "node_type", "summary", "character_ids"),
     "character_relationship": ("source_name", "target_name", "relationship_type"),
     "character_merge_candidate": ("primary_name", "secondary_name"),
 }
@@ -259,7 +266,7 @@ def candidate_record_schema() -> dict[str, Any]:
                             "type": _enum("outline_create"),
                             "node_type": _enum("section"),
                         },
-                        ("type", "node_type", "scene_number", "title", "summary"),
+                        ("type", "node_type", "scene_number", "title", "summary", "character_ids"),
                     ),
                 },
             },
@@ -301,6 +308,7 @@ def candidate_contract_examples() -> list[dict[str, Any]]:
             "title": "当前章节原题",
             "node_type": "chapter",
             "summary": "本章实际事件",
+            "character_ids": [],
         },
         {
             "type": "chapter_link",

@@ -8,12 +8,28 @@ ENTITY_COLLECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "macro_outline": (("volumes", "volume"),),
     "opening_outline": (("chapters", "chapter_outline"), ("sections", "scene_outline")),
 }
+PLACE_ENTITY_DIMENSIONS = {"location": "geography", "faction": "factions"}
+REQUIRED_STAGE_TEXT_FIELDS = {
+    "macro_outline": ("story_overview", "core_conflict", "ending_direction"),
+}
+ENTITY_OUTPUT_CONTRACTS = {
+    entity_type: {
+        "artifact": artifact,
+        "field": field,
+        "required_values": (
+            {"dimension": PLACE_ENTITY_DIMENSIONS[entity_type]} if kind == "place" else {}
+        ),
+    }
+    for artifact, collections in ENTITY_COLLECTIONS.items()
+    for field, kind in collections
+    for entity_type in (PLACE_ENTITY_DIMENSIONS if kind == "place" else (kind,))
+}
 ENTITY_TYPES_BY_ARTIFACT: dict[str, frozenset[str]] = {
-    "world_style": frozenset({"worldbuilding"}),
-    "characters": frozenset({"character", "relationship"}),
-    "locations": frozenset({"location", "faction", "world_relation"}),
-    "macro_outline": frozenset({"volume"}),
-    "opening_outline": frozenset({"chapter_outline", "scene_outline"}),
+    artifact: frozenset(
+        entity_type for entity_type, contract in ENTITY_OUTPUT_CONTRACTS.items()
+        if contract["artifact"] == artifact
+    )
+    for artifact in ENTITY_COLLECTIONS
 }
 CREATION_REFERENCE_DETAILS = {
     "creation_context_entity_unavailable": (

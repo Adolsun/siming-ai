@@ -1,0 +1,60 @@
+[
+  {
+    "tool": "patch_creation_entity",
+    "data": {
+      "entity": {
+        "id": "character-1", "session_id": "session-1", "artifact": "characters",
+        "entity_type": "character", "entity_key": "林遥", "revision": 21, "status": "active",
+        "data": {"background": "DOCUMENT_BODY"}
+      },
+      "artifact": {
+        "session_id": "session-1", "artifact": "characters", "revision": 21, "status": "generated",
+        "data": {"characters": [{"name": "林遥", "background": "DOCUMENT_BODY"}]},
+        "versions": [{"data": "DOCUMENT_BODY"}]
+      },
+      "changes": [{"path": "/name", "action": "set"}]
+    },
+    "expected_data": {
+      "entity": {
+        "id": "character-1", "session_id": "session-1", "artifact": "characters",
+        "entity_type": "character", "entity_key": "林遥", "revision": 21, "status": "active"
+      },
+      "artifact": {
+        "session_id": "session-1", "artifact": "characters", "revision": 21, "status": "generated"
+      }
+    }
+  },
+  {
+    "tool": "patch_creation_artifact",
+    "data": {"artifact": "characters", "revision": 21, "status": "generated", "data": "DOCUMENT_BODY"},
+    "expected_data": {"artifact": "characters", "revision": 21, "status": "generated"}
+  },
+  {
+    "tool": "patch_creation_entity",
+    "data": {
+      "id": "character-1", "artifact": "characters", "entity_type": "character",
+      "entity_key": "林遥", "revision": 21, "status": "active", "data": {"background": "DOCUMENT_BODY"}
+    },
+    "expected_data": {
+      "id": "character-1", "artifact": "characters", "entity_type": "character",
+      "entity_key": "林遥", "revision": 21, "status": "active"
+    }
+  },
+  {
+    "tool": "generate_creation_artifact",
+    "data": {
+      "run": {"id": "run-1", "status": "waiting_user", "result": {"stages": {"macro_outline": "DOCUMENT_BODY"}}},
+      "session": {"id": "session-1", "revision": 29, "draft": {"stages": "DOCUMENT_BODY"}},
+      "run_id": "run-1", "session_id": "session-1", "operation_id": "operation-1",
+      "artifact": "macro_outline", "revision": 29, "status": "generated", "saved": true,
+      "requires_confirmation": true, "next_action": "审阅并确认本阶段，或编辑后重新生成",
+      "collection_counts": {"volumes": 5}
+    },
+    "expected_data": {
+      "run_id": "run-1", "session_id": "session-1", "operation_id": "operation-1",
+      "artifact": "macro_outline", "revision": 29, "status": "generated", "saved": true,
+      "requires_confirmation": true, "next_action": "审阅并确认本阶段，或编辑后重新生成",
+      "collection_counts": {"volumes": 5}
+    }
+  }
+]
