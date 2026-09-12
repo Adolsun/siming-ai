@@ -32,6 +32,7 @@ from ..core.legacy_env import get_compatible_env
 from .base import BaseAdapter
 from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
 from .local_cli_output import normalize_cli_output
+from .local_cli_run import run_cli_once
 from .local_cli_prompt import (
     file_prompt_instruction,
     prepare_direct_mcp_launch,
@@ -1337,37 +1338,8 @@ class LocalCLIAdapter(BaseAdapter):
         self._cleanup_isolated_workspace(context.cwd, context.isolated)
         return result
 
-    async def _run_once(
-        self,
-        prompt: str,
-        model: str,
-        extra_body: dict | None = None,
-    ) -> str:
-        runtime_body = dict(extra_body or {})
-        context = self._prepare_run_context(prompt, model, runtime_body)
-        try:
-            process = await self._spawn_run_process(context)
-            stdout, stderr, terminal_reason = await self._collect_run_output(
-                context,
-                process,
-                runtime_body,
-            )
-            return await self._finalize_run_output(
-                context,
-                process,
-                stdout,
-                stderr,
-                terminal_reason,
-                model,
-                runtime_body,
-            )
-        finally:
-            _unlink_if_exists(context.prompt_file)
-            _unlink_if_exists(
-                context.codex_output_file
-                if context.cleanup_codex_output_file else None
-            )
-
+    async def _run_once(self, prompt: str, model: str, extra_body: dict | None = None) -> str:
+        return await run_cli_once(self, prompt, model, extra_body, _unlink_if_exists)
 
     @staticmethod
     def _isolated_retry_attempts(extra_body: dict | None) -> int:

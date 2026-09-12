@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from app.modules.operations.application.trace_capture import record_payload
+
 
 def _is_metadata_event(data: dict) -> bool:
     event_type = str(data.get("type") or "").strip().lower().replace("-", "_")
@@ -25,6 +27,7 @@ def normalize_cli_output(text: str, extract_text: Callable[[dict], str]) -> str:
     raw_json_parts: list[str] = []
     plain_parts: list[str] = []
     json_lines = 0
+    record_payload("cli_event", {"stdout": text, "coverage": "cli_boundary_only"}, source="cli")
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:

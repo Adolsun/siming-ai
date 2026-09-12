@@ -1,13 +1,26 @@
 """OpenAI adapter using the official openai SDK."""
 import json as _json
-from typing import Any, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 from urllib.parse import urlparse
 
-import httpx
-from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, AuthenticationError
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    DefaultAsyncHttpxClient,
+)
+
+from app.modules.operations.infrastructure.http_trace import ObservedHttpClient, TraceHttpMixin
 
 from ..core.exceptions import LLMError
 from .base import BaseAdapter
+
+
+class TracedOpenAIHttpClient(TraceHttpMixin, DefaultAsyncHttpxClient):
+    pass
 
 
 class OpenAIClientProxy:
@@ -21,13 +34,14 @@ class OpenAIClientProxy:
         return getattr(self._client, name)
 
 
-def create_openai_compatible_client(api_key: str, base_url: Optional[str] = None):
+def create_openai_compatible_client(api_key: str, base_url: str | None = None):
     """Create an AsyncOpenAI-compatible client with normalized display metadata."""
-    kwargs = {"api_key": api_key}
+    kwargs = {"api_key": api_key, "http_client": (
+        ObservedHttpClient(trust_env=False) if base_url and _is_loopback_url(base_url)
+        else TracedOpenAIHttpClient()
+    )}
     if base_url:
         kwargs["base_url"] = base_url
-        if _is_loopback_url(base_url):
-            kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
     client = AsyncOpenAI(**kwargs)
     if base_url:
         return OpenAIClientProxy(client, base_url)
@@ -121,7 +135,7 @@ def compact_openai_kwargs(kwargs: dict) -> dict:
     return {key: value for key, value in kwargs.items() if value is not None}
 
 
-def _provider_extra_body(extra_body: Optional[dict]) -> dict | None:
+def _provider_extra_body(extra_body: dict | None) -> dict | None:
     """Keep Siming orchestration metadata out of provider request bodies."""
 
     if not extra_body:
@@ -228,7 +242,7 @@ def _responses_input(messages: list[dict]) -> list[dict]:
     return items
 
 
-def _responses_tools(tools: Optional[list[dict]]) -> list[dict] | None:
+def _responses_tools(tools: list[dict] | None) -> list[dict] | None:
     converted: list[dict] = []
     for tool in tools or []:
         if tool.get("type") != "function":
@@ -248,7 +262,7 @@ def _responses_tools(tools: Optional[list[dict]]) -> list[dict] | None:
     return converted or None
 
 
-def _responses_tool_choice(tool_choice: Optional[str | dict]) -> Optional[str | dict]:
+def _responses_tool_choice(tool_choice: str | dict | None) -> str | dict | None:
     if not isinstance(tool_choice, dict):
         return tool_choice
     if tool_choice.get("type") != "function":
@@ -341,10 +355,10 @@ class OpenAIAdapter(BaseAdapter):
         *,
         messages: list[dict],
         model: str,
-        max_tokens: Optional[int],
-        extra_body: Optional[dict],
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None,
+        extra_body: dict | None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
         stream: bool = False,
     ) -> dict:
         kwargs = compact_openai_kwargs({
@@ -365,10 +379,10 @@ class OpenAIAdapter(BaseAdapter):
         *,
         messages: list[dict],
         model: str,
-        max_tokens: Optional[int],
-        extra_body: Optional[dict],
-        tools: Optional[list[dict]],
-        tool_choice: Optional[str | dict],
+        max_tokens: int | None,
+        extra_body: dict | None,
+        tools: list[dict] | None,
+        tool_choice: str | dict | None,
     ) -> dict:
         client = self._get_client()
         response = await client.responses.create(**self._responses_kwargs(
@@ -393,10 +407,10 @@ class OpenAIAdapter(BaseAdapter):
         *,
         messages: list[dict],
         model: str,
-        max_tokens: Optional[int],
-        extra_body: Optional[dict],
-        tools: Optional[list[dict]],
-        tool_choice: Optional[str | dict],
+        max_tokens: int | None,
+        extra_body: dict | None,
+        tools: list[dict] | None,
+        tool_choice: str | dict | None,
     ) -> AsyncGenerator[dict, None]:
         client = self._get_client()
         stream = await client.responses.create(**self._responses_kwargs(
@@ -513,10 +527,10 @@ class OpenAIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict:
         try:
             if self.api_protocol == "responses":
@@ -572,8 +586,8 @@ class OpenAIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """Text-only streaming — no tool calls surfaced. Use stream_chat_completion_with_tools for tools."""
         self.last_stream_finish_reason = None
@@ -632,10 +646,10 @@ class OpenAIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Streaming chat completion that yields both text and tool call deltas."""
         try:

@@ -41,6 +41,25 @@ class GatewayHttpException(val status: Int, override val message: String) : IOEx
 
 @OptIn(ExperimentalSerializationApi::class)
 class GatewayApi(private val tokenStore: SecureTokenStore) {
+    internal suspend fun contextTraceRequest(
+        connection: GatewayConnection, suffix: String, method: String = "GET", body: JsonObject? = null,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl, PcApiPaths.contextTrace(suffix),
+        method, body?.toString(),
+    ).data
+
+    internal suspend fun downloadContextTrace(connection: GatewayConnection, traceId: String, output: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        require(traceId.matches(Regex("[a-f0-9]{32}")))
+        PairingSecurity.validateGatewayUrl(connection.baseUrl)
+        val token = validAccessToken(connection.baseUrl)
+        val request = Request.Builder().url(connection.baseUrl.trimEnd('/') + PcApiPaths.contextTrace("$traceId/export"))
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw GatewayHttpException(response.code, "诊断包导出失败，请刷新设备连接后重试。")
+            requireNotNull(response.body) { "诊断包为空" }.byteStream().use { it.copyTo(output) }
+        }
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false

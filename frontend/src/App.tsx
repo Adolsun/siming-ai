@@ -1,3 +1,4 @@
+import { ContextInspectorHost } from './features/contextInspector/ContextInspector'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Layout, Spin } from 'antd'
 import { Suspense, lazy, useEffect } from 'react'
@@ -138,6 +139,7 @@ function App() {
         <a className="siming-skip-link" href="#main-content">跳到主要内容</a>
         <GlobalErrorBanner />
         <GlobalOperationCenter />
+        <ContextInspectorHost />
         <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
           <FirstRunSetupGate />
           <Suspense fallback={<LoadingScreen />}>

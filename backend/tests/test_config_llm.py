@@ -35,7 +35,7 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import ANY, AsyncMock, patch, MagicMock
 
 # ---------------------------------------------------------------------------
 # MUST set test database BEFORE importing any application modules.
@@ -1604,6 +1604,7 @@ class TestLLMGatewayChatCompletion(unittest.TestCase):
         mock_openai.assert_called_with(
             api_key="sk-openrouter",
             base_url="https://openrouter.example.test/v1",
+            http_client=ANY,
         )
 
     @patch("app.ai.openai_adapter.AsyncOpenAI")

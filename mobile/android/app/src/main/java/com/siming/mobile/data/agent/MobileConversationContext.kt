@@ -84,6 +84,7 @@ internal data class MobileTranscriptMessage(
     }
 
     fun displayMessage(): MobileAssistantMessage = MobileAssistantMessage(
+        turnId = turnId,
         id = id,
         role = role,
         content = content,

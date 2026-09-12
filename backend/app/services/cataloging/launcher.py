@@ -12,6 +12,8 @@ from contextlib import nullcontext
 from functools import wraps
 from typing import Any
 
+from app.modules.operations.application.trace_decorators import observed
+from app.modules.operations.application.trace_capture import record_business_event
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
@@ -517,6 +519,7 @@ def create_and_queue_cataloging_job(
     return job, data
 
 
+@observed(kind="turn", scope_kind="operation", scope_id="job_id", correlations={"job_id": "job_id"})
 async def run_cataloging_job(job_id: str) -> None:
     """Start the worker appropriate for a previously committed job."""
 
@@ -528,6 +531,8 @@ async def run_cataloging_job(job_id: str) -> None:
         if not job or job.status in inactive:
             return
         if job.execution_backend == "local_cli_agent":
+            record_business_event({"type": "coverage", "boundary": "external_cli_worker",
+                "missing_reason": "external_process_requests_not_visible"})
             ensure_local_cli_cataloging_worker(db, job, provider=job.provider)
             return
         if job.execution_backend == "external_agent":
@@ -558,7 +563,7 @@ async def run_cataloging_job(job_id: str) -> None:
 
     try:
         async for _event in stream_cataloging_job(project_id, job_id):
-            pass
+            record_business_event(_event if isinstance(_event, dict) else {"event": _event})
     except asyncio.CancelledError as exc:
         mark_cataloging_worker_failure(
             job_id,
@@ -572,6 +577,7 @@ async def run_cataloging_job(job_id: str) -> None:
             f"章节建档执行失败：{exc}",
             failure_class=type(exc).__name__,
         )
+        record_business_event({"type": "error", "error_type": type(exc).__name__})
         logger.exception("Cataloging worker failed for %s", job_id)
     finally:
         if worker_lease is not None:

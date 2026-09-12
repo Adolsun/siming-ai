@@ -103,6 +103,10 @@ def _configure_model_runtime_services() -> None:
 
 def configure_application_services() -> None:
     """Connect application ports to infrastructure implementations."""
+    from ..modules.gateway.application.project_access import configure_project_access
+    from ..modules.gateway.infrastructure.project_access import is_project_shared
+
+    configure_project_access(is_project_shared)
     from ..modules.assistant.application.prompt_compiler import PromptCompiler
     from ..modules.assistant.infrastructure.prompt_files import MarkdownPromptRepository
     from ..modules.assistant.infrastructure.system_conversations import (

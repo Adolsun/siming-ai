@@ -1,0 +1,95 @@
+{
+  "schema": "siming.context_trace.v1",
+  "redaction_cases": [
+    {
+      "input": {
+        "api_key": "secret-a",
+        "messages": [
+          {
+            "role": "user",
+            "content": "text secret-b"
+          }
+        ]
+      },
+      "secrets": [
+        "secret-b"
+      ],
+      "expected": {
+        "api_key": "[REDACTED]",
+        "messages": [
+          {
+            "role": "user",
+            "content": "text [REDACTED]"
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": null
+        },
+        "credentials": {
+          "password": "hidden"
+        },
+        "cache_read_input_tokens": 0
+      },
+      "secrets": [],
+      "expected": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": null
+        },
+        "credentials": "[REDACTED]",
+        "cache_read_input_tokens": 0
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "11111111111111111111111111111111",
+      "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sequence": 1,
+      "timestamp": 1.0,
+      "event_type": "span_started",
+      "span_id": null,
+      "data": {
+        "span_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": "tool",
+        "label": "generate_creation_artifact",
+        "status": "running",
+        "parent_span_id": null
+      }
+    },
+    {
+      "event_id": "22222222222222222222222222222222",
+      "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sequence": 2,
+      "timestamp": 2.0,
+      "event_type": "span_finished",
+      "span_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "data": {
+        "span_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "status": "error",
+        "duration_ms": 10.0
+      }
+    },
+    {
+      "event_id": "33333333333333333333333333333333",
+      "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sequence": 3,
+      "timestamp": 3.0,
+      "event_type": "payload",
+      "span_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "data": {
+        "layer": "model_visible_tool_result",
+        "capture_source": "application",
+        "missing_reason": "recording_not_enabled"
+      }
+    }
+  ]
+}

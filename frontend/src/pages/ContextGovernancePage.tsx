@@ -20,6 +20,7 @@ import {
   SafetyCertificateOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
+import { ContextInspectorButton } from '../shared/ui/ContextInspectorButton'
 import { apiClient } from '../api/client'
 import { createLatestRequestGate } from '../shared/latestRequest'
 
@@ -280,6 +281,7 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
           <Text type="secondary">每次生成、评审和外部 Agent 执行使用的来源、预算与确认记录。</Text>
         </div>
         <Space>
+          <ContextInspectorButton scope={{ kind: 'project_conversation', id: projectId }} label="查看调用记录" />
           <Button icon={<SyncOutlined />} loading={loading} onClick={rebuildProject}>重建索引</Button>
           <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>
         </Space>

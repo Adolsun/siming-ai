@@ -136,6 +136,19 @@ internal class MobileWorkspaceAgent(
         conversation: MobileConversationSnapshot,
         turnContext: MobileAssistantTurnContext,
         onEvent: suspend (String) -> Unit,
+    ): Unit = com.siming.mobile.data.observability.MobileTrace.turn(
+        "project_conversation", projectId, buildJsonObject {
+            put("turn_id", turnContext.turnId); put("conversation_id", turnContext.conversationId); put("user_message_id", turnContext.userMessageId)
+        },
+    ) { executeTurn(projectId, prompt, config, conversation, turnContext, onEvent) }
+
+    private suspend fun executeTurn(
+        projectId: String,
+        prompt: String,
+        config: DirectApiConfig,
+        conversation: MobileConversationSnapshot,
+        turnContext: MobileAssistantTurnContext,
+        onEvent: suspend (String) -> Unit,
     ) {
         val initialRecords = records(projectId)
         val project = initialRecords.firstOrNull { it.entity.entityType == "project" }?.payload
@@ -341,7 +354,10 @@ internal class MobileWorkspaceAgent(
             val availableTools = contract.availableToolNames(activeCategories)
             val toolResults = mutableListOf<JsonObject>()
             for (call in turn.toolCalls) {
-                val rawResult = if (call.name in availableTools) {
+                lateinit var rawResult: JsonObject
+                val result = com.siming.mobile.data.observability.MobileTrace.tool(call.name, call.arguments, call.id,
+                    project = { rawResult = it; modelVisibleToolResult(call.name, it, call.arguments) }) {
+                    if (call.name in availableTools) {
                     try {
                         execute(projectId, call.name, call.arguments, config, onEvent)
                     } catch (error: CancellationException) {
@@ -352,7 +368,7 @@ internal class MobileWorkspaceAgent(
                 } else {
                     skipped(call.name, "手机提示词契约未开放该工具")
                 }
-                val result = modelVisibleToolResult(call.name, rawResult, call.arguments)
+                }
                 onEvent(
                     event(
                         type = "tool",

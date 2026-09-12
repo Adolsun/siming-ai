@@ -290,6 +290,7 @@ internal class MobileDirectConversationContextRuntime(
                 // Future-result estimates guide history planning. The actual
                 // native batch is still admitted before any handler executes.
                 val frame = provisionalFrame(plan.recentExactTurns, finalBudget)
+                com.siming.mobile.data.observability.MobileTrace.lazyPayload("context_frame") { frame.toJson() }
                 val rendered = renderMobileContextFrame(frame, systemPrompt)
                 check(providerMessages(rendered.messages) == providerMessages(provisionalRendered.messages)) {
                     "回填最终预算后 provider 请求正文发生变化"
@@ -393,7 +394,9 @@ internal class MobileDirectConversationContextRuntime(
                     pending.checkpoint.id,
                     deterministicExecutionLedger = checkpointLedger,
                 )
-                val draft = generator.generate(request)
+                val draft = com.siming.mobile.data.observability.MobileTrace.span("checkpoint", "生成上下文 checkpoint") {
+                    generator.generate(request)
+                }
                 val checkpointTokensEstimate = counter.countValue(buildJsonObject {
                     put("semantic_navigation", draft.semanticNavigation)
                     put("author_quote_positions", buildJsonArray {
@@ -418,6 +421,7 @@ internal class MobileDirectConversationContextRuntime(
                         }
                     })
                 })
+                com.siming.mobile.data.observability.MobileTrace.span("checkpoint", "校验并发布上下文 checkpoint") {
                 conversationStore.publishCheckpoint(
                     projectId = storageId,
                     conversationId = current.conversationId,
@@ -433,6 +437,7 @@ internal class MobileDirectConversationContextRuntime(
                     },
                     checkpointTokens = checkpointTokensEstimate.coerceAtLeast(1),
                 )
+                }
             } catch (error: CancellationException) {
                 runCatching {
                     conversationStore.cancelCheckpoint(

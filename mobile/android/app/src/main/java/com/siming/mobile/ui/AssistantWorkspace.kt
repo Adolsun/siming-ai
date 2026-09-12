@@ -225,6 +225,7 @@ internal fun AssistantWorkspace(
                         else {
                             AssistantBubble(message.content)
                             AssistantToolLogDisclosure(message.toolLogs, message.id)
+                            ContextInspectorButton(correlationId = message.turnId ?: message.id, label = "查看本轮调用")
                         }
                     }
                 }

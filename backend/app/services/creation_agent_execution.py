@@ -57,6 +57,9 @@ from app.services.creation_agent_turn_records import (
     seal_creation_runtime_snapshot,
 )
 from app.services.workspace.executor import execute_workspace_action
+from app.services.creation_agent_tool_projection import creation_tool_message_content as _tool_message_content
+from app.modules.operations.application.trace_capture import record_payload, record_tool_outcome
+from app.modules.operations.application.trace_decorators import observed
 from app.services.workspace.registry import registry
 from app.services.workspace.tool_result_projection import (
     MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS,
@@ -254,41 +257,6 @@ def _durable_runtime_snapshot(
     })
 
 
-@dataclass(frozen=True)
-class _RuntimeResultTool:
-    """Explicit contract for the controller and rejected unknown tool calls."""
-
-    name: str
-    model_result_contract: Any = TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT
-
-
-def _tool_message_content(name: str, result: dict[str, Any], arguments: dict[str, Any]) -> str:
-    """Apply the one declarative model-result projection path."""
-
-    tool = registry.get(name) or _RuntimeResultTool(name=name)
-    try:
-        return model_tool_result_projector.project(
-            tool,
-            result,
-            arguments=arguments,
-        ).content
-    except ToolResultOverCapacity as exc:
-        return json.dumps(
-            exc.model_error_result(),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    except ToolResultProjectionError:
-        return json.dumps(
-            safe_creation_tool_result(name, {
-                "status": "error",
-                "data": {"reason": "model_result_projection_failed"},
-            }),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-
-
 async def _execute_domain_call(
     state: CreationTurnState,
     bindings: CreationExecutionBindings,
@@ -473,6 +441,9 @@ def _prepare_native_batch(
     )
 
 
+@observed(kind="tool", inputs=("arguments",), input_layer="tool_arguments",
+    label_field="native_call.name", attributes={"tool_call_id": "native_call.call_id"},
+    capture_output=False)
 async def _execute_one_native_call(
     state: CreationTurnState,
     bindings: CreationExecutionBindings,
@@ -521,6 +492,8 @@ async def _execute_one_native_call(
             arguments,
             available_tools,
         )
+    record_payload("tool_receipt", tool_result)
+    record_tool_outcome(tool_result)
     tool_result = safe_creation_tool_result(name, tool_result)
     state.tool_results.append(tool_result)
     if name != TOOL_CATEGORY_CONTROLLER:
@@ -576,6 +549,8 @@ async def _execute_one_native_call(
         write_tools=WRITE_TOOLS,
         write_success_statuses=CREATION_WRITE_SUCCESS_STATUSES,
     )
+    record_payload("model_visible_tool_result", {"tool_call_id": native_result.call_id,
+        "content": native_result.content, "receipt": receipt.to_dict()})
     return native_result, receipt, pending_categories
 
 

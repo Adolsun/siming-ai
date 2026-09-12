@@ -1164,7 +1164,7 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     const transcript = document.querySelector('.workspace-assistant-messages')
     expect(transcript).not.toHaveTextContent('已整理较早上下文')
 
-    await user.click(screen.getByRole('button', { name: /查看/ }))
+    await user.click(screen.getByRole('button', { name: /查看$/ }))
     const detailDialog = await screen.findByRole('dialog', { name: '上下文整理详情' })
     expect(within(detailDialog).getByText(/原始 84,000 tokens/)).toBeInTheDocument()
     expect(within(detailDialog).getByText('不要修改主角姓名。', { exact: false })).toBeInTheDocument()

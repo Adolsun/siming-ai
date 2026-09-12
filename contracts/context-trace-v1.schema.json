@@ -1,0 +1,358 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "siming.context_trace.v1",
+  "title": "Siming context trace event v1",
+  "type": "object",
+  "required": [
+    "event_id",
+    "trace_id",
+    "source_id",
+    "sequence",
+    "timestamp",
+    "event_type",
+    "span_id",
+    "data"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "number"
+    },
+    "event_type": {
+      "enum": [
+        "trace_started",
+        "trace_finished",
+        "span_started",
+        "span_finished",
+        "correlation",
+        "payload",
+        "http_response",
+        "usage"
+      ]
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "payload"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "layer",
+              "capture_source"
+            ],
+            "properties": {
+              "layer": {
+                "enum": [
+                  "context_frame",
+                  "logical_request",
+                  "provider_request",
+                  "provider_response",
+                  "adapter_output",
+                  "tool_arguments",
+                  "tool_receipt",
+                  "model_visible_tool_result",
+                  "cli_input",
+                  "cli_event"
+                ]
+              },
+              "capture_source": {
+                "enum": [
+                  "application",
+                  "http_transport",
+                  "cli"
+                ]
+              },
+              "missing_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "stored_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "trace_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "schema",
+              "scope",
+              "mode",
+              "origin"
+            ],
+            "properties": {
+              "schema": {
+                "const": "siming.context_trace.v1"
+              },
+              "scope": {
+                "$ref": "#/definitions/scope"
+              },
+              "mode": {
+                "enum": [
+                  "off",
+                  "summary",
+                  "full"
+                ]
+              },
+              "origin": {
+                "enum": [
+                  "server",
+                  "android"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "trace_finished"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "status",
+              "finished_at",
+              "capture_status",
+              "dropped_events"
+            ],
+            "properties": {
+              "finished_at": {
+                "type": "number"
+              },
+              "dropped_events": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "span_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "span_id",
+              "parent_span_id",
+              "kind",
+              "label",
+              "status"
+            ],
+            "properties": {
+              "span_id": {
+                "type": "string"
+              },
+              "parent_span_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "span_finished"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "span_id",
+              "status",
+              "duration_ms"
+            ],
+            "properties": {
+              "duration_ms": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "usage"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "usage",
+              "usage_source"
+            ],
+            "properties": {
+              "usage": {
+                "type": "object"
+              },
+              "usage_source": {
+                "enum": [
+                  "provider_reported",
+                  "estimated"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "scope": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "project_conversation",
+            "creation_session",
+            "system_conversation",
+            "operation"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "required": [
+        "schema",
+        "id",
+        "scope_kind",
+        "scope_id",
+        "started",
+        "finished",
+        "status",
+        "mode",
+        "capture_status",
+        "correlations"
+      ],
+      "properties": {
+        "schema": {
+          "const": "siming.context_trace.v1"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "mode": {
+          "enum": [
+            "off",
+            "summary",
+            "full"
+          ]
+        },
+        "started": {
+          "type": "number"
+        },
+        "finished": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "correlations": {
+          "type": "object"
+        },
+        "capture_status": {
+          "enum": [
+            "recording",
+            "recorded",
+            "partial",
+            "interrupted"
+          ]
+        }
+      }
+    }
+  }
+}

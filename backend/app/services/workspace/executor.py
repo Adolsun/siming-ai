@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy.orm import Session
-
 from app.architecture.tool_spec import ToolInputSchemaValidationError
 from app.architecture.uow import commit_session
+from app.modules.operations.application.trace_decorators import observed
+from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy.orm import Session
 
 from .registry import registry
 from .tool_result_projection import sanitize_diagnostic_tool_result
@@ -68,6 +68,7 @@ def _invalid_arguments_result(
     }
 
 
+@observed(kind="executor", inputs=("action",), input_layer="tool_arguments", output_layer="model_visible_tool_result", label_field="action.tool")
 async def execute_workspace_action(
     db: Session,
     project_id: str,

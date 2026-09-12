@@ -93,6 +93,22 @@ internal class MobileCreationConversationAgent(
         turnContext: MobileAssistantTurnContext,
         config: DirectApiConfig,
         onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
+    ): MobileCreationConversationResult = com.siming.mobile.data.observability.MobileTrace.turn(
+        "creation_session", source.string("id"), buildJsonObject {
+            put("turn_id", turnContext.turnId); put("conversation_id", turnContext.conversationId); put("user_message_id", turnContext.userMessageId)
+        },
+    ) { executeTurn(source, message, storageId, conversation, turnContext, config, onProgress).also {
+        com.siming.mobile.data.observability.MobileTrace.current.get()?.businessStatus = it.status
+    } }
+
+    private suspend fun executeTurn(
+        source: JsonObject,
+        message: String,
+        storageId: String,
+        conversation: MobileConversationSnapshot,
+        turnContext: MobileAssistantTurnContext,
+        config: DirectApiConfig,
+        onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
     ): MobileCreationConversationResult {
         require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
         var working = source
@@ -368,7 +384,11 @@ internal class MobileCreationConversationAgent(
             val modelVisibleResults = mutableListOf<JsonObject>()
             for (call in calls) {
                 var attemptedWrite = false
-                val execution = try {
+                val execution = com.siming.mobile.data.observability.MobileTrace.span("tool", call.name) {
+                com.siming.mobile.data.observability.MobileTrace.payload("tool_arguments", buildJsonObject {
+                    put("tool_call_id", call.id); put("arguments", call.arguments)
+                })
+                val outcome = try {
                     when {
                         call.name !in availableTools -> ToolExecution(
                             working,
@@ -411,6 +431,11 @@ internal class MobileCreationConversationAgent(
                         working,
                         result(call.name, "error", error.message ?: "工具执行失败"),
                     )
+                }
+                com.siming.mobile.data.observability.MobileTrace.toolOutcome(outcome.result)
+                com.siming.mobile.data.observability.MobileTrace.payload("tool_receipt", outcome.result)
+                com.siming.mobile.data.observability.MobileTrace.payload("model_visible_tool_result", outcome.result)
+                outcome
                 }
                 working = execution.session
                 execution.createdProjectId?.let { createdProjectId = it }

@@ -262,7 +262,7 @@ class DirectApiHttpException(
 
 /** OpenAI-compatible client used only by Android standalone mode. */
 class DirectApiClient(
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -271,6 +271,8 @@ class DirectApiClient(
     private val allowCleartextForTests: Boolean = false,
     private val retryDelaysMillis: List<Long> = listOf(700, 1_500, 3_000),
 ) {
+    private val client = client.newBuilder()
+        .addNetworkInterceptor(com.siming.mobile.data.observability.TraceHttpInterceptor()).build()
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun discoverModels(baseUrl: String, apiKey: String): List<String> {
@@ -419,6 +421,21 @@ class DirectApiClient(
         maxOutputTokens: Int = 4_000,
         temperature: Double = 0.3,
         extraBody: JsonObject? = null,
+    ): DirectAgentTurn = com.siming.mobile.data.observability.MobileTrace.span("model", config.model) {
+        com.siming.mobile.data.observability.MobileTrace.current.get()?.secrets?.add(config.apiKey)
+        executeAgentTurn(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody).also {
+            com.siming.mobile.data.observability.MobileTrace.payload("adapter_output", it.assistantMessage)
+        }
+    }
+
+    private suspend fun executeAgentTurn(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String? = null,
+        maxOutputTokens: Int = 4_000,
+        temperature: Double = 0.3,
+        extraBody: JsonObject? = null,
     ): DirectAgentTurn {
         validateConfig(config)
         val protocol = if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
@@ -478,6 +495,23 @@ class DirectApiClient(
      * stream can never execute partial JSON arguments.
      */
     suspend fun streamAgentTurn(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String? = null,
+        maxOutputTokens: Int = 4_000,
+        temperature: Double = 0.3,
+        extraBody: JsonObject? = null,
+        onContentDelta: suspend (String) -> Unit = {},
+        onReasoningDelta: suspend (String) -> Unit = {},
+    ): DirectAgentTurn = com.siming.mobile.data.observability.MobileTrace.span("model", config.model) {
+        com.siming.mobile.data.observability.MobileTrace.current.get()?.secrets?.add(config.apiKey)
+        executeStreamAgentTurn(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody, onContentDelta, onReasoningDelta).also {
+            com.siming.mobile.data.observability.MobileTrace.payload("adapter_output", it.assistantMessage)
+        }
+    }
+
+    private suspend fun executeStreamAgentTurn(
         config: DirectApiConfig,
         messages: List<JsonObject>,
         tools: JsonArray,
@@ -1126,10 +1160,12 @@ class DirectApiClient(
     private fun JsonObject.string(name: String): String =
         (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
 
-    private fun promptTokens(root: JsonObject, key: String): Int? =
-        ((root["usage"] as? JsonObject)?.get(key) as? JsonPrimitive)
+    private fun promptTokens(root: JsonObject, key: String): Int? {
+        com.siming.mobile.data.observability.MobileTrace.usage(root)
+        return ((root["usage"] as? JsonObject)?.get(key) as? JsonPrimitive)
             ?.intOrNull
             ?.coerceAtLeast(0)
+    }
 
     private fun directTextMessages(
         systemPrompt: String,

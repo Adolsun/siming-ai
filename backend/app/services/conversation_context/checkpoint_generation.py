@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.modules.operations.application.trace_decorators import observed
+
 import asyncio
 import inspect
 from collections.abc import Mapping, Sequence
@@ -815,6 +817,7 @@ async def _fail_attempt(
     return error
 
 
+@observed(kind="checkpoint", capture_output=False)
 async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveCheckpoint:
     """Generate one sealed segment across explicit DB/network/DB phases."""
 

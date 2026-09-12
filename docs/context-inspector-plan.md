@@ -1,6 +1,6 @@
 # 内置上下文查看实施方案
 
-> 状态：准备完成，待实施。本文描述下一轮开发范围，不代表功能已经可用。
+> 状态：首期代码已实现，处于测试验收阶段；尚未发布新版本。使用入口、默认值及明确限制见 [使用说明](context-inspector.md)。
 >
 > 基线：`v3.3.16` / `main@ad56db35d3677685afe0d93296b544206e07f5ae`。
 > 该版本已发布，发布代码已同步回 `develop`。准备分支：`codex/context-inspector`。
@@ -73,7 +73,7 @@ flowchart LR
 
 ## 4. 共享数据契约草案
 
-首个实施提交固化 `siming.context_trace.v1`，由同一机器可读 Schema 和合成样例约束 Python、TypeScript、Kotlin。本文先定义字段语义，不增加尚无实现的产品 API 或能力声明。
+首个实施提交固化 `siming.context_trace.v1`，由同一机器可读 Schema 和合成样例约束 Python、TypeScript、Kotlin。机器契约已固化在 `contracts/context-trace-v1.schema.json`，跨端样例位于 `contracts/fixtures/context-trace-v1-interop.json`。
 
 | 对象 | 必须表达的字段与约束 |
 | --- | --- |
@@ -86,7 +86,7 @@ flowchart LR
 | Usage | 原字段、归一化的可空输入/输出/缓存统计、来源 `provider_reported` 或 `estimated`、计数器/价格版本；未调用、未采集和提供商未返回分别表示 |
 | Coverage | 各层覆盖状态、缺失原因、限额截断、采集错误、丢弃事件数；不能用单个“完整”覆盖全部层次 |
 
-Payload 的语义层固定为 `context_frame`、`provider_request`、`provider_response`、`adapter_output`、`tool_arguments`、`tool_receipt`、`model_visible_tool_result`、`cli_input`、`cli_event`。视图据此命名，不把保存的历史摘要当作 provider request。
+Payload 的语义层固定为 `logical_request`、`context_frame`、`provider_request`、`provider_response`、`adapter_output`、`tool_arguments`、`tool_receipt`、`model_visible_tool_result`、`cli_input`、`cli_event`。视图据此命名，不把保存的历史摘要当作 provider request。
 
 采集范围与内容处理分别表示：例如 `capture_source=http_transport`、`completeness=complete`、`redaction=applied` 表示“在该边界完整观察到，但保存的是脱敏副本”，不表示原始字节未被处理。取消、大小超限、未知压缩、未开启记录分别具有明确的缺失原因。
 
@@ -192,6 +192,14 @@ Android 使用同一信息层级的列表和详情页，从助手、立项消息
 
 日常回归使用 HTTP mock、合成上下文、临时数据库和共享跨端样例，不使用作者真实创作记录作为仓库测试数据，也不因运行测试额外消耗模型 token。性能门槛在阶段 1 的基准测量后明确记录，再作为首期发布门禁。
 
-## 11. 本轮准备完成的边界
+## 11. 实施记录
 
-本轮完成 3.3.16 的发布与分支同步，并确认以上现有代码落点、首期范围、共享数据语义、跨端要求和实施顺序。此分支目前只有准备文档；没有新增产品接口、采集代码、界面、依赖或数据库迁移。
+首期实现新增 `operations` 观察端口、独立诊断库及 `/api/v1/context-traces` 查询接口；接入当前模型 Gateway、HTTP 客户端、工作区/立项工具边界和 ContextFrame/checkpoint。PC 消息与任务入口、Android 直连采集/本机查看、显式 Gateway 查看和 ZIP 导出同步交付。
+
+旧 `live_capture.py`、`run_backend.py` 及对应测试已删除；Phoenix 仅保留可选的历史记录分析。未新增压缩策略、语义路由、自动重放或额外模型调用。
+
+实现采用保守的空间控制：PC 诊断 SQLite 页上限 128 MiB、Android 64 MiB，分别预留另一半总预算给写入日志；按实际占用页数提前清理已结束 trace。每端队列与传输缓冲各有 32 MiB 上限；这不是整个进程的内存上限。Android 对解压/脱敏处理限制并发，繁忙时明确标为部分采集，不等待、不影响模型业务结果。
+
+导出已结束任务时生成自包含 ZIP，包含 manifest、events.jsonl、脱敏内容、文件大小与 SHA-256。PC 使用读取锁阻止导出期间清理；Android 在记录清理后使导出明确失败。大型正文按 Unicode 码点分页，读取端返回下一页位置。
+
+实现边界及测试证据持续记录在 [使用说明](context-inspector.md)。当前没有已连接的 Android 实机；自动检查及 APK 构建不能替代实机安装体验和移动设备性能验收。

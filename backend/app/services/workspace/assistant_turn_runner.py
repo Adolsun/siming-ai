@@ -20,6 +20,8 @@ from app.architecture.tool_categories import (
 from app.architecture.uow import commit_session
 from app.core.db_helpers import get_project_or_404
 from app.core.exceptions import LLMError, NotFoundError, ValidationError
+from app.modules.operations.application.trace_capture import correlate
+from app.modules.operations.application.trace_decorators import observed
 from app.prompts.workspace_assistant import build_workspace_assistant_runtime_system_prompt
 from app.services.agent.prompt_builder import build_system_prompt, get_workspace_pack
 from app.services.content_store import ensure_project_folder
@@ -66,12 +68,12 @@ from app.services.workspace.assistant_turn_support import (
     reference_context_record,
     workspace_category_instruction,
 )
+from app.services.workspace.chapter_writing_state import load_chapter_writing_state
 from app.services.workspace.conversation_context_adapter import (
     build_workspace_context_input,
     workspace_checkpoint_source_turns,
     workspace_execution_ledger_from_run_steps,
 )
-from app.services.workspace.chapter_writing_state import load_chapter_writing_state
 from app.services.workspace.run_log import (
     create_assistant_run,
     mark_assistant_run,
@@ -126,6 +128,7 @@ class WorkspaceAssistantTurnRunner:
         self.prepare_context = prepare_context
         self.encode_event = encode_event
 
+    @observed(kind="turn", scope_kind="project_conversation", scope_id="self.project_id", correlations={"conversation_id": "self.payload.conversation_id"}, output_layer="adapter_output")
     async def events(self, db: Any) -> AsyncGenerator[str, None]:
         supports_native = self._supports_native_tools()
         local_cli = is_local_cli_provider(self.selected_provider)
@@ -286,6 +289,7 @@ class WorkspaceAssistantTurnRunner:
         commit_session(state.db)
         for record in (conversation, state.user_message, state.assistant_message):
             state.db.refresh(record)
+        correlate(conversation_id=conversation.id, assistant_message_id=state.assistant_message.id)
         state.assistant_run = create_assistant_run(
             state.db,
             project_id=state.project_id,
@@ -296,6 +300,7 @@ class WorkspaceAssistantTurnRunner:
             model=payload.model,
         )
         current_sequence = int(state.user_message.sequence_no)
+        correlate(run_id=str(state.assistant_run.id), operation_id=state.assistant_run.operation_id)
         newer_run_exists = False
         for prior in workspace.conversation_runs(state.project_id, conversation.id):
             if (
