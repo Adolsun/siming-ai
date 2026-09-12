@@ -3243,9 +3243,10 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             if (state.string("status") != "confirmed") continue
             var data = state["data"] as? JsonObject ?: continue
             if (stage == "concepts") data = ensureSelectedConcept(data)
+            if (stage == "characters") data = mobileCreationAgent.openingContract.transferCharacters(local, data)
             if (stage == "macro_outline") data = mobileCreationAgent.openingContract.transferVolumes(local, data)
             if (stage == "opening_outline") {
-                data = mobileCreationAgent.openingContract.transferOpening(data, remote["volume_index"] as JsonArray)
+                data = mobileCreationAgent.openingContract.transferOpening(data, remote["volume_index"] as JsonArray, remote["character_index"] as JsonArray)
             }
             onProgress("正在提交${creationStageLabel(stage)}…")
             remote = api.confirmNovelCreationStage(
@@ -3278,7 +3279,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val characters = session.stageData("characters")
         val locations = session.stageData("locations")
         val projectId = UUID.randomUUID().toString()
-        val outlineRecords = mobileCreationAgent.openingContract.materialize(session, projectId)
+        val creationCharacterIds = mobileCreationAgent.openingContract.characterRecordIds(session)
+        val outlineRecords = mobileCreationAgent.openingContract.materialize(session, projectId, creationCharacterIds)
         val title = concept.string("title").ifBlank { "未命名作品" }
         val projectTags = listOfNotNull(
             form.string("genre").takeIf(String::isNotBlank),
@@ -3314,7 +3316,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         (characters["characters"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEach { row ->
             val name = row.string("name").ifBlank { "未命名角色" }.take(100)
             if (characterIds.containsKey(name)) return@forEach
-            val id = UUID.randomUUID().toString()
+            val id = creationCharacterIds.getValue(mobileCreationAgent.openingContract.characterId(session, row))
             characterIds[name] = id
             saveEntity(projectId, "character", id, buildJsonObject {
                 put("_record_type", "character")

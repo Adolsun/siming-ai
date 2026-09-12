@@ -198,6 +198,7 @@ def _materialize_characters(db: Session, project_id: str, project_payload: dict[
     if isinstance(protagonist, dict) and _text(protagonist.get("name")):
         rows.insert(0, {**protagonist, "role_type": "protagonist"})
     by_name: dict[str, Character] = {}
+    by_creation_id: dict[str, str] = {}
     for item in rows:
         name = _text(item.get("name"))[:100]
         if not name or name in by_name:
@@ -225,8 +226,10 @@ def _materialize_characters(db: Session, project_id: str, project_payload: dict[
         db.add(character)
         db.flush()
         by_name[name] = character
+        if item.get("creation_entity_id"):
+            by_creation_id[item["creation_entity_id"]] = character.id
         created["characters"].append(name)
-    return by_name
+    return by_name, by_creation_id
 
 
 def _materialize_worldbuilding(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any]) -> None:
@@ -268,8 +271,8 @@ def _materialize_worldbuilding(db: Session, project_id: str, project_payload: di
         })
 
 
-def _materialize_outline(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any]) -> None:
-    from app.database.models import OutlineNode
+def _materialize_outline(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any], character_ids: dict[str, str]) -> None:
+    from app.database.models import OutlineNode, OutlineNodeCharacter
 
     volumes: dict[str, OutlineNode] = {}
     for index, item in enumerate(_objects(project_payload.get("volume_outline"))):
@@ -297,6 +300,10 @@ def _materialize_outline(db: Session, project_id: str, project_payload: dict[str
     for index, item in enumerate(ordered):
         node = _outline_node(db, project_id, item, index, volumes, by_client_id)
         if node is not None:
+            for reference in item["character_ids"]:
+                node.linked_characters.append(OutlineNodeCharacter(
+                    character_id=character_ids[reference], role_in_scene="立项规划",
+                ))
             created["outline"].append(node.title)
 
 
@@ -367,7 +374,7 @@ async def finalize_creation_session(db: Session, project_id: str, args: dict[str
     """Idempotently materialize one structured creation session."""
     from app.database.models import NovelCreationSession, Project
     from app.modules.story.application.content_sync import enqueue_project_sync
-    from app.services.novel_creation_workspace import build_project_materialization_payload
+    from app.services.novel_creation_materialization import build_project_materialization_payload
 
     session_id = _text(args.get("session_id"))
     if not session_id:
@@ -395,9 +402,9 @@ async def finalize_creation_session(db: Session, project_id: str, args: dict[str
     try:
         project = _create_project(db, project_payload)
         created = _created_manifest(project.id, project_payload)
-        characters = _materialize_characters(db, project.id, project_payload, created)
+        characters, character_ids = _materialize_characters(db, project.id, project_payload, created)
         _materialize_worldbuilding(db, project.id, project_payload, created)
-        _materialize_outline(db, project.id, project_payload, created)
+        _materialize_outline(db, project.id, project_payload, created, character_ids)
         _materialize_relationships(db, project.id, project_payload, characters, created)
         session.created_project_id = project.id
         session.status = "completed"

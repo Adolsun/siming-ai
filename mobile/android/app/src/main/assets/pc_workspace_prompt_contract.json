@@ -3256,6 +3256,7 @@
       },
       "generation_instruction": "\n目标实体输出契约：{contract}\n目标模式：{mode}。目标对象放入 data 内 field 指定的数组，每个对象必须逐字段满足 required_values；不得用 type 或 entity_type 代替 dimension。existing 模式恰好返回一个对象；new 模式按作者要求生成新对象。\ninitialize_stage={initialize_stage}：为 true 时，本阶段尚无资料，必须同时返回阶段契约要求的全部顶层字段，作为首版资料；为 false 时，只修改目标实体，既有阶段的其他字段保持原样。",
       "generation_diagnostics": {
+        "creation_opening_characters_invalid": "章节和场景必须提供不重复的 character_ids 字符串数组，且所有 ID 必须属于当前会话的 character_index；无已建档人物时显式填写 []。请由模型读取目录并选择真实 ID，本次未写入。",
         "creation_opening_locked_changed": "生成结果修改了已锁定的细纲字段；请保留该 JSON Pointer 对应的原值后修正输出。本次未写入。",
         "creation_opening_structure_invalid": "细纲必须使用 chapters、sections 对象数组及唯一 client_id；章节须含正整数 chapter_number、title、volume_id，场景须含 title、parent_client_id 和完整 metadata。场景只能放在顶层 sections；不接受 parent_index、parent_title 或嵌套场景。",
         "creation_opening_summary_missing": "章节和场景都必须有非空字符串 summary，写明可读的细纲内容；goal、key_events、chapter_hook 等补充字段不能代替 summary。本次未写入。",
@@ -3872,7 +3873,7 @@
       "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
       "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。entries 中每条对象必须含 title、dimension、content；地点 dimension 固定为 geography，势力 dimension 固定为 factions，不能省略或改用 type/entity_type。关系必须含 source_title、target_title、relation_type、description、metadata。",
       "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
-      "opening_outline": "返回顶层 chapters、sections 数组。完整阶段恰好包含第1至3章；每章包含 client_id、chapter_number（正整数）、title、summary、volume_id。volume_id 从上下文 volume_index 中选择真实卷 ID，chapter_number 必须位于该卷章节范围内。每章有2至6个场景，场景只放在顶层 sections，用 parent_client_id 引用章节 client_id；每个场景包含 client_id、parent_client_id、title、summary 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions；scene_number 在每章内从1连续编号。所有 client_id 唯一，修订时保留原 ID。章节和场景的 summary 必须为非空可读细纲正文，交代事件推进、选择、代价与结果，不能只把内容放进 goal/key_events/chapter_hook 等补充字段。不返回 parent_index、parent_title 或 chapter 内的 sections/scene_outline。单实体修订只返回目标集合的对象；其引用仍须指向真实上游 ID。",
+      "opening_outline": "返回顶层 chapters、sections 数组。完整阶段恰好包含第1至3章；每章包含 client_id、chapter_number（正整数）、title、summary、volume_id。volume_id 从上下文 volume_index 中选择真实卷 ID，chapter_number 必须位于该卷章节范围内。每章和每个场景在顶层提供 character_ids 数组，从 character_index 逐字选择本会话角色 ID；无已建档人物时明确写 []。characters 是展示用人物描述，不能代替 character_ids 绑定。每章有2至6个场景，场景只放在顶层 sections，用 parent_client_id 引用章节 client_id；每个场景包含 client_id、parent_client_id、title、summary 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions；scene_number 在每章内从1连续编号。所有 client_id 唯一，修订时保留原 ID。章节和场景的 summary 必须为非空可读细纲正文，交代事件推进、选择、代价与结果，不能只把内容放进 goal/key_events/chapter_hook 等补充字段。不返回 parent_index、parent_title 或 chapter 内的 sections/scene_outline。单实体修订只返回目标集合的对象；其引用仍须指向真实上游 ID。",
       "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。"
     },
     "concept_shape": {
@@ -4295,6 +4296,7 @@
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 1
             },
             {
@@ -4306,6 +4308,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 2
             },
             {
@@ -4317,6 +4320,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 3
             }
           ],
@@ -4324,6 +4328,7 @@
             {
               "client_id": "chapter-01-section-1",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
               "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
@@ -4349,6 +4354,7 @@
             {
               "client_id": "chapter-01-section-2",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
@@ -4374,6 +4380,7 @@
             {
               "client_id": "chapter-01-section-3",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
@@ -4399,6 +4406,7 @@
             {
               "client_id": "chapter-02-section-1",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4424,6 +4432,7 @@
             {
               "client_id": "chapter-02-section-2",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4449,6 +4458,7 @@
             {
               "client_id": "chapter-02-section-3",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4474,6 +4484,7 @@
             {
               "client_id": "chapter-03-section-1",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4499,6 +4510,7 @@
             {
               "client_id": "chapter-03-section-2",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4524,6 +4536,7 @@
             {
               "client_id": "chapter-03-section-3",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4668,6 +4681,7 @@
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 1
             },
             {
@@ -4679,6 +4693,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 2
             },
             {
@@ -4690,6 +4705,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "",
+              "character_ids": [],
               "sort_order": 3
             }
           ],
@@ -4697,6 +4713,7 @@
             {
               "client_id": "chapter-01-section-1",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
               "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
@@ -4722,6 +4739,7 @@
             {
               "client_id": "chapter-01-section-2",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
@@ -4747,6 +4765,7 @@
             {
               "client_id": "chapter-01-section-3",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
@@ -4772,6 +4791,7 @@
             {
               "client_id": "chapter-02-section-1",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4797,6 +4817,7 @@
             {
               "client_id": "chapter-02-section-2",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4822,6 +4843,7 @@
             {
               "client_id": "chapter-02-section-3",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4847,6 +4869,7 @@
             {
               "client_id": "chapter-03-section-1",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4872,6 +4895,7 @@
             {
               "client_id": "chapter-03-section-2",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -4897,6 +4921,7 @@
             {
               "client_id": "chapter-03-section-3",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5022,6 +5047,7 @@
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 1
             },
             {
@@ -5033,6 +5059,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 2
             },
             {
@@ -5044,6 +5071,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 3
             }
           ],
@@ -5051,6 +5079,7 @@
             {
               "client_id": "chapter-01-section-1",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
               "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
@@ -5076,6 +5105,7 @@
             {
               "client_id": "chapter-01-section-2",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
@@ -5101,6 +5131,7 @@
             {
               "client_id": "chapter-01-section-3",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
@@ -5126,6 +5157,7 @@
             {
               "client_id": "chapter-02-section-1",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5151,6 +5183,7 @@
             {
               "client_id": "chapter-02-section-2",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5176,6 +5209,7 @@
             {
               "client_id": "chapter-02-section-3",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5201,6 +5235,7 @@
             {
               "client_id": "chapter-03-section-1",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5226,6 +5261,7 @@
             {
               "client_id": "chapter-03-section-2",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5251,6 +5287,7 @@
             {
               "client_id": "chapter-03-section-3",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5429,6 +5466,7 @@
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 1
             },
             {
@@ -5440,6 +5478,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 2
             },
             {
@@ -5451,6 +5490,7 @@
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
               "volume_id": "fixture-volume",
+              "character_ids": [],
               "sort_order": 3
             }
           ],
@@ -5458,6 +5498,7 @@
             {
               "client_id": "chapter-01-section-1",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
               "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
@@ -5483,6 +5524,7 @@
             {
               "client_id": "chapter-01-section-2",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
@@ -5508,6 +5550,7 @@
             {
               "client_id": "chapter-01-section-3",
               "parent_client_id": "chapter-01",
+              "character_ids": [],
               "node_type": "section",
               "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
@@ -5533,6 +5576,7 @@
             {
               "client_id": "chapter-02-section-1",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5558,6 +5602,7 @@
             {
               "client_id": "chapter-02-section-2",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5583,6 +5628,7 @@
             {
               "client_id": "chapter-02-section-3",
               "parent_client_id": "chapter-02",
+              "character_ids": [],
               "node_type": "section",
               "title": "第2章 局势推进 2 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5608,6 +5654,7 @@
             {
               "client_id": "chapter-03-section-1",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5633,6 +5680,7 @@
             {
               "client_id": "chapter-03-section-2",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 选择与对抗",
               "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5658,6 +5706,7 @@
             {
               "client_id": "chapter-03-section-3",
               "parent_client_id": "chapter-03",
+              "character_ids": [],
               "node_type": "section",
               "title": "第3章 局势推进 3 · 后果与钩子",
               "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
@@ -5686,5 +5735,5 @@
       }
     }
   },
-  "source_sha256": "b10bb523b1d7ab5d43c5b68b692dce2cd6f5b7de482cb4b4faf839a23e385de3"
+  "source_sha256": "56039c5e5136321cd7e182b541e3c7eb17e9811a903e369da5e083ae16172e99"
 }

@@ -56,6 +56,7 @@ def validate_generated_entity(
     target: dict[str, Any] | None,
     *,
     volume_index: list[dict[str, Any]] | None = None,
+    character_index: list[dict[str, Any]] | None = None,
 ) -> None:
     """Validate model structure before normalization can merge any old data."""
     if not target or target.get("initialize_stage"):
@@ -80,6 +81,7 @@ def validate_generated_entity(
         validate_opening_outline(
             data,
             volume_index=volume_index,
+            character_index=character_index,
             partial=bool(target and not target.get("initialize_stage")),
         )
     if stage == "locations":

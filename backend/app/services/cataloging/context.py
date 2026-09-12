@@ -88,6 +88,7 @@ def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:
         "recent_chapter_summaries": recent_summaries,
         "character_index": [
             {
+                "id": item.id,
                 "name": item.name,
                 "age": item.age,
                 "role_type": item.role_type,
@@ -121,6 +122,7 @@ def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:
 def _character_detail(character: Character) -> dict:
     config = character.ai_config
     return {
+        "id": character.id,
         "name": character.name,
         "aliases": [alias.alias for alias in (character.aliases or []) if alias.alias],
         "role_type": character.role_type,

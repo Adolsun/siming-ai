@@ -127,6 +127,7 @@ def test_cataloging_preserves_author_owned_chapter_volume():
             run,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "chapter",
                 "title": planned.title,
                 "summary": "正文实际摘要",
@@ -203,6 +204,7 @@ def test_cataloging_replaces_completed_planning_outline_in_place():
             run,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "chapter",
                 "title": "第一章：归港",
                 "summary": "正文实际摘要",
@@ -289,6 +291,7 @@ def test_recataloging_replaces_projection_without_losing_outline_position():
             first_run,
             "outline_update",
             {
+                "character_ids": [],
                 "id": planned.id,
                 "node_type": "chapter",
                 "title": "第一版实际标题",
@@ -302,6 +305,7 @@ def test_recataloging_replaces_projection_without_losing_outline_position():
             first_run,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "section",
                 "scene_number": 1,
                 "title": "旧场景",
@@ -348,6 +352,7 @@ def test_recataloging_replaces_projection_without_losing_outline_position():
             second_run,
             "outline_update",
             {
+                "character_ids": [],
                 "id": planned.id,
                 "node_type": "chapter",
                 "title": "与立项完全不同的新标题",
@@ -361,6 +366,7 @@ def test_recataloging_replaces_projection_without_losing_outline_position():
             second_run,
             "outline_create",
             {
+                "character_ids": [],
                 "node_type": "section",
                 "scene_number": 1,
                 "title": "新场景",
@@ -464,7 +470,7 @@ def test_revised_chapter_updates_linked_projection_without_deleting_outline_node
             ("chapter_summary", _summary("旧摘要")),
             (
                 "outline_create",
-                {"node_type": "chapter", "title": "第一章：归港", "summary": "旧实际摘要"},
+                {"character_ids": [], "node_type": "chapter", "title": "第一章：归港", "summary": "旧实际摘要"},
             ),
             (
                 "outline_create",
@@ -473,20 +479,21 @@ def test_revised_chapter_updates_linked_projection_without_deleting_outline_node
                     "title": "码头",
                     "scene_number": 1,
                     "summary": "旧码头场景",
-                    "related_characters": ["阿舟", "掌柜"],
+                    "character_ids": ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"],
                 },
             ),
             (
                 "outline_create",
                 {
+                    "character_ids": [],
                     "node_type": "section",
                     "title": "客栈",
                     "scene_number": 2,
                     "summary": "旧客栈场景",
                 },
             ),
-            ("character_create", {"name": "阿舟", "personality": "谨慎", "background": "旧经历"}),
-            ("character_create", {"name": "掌柜", "personality": "圆滑", "background": "客栈掌柜"}),
+            ("character_create", {"client_id": "22222222-2222-4222-8222-222222222222", "name": "阿舟", "personality": "谨慎", "background": "旧经历"}),
+            ("character_create", {"client_id": "33333333-3333-4333-8333-333333333333", "name": "掌柜", "personality": "圆滑", "background": "客栈掌柜"}),
             ("character_state_update", {"name": "阿舟", "current_location": "码头"}),
             (
                 "character_timeline",
@@ -537,7 +544,7 @@ def test_revised_chapter_updates_linked_projection_without_deleting_outline_node
             ("chapter_summary", _summary("新摘要")),
             (
                 "outline_create",
-                {"node_type": "chapter", "title": "第一章 归航", "summary": "新实际摘要"},
+                {"character_ids": [], "node_type": "chapter", "title": "第一章 归航", "summary": "新实际摘要"},
             ),
             (
                 "outline_create",
@@ -546,7 +553,7 @@ def test_revised_chapter_updates_linked_projection_without_deleting_outline_node
                     "title": "雨夜码头",
                     "scene_number": 1,
                     "summary": "新码头场景",
-                    "related_characters": ["阿舟"],
+                    "character_ids": ["22222222-2222-4222-8222-222222222222"],
                 },
             ),
             ("character_update", {"id": db.query(Character).filter_by(project_id=project.id, name="阿舟").one().id,
@@ -671,7 +678,7 @@ def test_revised_chapter_supersedes_unshared_worldbuilding_removed_from_projecti
             first_job,
             first_run,
             "outline_create",
-            {"node_type": "chapter", "title": chapter.title, "summary": "旧摘要"},
+            {"character_ids": [], "node_type": "chapter", "title": chapter.title, "summary": "旧摘要"},
             2,
         )
         _candidate(
@@ -701,7 +708,7 @@ def test_revised_chapter_supersedes_unshared_worldbuilding_removed_from_projecti
             second_job,
             second_run,
             "outline_create",
-            {"node_type": "chapter", "title": chapter.title, "summary": "新摘要"},
+            {"character_ids": [], "node_type": "chapter", "title": chapter.title, "summary": "新摘要"},
             2,
         )
         # A model may repeat an older card in the weak chapter link even though
@@ -981,7 +988,7 @@ def test_revised_chapter_preserves_worldbuilding_shared_by_another_chapter():
             first_job,
             first_run,
             "outline_create",
-            {"node_type": "chapter", "title": source.title, "summary": "旧摘要"},
+            {"character_ids": [], "node_type": "chapter", "title": source.title, "summary": "旧摘要"},
             2,
         )
         _candidate(
@@ -1013,7 +1020,7 @@ def test_revised_chapter_preserves_worldbuilding_shared_by_another_chapter():
             second_job,
             second_run,
             "outline_create",
-            {"node_type": "chapter", "title": source.title, "summary": "新摘要"},
+            {"character_ids": [], "node_type": "chapter", "title": source.title, "summary": "新摘要"},
             2,
         )
         db.flush()

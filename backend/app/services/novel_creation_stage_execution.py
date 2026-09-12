@@ -438,9 +438,10 @@ def _prepare_execution(
         deepcopy(snapshot) if isinstance(snapshot, dict) else deepcopy(current_draft)
     )
     if stage == "opening_outline":
-        from app.services.novel_creation_entities import creation_volume_index
+        from app.services.novel_creation_entities import creation_character_index, creation_volume_index
 
         working_draft["_volume_index"] = creation_volume_index(session)
+        working_draft["_character_index"] = creation_character_index(session)
     instruction = _text(args.get("instruction"))
     if instruction:
         working_draft["_refinement_instruction"] = instruction
@@ -715,9 +716,10 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         context.run.current_message = f"正在生成{label}"
         commit_session(context.db)
         if name == "opening_outline":
-            from app.services.novel_creation_entities import creation_volume_index
+            from app.services.novel_creation_entities import creation_character_index, creation_volume_index
 
             context.working_draft["_volume_index"] = creation_volume_index(context.session)
+            context.working_draft["_character_index"] = creation_character_index(context.session)
         existing_stage = ((context.working_draft.get("stages") or {}).get(name) or {})
         existing_data = (
             deepcopy(existing_stage.get("data"))

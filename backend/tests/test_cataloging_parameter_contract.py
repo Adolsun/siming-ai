@@ -30,6 +30,14 @@ def test_api_and_mcp_export_the_same_non_opaque_candidate_schema():
         "protagonist", "supporting", "antagonist", "mentor", "other",
     ]
     assert fields["chapter_link"]["characters"]["items"]["required"] == ["name", "appearance_type"]
+    assert fields["character_create"]["client_id"]["type"] == "string"
+    for kind in ("outline_create", "outline_update"):
+        variant = next(row for row in variants if row["properties"]["type"]["enum"] == [kind])
+        assert "character_ids" in variant["required"]
+        assert fields[kind]["character_ids"]["items"]["type"] == "string"
+        assert "related_characters" not in fields[kind]
+    sections = fields["scene_outline_replace"]["sections"]["items"]
+    assert "character_ids" in sections["required"]
     for example in candidate_contract_examples():
         spec.validate_input({"job_id": "job", "chapter_id": "chapter", "candidates": [example]})
 
@@ -153,7 +161,7 @@ def test_api_gateway_corrects_enum_on_next_request_without_repeating_saved_candi
         if len(calls) == 2:
             rows = [
                 {"type": "chapter_summary", "payload": summary_payload(character_profiles=[character.name])},
-                {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
+                {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
                 record,
             ]
         else:

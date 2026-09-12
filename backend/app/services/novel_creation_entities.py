@@ -337,6 +337,15 @@ def creation_volume_index(session: NovelCreationSession) -> list[dict[str, Any]]
     ]
 
 
+def creation_character_index(session: NovelCreationSession) -> list[dict[str, Any]]:
+    return [
+        {"id": item.id, **{key: deepcopy(item.data_json.get(key)) for key in ("client_id", "name")}}
+        for item in sorted(session.entities, key=lambda row: int(row.position or 0))
+        if item.artifact_key == "characters" and item.entity_type == "character"
+        and item.status == "active"
+    ]
+
+
 def _entity_pointer(session: NovelCreationSession, entity: NovelCreationEntity) -> str:
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
     stages = draft.get("stages") if isinstance(draft.get("stages"), dict) else {}

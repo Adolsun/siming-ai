@@ -36,7 +36,7 @@ internal class PcCreationEntityContract(creation: JsonObject) {
         else -> "location"
     }
 
-    fun validateGenerated(stage: String, data: JsonObject, target: JsonObject?, volumes: JsonArray? = null) {
+    fun validateGenerated(stage: String, data: JsonObject, target: JsonObject?, volumes: JsonArray? = null, characters: JsonArray? = null) {
         if (target == null || target.string("initialize_stage") == "true") {
             validateStageTextFields(stage, data)
         }
@@ -60,7 +60,7 @@ internal class PcCreationEntityContract(creation: JsonObject) {
             }
         }
         if (stage == "opening_outline") {
-            opening.validate(data, volumes, partial = target != null && target.string("initialize_stage") != "true")
+            opening.validate(data, volumes, partial = target != null && target.string("initialize_stage") != "true", characters = characters)
         }
         if (stage == "locations") {
             (data["entries"] as? JsonArray).orEmpty().forEachIndexed { index, item ->

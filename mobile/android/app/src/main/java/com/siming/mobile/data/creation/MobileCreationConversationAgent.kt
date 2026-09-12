@@ -34,6 +34,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 internal data class MobileCreationConversationResult(
@@ -882,7 +884,8 @@ internal class MobileCreationConversationAgent(
         val updated = try { stageAgent.replaceArtifact(source, entity.artifact, JsonObject(artifactData), "assistant") } catch (error: Exception) {
             return ToolExecution(source, result("patch_creation_entity", "error", error.message ?: "实体修改后未通过校验"))
         }
-        val next = resolveEntity(updated, entity.id)?.descriptor ?: JsonNull
+        val saved = updated.stageData(entity.artifact).getValue(entity.field).jsonArray[entity.index].jsonObject
+        val next = entityDescriptor(updated, entity.artifact, entity.field, entity.type, entity.index, saved)
         return ToolExecution(updated, result("patch_creation_entity", "ok", "立项实体已更新", next), wrote = true)
     }
 
@@ -1121,6 +1124,13 @@ internal class MobileCreationConversationAgent(
     }
 
     private fun resolveEntity(source: JsonObject, entityId: String): LocalCreationEntity? {
+        (source.stageData("characters")["characters"] as? JsonArray).orEmpty().forEachIndexed { index, raw ->
+            val row = raw as? JsonObject ?: return@forEachIndexed
+            if (contract.entities.opening.characterId(source, row) == entityId) {
+                return LocalCreationEntity(entityId, "characters", "characters", "character", index, row,
+                    entityDescriptor(source, "characters", "characters", "character", index, row))
+            }
+        }
         val volumes = (source.stageData("macro_outline")["volumes"] as? JsonArray).orEmpty()
         volumes.forEachIndexed { index, raw ->
             val row = raw as? JsonObject ?: return@forEachIndexed
@@ -1138,11 +1148,12 @@ internal class MobileCreationConversationAgent(
         val kind = contract.entities.collections[artifact]?.firstOrNull { it.first == field }?.second ?: return null
         val data = ((source.stageData(artifact)[field] as? JsonArray)?.getOrNull(index) as? JsonObject) ?: return null
         val type = contract.entities.entityType(kind, data)
+        if (type == "character") return null
         return LocalCreationEntity(entityId, artifact, field, type, index, data, entityDescriptor(source, artifact, field, type, index, data))
     }
 
     private fun entityDescriptor(source: JsonObject, artifact: String, field: String, type: String, index: Int, data: JsonObject): JsonObject = buildJsonObject {
-        put("id", if (type == "volume") contract.entities.opening.volumeId(source, data) else "$artifact:$field:$index")
+        put("id", if (type == "volume") contract.entities.opening.volumeId(source, data) else if (type == "character") contract.entities.opening.characterId(source, data) else "$artifact:$field:$index")
         put("artifact", artifact)
         put("entity_type", type)
         put("entity_key", entityKey(data).ifBlank { "$field-$index" })

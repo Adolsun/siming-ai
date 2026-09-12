@@ -15,9 +15,12 @@ from ...database.models import (
     CatalogingChapterRun,
     Character,
     CharacterAlias,
+    ChapterCharacter,
+    OutlineNode,
     WorldbuildingEntry,
 )
 from ...database.query_filters import current_worldbuilding_clause
+from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 from ..story_granularity import CandidateCoverage, inspect_candidate_coverage_items
 from .repair_identity import (
     canonicalize,
@@ -710,7 +713,6 @@ def validate_candidate_source_character_grounding(
                     require(relationship.get("target_name") or relationship.get("target"))
     elif item_type in {"outline_create", "outline_update"}:
         require(payload.get("characters"))
-        require(payload.get("related_characters"))
         require(payload.get("pov_character"))
     elif item_type == "chapter_link":
         require(payload.get("characters"))
@@ -852,6 +854,42 @@ def _source_review_warnings(
     return warnings
 
 
+def _outline_reference_missing(db: Session, project_id: str, items: list[Any]) -> list[str]:
+    existing = {row[0] for row in db.query(Character.id).filter(Character.project_id == project_id).all()}
+    new_ids = {
+        client_id for item in items
+        if _candidate_type(item) == "character_create" and _candidate_status(item) not in {"rejected", "apply_failed"}
+        and isinstance(client_id := _candidate_payload(item).get("client_id"), str)
+    }
+    missing: list[str] = []
+    for item in items:
+        if _candidate_type(item) not in {"outline_create", "outline_update"} or _candidate_status(item) == "rejected":
+            continue
+        payload = _candidate_payload(item)
+        try:
+            expected = set(outline_character_ids(payload))
+        except ValueError as exc:
+            missing.append(str(exc))
+            continue
+        if not expected.issubset(existing | new_ids):
+            missing.append("大纲 character_ids 无有效角色或同批新角色：" + "、".join(sorted(expected - existing - new_ids)))
+        if _candidate_status(item) != "applied":
+            continue
+        node = db.get(OutlineNode, getattr(item, "target_id", None))
+        if node is None or node.project_id != project_id:
+            missing.append("大纲人物绑定目标不存在或不属于当前作品")
+            continue
+        actual = {link.character_id for link in node.linked_characters}
+        if node.node_type == "chapter":
+            expected.update(row[0] for row in db.query(ChapterCharacter.character_id).filter(
+                ChapterCharacter.chapter_id == getattr(item, "chapter_id", None),
+            ).all())
+        if (not expected.issubset(actual) or not actual.issubset(existing)
+                or (node.node_type == "section" and actual != expected)):
+            missing.append(f"大纲人物绑定未完成写入：{node.id}")
+    return missing
+
+
 def inspect_candidate_coverage(
     candidates: Iterable[Any],
     *,
@@ -879,7 +917,8 @@ def inspect_candidate_coverage(
             coverage,
         )
     )
-    missing = _referential_missing(coverage, existing, unresolved)
+    missing = [*coverage.persistence_missing, *_referential_missing(coverage, existing, unresolved),
+               *_outline_reference_missing(db, project_id, items)]
     review_warnings = _source_review_warnings(
         db,
         project_id,
