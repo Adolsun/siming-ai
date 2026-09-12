@@ -521,7 +521,10 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         name="generate_creation_artifact",
         description=(
             "Generate one artifact or one new entity inside an artifact as a durable "
-            "revision-protected run. When model is omitted, use the active default model."
+            "revision-protected run. Await the saved result: status=ok with data.saved=true "
+            "means generation has finished and the draft awaits author confirmation, not a queued task. "
+            "For the first entity in an empty artifact, also initialize required stage fields. "
+            "When model is omitted, use the active default model."
         ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},

@@ -18,6 +18,7 @@ archive = archive_fixture
 
 def section(number, summary=None, **extra):
     return {
+        "character_ids": [],
         "type": "outline_create", "node_type": "section", "title": f"场景{number}",
         "scene_number": number, "summary": summary or f"事件{number}", "purpose": "核对档案",
         "location": "档案室", "timeline": "本章", "pov_character": "主角",
@@ -35,7 +36,7 @@ def checkpoint(archive, *, legacy_extra=False):
     }}, 0)
     for i, raw in enumerate([
         {"type": "chapter_summary", "payload": summary_payload(scene_count=4)},
-        {"type": "outline_create", "node_type": "chapter", "title": chapter.title, "summary": "核对档案"},
+        {"character_ids": [], "type": "outline_create", "node_type": "chapter", "title": chapter.title, "summary": "核对档案"},
         *[section(number) for number in range(1, 5)],
     ]):
         result = create_candidate_from_raw(db, job, run, raw, i)

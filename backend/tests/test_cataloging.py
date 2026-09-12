@@ -358,10 +358,11 @@ class CatalogingServiceTestCase(unittest.TestCase):
             run = job.chapter_runs[0]
             for item_type, payload in [
                 ("chapter_summary", {"summary_text": "张三来到青云宗。", "key_events": ["张三抵达青云宗"]}),
-                ("outline_create", {"title": "第1章 开端", "node_type": "chapter", "summary": "张三来到青云宗。", "related_characters": ["张三"]}),
-                ("outline_create", {"title": "第1章 开端-场景1 入宗门", "node_type": "section", "parent_title": "第1章 开端", "summary": "张三进入青云宗山门。", "scene_number": 1, "related_characters": ["张三"]}),
+                ("outline_create", {"title": "第1章 开端", "node_type": "chapter", "summary": "张三来到青云宗。", "character_ids": ["11111111-1111-4111-8111-111111111111"]}),
+                ("outline_create", {"title": "第1章 开端-场景1 入宗门", "node_type": "section", "parent_title": "第1章 开端", "summary": "张三进入青云宗山门。", "scene_number": 1, "character_ids": ["11111111-1111-4111-8111-111111111111"]}),
                 ("character_create", {
                     "name": "张三",
+                    "client_id": "11111111-1111-4111-8111-111111111111",
                     "role_type": "protagonist",
                     "appearance": "原文未明示，按当前表现推定：少年修士，衣着朴素。",
                     "personality": "谨慎敏锐。",
@@ -651,6 +652,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 item_type="outline_create",
                 operation="create",
                 raw_payload=json.dumps({
+                    "character_ids": [],
                     "type": "outline_create",
                     "node_type": "chapter",
                     "title": chapter.title,
@@ -763,11 +765,13 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 }],
                 "outline_creates": [
                     {
+                        "character_ids": [],
                         "title": chapter.title,
                         "node_type": "chapter",
                         "summary": "完成吐纳并验证新路径。",
                     },
                     {
+                        "character_ids": [],
                         "title": "首次吐纳",
                         "node_type": "section",
                         "parent_id": chapter.title,
@@ -880,6 +884,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     "description": "依靠灵石维持的家族阵法。",
                 }],
                 "outline_creates": [{
+                    "character_ids": [],
                     "type": "outline_create",
                     "node_type": "chapter",
                     "title": chapter.title,
@@ -936,6 +941,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             "narrative_state": {"events": ["发现异常"]},
         }
         outline = {
+            "character_ids": [],
             "type": "outline_create",
             "node_type": "chapter",
             "title": "第一章",
@@ -1018,6 +1024,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     "unresolved_actions": ["追查异常来源"],
                 },
                 "outline_creates": [{
+                    "character_ids": [],
                     "type": "outline_create",
                     "node_type": "chapter",
                     "title": chapter.title,
@@ -1176,7 +1183,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 run,
                 json.dumps({
                     "type": "outline_create",
-                    "payload": {"node_type": "chapter", "summary": "特昂糖在陆家醒来。"},
+                    "payload": {"character_ids": [], "node_type": "chapter", "summary": "特昂糖在陆家醒来。"},
                 }, ensure_ascii=False),
                 0,
             )
@@ -1622,6 +1629,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 run,
                 "outline_create",
                 {
+                    "character_ids": [],
                     "title": chapter.title,
                     "node_type": "chapter",
                     "summary": "林舟确认档案记录仍然有效。",
@@ -2044,7 +2052,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     }, ensure_ascii=False),
                     json.dumps({
                         "type": "outline_create",
-                        "payload": {"title": "Reveal", "node_type": "chapter", "summary": "Identity reveal."},
+                        "payload": {"character_ids": [], "title": "Reveal", "node_type": "chapter", "summary": "Identity reveal."},
                     }, ensure_ascii=False),
                     json.dumps({
                         "type": "character_merge_candidate",
@@ -2123,7 +2131,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     }, ensure_ascii=False),
                     json.dumps({
                         "type": "outline_create",
-                        "payload": {"title": "Local Door", "node_type": "chapter", "summary": "The door opens."},
+                        "payload": {"character_ids": [], "title": "Local Door", "node_type": "chapter", "summary": "The door opens."},
                     }, ensure_ascii=False),
                 ]) + "\n"
             yield body
@@ -2193,7 +2201,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     }, ensure_ascii=False),
                     json.dumps({
                         "type": "outline_create",
-                        "payload": {"title": "Retry", "node_type": "chapter", "summary": "final"},
+                        "payload": {"character_ids": [], "title": "Retry", "node_type": "chapter", "summary": "final"},
                     }, ensure_ascii=False),
                 ]) + "\n"
             yield body
@@ -2252,7 +2260,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 }, ensure_ascii=False),
                 json.dumps({
                     "type": "outline_create",
-                    "payload": {"title": "Retry", "node_type": "chapter", "summary": "final"},
+                    "payload": {"character_ids": [], "title": "Retry", "node_type": "chapter", "summary": "final"},
                 }, ensure_ascii=False),
             ]) + "\n"
             yield body
@@ -2480,6 +2488,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                     narrative_state={"events": ["发现旧档案"]},
                 ),
                 "outline_creates": [{
+                    "character_ids": [],
                     "type": "outline_create",
                     "node_type": "chapter",
                     "title": chapter.title,

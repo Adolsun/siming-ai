@@ -6,9 +6,19 @@ from typing import Any, Callable
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
+from app.modules.creation.domain.generation_contract import CreationGenerationError
 from app.modules.creation.interfaces.session_dependencies import novel_creation_session_store
-from app.services.novel_creation_confirmation import assess_creation_confirmation, save_exact_confirmation
-from app.services.novel_creation_workspace import STAGE_LABELS, STAGE_ORDER, derive_stage, save_stage, serialize_session
+from app.services.novel_creation_confirmation import (
+    assess_creation_confirmation,
+    save_exact_confirmation,
+)
+from app.services.novel_creation_workspace import (
+    STAGE_LABELS,
+    STAGE_ORDER,
+    derive_stage,
+    save_stage,
+    serialize_session,
+)
 
 
 def _text(value: Any) -> str:
@@ -28,12 +38,16 @@ async def save_creation_stage_data(
         return {"tool": "save_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
     if stage not in STAGE_ORDER:
         return {"tool": "save_creation_artifact", "status": "skipped", "detail": "Unknown stage", "data": None}
-    confirmation = assess_creation_confirmation(
-        session,
-        stage,
-        requested_data=args.get("data"),
-        confirm=bool(args.get("confirm", True)),
-    )
+    try:
+        confirmation = assess_creation_confirmation(
+            session,
+            stage,
+            requested_data=args.get("data"),
+            confirm=bool(args.get("confirm", True)),
+        )
+    except CreationGenerationError as exc:
+        db.rollback()
+        return exc.tool_result("save_creation_artifact")
     if confirmation.action == "already_confirmed":
         return {
             "tool": "save_creation_artifact",
@@ -82,6 +96,9 @@ async def save_creation_stage_data(
             "detail": f"{STAGE_LABELS[stage]}已保存",
             "data": serialize_session(session),
         }
+    except CreationGenerationError as exc:
+        db.rollback()
+        return exc.tool_result("save_creation_artifact")
     except Exception as exc:
         db.rollback()
         return {"tool": "save_creation_artifact", "status": "error", "detail": str(exc), "data": None}

@@ -1,0 +1,85 @@
+{
+  "cases": [
+    {
+      "name": "valid_faction",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"entries": [{"title": "巡夜会", "dimension": "factions", "content": "商户出资雇用的巡夜队。"}], "relations": []}
+    },
+    {
+      "name": "missing_dimension",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"entries": [{"title": "巡夜会", "entity_type": "faction", "content": "商户出资雇用的巡夜队。"}]},
+      "error": {"reason": "creation_generated_dimension_invalid", "path": "$.data.entries[0].dimension"}
+    },
+    {
+      "name": "singular_dimension_is_not_the_enum",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"entries": [{"title": "巡夜会", "dimension": "faction"}]},
+      "error": {"reason": "creation_generated_dimension_invalid", "path": "$.data.entries[0].dimension"}
+    },
+    {
+      "name": "mixed_types_cannot_be_silently_filtered",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"entries": [{"title": "巡夜会", "dimension": "factions"}, {"title": "街道", "dimension": "geography"}]},
+      "error": {"reason": "creation_generated_dimension_invalid", "path": "$.data.entries[1].dimension"}
+    },
+    {
+      "name": "empty_collection",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"entries": []},
+      "error": {"reason": "creation_generated_collection_invalid", "path": "$.data.entries"}
+    },
+    {
+      "name": "wrong_collection",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "new"},
+      "data": {"factions": [{"title": "巡夜会", "dimension": "factions"}]},
+      "error": {"reason": "creation_generated_collection_invalid", "path": "$.data.entries"}
+    },
+    {
+      "name": "existing_target_requires_one_row",
+      "stage": "locations",
+      "target": {"entity_type": "faction", "mode": "existing"},
+      "data": {"entries": [{"title": "甲", "dimension": "factions"}, {"title": "乙", "dimension": "factions"}]},
+      "error": {"reason": "creation_generated_count_invalid", "path": "$.data.entries"}
+    },
+    {
+      "name": "whole_stage_also_requires_dimension",
+      "stage": "locations",
+      "target": null,
+      "data": {"entries": [{"title": "街道"}]},
+      "error": {"reason": "creation_generated_dimension_invalid", "path": "$.data.entries[0].dimension"}
+    },
+    {
+      "name": "valid_location_and_faction_stage",
+      "stage": "locations",
+      "target": null,
+      "data": {"entries": [{"title": "街道", "dimension": "geography"}, {"title": "巡夜会", "dimension": "factions"}], "relations": []}
+    },
+    {
+      "name": "first_volume_requires_stage_fields",
+      "stage": "macro_outline",
+      "target": {"entity_type": "volume", "mode": "new", "initialize_stage": true},
+      "data": {"volumes": [{"title": "第一卷"}]},
+      "error": {"reason": "creation_generated_stage_fields_missing", "path": "$.data.story_overview"}
+    },
+    {
+      "name": "existing_volume_does_not_replace_stage_fields",
+      "stage": "macro_outline",
+      "target": {"entity_type": "volume", "mode": "existing", "initialize_stage": false},
+      "data": {"volumes": [{"title": "第一卷"}]}
+    },
+    {
+      "name": "whole_outline_requires_stage_fields",
+      "stage": "macro_outline",
+      "target": null,
+      "data": {"volumes": [{"title": "第一卷"}], "story_overview": {}, "core_conflict": "线索争夺", "ending_direction": "公开证据"},
+      "error": {"reason": "creation_generated_stage_fields_missing", "path": "$.data.story_overview"}
+    }
+  ]
+}

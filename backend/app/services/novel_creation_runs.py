@@ -267,6 +267,8 @@ def fail_run(
     *,
     failed_stage: str | None = None,
 ) -> None:
+    from app.modules.creation.domain.generation_contract import CreationGenerationError
+
     message = _text(exc, "阶段生成失败")
     failure_class = _text(getattr(exc, "failure_class", "")) or classify_failure(message) or "unknown"
     retry_stage = failed_stage or run.stage
@@ -278,6 +280,10 @@ def fail_run(
         failed_stage=retry_stage,
         failed_stage_label=retry_label,
     )
+    if isinstance(exc, CreationGenerationError):
+        diagnostic = exc.tool_result("generate_creation_artifact")["data"]
+        failure_payload.update(diagnostic)
+        run.result_json = {"status": "error", **diagnostic, "attempt": exc.attempt}
     if failure_class == "revision_conflict":
         advice = "保留当前人工修改，检查草稿后重新生成本阶段。"
         failure_payload["next_action"] = advice

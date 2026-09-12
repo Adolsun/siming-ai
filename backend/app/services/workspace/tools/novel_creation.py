@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 
-
 _CHARACTER_ROLE_TYPES = {
     "protagonist",
     "supporting",
@@ -199,6 +198,7 @@ def _materialize_characters(db: Session, project_id: str, project_payload: dict[
     if isinstance(protagonist, dict) and _text(protagonist.get("name")):
         rows.insert(0, {**protagonist, "role_type": "protagonist"})
     by_name: dict[str, Character] = {}
+    by_creation_id: dict[str, str] = {}
     for item in rows:
         name = _text(item.get("name"))[:100]
         if not name or name in by_name:
@@ -226,8 +226,10 @@ def _materialize_characters(db: Session, project_id: str, project_payload: dict[
         db.add(character)
         db.flush()
         by_name[name] = character
+        if item.get("creation_entity_id"):
+            by_creation_id[item["creation_entity_id"]] = character.id
         created["characters"].append(name)
-    return by_name
+    return by_name, by_creation_id
 
 
 def _materialize_worldbuilding(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any]) -> None:
@@ -269,10 +271,10 @@ def _materialize_worldbuilding(db: Session, project_id: str, project_payload: di
         })
 
 
-def _materialize_outline(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any]) -> None:
-    from app.database.models import OutlineNode
+def _materialize_outline(db: Session, project_id: str, project_payload: dict[str, Any], created: dict[str, Any], character_ids: dict[str, str]) -> None:
+    from app.database.models import OutlineNode, OutlineNodeCharacter
 
-    volumes: list[OutlineNode] = []
+    volumes: dict[str, OutlineNode] = {}
     for index, item in enumerate(_objects(project_payload.get("volume_outline"))):
         title = _text(item.get("title"))[:200]
         if not title:
@@ -288,42 +290,37 @@ def _materialize_outline(db: Session, project_id: str, project_payload: dict[str
         )
         db.add(node)
         db.flush()
-        volumes.append(node)
+        volumes[item["creation_entity_id"]] = node
         created["volumes"].append(node.title)
         created["outline"].append(node.title)
     rows = _objects(project_payload.get("outline"))
     ordered = [item for item in rows if _text(item.get("node_type"), "chapter") != "section"]
     ordered += [item for item in rows if _text(item.get("node_type"), "chapter") == "section"]
     by_client_id: dict[str, OutlineNode] = {}
-    by_title: dict[str, OutlineNode] = {}
     for index, item in enumerate(ordered):
-        node = _outline_node(db, project_id, item, index, volumes, by_client_id, by_title)
+        node = _outline_node(db, project_id, item, index, volumes, by_client_id)
         if node is not None:
+            for reference in item["character_ids"]:
+                node.linked_characters.append(OutlineNodeCharacter(
+                    character_id=character_ids[reference], role_in_scene="立项规划",
+                ))
             created["outline"].append(node.title)
 
 
-def _outline_node(db, project_id, item, index, volumes, by_client_id, by_title):
+def _outline_node(db, project_id, item, index, volumes, by_client_id):
     from app.database.models import OutlineNode
 
     title = _text(item.get("title"))[:200]
     if not title:
         return None
     node_type = _text(item.get("node_type"), "chapter")[:20]
-    parent_id = None
-    if node_type == "section":
-        parent = by_client_id.get(_text(item.get("parent_client_id"))) or by_title.get(_text(item.get("parent_title")))
-        parent_id = parent.id if parent else None
-    else:
-        parent_index = item.get("parent_index")
-        if isinstance(parent_index, int) and 0 <= parent_index < len(volumes):
-            parent_id = volumes[parent_index].id
-    metadata = dict(item.get("metadata")) if isinstance(item.get("metadata"), dict) else {}
-    for field in (
-        "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
-        "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
-    ):
-        if field in item and field not in metadata:
-            metadata[field] = item[field]
+    from app.modules.creation.domain.opening_outline_contract import outline_metadata
+
+    parent_id = (
+        by_client_id[item["parent_client_id"]].id if node_type == "section"
+        else volumes[item["volume_id"]].id
+    )
+    metadata = outline_metadata(item)
     node = OutlineNode(
         project_id=project_id,
         parent_id=parent_id,
@@ -336,10 +333,7 @@ def _outline_node(db, project_id, item, index, volumes, by_client_id, by_title):
     )
     db.add(node)
     db.flush()
-    client_id = _text(item.get("client_id"))
-    if client_id:
-        by_client_id[client_id] = node
-    by_title[node.title] = node
+    by_client_id[item["client_id"]] = node
     return node
 
 
@@ -380,7 +374,7 @@ async def finalize_creation_session(db: Session, project_id: str, args: dict[str
     """Idempotently materialize one structured creation session."""
     from app.database.models import NovelCreationSession, Project
     from app.modules.story.application.content_sync import enqueue_project_sync
-    from app.services.novel_creation_workspace import build_project_materialization_payload
+    from app.services.novel_creation_materialization import build_project_materialization_payload
 
     session_id = _text(args.get("session_id"))
     if not session_id:
@@ -396,15 +390,21 @@ async def finalize_creation_session(db: Session, project_id: str, args: dict[str
             })
     if not isinstance(session.draft_json, dict) or int(session.schema_version or 0) < 2:
         return _tool_result("skipped", "Creation session has no structured artifact snapshot")
-    project_payload = build_project_materialization_payload(session)
+    from app.modules.creation.domain.generation_contract import CreationGenerationError
+
+    try:
+        project_payload = build_project_materialization_payload(session)
+    except CreationGenerationError as exc:
+        db.rollback()
+        return exc.tool_result("finalize_creation_session")
     if not isinstance(project_payload, dict):
         return _tool_result("skipped", "Creation snapshot is invalid")
     try:
         project = _create_project(db, project_payload)
         created = _created_manifest(project.id, project_payload)
-        characters = _materialize_characters(db, project.id, project_payload, created)
+        characters, character_ids = _materialize_characters(db, project.id, project_payload, created)
         _materialize_worldbuilding(db, project.id, project_payload, created)
-        _materialize_outline(db, project.id, project_payload, created)
+        _materialize_outline(db, project.id, project_payload, created, character_ids)
         _materialize_relationships(db, project.id, project_payload, characters, created)
         session.created_project_id = project.id
         session.status = "completed"

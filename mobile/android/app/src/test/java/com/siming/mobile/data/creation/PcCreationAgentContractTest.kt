@@ -5,10 +5,68 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 
 class PcCreationAgentContractTest {
+    @Test
+    fun `generated entities match shared PC validation fixtures`() {
+        val file = listOf(
+            java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
+            java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
+        ).first { it.isFile }
+        val contract = PcCreationAgentContract(file.readText(Charsets.UTF_8)).entities
+        val fixture = checkNotNull(javaClass.classLoader?.getResourceAsStream("creation_entity_generation.json"))
+            .bufferedReader(Charsets.UTF_8).use { Json.parseToJsonElement(it.readText()).jsonObject }
+        fixture.getValue("cases").jsonArray.forEach { value ->
+            val case = value.jsonObject
+            val data = case.getValue("data").jsonObject
+            val original = data.toString()
+            val stage = (case.getValue("stage") as JsonPrimitive).content
+            val target = case["target"] as? JsonObject
+            val expected = case["error"] as? JsonObject
+            if (expected == null) {
+                contract.validateGenerated(stage, data, target)
+            } else {
+                val error = kotlin.test.assertFailsWith<CreationGenerationException> {
+                    contract.validateGenerated(stage, data, target)
+                }
+                val diagnostic = error.diagnostic.getValue("data").jsonObject
+                assertEquals(expected["reason"], diagnostic["reason"])
+                assertEquals(expected["path"], diagnostic["path"])
+            }
+            assertEquals(original, data.toString())
+        }
+        assertEquals("faction", contract.entityType("place", Json.parseToJsonElement("""{"dimension":"factions"}""").jsonObject))
+        assertEquals("location", contract.entityType("place", Json.parseToJsonElement("""{"dimension":"geography"}""").jsonObject))
+    }
+
+    @Test
+    fun `large write receipts match PC fixtures and preserve exact metadata`() {
+        val contractFile = listOf(
+            java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
+            java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
+        ).first { it.isFile }
+        val contract = PcCreationAgentContract(contractFile.readText(Charsets.UTF_8))
+        val fixture = checkNotNull(javaClass.classLoader?.getResourceAsStream("creation_write_receipts.json"))
+            .bufferedReader(Charsets.UTF_8).use { it.readText() }
+            .replace("DOCUMENT_BODY", "完整角色背景。".repeat(5_000))
+        Json.parseToJsonElement(fixture).jsonArray.forEach { value ->
+            val case = value.jsonObject
+            val source = case.getValue("data").jsonObject
+            val original = source.toString()
+            val projected = contract.projectWriteResultData(source)
+
+            assertEquals(case["expected_data"], projected)
+            assertTrue(projected.toString().toByteArray(Charsets.UTF_8).size < contract.writeResultMaxBytes)
+            assertTrue(original.toByteArray(Charsets.UTF_8).size > contract.writeResultMaxBytes)
+            assertEquals(original, source.toString())
+        }
+    }
+
     @Test
     fun currentPcCreationAgentPromptRequiresImmediateIncrementalWrites() {
         val contractFile = listOf(

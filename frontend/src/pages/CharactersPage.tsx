@@ -229,6 +229,8 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
   const loadCharacterEditor = useCallback((characterId: string) => {
     const request = editorRequestGate.current.begin(characterId)
+    const formRevision = formRevisionRef.current
+    const aiConfigRevision = aiConfigRevisionRef.current
     const ownsEditor = () => (
       editorRequestGate.current.isCurrent(request)
       && editorTargetRef.current.mode === 'view'
@@ -238,7 +240,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     const detailRequest = apiClient
       .get<ApiResponse<Character>>(`/projects/${projectId}/characters/${characterId}`)
       .then((res) => {
-        if (!ownsEditor()) return
+        if (!ownsEditor() || formRevisionRef.current !== formRevision) return
         const detail = res.data.data
         setSelectedDetail(detail)
         form.setFieldsValue({
@@ -274,12 +276,12 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     const aiConfigRequest = apiClient
       .get<ApiResponse<AIConfig>>(`/projects/${projectId}/characters/${characterId}/ai-config`)
       .then((res) => {
-        if (!ownsEditor()) return
+        if (!ownsEditor() || aiConfigRevisionRef.current !== aiConfigRevision) return
         setAiConfig(res.data.data)
         aiConfigForm.setFieldsValue(res.data.data)
       })
       .catch(() => {
-        if (!ownsEditor()) return
+        if (!ownsEditor() || aiConfigRevisionRef.current !== aiConfigRevision) return
         setAiConfig(null)
         aiConfigForm.resetFields()
       })

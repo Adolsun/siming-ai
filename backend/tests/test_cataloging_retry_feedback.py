@@ -111,7 +111,7 @@ def test_staged_retry_delivers_validation_coverage_and_accepted_candidates(archi
         if len(calls) == 2:
             rows = [
                 {"type": "chapter_summary", "payload": summary_payload(character_profiles=[character.name])},
-                {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
+                {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
                 candidate,
             ]
         else:
@@ -172,7 +172,7 @@ def test_resume_supplies_saved_candidates_and_rechecks_a_model_corrected_manifes
     )
     for index, raw in enumerate([
         {"type": "chapter_summary", "payload": original},
-        {"type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
+        {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
         {"type": "character_state_update", "id": character.id, "name": character.name, "mental_state": "冷静"},
         {"type": "chapter_link", "characters": [{"name": character.name, "appearance_type": "出场"}]},
     ]):

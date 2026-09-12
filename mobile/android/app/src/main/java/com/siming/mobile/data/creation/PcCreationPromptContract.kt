@@ -26,6 +26,7 @@ internal class PcCreationPromptContract private constructor(
     private val creation: JsonObject,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    val entities = PcCreationEntityContract(creation)
 
     constructor(context: Context) : this(
         context.assets.open(PcPromptContract.ASSET_NAME)
@@ -116,12 +117,17 @@ internal class PcCreationPromptContract private constructor(
             put("refinement_instruction", instruction)
             put("entity_target", entityTarget ?: JsonNull)
             put("retrieved_entities", JsonArray(contextEntities))
+            if (stage == "opening_outline") {
+                put("volume_index", entities.opening.volumeIndex(session))
+                put("character_index", entities.opening.characterIndex(session))
+                put("locked_paths", draft.objectValue("artifact_locks")["opening_outline"] ?: JsonArray(emptyList()))
+            }
         }
         val system = creation.string("stage_system_template").fill(
             "task_kind" to "深化阶段：$label",
             "task_rules" to creation.string("stage_task_rules"),
         )
-        val contract = creation.objectValue("stage_contracts").string(stage)
+        val contract = stageContract(stage, entityTarget)
         val prefix = creation.string("stage_user_prefix").fill(
             "stage_label" to label,
             "stage_contract" to contract,
@@ -132,8 +138,15 @@ internal class PcCreationPromptContract private constructor(
         return system to user
     }
 
-    fun stageContract(stage: String): String =
-        creation.objectValue("stage_contracts").string(stage)
+    fun stageContract(stage: String, entityTarget: JsonObject? = null): String {
+        val base = creation.objectValue("stage_contracts").string(stage)
+        if (entityTarget == null) return base
+        val output = entities.output(stage, entityTarget.string("entity_type")) ?: error("目标实体不属于当前阶段")
+        return base + entities.instructionTemplate.fill(
+            "contract" to pythonJson(output), "mode" to entityTarget.string("mode"),
+            "initialize_stage" to (entityTarget.string("initialize_stage").ifBlank { "false" }),
+        )
+    }
 
     fun presetDefaults(presetId: String): JsonObject = preset(presetId)?.objectValue("defaults")
         ?: JsonObject(emptyMap())
@@ -146,11 +159,11 @@ internal class PcCreationPromptContract private constructor(
             .mapNotNull { it as? JsonObject }
             .firstOrNull { it.string("id") == presetId }
 
-    fun repairMessages(raw: String, error: String, stage: String): Pair<String, String> {
+    fun repairMessages(raw: String, error: String, stage: String, entityTarget: JsonObject? = null, volumes: JsonArray? = null, openingLocks: JsonArray = JsonArray(emptyList()), characters: JsonArray? = null): Pair<String, String> {
         val structure = if (stage == "concepts") {
             "顶层 concepts 必须是非空数组，每张卡的字段与示例一致，不得为了满足数量而复制方案"
         } else {
-            stageContract(stage)
+            stageContract(stage, entityTarget) + (volumes?.let { "\nvolume_index=" + pythonJson(it) + "\n必须保持原值的 locked_paths=" + pythonJson(openingLocks) } ?: "") + (characters?.let { "\ncharacter_index=" + pythonJson(it) } ?: "")
         }
         return creation.string("repair_system_prompt") to
             creation.string("repair_user_template").fill(

@@ -169,6 +169,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         "narrative_review": {"source": "provided", "findings": []},
                     },
                     {
+                        "character_ids": [],
                         "type": "outline_create",
                         "node_type": "chapter",
                         "title": "第一章 开门",
@@ -414,6 +415,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                 "narrative_review": {"source": "provided", "findings": []},
             }
             outline = {
+                "character_ids": [],
                 "type": "outline_create",
                 "node_type": "chapter",
                 "title": self.chapter.title,
@@ -437,7 +439,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         "candidates": [
                             summary,
                             outline,
-                            {"type": "outline_create", "node_type": "section", "title": "场景一", "scene_number": 1},
+                            {"character_ids": [], "type": "outline_create", "node_type": "section", "title": "场景一", "scene_number": 1},
                             {"type": "chapter_link", "description": "聚合关联"},
                         ],
                     },
@@ -831,6 +833,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                                 "narrative_review": {"source": "provided", "findings": []},
                             },
                             {
+                                "character_ids": [],
                                 "type": "outline_create",
                                 "node_type": "chapter",
                                 "title": "第一章 开门",
@@ -1069,6 +1072,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                                 "narrative_review": {"source": "provided", "findings": []},
                             },
                             {
+                                "character_ids": [],
                                 "type": "outline_create",
                                 "node_type": "chapter",
                                 "title": chapter.title,
@@ -1258,6 +1262,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                                 },
                             },
                             {
+                                "character_ids": [],
                                 "type": "outline_create",
                                 "node_type": "chapter",
                                 "title": chapter.title,

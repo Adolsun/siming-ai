@@ -133,7 +133,11 @@ class MobileCreationAgentTest {
                 (it as JsonPrimitive).content.contains("开篇细纲尚未确认")
             },
         )
-        session = agent.confirmStage(session, "opening_outline", opening)
+        val volumeId = agent.openingContract.volumeIndex(session).first().jsonObject.getValue("id")
+        val boundOpening = JsonObject(opening + ("chapters" to JsonArray(opening.array("chapters").map { raw ->
+            JsonObject(raw.jsonObject + ("volume_id" to volumeId))
+        })))
+        session = agent.confirmStage(session, "opening_outline", boundOpening)
         val review = agent.baseline(session, "final_review")
         assertTrue(review["ready"]!!.jsonPrimitive.boolean)
         assertEquals(1, review.objectValue("counts")["characters"]!!.jsonPrimitive.int)

@@ -17,7 +17,8 @@ const unsaved = vi.hoisted(() => ({
 }))
 
 vi.mock('../api/client', () => ({ apiClient: api }))
-vi.mock('../contexts/AiPanelContext', () => ({ useAiPanelContext: () => ({ refreshKey: 0 }) }))
+const refresh = vi.hoisted(() => ({ key: 0 }))
+vi.mock('../contexts/AiPanelContext', () => ({ useAiPanelContext: () => ({ refreshKey: refresh.key }) }))
 vi.mock('../hooks/useModelOptions', () => ({ useModelOptions: () => ({ modelOptions: [], loading: false }) }))
 vi.mock('../hooks/useUnsavedGuard', () => ({
   useUnsavedGuard: () => ({
@@ -62,6 +63,7 @@ const characterDetail = {
 
 describe('CharactersPage', () => {
   beforeEach(() => {
+    refresh.key = 0
     api.delete.mockReset()
     api.get.mockReset()
     api.post.mockReset()
@@ -255,4 +257,55 @@ describe('CharactersPage', () => {
     expect(screen.getByRole('status')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /保存角色/ })).not.toBeDisabled())
   })
+})
+
+
+it('reloads v3, basic fields, state and writing constraints after cataloging refresh', async () => {
+  refresh.key = 0
+  let detail = { ...characterDetail, current_goal: '旧目标', profile: { voice: '旧声线' } }
+  api.get.mockImplementation((url: string) => {
+    if (url === '/projects/project-1/characters') return Promise.resolve({ data: { data: { items: [detail], total: 1 } } })
+    if (url.endsWith('/relationships')) return Promise.resolve({ data: { data: { nodes: [], edges: [], total: 0 } } })
+    if (url.endsWith('/character-a')) return Promise.resolve({ data: { data: detail } })
+    if (url.endsWith('/versions')) return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+    if (url.endsWith('/ai-config')) return Promise.reject(new Error('not configured'))
+    throw new Error(url)
+  })
+  const view = render(<CharactersPage projectId="project-1" />)
+  expect(await screen.findByText('当前版本 v1')).toBeInTheDocument()
+  detail = { ...detail, current_version: 3, background: '保留旧背景并新增已确认经历', current_goal: '追查案卷', profile: { voice: '慢而稳' } }
+  refresh.key += 1
+  view.rerender(<CharactersPage projectId="project-1" />)
+  expect(await screen.findByText('当前版本 v3')).toBeInTheDocument()
+  expect(screen.getByText('v3')).toBeInTheDocument()
+  expect(screen.getByLabelText('背景故事')).toHaveValue('保留旧背景并新增已确认经历')
+  fireEvent.click(screen.getByText('剧情状态', { exact: false }))
+  fireEvent.click(screen.getByText('写作约束', { exact: false }))
+  expect(screen.getByLabelText('当前目标')).toHaveValue('追查案卷')
+  expect(screen.getByLabelText('声线')).toHaveValue('慢而稳')
+})
+
+it('does not overwrite typing when a cataloging refresh response arrives late', async () => {
+  refresh.key = 0
+  const pending = deferred<{ data: { data: typeof characterDetail } }>()
+  let refreshing = false
+  api.get.mockImplementation((url: string) => {
+    if (url === '/projects/project-1/characters') return Promise.resolve({ data: { data: { items: [characterSummary], total: 1 } } })
+    if (url.endsWith('/relationships')) return Promise.resolve({ data: { data: { nodes: [], edges: [], total: 0 } } })
+    if (url.endsWith('/character-a')) return refreshing ? pending.promise : Promise.resolve({ data: { data: characterDetail } })
+    if (url.endsWith('/versions')) return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+    if (url.endsWith('/ai-config')) return Promise.reject(new Error('not configured'))
+    throw new Error(url)
+  })
+  const view = render(<CharactersPage projectId="project-1" />)
+  await screen.findByText('当前版本 v1')
+  refreshing = true
+  refresh.key += 1
+  view.rerender(<CharactersPage projectId="project-1" />)
+  fireEvent.change(screen.getByLabelText('背景故事'), { target: { value: '作者尚未保存的修改' } })
+  await act(async () => {
+    pending.resolve({ data: { data: { ...characterDetail, current_version: 3, background: '后台建档结果' } } })
+    await pending.promise
+  })
+  expect(screen.getByLabelText('背景故事')).toHaveValue('作者尚未保存的修改')
 })

@@ -608,6 +608,8 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
         "source": "author",
         "expected_revision": payload.expected_revision,
     })
+    if result.get("status") != "ok":
+        return _tool_response(result)
     if payload.confirm:
         producing_run = store.latest_stage_operation(session_id, stage)
         if producing_run:

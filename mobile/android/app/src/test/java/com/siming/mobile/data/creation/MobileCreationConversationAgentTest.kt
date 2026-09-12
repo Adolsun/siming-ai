@@ -32,6 +32,298 @@ import okhttp3.mockwebserver.RecordedRequest
 
 class MobileCreationConversationAgentTest {
     @Test
+    fun `standalone first outline generation reports five saved volumes`() {
+        listOf("whole", "new").forEach(::exerciseOutlineGeneration)
+    }
+
+    @Test
+    fun `standalone initial volumes repair missing stage fields or report a diagnostic`() {
+        listOf("repair", "invalid").forEach(::exerciseOutlineGeneration)
+    }
+
+    @Test
+    fun `standalone volume refinement preserves the existing main story and other volumes`() {
+        exerciseOutlineGeneration("existing")
+    }
+
+    private fun exerciseOutlineGeneration(mode: String) {
+        val calls = AtomicInteger()
+        val writes = AtomicInteger()
+        val initial = mode != "existing"
+        val repairs = mode == "repair" || mode == "invalid"
+        val succeeds = mode != "invalid"
+        val volumes = JsonArray((0..4).map { index -> buildJsonObject {
+            put("title", "第${index + 1}卷"); put("start_chapter", index * 48 + 1)
+            put("end_chapter", (index + 1) * 48); put("summary", "调查取得新证据。")
+        } })
+        val outline = buildJsonObject {
+            put("story_overview", "追索旧城秘密。"); put("core_conflict", "争夺旧档。")
+            put("ending_direction", "公开旧档并承担代价。"); put("target_chapters", 240)
+            put("volumes", volumes); put("stage_plan", JsonArray(emptyList()))
+        }
+        val replacement = JsonObject(volumes.first().jsonObject + ("summary" to JsonPrimitive("修订后的卷摘要。")))
+        val base = session()
+        val source = if (initial) base else JsonObject(base + ("draft" to JsonObject(
+            base.getValue("draft").jsonObject + ("stages" to buildJsonObject {
+                put("macro_outline", buildJsonObject { put("status", "generated"); put("data", outline) })
+            }),
+        )))
+        fun tool(name: String, args: JsonObject) = buildJsonObject {
+            put("role", "assistant")
+            put("tool_calls", JsonArray(listOf(buildJsonObject {
+                put("id", "call-$name"); put("type", "function")
+                put("function", buildJsonObject { put("name", name); put("arguments", args.toString()) })
+            })))
+        }
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val index = calls.getAndIncrement()
+                val message = when {
+                    index == 0 -> tool("set_tool_categories", buildJsonObject {
+                        put("enabled_categories", JsonArray(listOf("creation_data", "creation_flow").map(::JsonPrimitive)))
+                    })
+                    index == 1 -> tool("get_creation_snapshot", buildJsonObject {})
+                    index == 2 -> tool(if (initial) "generate_creation_artifact" else "refine_creation_artifact", buildJsonObject {
+                        put("artifact", "macro_outline"); put("expected_revision", 1)
+                        put("instruction", if (initial) "生成首版全书主线与五卷卷纲" else "只修订第一卷摘要")
+                        if (!initial) put("entity_id", MobileCreationAgent(contractJson(), DirectApiClient()).openingContract.volumeId(source, volumes.first().jsonObject))
+                        else if (mode != "whole") put("entity_type", "volume")
+                    })
+                    index == 3 || (repairs && index == 4) -> {
+                        val prompt = body.getValue("messages").jsonArray.last().jsonObject.string("content")
+                        if (mode != "whole") assertTrue("initialize_stage=$initial" in prompt, prompt)
+                        if (index == 4) assertTrue("$.data.story_overview" in prompt, prompt)
+                        val data = when {
+                            !initial -> buildJsonObject { put("volumes", JsonArray(listOf(replacement))) }
+                            repairs && (index == 3 || !succeeds) -> buildJsonObject { put("volumes", volumes) }
+                            else -> outline
+                        }
+                        buildJsonObject { put("role", "assistant"); put("content", buildJsonObject { put("data", data) }.toString()) }
+                    }
+                    else -> {
+                        check(index == if (repairs) 5 else 4)
+                        val wire = body.getValue("messages").jsonArray.map { it.jsonObject }
+                            .last { it.string("role") == "tool" }.string("content")
+                        val result = Json.parseToJsonElement(wire).jsonObject
+                        val data = result.getValue("data").jsonObject
+                        if (succeeds) {
+                            assertEquals("ok", result.string("status"))
+                            assertEquals("generated", data.string("status"))
+                            assertEquals("true", data.string("saved"))
+                            assertEquals("true", data.string("requires_confirmation"))
+                            assertEquals("2", data.string("revision"))
+                            assertEquals("5", data.getValue("collection_counts").jsonObject.string("volumes"))
+                            assertFalse("data" in data)
+                            assertTrue(wire.toByteArray(Charsets.UTF_8).size <= 4_096)
+                        } else {
+                            assertEquals("error", result.string("status"))
+                            assertEquals("creation_generated_stage_fields_missing", data.string("reason"))
+                            assertEquals("$.data.story_overview", data.string("path"))
+                        }
+                        buildJsonObject {
+                            put("role", "assistant")
+                            put("content", if (succeeds) "五卷卷纲已保存，等待审阅确认。" else "生成失败，资料未改动。")
+                        }
+                    }
+                }
+                val payload = buildJsonObject { put("choices", JsonArray(listOf(buildJsonObject { put("message", message) }))) }
+                return if (body["stream"]?.jsonPrimitive?.content == "true") chatStreamResponse(payload.toString())
+                else MockResponse().setHeader("Content-Type", "application/json").setBody(payload.toString())
+            }
+        }) { server ->
+            val outcome = runBlocking { agent { writes.incrementAndGet() }.run(source, "处理卷纲", config(server)) }
+            assertEquals(if (repairs) 6 else 5, calls.get())
+            assertEquals(if (succeeds) 1 else 0, writes.get())
+            assertEquals(if (succeeds) "2" else "1", outcome.session.string("revision"))
+            val stages = outcome.session.getValue("draft").jsonObject.getValue("stages").jsonObject
+            if (succeeds) {
+                val data = stages.getValue("macro_outline").jsonObject.getValue("data").jsonObject
+                listOf("story_overview", "core_conflict", "ending_direction").forEach { assertEquals(outline[it], data[it]) }
+                assertEquals(if (initial) volumes else JsonArray(listOf(replacement) + volumes.drop(1)), data["volumes"])
+            } else {
+                assertEquals(source.getValue("draft").jsonObject.getValue("stages"), stages)
+            }
+        }
+    }
+
+    @Test
+    fun `standalone factions repair their dimension or report the exact error without changing locations`() {
+        listOf(true, false).forEach { repairSucceeds ->
+            val calls = AtomicInteger()
+            val writes = AtomicInteger()
+            val oldEntries = JsonArray(listOf("旧坊", "黑市", "东巷").map { title -> buildJsonObject {
+                put("title", title); put("dimension", "geography"); put("content", "保留原有地点资料。")
+            } })
+            val factions = JsonArray(listOf("黑市会", "巡夜队", "纸业行", "驿站脚行").map { title -> buildJsonObject {
+                put("title", title); put("dimension", "factions"); put("content", "凡人组成的本地组织。")
+            } })
+            val malformed = JsonArray(factions.map { JsonObject(it.jsonObject - "dimension") })
+            val base = session()
+            val source = JsonObject(base.toMutableMap().apply {
+                put("draft", JsonObject(base.getValue("draft").jsonObject.toMutableMap().apply {
+                    put("stages", buildJsonObject {
+                        put("locations", buildJsonObject {
+                            put("status", "generated")
+                            put("data", buildJsonObject {
+                                put("entries", oldEntries); put("relations", JsonArray(emptyList()))
+                            })
+                        })
+                    })
+                }))
+            })
+            fun tool(name: String, args: JsonObject) = buildJsonObject {
+                put("role", "assistant")
+                put("tool_calls", JsonArray(listOf(buildJsonObject {
+                    put("id", "call-$name"); put("type", "function")
+                    put("function", buildJsonObject { put("name", name); put("arguments", args.toString()) })
+                })))
+            }
+            withServer(object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                    val index = calls.getAndIncrement()
+                    val message = when (index) {
+                        0 -> tool("set_tool_categories", buildJsonObject {
+                            put("enabled_categories", JsonArray(listOf("creation_data", "creation_flow").map(::JsonPrimitive)))
+                        })
+                        1 -> tool("list_creation_entities", buildJsonObject {
+                            put("artifact", "locations"); put("entity_type", "location")
+                        })
+                        2 -> tool("generate_creation_artifact", buildJsonObject {
+                            put("artifact", "locations"); put("entity_type", "faction"); put("expected_revision", 1)
+                            put("instruction", "新增四个本地势力，保留已有地点。")
+                            put("context_entity_ids", JsonArray((0..2).map { JsonPrimitive("locations:entries:$it") }))
+                        })
+                        3, 4 -> {
+                            val prompt = body.getValue("messages").jsonArray.last().jsonObject.string("content")
+                            assertTrue(prompt.contains("\"required_values\": {\"dimension\": \"factions\"}"), prompt)
+                            assertTrue(prompt.contains("目标模式：new"), prompt)
+                            if (index == 4) assertTrue(prompt.contains("$.data.entries[0].dimension"), prompt)
+                            buildJsonObject {
+                                put("role", "assistant")
+                                put("content", buildJsonObject {
+                                    put("data", buildJsonObject {
+                                        put("entries", if (index == 4 && repairSucceeds) factions else malformed)
+                                        put("relations", JsonArray(emptyList()))
+                                    })
+                                }.toString())
+                            }
+                        }
+                        else -> {
+                            check(index == 5)
+                            val receipt = body.getValue("messages").jsonArray.map { it.jsonObject }
+                                .last { it.string("role") == "tool" }.string("content")
+                            val result = Json.parseToJsonElement(receipt).jsonObject
+                            assertEquals(if (repairSucceeds) "ok" else "error", result.string("status"))
+                            if (!repairSucceeds) {
+                                assertTrue(receipt.contains("creation_generated_dimension_invalid"), receipt)
+                                assertTrue(receipt.contains("$.data.entries[0].dimension"), receipt)
+                                assertTrue(receipt.contains("factions"), receipt)
+                            }
+                            buildJsonObject { put("role", "assistant"); put("content", "本轮处理已结束。") }
+                        }
+                    }
+                    val payload = buildJsonObject { put("choices", JsonArray(listOf(buildJsonObject { put("message", message) }))) }
+                    return if (body["stream"]?.jsonPrimitive?.content == "true") chatStreamResponse(payload.toString())
+                    else MockResponse().setHeader("Content-Type", "application/json").setBody(payload.toString())
+                }
+            }) { server ->
+                val result = runBlocking { agent { writes.incrementAndGet() }.run(source, "新增本地势力网", config(server)) }
+                val entries = result.session.getValue("draft").jsonObject.getValue("stages").jsonObject
+                    .getValue("locations").jsonObject.getValue("data").jsonObject.getValue("entries").jsonArray
+                assertEquals(6, calls.get())
+                assertEquals(if (repairSucceeds) 1 else 0, writes.get())
+                assertEquals(if (repairSucceeds) "2" else "1", result.session.getValue("revision").jsonPrimitive.content)
+                assertEquals(oldEntries.toList(), entries.take(3))
+                assertEquals(if (repairSucceeds) 7 else 3, entries.size)
+                if (repairSucceeds) assertEquals(factions.toList(), entries.drop(3))
+            }
+        }
+    }
+
+    @Test
+    fun `standalone large entity patch delivers success to summary and persists once`() {
+        val requests = AtomicInteger()
+        val persisted = AtomicInteger()
+        val background = "完整角色背景。".repeat(500)
+        val reply = "角色姓名已更新为林遥，原有背景已保留。"
+        val base = session()
+        val source = JsonObject(base.toMutableMap().apply {
+            put("draft", JsonObject(base.getValue("draft").jsonObject.toMutableMap().apply {
+                put("stages", buildJsonObject {
+                    put("characters", buildJsonObject {
+                        put("status", "generated")
+                        put("data", buildJsonObject {
+                            put("characters", JsonArray(listOf(buildJsonObject {
+                                put("name", "林七"); put("role_type", "protagonist")
+                                put("goal", "找到母亲"); put("background", background)
+                            })))
+                            put("relationships", JsonArray(emptyList()))
+                        })
+                    })
+                })
+            }))
+        })
+        val openingContract = PcCreationEntityContract(Json.parseToJsonElement(contractJson()).jsonObject.getValue("creation").jsonObject).opening
+        val entityId = openingContract.characterIndex(source).first().jsonObject.getValue("id").jsonPrimitive.content
+        var savedEntityId = ""
+        fun response(content: String = "", name: String? = null, arguments: String = "{}") = chatStreamResponse(
+            buildJsonObject {
+                put("choices", JsonArray(listOf(buildJsonObject {
+                    put("message", buildJsonObject {
+                        put("role", "assistant"); put("content", content)
+                        if (name != null) put("tool_calls", JsonArray(listOf(buildJsonObject {
+                            put("id", name); put("type", "function")
+                            put("function", buildJsonObject { put("name", name); put("arguments", arguments) })
+                        })))
+                    })
+                })))
+            }.toString(),
+        )
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                return when (requests.getAndIncrement()) {
+                    0 -> response(name = "set_tool_categories", arguments = """{"enabled_categories":["creation_data"]}""")
+                    1 -> response(name = "get_creation_entity", arguments = """{"entity_id":"$entityId"}""")
+                    2 -> response(name = "patch_creation_entity", arguments = """{"entity_id":"$entityId","expected_revision":1,"changes":[{"action":"set","path":"/name","value":"林遥"}]}""")
+                    else -> {
+                        check(requests.get() == 4)
+                        assertTrue(body.getValue("tools").jsonArray.isEmpty())
+                        val message = body.getValue("messages").jsonArray.last().jsonObject
+                        val receipt = Json.parseToJsonElement(message.string("content")).jsonObject
+                        assertEquals("ok", receipt.string("status"))
+                        val data = receipt.getValue("data").jsonObject
+                        savedEntityId = data.string("id")
+                        assertTrue(savedEntityId.isNotBlank())
+                        assertEquals("林遥", data.string("entity_key"))
+                        assertEquals("characters", data.string("artifact"))
+                        assertFalse("data" in data)
+                        assertTrue(message.string("content").toByteArray(Charsets.UTF_8).size <= 4_096)
+                        response(reply)
+                    }
+                }
+            }
+        }) { server ->
+            val outcome = runBlocking { agent { persisted.incrementAndGet() }.run(
+                source = source, message = "把主角改名为林遥", config = config(server),
+            ) }
+            assertEquals(reply, outcome.reply)
+            assertEquals("model", outcome.replyStatus)
+            assertTrue(outcome.replyDiagnostics.isEmpty())
+            assertEquals(4, requests.get())
+            assertEquals(1, persisted.get())
+            assertEquals("2", outcome.session.getValue("revision").jsonPrimitive.content)
+            assertEquals(openingContract.characterIndex(outcome.session).first().jsonObject.getValue("id").jsonPrimitive.content, savedEntityId)
+            val character = outcome.session.getValue("draft").jsonObject.getValue("stages").jsonObject
+                .getValue("characters").jsonObject.getValue("data").jsonObject.getValue("characters").jsonArray.first().jsonObject
+            assertEquals("林遥", character.string("name"))
+            assertEquals(background, character.string("background"))
+        }
+    }
+
+    @Test
     fun `standalone generation returns reference diagnostics without calling the generator`() {
         val cases = listOf(
             Triple("context_entity_ids", JsonArray(listOf(JsonPrimitive("world_style:worldbuilding:99"))), "creation_context_entity_unavailable"),
@@ -771,7 +1063,7 @@ class MobileCreationConversationAgentTest {
         val store: MobileAssistantConversationStore,
     )
 
-    private fun agent(): AgentHarness {
+    private fun agent(persistSession: suspend (JsonObject) -> Unit = {}): AgentHarness {
         val client = DirectApiClient(allowCleartextForTests = true, retryDelaysMillis = emptyList())
         val contract = contractJson()
         val store = MobileAssistantConversationStore(Files.createTempDirectory("creation-agent-test").toFile())
@@ -781,7 +1073,7 @@ class MobileCreationConversationAgentTest {
                 stageAgent = MobileCreationAgent(contract, client),
                 directApi = client,
                 conversationStore = store,
-                persistSession = {},
+                persistSession = persistSession,
                 finalizeSession = { source -> source to "project-1" },
             ),
             store = store,
