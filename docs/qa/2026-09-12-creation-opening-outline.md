@@ -33,4 +33,8 @@ backend\.venv\Scripts\python.exe scripts/check-mobile-pc-parity.py
 .\gradlew.bat :app:testDebugUnitTest --tests 'com.siming.mobile.data.creation.*' :app:lintDebug --offline --console=plain
 ```
 
-本次修复不改动本机现有小说或已完成的立项数据，也不自动从人物目标等字段拼造缺失细纲。已有空内容章节不会因为代码升级自动恢复。本次仅交付代码，未重建安装包或替换正在运行的程序。
+本次修复不改动本机现有小说或已完成的立项数据，也不自动从人物目标等字段拼造缺失细纲。已有空内容章节不会因为代码升级自动恢复。
+
+2026-09-12 随后按用户要求重新构建 Windows 安装包，版本保持 3.3.16：`release/Siming-Setup.exe`，42,579,612 字节，SHA256 为 `717cf37fa9424a8e30135c07dfea47f421247e68e2611cb0e620c10bf114258e`。安装包校验通过；打包后的 MCP 冒烟检查通过，注册 153 个工具。
+
+另用打包后的 `Siming.exe`、隔离数据库和本地合成模型响应完成实际生成到正式建书的回归：首次返回空正文及缺失卷 ID 时，同一模型修正一次后保存三章九场景；调整两卷顺序后，各章仍挂在原指定卷下；正式建书保留章节、场景正文及章末钩子；两次空正文或外部卷 ID 的写入被拒绝，资料和 revision 均未变化。验证记录位于 `.build/packaged-opening-outline-result.json`，构建日志位于 `.build/windows-installer-build.log`。没有替换正在运行的程序。
