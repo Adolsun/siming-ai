@@ -59,7 +59,7 @@ type MenuKey = 'creation' | 'world' | 'characters' | 'outline' | 'writer' | 'exp
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
   creation: '创作设定',
-  context: '上下文治理',
+  context: 'AI 参考资料',
   writer: '写作工作台',
   outline: '大纲规划',
   characters: '角色管理',
@@ -197,7 +197,7 @@ function ProjectWorkspace() {
       label: '连续性与档案',
       children: [
         { key: 'governance', icon: <SafetyCertificateOutlined />, label: '叙事治理' },
-        { key: 'context', icon: <AuditOutlined />, label: '上下文治理' },
+        { key: 'context', icon: <AuditOutlined />, label: 'AI 参考资料' },
         { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
         { key: 'stats', icon: <BarChartOutlined />, label: '统计追踪' },
       ],

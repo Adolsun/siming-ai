@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, Drawer, Empty, Popconfirm, Select, Space, Spin, Tag, Typography } from 'antd'
 import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons'
-import { CONTEXT_INSPECTOR_OPEN } from '../../shared/contextInspector'
+import { CONTEXT_INSPECTOR_OPEN, openContextInspector } from '../../shared/contextInspector'
 import type { ContextInspectorRequest } from '../../shared/contextInspector'
 import { clearTraces, exportTrace, listTraces, setTraceMode, traceDetail, traceEvents, traceHealth, tracePayload } from './api'
 import { buildSpans, layerNames, missingNames, statusNames } from './types'
@@ -11,6 +11,10 @@ import './contextInspector.css'
 
 const { Text } = Typography
 const keyRoot = ['context-inspector'] as const
+const scopeNames: Record<TraceScope['kind'], string> = {
+  creation_session: '新书立项', project_conversation: '作品助手',
+  system_conversation: '系统助手', operation: '后台任务',
+}
 
 function Failure({ error }: { error: unknown }) {
   return error ? <Alert type="error" showIcon message={error instanceof Error ? error.message : '调用记录读取失败'} /> : null
@@ -46,14 +50,16 @@ export function ContextInspector({ scope, correlationId }: { scope?: TraceScope;
     void cache.invalidateQueries({ queryKey: keyRoot })
   } })
   const items = traces.data?.pages.flatMap(page => page.items) ?? []
+  const filtered = Boolean(scope || correlationId)
   useEffect(() => {
     const first = traces.data?.pages.flatMap(page => page.items)
     if (!selected && first?.length) setSelected(first.find(item => item.status === 'error') ?? first[0])
   }, [selected, traces.data])
   return <div className="context-inspector">
     <div className="context-inspector-toolbar">
-      <div><Text strong>本机调用记录</Text><div className="context-inspector-caption">按任务追踪输入、响应与执行结果</div></div>
+      <div><Text strong>{correlationId ? '本条回复的调用' : scope ? `${scopeNames[scope.kind]}调用` : '全部调用记录'}</Text><div className="context-inspector-caption">查看发送给模型的内容、模型返回和工具执行结果</div></div>
       <Space wrap>
+        {filtered && <Button onClick={() => openContextInspector({})}>全部调用</Button>}
         <Select aria-label="记录级别" value={settings.data?.policy.mode === 'full' && settings.data.policy.full_until ? 'timed' : settings.data?.policy.mode}
           loading={settings.isLoading || changeMode.isPending} disabled={!settings.data}
           onChange={value => changeMode.mutate(value)} style={{ minWidth: 145 }}
@@ -64,15 +70,17 @@ export function ContextInspector({ scope, correlationId }: { scope?: TraceScope;
         </Popconfirm>
       </Space>
     </div>
-    <Alert type="info" showIcon message="完整记录会保存后续任务的提示词、正文与工具结果，默认保存在执行端。密钥会脱敏；未记录的旧请求无法补回。" />
+    <Alert type="info" showIcon message="记录设置对当前连接中的后续立项、作品助手任务都生效，切换页面不会停止记录。"
+      description="无需先创建作品。完整记录会保存提示词、正文与工具结果，仅用于查看，不改变发给模型的上下文。密钥会脱敏；未记录的旧请求无法补回。" />
     {!!(settings.data?.dropped_events || settings.data?.write_errors) && <Alert type="warning" showIcon message="部分诊断内容未能写入，记录可能不完整。正常生成不受此记录状态影响。" />}
     <Failure error={settings.error || changeMode.error || cleanup.error || traces.error} />
     <div className="context-inspector-layout">
       <nav className="context-inspector-traces" aria-label="任务调用记录">
         {traces.isLoading && <Spin />}
-        {!traces.isLoading && !items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本轮暂无记录；可开启记录后再次操作" />}
+        {!traces.isLoading && !items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={filtered ? '本次筛选暂无记录，可查看全部调用。' : '还没有调用记录。先开启完整记录，再去立项或与助手对话。'} />}
         {items.map(item => <button key={item.id} type="button" className={selected?.id === item.id ? 'trace-selected' : ''} onClick={() => setSelected(item)}>
           <span>{new Date(item.started * 1000).toLocaleString()}</span>
+          <Text strong>{scopeNames[item.scope_kind] ?? item.scope_kind}</Text>
           <span><Tag color={item.status === 'error' ? 'red' : 'default'}>{statusNames[item.status] ?? item.status}</Tag><Text type="secondary">{item.mode === 'full' ? '完整内容' : '摘要'}</Text></span>
           <code>{item.id.slice(0, 12)}</code>
           {item.capture_status !== 'recorded' && <Text type="secondary">采集：{statusNames[item.capture_status] ?? item.capture_status}</Text>}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
+  Collapse,
   Drawer,
   Empty,
   Input,
@@ -109,8 +110,8 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  ready: '可执行',
-  overridden: '已覆写',
+  ready: '资料已就绪',
+  overridden: '作者已确认继续',
   needs_confirmation: '待确认',
   stale: '已失效',
   blocked_rebuild: '索引维护中',
@@ -118,6 +119,22 @@ const STATUS_LABEL: Record<string, string> = {
   running: '重建中',
   completed: '已完成',
   failed: '失败',
+}
+
+const TASK_LABEL: Record<string, string> = {
+  writing: '章节写作', editing: '正文修改', review: '内容审阅', outline_planning: '大纲规划',
+  cataloging: '作品建档', rewrite: '正文改写', new_project: '新书立项', planning: '创作规划',
+}
+const SOURCE_LABEL: Record<string, string> = {
+  target_outline: '本次大纲', target_chapter: '本章正文', target_text: '待处理正文',
+  style: '写作风格', previous_summary: '前文摘要', scene_character: '相关角色',
+  worldbuilding: '世界观', narrative_governance: '叙事约束', user_requirement: '作者要求',
+  outline_position: '大纲位置', outline_parent: '上级大纲', memory: '创作记忆', skill: '写作技能',
+  hybrid_retrieval: '检索到的资料', confirmed_fact: '已确认事实', adjacent_summary: '相邻章节摘要',
+  creation_session: '立项资料', confirmed_stage: '已确认阶段', author_constraint: '作者约束',
+}
+const COVERAGE_LABEL: Record<string, string> = {
+  covered: '已具备', missing: '缺少资料', not_applicable: '本次无需', unknown: '尚未确认',
 }
 
 const tokenPercent = (manifest: ContextManifest) => {
@@ -209,12 +226,12 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
         reason: overrideReason.trim(),
         actor: 'author',
       })
-      message.success('已记录上下文覆写原因')
+      message.success('已记录继续执行的原因')
       setOverrideTarget(null)
       setOverrideReason('')
       load()
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '覆写未保存')
+      message.error(error instanceof Error ? error.message : '确认原因未保存')
     } finally {
       setSubmittingOverride(false)
     }
@@ -236,16 +253,16 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
       title: '任务',
       dataIndex: 'task_type',
       width: 126,
-      render: (value: string, item: ContextManifest) => <Space direction="vertical" size={0}><Text strong>{value}</Text><Text type="secondary" style={{ fontSize: 11 }}>{item.execution_route}</Text></Space>,
+      render: (value: string) => <Text strong>{TASK_LABEL[value] || value}</Text>,
     },
     {
-      title: '输入预算',
+      title: '预计资料占用',
       key: 'budget',
       width: 220,
       render: (_: unknown, item: ContextManifest) => (
         <div style={{ minWidth: 170 }}>
           <Progress percent={tokenPercent(item)} size="small" status={item.status === 'stale' ? 'exception' : undefined} showInfo={false} />
-          <Text type="secondary" style={{ fontSize: 11 }}>{item.budget.estimated_input_tokens} / {item.budget.input_budget_tokens} tokens</Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>约 {item.budget.estimated_input_tokens} / {item.budget.input_budget_tokens} tokens</Text>
         </div>
       ),
     },
@@ -254,10 +271,10 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
       key: 'model',
       render: (_: unknown, item: ContextManifest) => (
         <Text
-          ellipsis={{ tooltip: item.model || '未记录模型名称；本次按 256K 临时容量兜底。已配置的精确档案会优先使用。' }}
+          ellipsis={{ tooltip: item.model || '这条清单未记录模型名称；容量估算请查看本次资料详情。' }}
           style={{ maxWidth: 180 }}
         >
-          {item.model || '未知模型（256K 临时兜底）'}
+          {item.model || '未记录模型名称'}
         </Text>
       ),
     },
@@ -266,8 +283,8 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
       width: 120,
       render: (_: unknown, item: ContextManifest) => (
         <Space size={2}>
-          <Button type="text" icon={<EyeOutlined />} title="查看来源与预算" onClick={() => openManifest(item)} />
-          {item.status === 'needs_confirmation' && <Button type="text" icon={<SafetyCertificateOutlined />} title="记录覆写原因" onClick={() => setOverrideTarget(item)} />}
+          <Button type="text" icon={<EyeOutlined />} onClick={() => openManifest(item)}>查看资料</Button>
+          {item.status === 'needs_confirmation' && <Button type="text" icon={<SafetyCertificateOutlined />} title="说明资料不足时仍要继续的原因" onClick={() => setOverrideTarget(item)} />}
         </Space>
       ),
     },
@@ -275,17 +292,19 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
 
   return (
     <div style={{ maxWidth: 1500, margin: '0 auto' }}>
-      <Space align="start" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <Space wrap align="start" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
-          <Title level={3} style={{ margin: 0 }}>上下文治理</Title>
-          <Text type="secondary">每次生成、评审和外部 Agent 执行使用的来源、预算与确认记录。</Text>
+          <Title level={3} style={{ margin: 0 }}>AI 参考资料</Title>
+          <Text type="secondary">查看写作任务准备参考哪些作品资料、是否有缺失，以及预计占用多少上下文容量。</Text>
         </div>
         <Space>
           <ContextInspectorButton scope={{ kind: 'project_conversation', id: projectId }} label="查看调用记录" />
-          <Button icon={<SyncOutlined />} loading={loading} onClick={rebuildProject}>重建索引</Button>
           <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>
         </Space>
       </Space>
+
+      <Alert type="info" showIcon style={{ marginBottom: 16 }} message="这里展示写作前准备的资料清单。"
+        description="想看实际发给模型的提示词、对话、工具调用和返回内容，请点击“查看调用记录”。开启调用记录也可以从主界面的“调用记录”入口完成，无需先创建作品。" />
 
       {status && !status.generation_allowed && (
         <Alert
@@ -302,16 +321,9 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
           type={currentRebuild.status === 'failed' ? 'error' : 'info'}
           showIcon
           message={`索引${STATUS_LABEL[currentRebuild.status] || currentRebuild.status}`}
-          description={`词法块 ${currentRebuild.indexed_chunks}，语义块 ${currentRebuild.semantic_chunks}${currentRebuild.error ? `。${currentRebuild.error}` : ''}`}
+          description={`已整理 ${currentRebuild.indexed_chunks} 个资料片段，其中 ${currentRebuild.semantic_chunks} 个支持按含义检索${currentRebuild.error ? `。${currentRebuild.error}` : ''}`}
           style={{ marginBottom: 16 }}
         />
-      )}
-
-      {status?.semantic && (
-        <div style={{ marginBottom: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Tag color={status.semantic.available ? 'green' : 'default'}>{status.semantic.available ? '本地语义检索可用' : '词法检索模式'}</Tag>
-          <Text type="secondary" style={{ fontSize: 12 }}>{status.semantic.model}{status.semantic.reason ? ` · ${status.semantic.reason}` : ''}</Text>
-        </div>
       )}
 
       <Table
@@ -321,12 +333,19 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
         dataSource={manifests}
         columns={columns}
         pagination={{ pageSize: 12, hideOnSinglePage: true }}
-        locale={{ emptyText: <Empty description="尚无上下文 Manifest" /> }}
+        locale={{ emptyText: <Empty description="还没有写作参考资料清单。写作任务准备资料后会显示在这里；立项对话请到“调用记录”查看。" /> }}
         scroll={{ x: 820 }}
       />
 
+      <Collapse style={{ marginTop: 16 }} items={[{ key: 'maintenance', label: '资料检索与维护', children: <Space direction="vertical">
+        <Text type="secondary">资料索引用于从作品中找到相关片段。更新资料后检索结果异常时，可以重新整理；这不会改写作品正文。</Text>
+        {status?.semantic && <><Tag color={status.semantic.available ? 'green' : 'default'}>{status.semantic.available ? '支持按内容含义检索' : '使用关键词检索'}</Tag>
+          <Text type="secondary">{status.semantic.model}{status.semantic.reason ? ` · ${status.semantic.reason}` : ''}</Text></>}
+        <Button icon={<SyncOutlined />} loading={loading} onClick={rebuildProject}>重新整理资料索引</Button>
+      </Space> }]} />
+
       <Drawer
-        title={selected ? `Manifest · ${selected.task_type}` : 'Manifest'}
+        title={selected ? `参考资料 · ${TASK_LABEL[selected.task_type] || selected.task_type}` : '参考资料'}
         open={Boolean(selected)}
         onClose={closeManifest}
         width={Math.min(760, window.innerWidth - 36)}
@@ -337,22 +356,23 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
               type={selected.status === 'ready' || selected.status === 'overridden' ? 'success' : 'warning'}
               showIcon
               message={STATUS_LABEL[selected.status] || selected.status}
-              description={selected.stale_reason || selected.override?.reason || selected.warnings?.[0] || '所有选择均可审计。'}
+              description={selected.stale_reason || selected.override?.reason || selected.warnings?.[0] || '下面保留本次任务准备引用的资料及选择原因。'}
             />
             <div>
-              <Text strong>上下文窗口</Text>
+              <Text strong>预计资料占用</Text>
               <Progress percent={tokenPercent(selected)} status={selected.status === 'stale' ? 'exception' : undefined} />
-              <Text type="secondary">输入 {selected.budget.estimated_input_tokens} / {selected.budget.input_budget_tokens} · 输出预留 {selected.budget.output_reserve_tokens} · 安全余量 {selected.budget.safety_margin_tokens}</Text>
+              <Text type="secondary">约 {selected.budget.estimated_input_tokens} / {selected.budget.input_budget_tokens} tokens。token 是模型计算文本长度的单位，这里的估算不代表实际消耗。</Text>
+              <details><summary>容量计算详情</summary><Text type="secondary">为回答预留 {selected.budget.output_reserve_tokens}，安全余量 {selected.budget.safety_margin_tokens}。执行方式：{selected.execution_route}</Text></details>
             </div>
             <div>
-              <Text strong>必需项覆盖</Text>
+              <Text strong>需要的资料是否齐全</Text>
               <List
                 size="small"
                 dataSource={Object.entries(selected.coverage || {})}
                 renderItem={([name, item]) => (
                   <List.Item>
                     <Space direction="vertical" size={0} style={{ width: '100%' }}>
-                      <Space><Tag color={item.status === 'covered' || item.status === 'not_applicable' ? 'green' : 'orange'}>{item.status || 'unknown'}</Tag><Text>{name}</Text>{item.required && <Tag>必需</Tag>}</Space>
+                      <Space><Tag color={item.status === 'covered' || item.status === 'not_applicable' ? 'green' : 'orange'}>{COVERAGE_LABEL[item.status || 'unknown'] || item.status}</Tag><Text>{SOURCE_LABEL[name] || name}</Text>{item.required && <Tag>必需</Tag>}</Space>
                       {item.reason && <Text type="secondary" style={{ fontSize: 12 }}>{item.reason}</Text>}
                     </Space>
                   </List.Item>
@@ -360,17 +380,17 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
               />
             </div>
             <div>
-              <Text strong>选取来源</Text>
+              <Text strong>选中的参考资料</Text>
               <List
                 size="small"
                 dataSource={selected.items || []}
                 renderItem={(item) => (
                   <List.Item>
                     <Space direction="vertical" size={3} style={{ width: '100%' }}>
-                      <Space wrap><Tag>{item.category}</Tag>{item.required && <Tag color="red">必需</Tag>}{item.pinned && <Tag color="gold">固定</Tag>}<Text strong>{item.title}</Text></Space>
-                      <Text type="secondary" style={{ fontSize: 12 }}>{item.source_type}:{item.source_id || item.chunk_id || 'inline'} · {item.estimated_tokens} tokens</Text>
+                      <Space wrap><Tag>{SOURCE_LABEL[item.category] || item.category}</Tag>{item.required && <Tag color="red">必需</Tag>}{item.pinned && <Tag color="gold">固定</Tag>}<Text strong>{item.title}</Text></Space>
+                      <Text type="secondary" style={{ fontSize: 12 }}>预计约 {item.estimated_tokens} tokens</Text>
                       <Text style={{ fontSize: 12 }}>{item.selection_reason}</Text>
-                      <Text type="secondary" ellipsis={{ tooltip: item.source_hash }} style={{ fontSize: 11 }}>hash: {item.source_hash || 'n/a'}</Text>
+                      <details><summary>来源标识与校验值</summary><Text type="secondary">{item.source_type}:{item.source_id || item.chunk_id || 'inline'}<br />hash: {item.source_hash || 'n/a'}</Text></details>
                     </Space>
                   </List.Item>
                 )}
@@ -381,14 +401,14 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
       </Drawer>
 
       <Modal
-        title="覆写上下文契约"
+        title="资料不足时仍要继续"
         open={Boolean(overrideTarget)}
-        okText="确认覆写"
+        okText="确认允许继续"
         okButtonProps={{ disabled: !overrideReason.trim(), loading: submittingOverride }}
         onOk={submitOverride}
         onCancel={() => { setOverrideTarget(null); setOverrideReason('') }}
       >
-        <Text type="secondary">覆写会保留在审计记录中，并不会掩盖之后发生的来源失效。</Text>
+        <Text type="secondary">请说明缺少这些资料仍可继续的原因。系统会保存你的确认；之后资料发生变化时仍会重新检查。</Text>
         <Input.TextArea
           autoFocus
           rows={4}

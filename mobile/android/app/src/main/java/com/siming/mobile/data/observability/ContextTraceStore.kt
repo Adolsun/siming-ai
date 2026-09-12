@@ -30,6 +30,10 @@ internal class ContextTraceStore private constructor(context: Context) : Context
         }.onFailure { writeErrors.incrementAndGet() } }
     }
     override fun mode() = if (configuredMode == "full" && fullUntil > 0 && System.currentTimeMillis() > fullUntil) "summary" else configuredMode
+    fun policy() = buildJsonObject {
+        put("mode", mode())
+        put("full_until", fullUntil.takeIf { it > 0 }?.let { JsonPrimitive(it / 1000.0) } ?: JsonNull)
+    }
     fun setMode(mode: String, timed: Boolean) {
         require(mode in setOf("off", "summary", "full"))
         configuredMode = mode

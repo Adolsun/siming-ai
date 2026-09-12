@@ -26,12 +26,31 @@ function mount() {
 beforeEach(() => {
   vi.resetAllMocks()
   api.traceHealth.mockResolvedValue({ policy: { mode: 'summary', full_until: null }, dropped_events: 0, write_errors: 0 })
-  api.listTraces.mockImplementation(scope => Promise.resolve({ items: [trace(scope.id)], next_cursor: null }))
+  api.listTraces.mockImplementation(scope => Promise.resolve({ items: scope ? [trace(scope.id)] : [], next_cursor: null }))
   api.traceDetail.mockImplementation(id => Promise.resolve(trace(id)))
   api.traceEvents.mockResolvedValue(fixture.events)
 })
 
 describe('native context inspector', () => {
+  it('can enable continuous recording before any project or task exists', async () => {
+    mount()
+    act(() => window.dispatchEvent(new CustomEvent(CONTEXT_INSPECTOR_OPEN, { detail: {} })))
+    expect(await screen.findByText('还没有调用记录。先开启完整记录，再去立项或与助手对话。')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '记录级别' }))
+    fireEvent.click(screen.getByText('持续完整记录'))
+    await waitFor(() => expect(api.setTraceMode).toHaveBeenCalledWith('full', false))
+    expect(api.listTraces).toHaveBeenCalledWith(undefined, undefined, null, expect.any(AbortSignal))
+  })
+
+  it('can clear a message filter to view calls from creation and other tasks', async () => {
+    mount(); open('creation-reply')
+    expect(await screen.findByText('generate_creation_artifact')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '全部调用' }))
+    expect(await screen.findByText('全部调用记录')).toBeInTheDocument()
+    await waitFor(() => expect(api.listTraces).toHaveBeenCalledWith(undefined, undefined, null, expect.any(AbortSignal)))
+    expect(screen.queryByText('generate_creation_artifact')).not.toBeInTheDocument()
+  })
+
   it('uses source sequence even if timestamps run backwards; does not invent missing usage', () => {
     const events = fixture.events.map((event, index) => ({ ...event, timestamp: 100 - index })) as TraceEvent[]
     const spans = buildSpans(events)

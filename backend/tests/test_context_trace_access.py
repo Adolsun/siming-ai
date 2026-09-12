@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from app.modules.operations.application.trace_capture import (
 )
 from app.modules.operations.application.trace_queries import configure_trace_queries
 from app.modules.operations.domain.context_trace import TraceScope
+from app.modules.operations.infrastructure.http_trace import ObservedHttpClient
 from app.modules.operations.infrastructure.trace_queries import TraceQueries
 from app.modules.operations.infrastructure.trace_store import TraceStore
 from app.routers.context_traces import router
@@ -102,6 +104,42 @@ def test_actual_tool_contract_rejection_has_no_provider_request(store):
     assert not any(e["data"].get("layer") == "provider_request" for e in events)
     output = next(e for e in events if e["data"].get("layer") == "model_visible_tool_result")
     assert json.loads(store.payload("local", trace.id, output["event_id"])["content"]) == result
+
+
+def test_recording_enabled_without_a_project_captures_creation_and_is_searchable_globally(store):
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    request_body = {"messages": [{"role": "user", "content": "Synthetic new-book brief"}]}
+
+    async def create_without_project():
+        async with ObservedHttpClient(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"content": "Synthetic creation response"})
+        )) as transport:
+            with trace_scope(TraceScope(kind="creation_session", id="draft-without-project")) as trace:
+                response = await transport.post("https://provider.invalid/v1/chat/completions", json=request_body)
+                assert response.status_code == 200
+                return trace.id
+
+    with TestClient(app) as client:
+        settings = client.put("/api/v1/context-traces/settings", json={"mode": "full"})
+        assert settings.status_code == 200
+        assert settings.json()["data"]["full_until"] is None
+        creation_id = asyncio.run(create_without_project())
+        with trace_scope(TraceScope(kind="project_conversation", id="later-project")):
+            record_payload("logical_request", {"messages": ["Synthetic writing request"]})
+        store.flush()
+
+        all_traces = client.post("/api/v1/context-traces/search", json={}).json()["data"]["items"]
+        assert {item["scope_kind"] for item in all_traces} == {"creation_session", "project_conversation"}
+        assert all(item["mode"] == "full" for item in all_traces)
+        project_only = client.post("/api/v1/context-traces/search", json={
+            "scope": {"kind": "project_conversation", "id": "later-project"},
+        }).json()["data"]["items"]
+        assert len(project_only) == 1
+        events = client.get(f"/api/v1/context-traces/{creation_id}/events").json()["data"]["items"]
+        sent = next(item for item in events if item["data"].get("layer") == "provider_request")
+        payload = client.get(f"/api/v1/context-traces/{creation_id}/payloads/{sent['event_id']}")
+        assert json.loads(payload.json()["data"]["content"]) == request_body
 
 
 def test_payload_page_offsets_do_not_skip_non_bmp_characters(store):

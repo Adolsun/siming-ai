@@ -34,6 +34,7 @@ internal fun ContextInspectorButton(kind: String? = null, scopeId: String? = nul
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlationId: String?, close: () -> Unit) {
     val context = LocalContext.current
     val repository = remember { TraceInspectionRepository(context) }
@@ -42,6 +43,8 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
     var hasGateway by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
     var mode by remember { mutableStateOf("summary") }
+    var fullUntil by remember { mutableStateOf<Double?>(null) }
+    var showAll by remember { mutableStateOf(false) }
     var traces by remember { mutableStateOf(emptyList<JsonObject>()) }
     var next by remember { mutableStateOf<Long?>(null) }
     var before by remember { mutableStateOf<Long?>(null) }
@@ -65,14 +68,15 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
             finally { actionBusy = false }
         }
     }
-    LaunchedEffect(remote, refresh, before, kind, scopeId, correlationId) {
+    LaunchedEffect(remote, refresh, before, kind, scopeId, correlationId, showAll) {
         loading = true; error = ""; traces = emptyList(); next = null
         try {
             hasGateway = repository.hasGateway()
             val settings = repository.settings(remote)
             mode = settings["policy"]!!.jsonObject.text("mode")
+            fullUntil = settings["policy"]!!.jsonObject["full_until"]?.jsonPrimitive?.doubleOrNull
             health = if ((settings["write_errors"]?.jsonPrimitive?.intOrNull ?: 0) > 0 || (settings["dropped_events"]?.jsonPrimitive?.intOrNull ?: 0) > 0) "部分诊断内容未写入，记录可能不完整。" else ""
-            val result = repository.traces(remote, kind, scopeId, correlationId, before)
+            val result = repository.traces(remote, if (showAll) null else kind, if (showAll) null else scopeId, if (showAll) null else correlationId, before)
             traces = result["items"]!!.jsonArray.map { it.jsonObject }
             next = result["next_cursor"]?.jsonPrimitive?.longOrNull
         } catch (failure: Exception) { if (failure is CancellationException) throw failure; error = failure.message.orEmpty() }
@@ -96,16 +100,18 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
             Spacer(Modifier.width(8.dp))
             FilterChip(selected = remote, enabled = hasGateway && !actionBusy, onClick = { remote = true; selected = null; before = null }, label = { Text("Gateway") })
         }
-        Text("完整记录包含后续任务的正文、历史与工具结果，保存在执行端；密钥会脱敏。未记录的旧请求无法补回。", style = MaterialTheme.typography.bodySmall)
-        Row {
-            TextButton(enabled = !actionBusy, onClick = { changeMode("summary") }) { Text(if (mode == "summary") "✓ 摘要" else "摘要") }
-            TextButton(enabled = !actionBusy, onClick = { changeMode("full", true) }) { Text(if (mode == "full") "✓ 完整记录" else "完整 60 分钟") }
-            TextButton(enabled = !actionBusy, onClick = { changeMode("full") }) { Text("持续") }
-            TextButton(enabled = !actionBusy, onClick = { changeMode("off") }) { Text(if (mode == "off") "✓ 关闭" else "关闭") }
+        Text(if (remote) "设置对当前 Gateway 连接的后续立项与作品助手任务生效。手机独立任务请在“此手机”开启记录。" else "设置对这部手机的后续立项与作品助手任务都生效，无需先创建作品，切换页面不会停止记录。", style = MaterialTheme.typography.bodySmall)
+        Text("完整记录仅用于查看，不改变发给模型的上下文。正文、历史与工具结果保存在所选执行端；密钥会脱敏，旧请求无法补回。", style = MaterialTheme.typography.bodySmall)
+        FlowRow {
+            TextButton(enabled = !actionBusy && !loading, onClick = { changeMode("summary") }) { Text(if (mode == "summary") "✓ 摘要" else "摘要") }
+            TextButton(enabled = !actionBusy && !loading, onClick = { changeMode("full", true) }) { Text(if (mode == "full" && fullUntil != null) "✓ 完整 60 分钟" else "完整 60 分钟") }
+            TextButton(enabled = !actionBusy && !loading, onClick = { changeMode("full") }) { Text(if (mode == "full" && fullUntil == null) "✓ 持续完整记录" else "持续完整记录") }
+            TextButton(enabled = !actionBusy && !loading, onClick = { changeMode("off") }) { Text(if (mode == "off") "✓ 关闭记录" else "关闭记录") }
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         if (health.isNotBlank()) Text(health, color = MaterialTheme.colorScheme.error)
-        Row {
+        FlowRow {
+            if (!showAll && (kind != null || correlationId != null)) TextButton(enabled = !actionBusy, onClick = { showAll = true; before = null; selected = null }) { Text("全部调用") }
             TextButton(onClick = { refresh += 1 }) { Text("刷新") }
             TextButton(enabled = !actionBusy, onClick = { clearPrompt = true }) { Text("清空记录") }
             if (selected != null) {
@@ -117,10 +123,11 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
         if (selected != null) key(remote, selected!!.text("id")) {
             TraceDetails(repository, remote, selected!!.text("id"), refresh)
         } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (traces.isEmpty() && !loading) item { Text("本轮暂无记录。可开启记录后再次操作；旧记录也可能已过期。") }
+            if (traces.isEmpty() && !loading) item { Text(if (!showAll && (kind != null || correlationId != null)) "本次筛选暂无记录，可查看全部调用。" else "还没有调用记录。先开启完整记录，再去立项或与助手对话。") }
             items(traces, key = { it.text("id") }) { trace ->
                 OutlinedCard(onClick = { selected = trace }, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
+                        Text(when (trace.text("scope_kind")) { "creation_session" -> "新书立项"; "project_conversation" -> "作品助手"; "system_conversation" -> "系统助手"; "operation" -> "后台任务"; else -> trace.text("scope_kind") })
                         Text(java.time.Instant.ofEpochMilli((trace["started"]!!.jsonPrimitive.double * 1000).toLong()).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString())
                         Text("${trace.text("status")} · ${trace.text("mode")} · 采集 ${trace.text("capture_status")}")
                         Text(trace.text("id").take(12), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)

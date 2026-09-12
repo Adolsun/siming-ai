@@ -4,6 +4,7 @@ import { BookOutlined, ExperimentOutlined, HomeOutlined, InfoCircleOutlined, Plu
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 import { useGatewayRuntime } from './GatewayRuntimeContext'
 import AppVersion from './AppVersion'
+import { ContextInspectorButton } from '../shared/ui/ContextInspectorButton'
 
 const { Text } = Typography
 
@@ -65,6 +66,7 @@ function SystemNav({ current }: SystemNavProps) {
         ))}
       </Space>
       <div className="system-nav-tools">
+        <ContextInspectorButton label="调用记录" />
         <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
         <Tooltip title="关于我们">
           <Button

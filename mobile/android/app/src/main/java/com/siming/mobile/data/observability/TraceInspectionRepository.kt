@@ -19,7 +19,7 @@ internal class TraceInspectionRepository(context: Context) {
     suspend fun hasGateway() = dao.connection() != null
 
     suspend fun settings(remote: Boolean): JsonObject = if (remote) api.contextTraceRequest(connection(), "settings") else buildJsonObject {
-        put("policy", buildJsonObject { put("mode", store.mode()) })
+        put("policy", store.policy())
         put("dropped_events", store.dropped.get()); put("write_errors", store.writeErrors.get())
     }
     suspend fun setMode(remote: Boolean, mode: String, timed: Boolean) {
