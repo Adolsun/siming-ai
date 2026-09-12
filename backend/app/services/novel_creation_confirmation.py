@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
 
-
 ConfirmationAction = Literal["already_confirmed", "confirm_exact"]
 
 

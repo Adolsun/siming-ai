@@ -8,8 +8,17 @@ from sqlalchemy.orm import Session
 from app.architecture.uow import commit_session
 from app.modules.creation.domain.generation_contract import CreationGenerationError
 from app.modules.creation.interfaces.session_dependencies import novel_creation_session_store
-from app.services.novel_creation_confirmation import assess_creation_confirmation, save_exact_confirmation
-from app.services.novel_creation_workspace import STAGE_LABELS, STAGE_ORDER, derive_stage, save_stage, serialize_session
+from app.services.novel_creation_confirmation import (
+    assess_creation_confirmation,
+    save_exact_confirmation,
+)
+from app.services.novel_creation_workspace import (
+    STAGE_LABELS,
+    STAGE_ORDER,
+    derive_stage,
+    save_stage,
+    serialize_session,
+)
 
 
 def _text(value: Any) -> str:

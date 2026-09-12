@@ -752,6 +752,11 @@ def undo_creation_artifact(session: NovelCreationSession, stage: str) -> dict[st
     data = checkpoint.get("data")
     if not isinstance(data, dict):
         raise ValueError("最近检查点不包含可恢复的结构化数据")
+    if stage == "opening_outline":
+        from app.modules.creation.domain.opening_outline_contract import validate_opening_outline
+        from app.services.novel_creation_entities import creation_volume_index
+
+        validate_opening_outline(data, volume_index=creation_volume_index(session))
     draft = deepcopy(initialize_session_draft(session))
     current = _dict(_dict(draft.get("stages")).get(stage))
     from app.services.novel_creation_versions import record_artifact_version
@@ -1156,25 +1161,17 @@ def derive_stage(
     opening = _dict(opening_state.get("data")) if opening_confirmed else {}
     characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters", draft)
     world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style", draft)
+    warnings: list[str] = []
+    blocking: list[str] = []
     if opening_confirmed:
-        opening_chapter_count = _opening_outline_chapter_count(form)
-        if len(opening.get("chapters", [])) != opening_chapter_count:
-            warnings = [f"已确认的前{opening_chapter_count}章细纲不完整"]
-        else:
-            warnings = []
-        section_counts: dict[str, int] = {}
-        for section in opening.get("sections", []):
-            parent = _text(section.get("parent_client_id"))
-            section_counts[parent] = section_counts.get(parent, 0) + 1
-        chapter_ids = [
-            _text(chapter.get("client_id"))
-            for chapter in opening.get("chapters", [])
-            if isinstance(chapter, dict)
-        ]
-        if any(not chapter_id or section_counts.get(chapter_id, 0) not in range(2, 7) for chapter_id in chapter_ids):
-            warnings.append("已确认的开篇细纲中，每章应包含2至6个场景事件")
-    else:
-        warnings = []
+        from app.modules.creation.domain.generation_contract import CreationGenerationError
+        from app.modules.creation.domain.opening_outline_contract import validate_opening_outline
+        from app.services.novel_creation_entities import creation_volume_index
+
+        try:
+            validate_opening_outline(opening, volume_index=creation_volume_index(session))
+        except CreationGenerationError as exc:
+            blocking.append(str(exc))
     if not characters.get("characters"):
         warnings.append("当前没有角色档案，可在正式作品中继续补充")
     if not world.get("worldbuilding"):
@@ -1185,8 +1182,8 @@ def derive_stage(
             "开篇细纲尚未确认，本次只写入核心立项资料；可在正式作品中继续生成和完善章节。"
         )
     return {
-        "ready": True,
-        "blocking": [],
+        "ready": not blocking,
+        "blocking": blocking,
         "warnings": warnings,
         "counts": {
             "characters": len(characters.get("characters", [])),

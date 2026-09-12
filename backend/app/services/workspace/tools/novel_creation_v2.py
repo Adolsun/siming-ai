@@ -1,9 +1,8 @@
 """Workspace tools for the resumable novel creation workbench."""
 from __future__ import annotations
 
-import json
-
 import asyncio
+import json
 import re
 import time
 from contextlib import nullcontext
@@ -486,8 +485,10 @@ async def _enhance_with_model(
         opening_chapter_count=opening_chapter_count or OPENING_OUTLINE_CHAPTER_COUNT,
         entity_target=entity_target,
     )
+    opening_locks = ((draft.get("artifact_locks") or {}).get("opening_outline") or [])
     if stage == "opening_outline":
         stage_contract += "\nvolume_index=" + json.dumps(context["volume_index"], ensure_ascii=False)
+        stage_contract += "\n必须保持原值的 locked_paths=" + json.dumps(opening_locks, ensure_ascii=False)
     messages = build_creation_stage_messages(
         stage=stage,
         stage_label=STAGE_LABELS.get(stage, stage),
@@ -527,6 +528,10 @@ async def _enhance_with_model(
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
         validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"))
         data = _normalize_stage_data(stage, data, baseline)
+        if stage == "opening_outline" and not entity_target:
+            from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
+
+            validate_opening_locks(data, baseline, opening_locks)
         if not entity_target or entity_target.get("initialize_stage"):
             _validate_stage(stage, data)
         metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
@@ -561,6 +566,12 @@ async def _enhance_with_model(
             _raise_if_task_cancelled()
             validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"))
             data = _normalize_stage_data(stage, data, baseline)
+            if stage == "opening_outline" and not entity_target:
+                from app.modules.creation.domain.opening_outline_contract import (
+                    validate_opening_locks,
+                )
+
+                validate_opening_locks(data, baseline, opening_locks)
             if not entity_target or entity_target.get("initialize_stage"):
                 _validate_stage(stage, data)
             metadata = {

@@ -6,33 +6,27 @@ from copy import deepcopy
 from typing import Any
 
 SCENE_METADATA_FIELDS = (
-    "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
-    "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+    "scene_number",
+    "purpose",
+    "location",
+    "timeline",
+    "pov_character",
+    "characters",
+    "entry_state",
+    "exit_state",
+    "emotional_residue",
+    "unresolved_actions",
 )
 CHAPTER_METADATA_FIELDS = (
-    "chapter_number", "goal", "purpose", "scenes", "characters", "key_events",
-    "chapter_hook", "word_count_suggestion",
+    "chapter_number",
+    "goal",
+    "purpose",
+    "scenes",
+    "characters",
+    "key_events",
+    "chapter_hook",
+    "word_count_suggestion",
 )
-OPENING_OUTLINE_DETAILS = {
-    "creation_opening_structure_invalid": (
-        "细纲必须使用 chapters、sections 对象数组及唯一 client_id；章节须含正整数 "
-        "chapter_number、title、volume_id，场景须含 title、parent_client_id 和完整 metadata。"
-        "场景只能放在顶层 sections；不接受 parent_index、parent_title 或嵌套场景。"
-    ),
-    "creation_opening_summary_missing": (
-        "章节和场景都必须有非空字符串 summary，写明可读的细纲内容；"
-        "goal、key_events、chapter_hook 等补充字段不能代替 summary。本次未写入。"
-    ),
-    "creation_opening_parent_invalid": (
-        "章节 volume_id 必须是当前会话 volume_index 中的真实卷 ID，且章节序号须在该卷范围内；"
-        "场景 parent_client_id 必须引用本阶段真实章节 client_id。请读取索引后由模型选择 ID，"
-        "不得用数组位置、卷名或其他会话的 ID 代替。本次未写入。"
-    ),
-    "creation_opening_count_invalid": (
-        "开篇细纲必须包含约定的连续章节（默认第 1 至 3 章），每章有 2 至 6 个场景，"
-        "场景 metadata.scene_number 须在所属章节内连续且唯一。本次未写入。"
-    ),
-}
 OPENING_OUTLINE_INSTRUCTION = (
     "返回顶层 chapters、sections 数组。完整阶段恰好包含第1至{count}章；"
     "每章包含 client_id、chapter_number（正整数）、title、summary、volume_id。"
@@ -49,7 +43,7 @@ OPENING_OUTLINE_INSTRUCTION = (
 
 
 def _reject(reason: str, path: str) -> None:
-    from .generation_contract import CreationGenerationError
+    from .generation_errors import CreationGenerationError
 
     raise CreationGenerationError(reason, path)
 
@@ -85,6 +79,8 @@ def validate_opening_outline(
             ids.add(item["client_id"])
             if not _text(item.get("summary")):
                 _reject("creation_opening_summary_missing", f"{path}.summary")
+            if "planned_summary" in item and not isinstance(item["planned_summary"], str):
+                _reject(structure, f"{path}.planned_summary")
             for obsolete in ("parent_index", "parent_title", "sections", "scene_outline"):
                 if obsolete in item:
                     _reject(structure, f"{path}.{obsolete}")
@@ -126,7 +122,9 @@ def validate_opening_outline(
         if sorted(row["chapter_number"] for row in rows["chapters"]) != list(range(1, count + 1)):
             _reject(count_error, "$.data.chapters")
         for numbers in scenes.values():
-            if len(numbers) not in range(2, 7) or sorted(numbers) != list(range(1, len(numbers) + 1)):
+            if len(numbers) not in range(2, 7) or sorted(numbers) != list(
+                range(1, len(numbers) + 1)
+            ):
                 _reject(count_error, "$.data.sections")
 
 
@@ -137,7 +135,8 @@ def normalize_opening_outline(data: dict[str, Any]) -> dict[str, Any]:
     for field, kind in (("chapters", "chapter"), ("sections", "section")):
         for row in result.get(field, []):
             row["node_type"] = kind
-            row["planned_summary"] = row["summary"]
+            if not _text(row.get("planned_summary")):
+                row["planned_summary"] = row["summary"]
             row["sort_order"] = (
                 row["chapter_number"] if kind == "chapter" else row["metadata"]["scene_number"]
             )
@@ -150,3 +149,24 @@ def outline_metadata(row: dict[str, Any]) -> dict[str, Any]:
         if field in row and field not in metadata:
             metadata[field] = deepcopy(row[field])
     return metadata
+
+
+def validate_opening_locks(
+    data: dict[str, Any], baseline: dict[str, Any], paths: list[str]
+) -> None:
+    """A whole-stage regeneration cannot overwrite the author's locked fields."""
+    missing = object()
+
+    def read(document: Any, path: str) -> Any:
+        parts = [] if path in {"", "/"} else path.lstrip("/").split("/")
+        try:
+            for part in parts:
+                key = part.replace("~1", "/").replace("~0", "~")
+                document = document[int(key)] if isinstance(document, list) else document[key]
+        except (KeyError, ValueError, IndexError, TypeError):
+            return missing
+        return document
+
+    for path in paths:
+        if read(data, path) != read(baseline, path):
+            _reject("creation_opening_locked_changed", path)

@@ -1190,4 +1190,3 @@ def test_opening_outline_validation_returns_actionable_path_for_missing_content(
     with pytest.raises(ValueError, match=r"chapters\[0\].summary") as error:
         _validate_stage("opening_outline", data)
     assert "非空字符串 summary" in str(error.value)
-

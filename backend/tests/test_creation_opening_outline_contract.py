@@ -40,21 +40,35 @@ def test_shared_contract_rejects_empty_bodies_and_invalid_links(case):
 
 def _opening_for_session(session):
     macro = deepcopy(session.draft_json["stages"]["macro_outline"]["data"])
-    macro["volumes"] = [{key: value for key, value in row.items() if key != "id"}
-                        for row in FIXTURE["volume_index"]]
+    macro["volumes"] = [
+        {key: value for key, value in row.items() if key != "id"} for row in FIXTURE["volume_index"]
+    ]
     save_stage(session, "macro_outline", macro, confirm=True)
     ids = creation_volume_index(session)
     data = deepcopy(FIXTURE["data"])
-    mapping = {source["id"]: target["id"] for source, target in zip(FIXTURE["volume_index"], ids)}
+    mapping = {
+        source["id"]: target["id"]
+        for source, target in zip(FIXTURE["volume_index"], ids, strict=True)
+    }
     for chapter in data["chapters"]:
         chapter["volume_id"] = mapping[chapter["volume_id"]]
     return data
 
 
-def test_materialization_preserves_bodies_metadata_and_ids_after_volumes_reorder():
+@pytest.mark.parametrize("opaque_ids", [False, True])
+def test_materialization_preserves_bodies_metadata_and_ids_after_volumes_reorder(opaque_ids):
     with _db() as db:
         session = _ready_session(db)
         opening = _opening_for_session(session)
+        if opaque_ids:
+            ids = {
+                row["client_id"]: "chapter" + (" " * index)
+                for index, row in enumerate(opening["chapters"])
+            }
+            for chapter in opening["chapters"]:
+                chapter["client_id"] = ids[chapter["client_id"]]
+            for section in opening["sections"]:
+                section["parent_client_id"] = ids[section["parent_client_id"]]
         macro = deepcopy(session.draft_json["stages"]["macro_outline"]["data"])
         macro["volumes"].reverse()
         save_stage(session, "macro_outline", macro, confirm=True)
@@ -64,12 +78,18 @@ def test_materialization_preserves_bodies_metadata_and_ids_after_volumes_reorder
         assert result["status"] == "ok", result
         nodes = db.query(OutlineNode).filter_by(project_id=result["data"]["project_id"]).all()
         volumes = {row.title: row.id for row in nodes if row.node_type == "volume"}
-        chapters = sorted((row for row in nodes if row.node_type == "chapter"), key=lambda row: row.sort_order)
-        assert [row.parent_id for row in chapters] == [volumes["卷一"], volumes["卷一"], volumes["卷二"]]
+        chapters = sorted(
+            (row for row in nodes if row.node_type == "chapter"), key=lambda row: row.sort_order
+        )
+        assert [row.parent_id for row in chapters] == [
+            volumes["卷一"],
+            volumes["卷一"],
+            volumes["卷二"],
+        ]
         scenes = [row for row in nodes if row.node_type == "section"]
         assert len(scenes) == 9
         assert all(row.summary and row.planned_summary == row.summary for row in chapters + scenes)
-        for row, source in zip(chapters, opening["chapters"]):
+        for row, source in zip(chapters, opening["chapters"], strict=True):
             assert row.summary == source["summary"]
             assert row.metadata_json["key_events"] == source["key_events"]
             assert row.metadata_json["chapter_hook"] == source["chapter_hook"]
@@ -92,9 +112,18 @@ def test_invalid_save_and_existing_invalid_confirmation_do_not_write(field):
         before["stages"]["opening_outline"]["data"] = data
         session.draft_json = before
         db.commit()
-        confirmation = asyncio.run(novel_creation_v2.save_creation_artifact(db, "", {
-            "session_id": session.id, "stage": "opening_outline", "data": data, "confirm": True,
-        }))
+        confirmation = asyncio.run(
+            novel_creation_v2.save_creation_artifact(
+                db,
+                "",
+                {
+                    "session_id": session.id,
+                    "stage": "opening_outline",
+                    "data": data,
+                    "confirm": True,
+                },
+            )
+        )
         assert confirmation["status"] == "error"
         result = asyncio.run(finalize_creation_session(db, "", {"session_id": session.id}))
         assert result["status"] == "error"
@@ -105,7 +134,9 @@ def test_invalid_save_and_existing_invalid_confirmation_do_not_write(field):
 
 
 @pytest.mark.parametrize("repair_succeeds", [True, False])
-def test_model_repairs_body_and_explicit_volume_reference_or_writes_nothing(monkeypatch, repair_succeeds):
+def test_model_repairs_body_and_explicit_volume_reference_or_writes_nothing(
+    monkeypatch, repair_succeeds
+):
     with _db() as db:
         session = _ready_session(db)
         valid = _opening_for_session(session)
@@ -130,14 +161,24 @@ def test_model_repairs_body_and_explicit_volume_reference_or_writes_nothing(monk
             return generate()
 
         monkeypatch.setattr(novel_creation_v2.LLMGateway, "stream_chat_completion", stream)
-        result = asyncio.run(novel_creation_v2.run_creation_artifact_generation(db, "", {
-            "session_id": session.id, "stage": "opening_outline", "model": "openai:test",
-            "use_model": True,
-        }))
+        result = asyncio.run(
+            novel_creation_v2.run_creation_artifact_generation(
+                db,
+                "",
+                {
+                    "session_id": session.id,
+                    "stage": "opening_outline",
+                    "model": "openai:test",
+                    "use_model": True,
+                },
+            )
+        )
         assert len(calls) == 2
         if repair_succeeds:
             assert result["status"] == "ok", result
-            assert session.draft_json["stages"]["opening_outline"]["data"] == normalize_opening_outline(valid)
+            assert session.draft_json["stages"]["opening_outline"][
+                "data"
+            ] == normalize_opening_outline(valid)
             assert session.revision == revision + 1
         else:
             assert result["status"] == "error"
@@ -150,3 +191,114 @@ def test_single_entity_generation_still_validates_parent_against_owned_volume_in
     validate_opening_outline(data, volume_index=FIXTURE["volume_index"], partial=True)
     with pytest.raises(CreationGenerationError, match="volume_id"):
         validate_opening_outline(data, volume_index=[], partial=True)
+
+
+@pytest.mark.parametrize("entity_type", ["chapter_outline", "scene_outline"])
+def test_first_opening_entity_initializes_chapters_and_scenes_together(monkeypatch, entity_type):
+    with _db() as db:
+        session = _ready_session(db)
+        data = _opening_for_session(session)
+        draft = deepcopy(session.draft_json)
+        draft["stages"]["opening_outline"] = {"status": "pending", "data": None}
+        session.draft_json = draft
+        db.commit()
+
+        async def stream(**kwargs):
+            yield json.dumps({"data": data}, ensure_ascii=False)
+
+        monkeypatch.setattr(novel_creation_v2.LLMGateway, "stream_chat_completion", stream)
+        result = asyncio.run(
+            novel_creation_v2.run_creation_artifact_generation(
+                db,
+                "",
+                {
+                    "session_id": session.id,
+                    "stage": "opening_outline",
+                    "model": "openai:test",
+                    "entity_type": entity_type,
+                    "use_model": True,
+                },
+            )
+        )
+        assert result["status"] == "ok", result
+        saved = session.draft_json["stages"]["opening_outline"]["data"]
+        assert len(saved["chapters"]) == 3
+        assert len(saved["sections"]) == 9
+        validate_opening_outline(saved, volume_index=creation_volume_index(session))
+
+
+def test_failed_rest_confirmation_does_not_complete_the_generating_run():
+    from fastapi import HTTPException
+
+    from app.routers import novel_creation
+    from app.services.novel_creation_runs import create_run
+
+    with _db() as db:
+        session = _ready_session(db)
+        data = deepcopy(session.draft_json["stages"]["opening_outline"]["data"])
+        run = create_run(db, session, "opening_outline", {})
+        run.status = "waiting_user"
+        db.commit()
+        revision = session.revision
+        data["chapters"][0]["summary"] = ""
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(
+                novel_creation.confirm_creation_stage(
+                    session.id,
+                    "opening_outline",
+                    novel_creation.NovelCreationStageConfirmRequest(data=data, confirm=True),
+                    db,
+                )
+            )
+        assert caught.value.status_code == 400
+        assert run.status == "waiting_user"
+        assert session.revision == revision
+
+
+def test_undo_cannot_restore_an_empty_outline_and_final_review_reports_the_problem():
+    from app.services.novel_creation_workspace import derive_stage, undo_creation_artifact
+
+    with _db() as db:
+        session = _ready_session(db)
+        data = deepcopy(session.draft_json["stages"]["opening_outline"]["data"])
+        data["sections"][0]["summary"] = ""
+        session.checkpoints_json = {"opening_outline": [{"data": data, "status": "confirmed"}]}
+        before = deepcopy(session.draft_json)
+        with pytest.raises(CreationGenerationError):
+            undo_creation_artifact(session, "opening_outline")
+        assert session.draft_json == before
+        before["stages"]["opening_outline"]["data"] = data
+        session.draft_json = before
+        review = derive_stage(session, "final_review")
+        assert not review["ready"]
+        assert "sections[0].summary" in review["blocking"][0]
+
+
+def test_whole_stage_regeneration_cannot_change_a_locked_body():
+    from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
+
+    baseline = deepcopy(FIXTURE["data"])
+    changed = deepcopy(baseline)
+    changed["chapters"][0]["summary"] = "试图改写作者已经锁定的正文。"
+    paths = ["/chapters/0/summary"]
+    validate_opening_locks(baseline, baseline, paths)
+    with pytest.raises(CreationGenerationError) as caught:
+        validate_opening_locks(changed, baseline, paths)
+    assert caught.value.reason == "creation_opening_locked_changed"
+
+
+def test_explicit_planned_body_is_preserved_through_materialization():
+    with _db() as db:
+        session = _ready_session(db)
+        data = _opening_for_session(session)
+        detail = "作者补充的详细章纲：核对证据、安排伏笔，并明确这一章的行动代价。"
+        data["chapters"][0]["planned_summary"] = detail
+        normalized = normalize_opening_outline(data)
+        assert normalized["chapters"][0]["planned_summary"] == detail
+        save_stage(session, "opening_outline", normalized, confirm=True)
+        db.commit()
+        result = asyncio.run(finalize_creation_session(db, "", {"session_id": session.id}))
+        assert result["status"] == "ok"
+        chapter = db.query(OutlineNode).filter_by(node_type="chapter", sort_order=1).one()
+        assert chapter.summary == data["chapters"][0]["summary"]
+        assert chapter.planned_summary == detail

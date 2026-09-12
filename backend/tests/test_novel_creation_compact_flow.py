@@ -556,7 +556,14 @@ def test_compact_seed_can_drive_stages_and_project_materialization():
     save_stage(session, "constraints", session.draft_json["form"], confirm=True)
     save_stage(session, "concepts", {"options": session.draft_json["concepts"], "selected_concept_id": "concept-1"}, confirm=True)
     for stage in STAGE_ORDER[2:]:
-        save_stage(session, stage, derive_stage(session, stage), confirm=stage != "final_review")
+        data = derive_stage(session, stage)
+        if stage == "opening_outline":
+            from app.services.novel_creation_entities import creation_volume_index
+
+            volume_id = creation_volume_index(session)[0]["id"]
+            for chapter in data["chapters"]:
+                chapter["volume_id"] = volume_id
+        save_stage(session, stage, data, confirm=stage != "final_review")
 
     project_payload = build_project_materialization_payload(session)
     assert project_payload["title"] == "Concept 1"
