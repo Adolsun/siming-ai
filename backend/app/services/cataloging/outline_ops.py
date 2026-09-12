@@ -6,13 +6,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter, OutlineNode
+from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 from ..story_granularity import (
     chapter_outline_node,
     extract_chapter_number,
     normalize_section_scene_state,
 )
 from .facts import record_cataloging_fact
-from .links import link_outline_characters
+from .links import link_outline_characters, resolve_outline_characters
 from .lookups import find_outline_by_title_or_id, next_outline_sort_order, normalize_lookup
 from .snapshots import outline_snapshot
 
@@ -24,6 +25,8 @@ def apply_outline(
     payload: dict[str, Any],
     create: bool,
 ) -> dict[str, Any]:
+    character_ids = outline_character_ids(payload)
+    resolve_outline_characters(db, chapter.project_id, character_ids)
     title = str(payload.get("title") or payload.get("target_name") or chapter.title).strip()
     if not title:
         raise ValueError("大纲标题为空")
@@ -134,7 +137,7 @@ def apply_outline(
         db,
         chapter.project_id,
         node,
-        payload.get("related_characters"),
+        character_ids,
         replace=(
             node.node_type == "section"
             and node.source_chapter_id == chapter.id

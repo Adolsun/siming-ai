@@ -497,10 +497,7 @@ def reconcile_successful_run(db: Session, run: CatalogingChapterRun) -> dict[str
             db.delete(node)
             removed_sections += 1
 
-    # Outline candidates are applied before newly discovered characters.  Now
-    # that the complete run has been materialized, reconcile the scene links a
-    # second time so retained scenes neither miss new characters nor keep
-    # characters removed by the revised chapter.
+    # Reconcile the same explicit ID projection after the complete run is applied.
     for row in applied:
         if row.item_type not in {"outline_create", "outline_update"} or not row.target_id:
             continue
@@ -512,7 +509,7 @@ def reconcile_successful_run(db: Session, run: CatalogingChapterRun) -> dict[str
             db,
             run.project_id,
             node,
-            payload.get("related_characters", []),
+            payload.get("character_ids"),
             replace=(
                 node.node_type == "section"
                 and node.source_chapter_id == run.chapter_id

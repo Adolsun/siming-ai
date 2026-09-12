@@ -31,6 +31,8 @@ OPENING_OUTLINE_INSTRUCTION = (
     "返回顶层 chapters、sections 数组。完整阶段恰好包含第1至{count}章；"
     "每章包含 client_id、chapter_number（正整数）、title、summary、volume_id。"
     "volume_id 从上下文 volume_index 中选择真实卷 ID，chapter_number 必须位于该卷章节范围内。"
+    "每章和每个场景在顶层提供 character_ids 数组，从 character_index 逐字选择本会话角色 ID；"
+    "无已建档人物时明确写 []。characters 是展示用人物描述，不能代替 character_ids 绑定。"
     "每章有2至6个场景，场景只放在顶层 sections，用 parent_client_id 引用章节 client_id；"
     "每个场景包含 client_id、parent_client_id、title、summary 及 "
     "metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/"
@@ -56,6 +58,7 @@ def validate_opening_outline(
     data: dict[str, Any],
     *,
     volume_index: list[dict[str, Any]] | None = None,
+    character_index: list[dict[str, Any]] | None = None,
     partial: bool = False,
 ) -> None:
     """Validate shape separately from owned IDs; writes always supply the current index."""
@@ -64,6 +67,9 @@ def validate_opening_outline(
     count_error = "creation_opening_count_invalid"
     rows: dict[str, list[dict[str, Any]]] = {}
     ids: set[str] = set()
+    known_characters = (
+        {row["id"] for row in character_index} if character_index is not None else None
+    )
     for field in ("chapters", "sections"):
         value = data.get(field, [] if partial else None)
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
@@ -87,6 +93,17 @@ def validate_opening_outline(
             expected_type = "chapter" if field == "chapters" else "section"
             if item.get("node_type", expected_type) != expected_type:
                 _reject(structure, f"{path}.node_type")
+            references = item.get("character_ids")
+            if (
+                not isinstance(references, list)
+                or any(not _text(value) for value in references)
+                or len(references) != len(set(references))
+                or (
+                    known_characters is not None
+                    and not set(references).issubset(known_characters)
+                )
+            ):
+                _reject("creation_opening_characters_invalid", f"{path}.character_ids")
     volumes = {row["id"]: row for row in volume_index} if volume_index is not None else None
     for index, chapter in enumerate(rows["chapters"]):
         path = f"$.data.chapters[{index}]"

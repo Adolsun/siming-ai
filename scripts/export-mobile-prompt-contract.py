@@ -345,6 +345,8 @@ def _creation_normalization_fixture(baseline_fixture: dict) -> dict:
     }
     for chapter in raw["opening_outline"]["chapters"]:
         chapter["volume_id"] = "fixture-volume"
+    for row in raw["opening_outline"]["chapters"] + raw["opening_outline"]["sections"]:
+        row["character_ids"] = []
     expected = {
         stage: _normalize_stage_data(stage, deepcopy(data), deepcopy(baselines[stage]))
         for stage, data in raw.items()

@@ -86,6 +86,8 @@ def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter:
     if not name or _is_placeholder_character_name(name):
         raise ValueError("角色名为空")
     character = Character(project_id=chapter.project_id, name=name[:100], current_version=1, is_evolution_tracked=True)
+    if payload.get("client_id"):
+        character.id = payload["client_id"]
     db.add(character)
     db.flush()
     fill_character_fields(db, character, chapter, payload)

@@ -473,10 +473,10 @@ async def _enhance_with_model(
         if isinstance(input_snapshot, dict)
         else (session.draft_json if isinstance(session.draft_json, dict) else {})
     )
-    if stage == "opening_outline" and "_volume_index" not in draft:
-        from app.services.novel_creation_entities import creation_volume_index
+    if stage == "opening_outline":
+        from app.services.novel_creation_entities import creation_character_index, creation_volume_index
 
-        draft = {**draft, "_volume_index": creation_volume_index(session)}
+        draft = {**draft, "_volume_index": creation_volume_index(session), "_character_index": creation_character_index(session)}
     context, entity_target = build_stage_generation_context(draft, baseline)
     instruction = _text(context.get("refinement_instruction"))
     opening_chapter_count = _opening_outline_chapter_count(baseline) if stage == "opening_outline" else None
@@ -488,6 +488,7 @@ async def _enhance_with_model(
     opening_locks = ((draft.get("artifact_locks") or {}).get("opening_outline") or [])
     if stage == "opening_outline":
         stage_contract += "\nvolume_index=" + json.dumps(context["volume_index"], ensure_ascii=False)
+        stage_contract += "\ncharacter_index=" + json.dumps(context["character_index"], ensure_ascii=False)
         stage_contract += "\n必须保持原值的 locked_paths=" + json.dumps(opening_locks, ensure_ascii=False)
     messages = build_creation_stage_messages(
         stage=stage,
@@ -526,7 +527,7 @@ async def _enhance_with_model(
         if not isinstance(parsed, dict):
             raise ValueError("模型返回的阶段 JSON 格式不合法")
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
-        validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"))
+        validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
         data = _normalize_stage_data(stage, data, baseline)
         if stage == "opening_outline" and not entity_target:
             from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
@@ -564,7 +565,7 @@ async def _enhance_with_model(
                 raise ValueError("结构修复没有返回 JSON 对象")
             data = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
             _raise_if_task_cancelled()
-            validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"))
+            validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
             data = _normalize_stage_data(stage, data, baseline)
             if stage == "opening_outline" and not entity_target:
                 from app.modules.creation.domain.opening_outline_contract import (

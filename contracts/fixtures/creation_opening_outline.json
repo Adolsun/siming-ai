@@ -29,7 +29,8 @@
           "发现代价"
         ],
         "chapter_hook": "新的线索指向下一处地点。",
-        "word_count_suggestion": 2500
+        "word_count_suggestion": 2500,
+        "character_ids": []
       },
       {
         "client_id": "ch-2",
@@ -44,7 +45,8 @@
           "发现代价"
         ],
         "chapter_hook": "新的线索指向下一处地点。",
-        "word_count_suggestion": 2500
+        "word_count_suggestion": 2500,
+        "character_ids": []
       },
       {
         "client_id": "ch-3",
@@ -59,7 +61,8 @@
           "发现代价"
         ],
         "chapter_hook": "新的线索指向下一处地点。",
-        "word_count_suggestion": 2500
+        "word_count_suggestion": 2500,
+        "character_ids": []
       }
     ],
     "sections": [
@@ -83,7 +86,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-1-s-2",
@@ -105,7 +109,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-1-s-3",
@@ -127,7 +132,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-2-s-1",
@@ -149,7 +155,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-2-s-2",
@@ -171,7 +178,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-2-s-3",
@@ -193,7 +201,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-3-s-1",
@@ -215,7 +224,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-3-s-2",
@@ -237,7 +247,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       },
       {
         "client_id": "ch-3-s-3",
@@ -259,7 +270,8 @@
           "unresolved_actions": [
             "继续追查"
           ]
-        }
+        },
+        "character_ids": []
       }
     ]
   },
@@ -361,6 +373,25 @@
       "key": "chapter_number",
       "value": true,
       "reason": "creation_opening_structure_invalid"
+    },
+    {
+      "name": "character_ids_are_names",
+      "field": "chapters",
+      "index": 0,
+      "key": "character_ids",
+      "value": "沈墨",
+      "reason": "creation_opening_characters_invalid"
+    },
+    {
+      "name": "duplicate_character_ids",
+      "field": "sections",
+      "index": 0,
+      "key": "character_ids",
+      "value": [
+        "c",
+        "c"
+      ],
+      "reason": "creation_opening_characters_invalid"
     }
   ]
 }

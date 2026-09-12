@@ -10,7 +10,7 @@ from ...modules.continuity.domain.cataloging_contract import (
     canonical_chapter_link_characters,
 )
 from .facts import record_cataloging_fact
-from .links import link_chapter_character, link_chapter_worldbuilding
+from .links import link_chapter_character, link_chapter_worldbuilding, link_outline_characters
 from .lookups import find_character_by_name_or_id, find_worldbuilding_by_title_or_id
 
 
@@ -21,6 +21,7 @@ def apply_chapter_link(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     linked = {"characters": [], "worldbuilding": [], "outline": None}
+    linked_character_ids: list[str] = []
     normalized_character_links = canonical_chapter_link_characters(payload)
     worldbuilding_titles = list(payload.get("worldbuilding_titles") or [])
     generic_endpoints = [payload.get("source"), payload.get("target")]
@@ -39,6 +40,7 @@ def apply_chapter_link(
         appearance_type = item["appearance_type"]
         character = find_character_by_name_or_id(db, chapter.project_id, name)
         if character:
+            linked_character_ids.append(character.id)
             link_chapter_character(
                 db,
                 chapter,
@@ -71,6 +73,7 @@ def apply_chapter_link(
         and outline.node_type == "chapter"
     ):
         linked["outline"] = outline.title
+        link_outline_characters(db, chapter.project_id, outline, linked_character_ids)
     element_payload = {
         key: payload.get(key)
         for key in (

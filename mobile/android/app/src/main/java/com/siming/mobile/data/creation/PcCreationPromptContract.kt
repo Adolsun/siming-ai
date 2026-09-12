@@ -119,6 +119,7 @@ internal class PcCreationPromptContract private constructor(
             put("retrieved_entities", JsonArray(contextEntities))
             if (stage == "opening_outline") {
                 put("volume_index", entities.opening.volumeIndex(session))
+                put("character_index", entities.opening.characterIndex(session))
                 put("locked_paths", draft.objectValue("artifact_locks")["opening_outline"] ?: JsonArray(emptyList()))
             }
         }
@@ -158,11 +159,11 @@ internal class PcCreationPromptContract private constructor(
             .mapNotNull { it as? JsonObject }
             .firstOrNull { it.string("id") == presetId }
 
-    fun repairMessages(raw: String, error: String, stage: String, entityTarget: JsonObject? = null, volumes: JsonArray? = null, openingLocks: JsonArray = JsonArray(emptyList())): Pair<String, String> {
+    fun repairMessages(raw: String, error: String, stage: String, entityTarget: JsonObject? = null, volumes: JsonArray? = null, openingLocks: JsonArray = JsonArray(emptyList()), characters: JsonArray? = null): Pair<String, String> {
         val structure = if (stage == "concepts") {
             "顶层 concepts 必须是非空数组，每张卡的字段与示例一致，不得为了满足数量而复制方案"
         } else {
-            stageContract(stage, entityTarget) + (volumes?.let { "\nvolume_index=" + pythonJson(it) + "\n必须保持原值的 locked_paths=" + pythonJson(openingLocks) } ?: "")
+            stageContract(stage, entityTarget) + (volumes?.let { "\nvolume_index=" + pythonJson(it) + "\n必须保持原值的 locked_paths=" + pythonJson(openingLocks) } ?: "") + (characters?.let { "\ncharacter_index=" + pythonJson(it) } ?: "")
         }
         return creation.string("repair_system_prompt") to
             creation.string("repair_user_template").fill(

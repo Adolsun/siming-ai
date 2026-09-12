@@ -175,6 +175,41 @@ class PcCreationOpeningContractTest {
         assertEquals(detail, records.first { it.text("node_type") == "chapter" }.text("planned_summary"))
     }
 
+    @Test
+    fun standaloneCharacterIdsSurviveReorderAndTransferAndRejectForeignSession() {
+        val characters = buildJsonObject { put("characters", buildJsonArray {
+            add(buildJsonObject { put("name", "甲"); put("role_type", "protagonist") })
+            add(buildJsonObject { put("name", "乙"); put("role_type", "supporting") })
+        }) }
+        var source = replaceStage(readySession(), "characters", characters)
+        val ids = contract.characterIndex(source).map { it.jsonObject.getValue("id") }
+        val data = source.stage("opening_outline").getValue("data").jsonObject
+        val linked = JsonObject(data.toMutableMap().apply {
+            listOf("chapters", "sections").forEach { field ->
+                put(field, JsonArray(data.getValue(field).jsonArray.map { raw ->
+                    JsonObject(raw.jsonObject + ("character_ids" to JsonArray(ids)))
+                }))
+            }
+        })
+        source = replaceStage(source, "opening_outline", linked)
+        source = replaceStage(source, "characters", JsonObject(characters + ("characters" to JsonArray(characters.getValue("characters").jsonArray.reversed()))))
+        val formalIds = ids.associate { it.jsonPrimitive.content to "formal-${it.jsonPrimitive.content}" }
+        contract.materialize(source, "project", formalIds).filter { it.text("node_type") != "volume" }.forEach { row ->
+            assertEquals(formalIds.values.toSet(), row.getValue("linked_characters").jsonArray.map { it.jsonObject.text("character_id") }.toSet())
+        }
+        val remoteCharacters = JsonArray(contract.transferCharacters(source, characters).getValue("characters").jsonArray.mapIndexed { i, raw ->
+            JsonObject(raw.jsonObject + ("id" to JsonPrimitive("pc-character-$i")))
+        })
+        val remoteVolumes = JsonArray(contract.transferVolumes(source, source.stage("macro_outline").getValue("data").jsonObject).getValue("volumes").jsonArray.mapIndexed { i, raw ->
+            JsonObject(raw.jsonObject + ("id" to JsonPrimitive("pc-volume-$i")))
+        })
+        val transferred = contract.transferOpening(linked, remoteVolumes, remoteCharacters)
+        contract.validate(transferred, remoteVolumes, characters = remoteCharacters)
+        assertEquals(setOf("pc-character-0", "pc-character-1"), transferred.getValue("sections").jsonArray.first().jsonObject.getValue("character_ids").jsonArray.map { it.jsonPrimitive.content }.toSet())
+        val foreign = JsonObject(source + ("id" to JsonPrimitive("other-session")))
+        assertFailsWith<CreationGenerationException> { contract.validate(linked, characters = contract.characterIndex(foreign)) }
+    }
+
     private fun readySession(): JsonObject {
         val agent = MobileCreationAgent(rawContract, DirectApiClient())
         var source = agent.start(CreationStartInput(creationMode = "explore", brief = "主角调查旧城线索"))

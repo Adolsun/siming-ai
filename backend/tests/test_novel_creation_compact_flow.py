@@ -26,9 +26,9 @@ from app.routers.novel_creation import (
     start_creation_stage_run,
     update_creation_session,
 )
+from app.services.novel_creation_materialization import build_project_materialization_payload
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
-    build_project_materialization_payload,
     create_run as create_stage_run,
     derive_stage,
     initialize_session_draft,
@@ -565,6 +565,8 @@ def test_compact_seed_can_drive_stages_and_project_materialization():
             for chapter in data["chapters"]:
                 assert volume["start_chapter"] <= chapter["chapter_number"] <= volume["end_chapter"]
                 chapter["volume_id"] = volume["id"]
+            for row in data["chapters"] + data["sections"]:
+                row["character_ids"] = []
         save_stage(session, stage, data, confirm=stage != "final_review")
 
     project_payload = build_project_materialization_payload(session)

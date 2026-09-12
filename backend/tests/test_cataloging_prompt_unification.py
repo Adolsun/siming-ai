@@ -1,4 +1,5 @@
 """Regression tests for shared cataloging behavior prompts."""
+import json
 import os
 import sys
 import unittest
@@ -10,7 +11,9 @@ from app.prompts.cataloging_source import (
     get_fact_extraction_rules,
     get_outline_granularity_rules,
 )
+from app.modules.continuity.domain.outline_character_contract import outline_character_ids
 from app.services.cataloging.orchestrator import _append_incremental_candidate_retry
+from app.services.cataloging.jsonl import normalize_candidate, parse_candidate_response_records
 from app.services.cataloging.staged_prompts import (
     CATALOGING_RESOLUTION_SYSTEM_PROMPT,
     FACT_EXTRACTION_SYSTEM_PROMPT,
@@ -80,6 +83,31 @@ class CatalogingPromptUnificationTest(unittest.TestCase):
         self.assertIn("只输出错误信息明确指出的缺失候选", retry_prompt)
         self.assertIn("不要重发完整候选集", retry_prompt)
         self.assertNotIn("重新输出完整标准 JSONL", retry_prompt)
+
+    def test_initial_response_examples_pass_the_current_candidate_contract(self):
+        for prompt in (
+            get_external_cataloging_system_prompt(),
+            CATALOGING_RESOLUTION_SYSTEM_PROMPT,
+        ):
+            examples = []
+            for line in prompt.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict) and "chapter_outline" in value:
+                    examples.append(value)
+            self.assertTrue(examples)
+            for example in examples:
+                records = parse_candidate_response_records(json.dumps(example, ensure_ascii=False))
+                normalized = [normalize_candidate(record) for record in records]
+                for item in normalized:
+                    if item["item_type"] == "outline_create":
+                        outline_character_ids(item["payload"])
+                self.assertEqual(
+                    {item["item_type"] for item in normalized},
+                    {"chapter_summary", "outline_create"},
+                )
 
     def test_character_state_schema_tracks_appearance_and_age(self):
         external = get_external_cataloging_system_prompt()

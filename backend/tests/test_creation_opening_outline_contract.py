@@ -302,3 +302,40 @@ def test_explicit_planned_body_is_preserved_through_materialization():
         chapter = db.query(OutlineNode).filter_by(node_type="chapter", sort_order=1).one()
         assert chapter.summary == data["chapters"][0]["summary"]
         assert chapter.planned_summary == detail
+
+
+def test_creation_materializes_explicit_character_links_after_character_reorder():
+    from app.database.models import Character
+    from app.services.novel_creation_entities import creation_character_index
+
+    with _db() as db:
+        session = _ready_session(db)
+        opening = _opening_for_session(session)
+        index = creation_character_index(session)
+        chosen = [row["id"] for row in index[:2]]
+        names = {row["name"] for row in index[:2]}
+        for row in opening["chapters"] + opening["sections"]:
+            row["character_ids"] = chosen
+        characters = deepcopy(session.draft_json["stages"]["characters"]["data"])
+        characters["characters"].reverse()
+        save_stage(session, "characters", characters, confirm=True)
+        save_stage(session, "opening_outline", opening, confirm=True)
+        db.commit()
+        result = asyncio.run(finalize_creation_session(db, "", {"session_id": session.id}))
+        assert result["status"] == "ok", result
+        for node in db.query(OutlineNode).filter(OutlineNode.node_type.in_(["chapter", "section"])).all():
+            assert {link.character.name for link in node.linked_characters} == names
+            assert all(db.get(Character, link.character_id).project_id == node.project_id for link in node.linked_characters)
+
+
+@pytest.mark.parametrize("references", [None, ["foreign-character"], ["林七"]])
+def test_invalid_character_references_do_not_change_creation_session(references):
+    with _db() as db:
+        session = _ready_session(db)
+        before = deepcopy(session.draft_json)
+        data = deepcopy(before["stages"]["opening_outline"]["data"])
+        data["sections"][0]["character_ids"] = references
+        with pytest.raises(CreationGenerationError) as error:
+            save_stage(session, "opening_outline", data)
+        assert error.value.reason == "creation_opening_characters_invalid"
+        assert session.draft_json == before

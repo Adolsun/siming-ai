@@ -32,6 +32,7 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import { usePanelResize } from '../hooks/usePanelResize'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 import { QueryStateNotice } from '../shared/ui/runtime'
+import { CatalogingRefreshBridge } from '../features/cataloging/CatalogingRefreshBridge'
 import './ProjectWorkspace.css'
 
 const { Sider, Content } = Layout
@@ -263,6 +264,7 @@ function ProjectWorkspace() {
 
   return (
     <AiPanelProvider>
+      {projectId && <CatalogingRefreshBridge projectId={projectId} />}
       <Layout className="project-workspace">
         <Sider
           width={208}

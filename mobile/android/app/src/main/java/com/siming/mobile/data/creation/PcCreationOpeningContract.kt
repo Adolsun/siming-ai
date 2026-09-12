@@ -9,10 +9,11 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
     private val sceneFields = (contract["scene_metadata_fields"] as JsonArray).map { it.jsonPrimitive.content }
     private val chapterFields = (contract["chapter_metadata_fields"] as JsonArray).map { it.jsonPrimitive.content }
 
-    fun validate(data: JsonObject, volumes: JsonArray? = null, partial: Boolean = false) {
+    fun validate(data: JsonObject, volumes: JsonArray? = null, partial: Boolean = false, characters: JsonArray? = null) {
         val structure = "creation_opening_structure_invalid"
         val parentError = "creation_opening_parent_invalid"
         val countError = "creation_opening_count_invalid"
+        val knownCharacters = characters?.map { it.jsonObject.text("id") }?.toSet()
         val ids = mutableSetOf<String>()
         val collections = listOf("chapters", "sections").associateWith { field ->
             val rows = data[field] ?: if (partial) JsonArray(emptyList()) else JsonNull
@@ -33,6 +34,12 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                 }
                 val type = if (field == "chapters") "chapter" else "section"
                 if ("node_type" in row && row.text("node_type") != type) entities.reject(structure, "$path.node_type")
+                val references = row["character_ids"] as? JsonArray
+                if (references == null || references.any { (it as? JsonPrimitive)?.let { value -> value.isString && value.content.isNotBlank() } != true }
+                    || references.distinct().size != references.size
+                    || (knownCharacters != null && references.any { it.jsonPrimitive.content !in knownCharacters })) {
+                    entities.reject("creation_opening_characters_invalid", "$path.character_ids")
+                }
                 row
             }
         }
@@ -123,7 +130,15 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
 
     // Exact content identity is independent of array order and is scoped to the local session.
     // Editing a volume changes its identity and already marks the dependent outline stale.
-    fun volumeId(session: JsonObject, row: JsonObject): String {
+    fun volumeId(session: JsonObject, row: JsonObject): String = entityId(session, row, "volume")
+    fun characterId(session: JsonObject, row: JsonObject): String = entityId(session, row, "character")
+    fun characterIndex(session: JsonObject): JsonArray = JsonArray(characterRows(session).map { row ->
+        buildJsonObject { put("id", characterId(session, row)); put("name", row.text("name")) }
+    })
+    fun characterRecordIds(session: JsonObject): Map<String, String> =
+        characterRows(session).associate { characterId(session, it) to UUID.randomUUID().toString() }
+
+    private fun entityId(session: JsonObject, row: JsonObject, type: String): String {
         fun canonical(value: JsonElement): JsonElement = when (value) {
             is JsonObject -> JsonObject(value.toSortedMap().mapValues { canonical(it.value) })
             is JsonArray -> JsonArray(value.map(::canonical))
@@ -131,13 +146,13 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
         }
         val digest = MessageDigest.getInstance("SHA-256").digest(canonical(row).toString().toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-        return "${session.text("id")}:volume:$digest"
+        return "${session.text("id")}:$type:$digest"
     }
 
     fun validateSaved(session: JsonObject) {
         val state = stages(session)["opening_outline"] as? JsonObject ?: return
         if (state.text("status") == "confirmed") {
-            validate(state["data"] as? JsonObject ?: JsonObject(emptyMap()), volumeIndex(session))
+            validate(state["data"] as? JsonObject ?: JsonObject(emptyMap()), volumeIndex(session), characters = characterIndex(session))
         }
     }
 
@@ -147,21 +162,33 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
         }) }))
     })
 
-    fun transferOpening(data: JsonObject, remoteIndex: JsonArray): JsonObject {
-        val ids = remoteIndex.associate { it.jsonObject.text("client_id") to it.jsonObject.text("id") }
+    fun transferCharacters(session: JsonObject, data: JsonObject): JsonObject = JsonObject(data.toMutableMap().apply {
+        put("characters", JsonArray(characterRows(session).map { row -> JsonObject(row.toMutableMap().apply {
+            put("client_id", JsonPrimitive(characterId(session, row)))
+        }) }))
+    })
+
+    fun transferOpening(data: JsonObject, remoteIndex: JsonArray, remoteCharacters: JsonArray = JsonArray(emptyList())): JsonObject {
+        val volumes = remoteIndex.associate { it.jsonObject.text("client_id") to it.jsonObject.text("id") }
+        val characters = remoteCharacters.associate { it.jsonObject.text("client_id") to it.jsonObject.text("id") }
         return JsonObject(data.toMutableMap().apply {
-            put("chapters", JsonArray((data["chapters"] as JsonArray).map { raw ->
-                JsonObject(raw.jsonObject.toMutableMap().apply {
-                    val target = ids[raw.jsonObject.text("volume_id")]
-                        ?: entities.reject("creation_opening_parent_invalid", "$.data.chapters.volume_id")
-                    put("volume_id", JsonPrimitive(target))
-                })
-            }))
+            listOf("chapters", "sections").forEach { field ->
+                put(field, JsonArray((data[field] as JsonArray).map { raw ->
+                    JsonObject(raw.jsonObject.toMutableMap().apply {
+                        if (field == "chapters") put("volume_id", JsonPrimitive(volumes[raw.jsonObject.text("volume_id")]
+                            ?: entities.reject("creation_opening_parent_invalid", "$.data.chapters.volume_id")))
+                        put("character_ids", JsonArray((raw.jsonObject["character_ids"] as JsonArray).map { ref ->
+                            JsonPrimitive(characters[ref.jsonPrimitive.content]
+                                ?: entities.reject("creation_opening_characters_invalid", "$.data.$field.character_ids"))
+                        }))
+                    })
+                }))
+            }
         })
     }
 
     /** Build all records before any repository writes, so an invalid outline leaves no partial book. */
-    fun materialize(session: JsonObject, projectId: String): List<JsonObject> {
+    fun materialize(session: JsonObject, projectId: String, characterIds: Map<String, String> = characterRecordIds(session)): List<JsonObject> {
         validateSaved(session)
         val result = mutableListOf<JsonObject>()
         val volumeIds = linkedMapOf<String, String>()
@@ -174,6 +201,9 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                 put("title", row.text("title").take(200)); put("summary", row.text("summary"))
                 put("planned_summary", row.text("planned_summary").ifBlank { row.text("summary") }); put("status", "pending"); put("sort_order", order)
                 put("metadata_json", metadata)
+                put("linked_characters", JsonArray((row["character_ids"] as? JsonArray).orEmpty().map { ref ->
+                    buildJsonObject { put("character_id", characterIds.getValue(ref.jsonPrimitive.content)); put("role_in_scene", "立项规划") }
+                }))
             }
             return id
         }
@@ -203,6 +233,9 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
     }
 
     private fun stages(session: JsonObject) = session.getValue("draft").jsonObject.getValue("stages").jsonObject
+    private fun characterRows(session: JsonObject): List<JsonObject> =
+        (((stages(session)["characters"] as? JsonObject)?.get("data") as? JsonObject)?.get("characters") as? JsonArray)
+            .orEmpty().map { it.jsonObject }
     private fun volumeRows(session: JsonObject): List<JsonObject> =
         (((stages(session)["macro_outline"] as? JsonObject)?.get("data") as? JsonObject)?.get("volumes") as? JsonArray)
             .orEmpty().map { it.jsonObject }

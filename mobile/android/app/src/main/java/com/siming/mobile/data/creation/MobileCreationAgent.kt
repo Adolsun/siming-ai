@@ -130,6 +130,7 @@ internal class MobileCreationAgent(
         contract.stageMessages(source, stage, stageBaseline, instruction, entityTarget, contextEntities)
     }
     val volumes = if (stage == "opening_outline") contract.entities.opening.volumeIndex(source) else null
+    val characters = if (stage == "opening_outline") contract.entities.opening.characterIndex(source) else null
     val maxTokens = if (stage == "concepts") 3_200 else 6_000
     val temperature = if (stage == "concepts") 0.8 else 0.65
     val creationExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
@@ -147,7 +148,7 @@ internal class MobileCreationAgent(
     var warning = ""
     var repairMethod = ""
     val data = try {
-        parseStageData(stage, raw, stageBaseline, entityTarget, volumes, openingLocks)
+        parseStageData(stage, raw, stageBaseline, entityTarget, volumes, openingLocks, characters)
     } catch (initialError: Exception) {
         val (repairSystem, repairUser) = contract.repairMessages(
             raw,
@@ -156,6 +157,7 @@ internal class MobileCreationAgent(
             entityTarget,
             volumes,
             openingLocks,
+            characters,
         )
         val repaired = try {
             directApi.complete(
@@ -175,7 +177,7 @@ internal class MobileCreationAgent(
             )
         }
         val repairedData = try {
-            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes, openingLocks)
+            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes, openingLocks, characters)
         } catch (repairError: Exception) {
             if (repairError is CreationGenerationException) throw repairError
             throw IllegalArgumentException(
@@ -207,10 +209,11 @@ internal class MobileCreationAgent(
         entityTarget: JsonObject?,
         volumes: JsonArray?,
         openingLocks: JsonArray,
+        characters: JsonArray?,
     ): JsonObject {
         val parsed = parseObject(raw)
         val rawData = (parsed["data"] as? JsonObject) ?: parsed
-        contract.entities.validateGenerated(stage, rawData, entityTarget, volumes)
+        contract.entities.validateGenerated(stage, rawData, entityTarget, volumes, characters)
         val data = if (stage == "concepts") {
             normalizeConcepts(rawData)
         } else {
@@ -270,7 +273,7 @@ internal class MobileCreationAgent(
         partial: Boolean = false,
     ): JsonObject = updateDraft(source) { draft ->
         if (stage == "opening_outline") {
-            contract.entities.opening.validate(data, contract.entities.opening.volumeIndex(source), partial)
+            contract.entities.opening.validate(data, contract.entities.opening.volumeIndex(source), partial, contract.entities.opening.characterIndex(source))
         }
         val stages = (draft["stages"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         val previous = stages[stage] as? JsonObject
@@ -740,6 +743,7 @@ internal class MobileCreationAgent(
                 put("planned_summary", summary)
                 put("purpose", source.string("purpose").ifBlank { "推进主线并改变人物状态" })
                 put("volume_id", source.string("volume_id"))
+                put("character_ids", JsonArray(emptyList()))
                 put("sort_order", number)
             }
             val specs = listOf(
@@ -752,6 +756,7 @@ internal class MobileCreationAgent(
                 sections += buildJsonObject {
                     put("client_id", "$chapterId-section-$scene")
                     put("parent_client_id", chapterId)
+                    put("character_ids", JsonArray(emptyList()))
                     put("node_type", "section")
                     put("title", "$chapterTitle · $suffix")
                     put("summary", "$purpose：$summary")
@@ -796,7 +801,7 @@ internal class MobileCreationAgent(
             .toMutableList()
         if (openingConfirmed) {
             try {
-                contract.entities.opening.validate(opening, contract.entities.opening.volumeIndex(session))
+                contract.entities.opening.validate(opening, contract.entities.opening.volumeIndex(session), characters = contract.entities.opening.characterIndex(session))
             } catch (error: CreationGenerationException) {
                 blocking += error.message.orEmpty()
             }

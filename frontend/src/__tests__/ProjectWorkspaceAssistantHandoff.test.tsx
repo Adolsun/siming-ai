@@ -10,6 +10,7 @@ vi.mock('../features/projects', () => ({
     refetch: vi.fn(),
   }),
 }))
+vi.mock('../shared/operations/queries', () => ({ useOperations: () => ({ data: [] }) }))
 
 vi.mock('../components/AiSidePanel', () => ({
   default: ({ collapsed, children }: { collapsed: boolean; children: React.ReactNode }) => (

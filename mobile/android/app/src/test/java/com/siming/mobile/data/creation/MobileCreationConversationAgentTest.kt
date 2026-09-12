@@ -247,7 +247,6 @@ class MobileCreationConversationAgentTest {
         val requests = AtomicInteger()
         val persisted = AtomicInteger()
         val background = "完整角色背景。".repeat(500)
-        val entityId = "characters:characters:0"
         val reply = "角色姓名已更新为林遥，原有背景已保留。"
         val deliveredReceipt = java.util.concurrent.atomic.AtomicReference<JsonObject>()
         val captures = java.util.Collections.synchronizedList(mutableListOf<Pair<JsonObject, String>>())
@@ -277,6 +276,9 @@ class MobileCreationConversationAgentTest {
                 })
             }))
         })
+        val openingContract = PcCreationEntityContract(Json.parseToJsonElement(contractJson()).jsonObject.getValue("creation").jsonObject).opening
+        val entityId = openingContract.characterIndex(source).first().jsonObject.getValue("id").jsonPrimitive.content
+        var savedEntityId = ""
         fun response(content: String = "", name: String? = null, arguments: String = "{}") = chatStreamResponse(
             buildJsonObject {
                 put("choices", JsonArray(listOf(buildJsonObject {
@@ -305,7 +307,8 @@ class MobileCreationConversationAgentTest {
                         deliveredReceipt.set(receipt)
                         assertEquals("ok", receipt.string("status"))
                         val data = receipt.getValue("data").jsonObject
-                        assertEquals(entityId, data.string("id"))
+                        savedEntityId = data.string("id")
+                        assertTrue(savedEntityId.isNotBlank())
                         assertEquals("林遥", data.string("entity_key"))
                         assertEquals("characters", data.string("artifact"))
                         assertFalse("data" in data)
@@ -324,6 +327,7 @@ class MobileCreationConversationAgentTest {
             assertEquals(4, requests.get())
             assertEquals(1, persisted.get())
             assertEquals("2", outcome.session.getValue("revision").jsonPrimitive.content)
+            assertEquals(openingContract.characterIndex(outcome.session).first().jsonObject.getValue("id").jsonPrimitive.content, savedEntityId)
             val character = outcome.session.getValue("draft").jsonObject.getValue("stages").jsonObject
                 .getValue("characters").jsonObject.getValue("data").jsonObject.getValue("characters").jsonArray.first().jsonObject
             assertEquals("林遥", character.string("name"))

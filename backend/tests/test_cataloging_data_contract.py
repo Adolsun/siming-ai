@@ -152,6 +152,7 @@ def test_fact_inventory_prevents_a_false_empty_manifest():
         rows = [
             candidate(db, job, run, chapter, "chapter_summary", summary_payload()),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "张三入门。",
             }, 1),
         ]
@@ -341,6 +342,7 @@ def test_persistence_coverage_errors_are_presented_in_chinese():
         rows = [
             candidate(db, job, run, chapter, "chapter_summary", summary_payload()),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "张三出现。",
             }, 1),
         ]
@@ -372,6 +374,7 @@ def test_character_aliases_are_canonicalized_before_identity_coverage():
         rows = [
             candidate(db, job, run, chapter, "chapter_summary", summary_payload(characters=["爷爷"])),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "众人落座。",
             }, 1),
             candidate(db, job, run, chapter, "character_state_update", {
@@ -461,6 +464,7 @@ def test_staged_aliases_and_folded_worldbuilding_terms_match_source_facts():
                 ),
             ),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter",
                 "title": chapter.title,
                 "summary": "陆糖穿越并感知灵气。",
@@ -529,6 +533,7 @@ def test_parenthetical_display_names_resolve_to_staged_character_cards():
                 ),
             ),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "祖孙交谈。",
             }, 1),
             candidate(db, job, run, chapter, "character_create", {
@@ -598,6 +603,7 @@ def test_folded_worldbuilding_term_requires_explicit_candidate_evidence():
                 summary_payload(worldbuilding=["游戏世界设定"]),
             ),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter",
                 "title": chapter.title,
                 "summary": "进入异世。",
@@ -658,6 +664,7 @@ def test_conflicting_staged_aliases_are_not_silently_merged():
                 summary_payload(characters=["甲", "乙"], character_profiles=["甲", "乙"]),
             ),
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "两人现身。",
             }, 1),
             candidate(db, job, run, chapter, "character_create", {
@@ -730,6 +737,7 @@ def test_relationship_fact_must_be_declared_and_written():
         rows = [
             summary,
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "甲拜师。",
             }, 1),
             candidate(db, job, run, chapter, "character_state_update", {"name": "甲", "current_location": "山门"}, 2),
@@ -815,6 +823,7 @@ def test_stable_character_fact_must_update_character_profile():
         rows = [
             summary,
             candidate(db, job, run, chapter, "outline_create", {
+                "character_ids": [],
                 "node_type": "chapter", "title": chapter.title, "summary": "姜尘立誓。",
             }, 1),
             candidate(db, job, run, chapter, "character_state_update", {

@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 OPENING_OUTLINE_DETAILS = {
+    "creation_opening_characters_invalid": (
+        "章节和场景必须提供不重复的 character_ids 字符串数组，且所有 ID 必须属于当前会话的 "
+        "character_index；无已建档人物时显式填写 []。请由模型读取目录并选择真实 ID，本次未写入。"
+    ),
     "creation_opening_locked_changed": (
         "生成结果修改了已锁定的细纲字段；请保留该 JSON Pointer 对应的原值后修正输出。本次未写入。"
     ),

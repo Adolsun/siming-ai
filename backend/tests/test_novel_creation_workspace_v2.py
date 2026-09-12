@@ -23,9 +23,9 @@ from app.services.novel_creation_contract import (
     LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
     OPENING_OUTLINE_CHAPTER_COUNT,
 )
+from app.services.novel_creation_materialization import build_project_materialization_payload
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
-    build_project_materialization_payload,
     build_stage_flow,
     creation_artifact_dependencies,
     derive_stage,
@@ -128,6 +128,8 @@ def _ready_session(db) -> NovelCreationSession:
             volume_id = creation_volume_index(session)[0]["id"]
             for chapter in data["chapters"]:
                 chapter["volume_id"] = volume_id
+            for row in data["chapters"] + data["sections"]:
+                row["character_ids"] = []
         save_stage(session, stage, data, confirm=stage != "final_review")
     db.commit()
     return session
@@ -187,6 +189,8 @@ def test_existing_fifteen_chapter_opening_outline_remains_usable_after_upgrade()
 
     for chapter in legacy_opening["chapters"]:
         chapter["volume_id"] = creation_volume_index(session)[0]["id"]
+    for row in [*legacy_opening["chapters"], *legacy_opening["sections"]]:
+        row["character_ids"] = []
     draft["stages"]["opening_outline"]["data"] = legacy_opening
     session.draft_json = draft
 

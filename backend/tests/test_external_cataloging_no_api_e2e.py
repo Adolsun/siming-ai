@@ -121,6 +121,7 @@ def _complete_alice_candidates(chapter_title: str, summary: str):
             character_profiles=["Alice"],
         ),
         {
+            "character_ids": [],
             "type": "outline_create",
             "node_type": "chapter",
             "title": chapter_title,
@@ -523,6 +524,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                 "content": "特昂糖穿越后醒来的陆家宅院。",
             },
             {
+                "character_ids": [],
                 "type": "outline_create",
                 "node_type": "chapter",
                 "title": "第一章 穿越·着陆",
@@ -1131,6 +1133,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                 "candidates": [
                     _summary_candidate("first"),
                     {
+                        "character_ids": [],
                         "type": "outline_create",
                         "title": chapter_title,
                         "node_type": "chapter",
@@ -1217,6 +1220,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                     "candidates": [
                         _summary_candidate("test"),
                         {
+                            "character_ids": [],
                             "type": "outline_create",
                             "title": self.chapters[0].title,
                             "node_type": "chapter",
