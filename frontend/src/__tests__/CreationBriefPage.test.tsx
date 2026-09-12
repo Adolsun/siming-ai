@@ -8,6 +8,10 @@ const api = vi.hoisted(() => ({
 }))
 
 vi.mock('../api/client', () => ({ apiClient: api }))
+vi.mock('antd', async (importOriginal) => ({
+  ...await importOriginal<typeof import('antd')>(),
+  message: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}))
 
 import CreationBriefPage from '../pages/CreationBriefPage'
 
