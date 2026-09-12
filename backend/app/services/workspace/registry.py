@@ -19,6 +19,7 @@ from ...architecture.tool_permissions import classify_tool_definitions
 from ...architecture.tool_result_policy import (
     ModelResultContract,
     ModelResultListProjection,
+    ModelResultObjectProjection,
     ModelResultPageBudget,
     ModelResultPolicy,
     ModelResultPreview,
@@ -34,7 +35,10 @@ from ...modules.context.interfaces.tool_definitions import (
 from ...modules.continuity.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as CONTINUITY_TOOL_DEFINITIONS,
 )
-from ...modules.creation.interfaces.agent_scope import CREATION_DIRECT_MCP_TOOL_NAMES
+from ...modules.creation.interfaces.agent_scope import (
+    CREATION_AGENT_WRITE_TOOL_NAMES,
+    CREATION_DIRECT_MCP_TOOL_NAMES,
+)
 from ...modules.creation.interfaces.tool_definitions import (
     TOOL_DEFINITIONS as CREATION_TOOL_DEFINITIONS,
 )
@@ -100,6 +104,29 @@ _STATUS_ONLY_CONTRACT = ModelResultContract(
     policy=ModelResultPolicy.STATUS_ONLY,
     max_json_bytes=4 * 1024,
     data_fields=_STATUS_RECEIPT_DATA_FIELDS,
+)
+
+# Creation edits return a nested artifact document as well as entity metadata.
+# The write receipt must fit independently of the size of that saved document.
+_CREATION_WRITE_RECEIPT_CONTRACT = replace(
+    _STATUS_ONLY_CONTRACT,
+    data_fields=(
+        *_STATUS_RECEIPT_DATA_FIELDS, "entity", "entity_type", "entity_key",
+        "reason", "path", "retryable", "stage",
+        "saved", "requires_confirmation", "next_action", "collection_counts",
+    ),
+    object_projections=(
+        ModelResultObjectProjection(
+            source_field="artifact",
+            fields=("session_id", "artifact", "revision", "status"),
+        ),
+        ModelResultObjectProjection(
+            source_field="entity",
+            fields=(
+                "id", "session_id", "artifact", "entity_type", "entity_key", "revision", "status",
+            ),
+        ),
+    ),
 )
 
 _CATALOGING_LAUNCH_RECEIPT_CONTRACT = ModelResultContract(
@@ -345,6 +372,8 @@ def _model_result_contract_for(tool_def: ToolDef) -> ModelResultContract:
     explicit = _MODEL_RESULT_CONTRACTS_BY_NAME.get(tool_def.name)
     if explicit is not None:
         return explicit
+    if tool_def.name in CREATION_AGENT_WRITE_TOOL_NAMES:
+        return _CREATION_WRITE_RECEIPT_CONTRACT
     if tool_def.tool_type in {"write", "scheduler"}:
         if tool_def.name == "create_outline_nodes":
             return replace(

@@ -1,0 +1,366 @@
+{
+  "volume_index": [
+    {
+      "id": "fixture-volume-a",
+      "title": "卷一",
+      "start_chapter": 1,
+      "end_chapter": 2
+    },
+    {
+      "id": "fixture-volume-b",
+      "title": "卷二",
+      "start_chapter": 3,
+      "end_chapter": 40
+    }
+  ],
+  "data": {
+    "opening_chapter_count": 3,
+    "chapters": [
+      {
+        "client_id": "ch-1",
+        "chapter_number": 1,
+        "title": "第1章 线索与代价",
+        "summary": "第1章：主角取得一条线索，选择追查并承担身份暴露的代价。",
+        "volume_id": "fixture-volume-a",
+        "goal": "找到线索",
+        "key_events": [
+          "追查",
+          "遭遇阻拦",
+          "发现代价"
+        ],
+        "chapter_hook": "新的线索指向下一处地点。",
+        "word_count_suggestion": 2500
+      },
+      {
+        "client_id": "ch-2",
+        "chapter_number": 2,
+        "title": "第2章 线索与代价",
+        "summary": "第2章：主角取得一条线索，选择追查并承担身份暴露的代价。",
+        "volume_id": "fixture-volume-a",
+        "goal": "找到线索",
+        "key_events": [
+          "追查",
+          "遭遇阻拦",
+          "发现代价"
+        ],
+        "chapter_hook": "新的线索指向下一处地点。",
+        "word_count_suggestion": 2500
+      },
+      {
+        "client_id": "ch-3",
+        "chapter_number": 3,
+        "title": "第3章 线索与代价",
+        "summary": "第3章：主角取得一条线索，选择追查并承担身份暴露的代价。",
+        "volume_id": "fixture-volume-b",
+        "goal": "找到线索",
+        "key_events": [
+          "追查",
+          "遭遇阻拦",
+          "发现代价"
+        ],
+        "chapter_hook": "新的线索指向下一处地点。",
+        "word_count_suggestion": 2500
+      }
+    ],
+    "sections": [
+      {
+        "client_id": "ch-1-s-1",
+        "parent_client_id": "ch-1",
+        "title": "第1场 线索转折",
+        "summary": "第1章第1场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 1,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-1-s-2",
+        "parent_client_id": "ch-1",
+        "title": "第2场 线索转折",
+        "summary": "第1章第2场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 2,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-1-s-3",
+        "parent_client_id": "ch-1",
+        "title": "第3场 线索转折",
+        "summary": "第1章第3场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 3,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-2-s-1",
+        "parent_client_id": "ch-2",
+        "title": "第1场 线索转折",
+        "summary": "第2章第1场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 1,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-2-s-2",
+        "parent_client_id": "ch-2",
+        "title": "第2场 线索转折",
+        "summary": "第2章第2场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 2,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-2-s-3",
+        "parent_client_id": "ch-2",
+        "title": "第3场 线索转折",
+        "summary": "第2章第3场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 3,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-3-s-1",
+        "parent_client_id": "ch-3",
+        "title": "第1场 线索转折",
+        "summary": "第3章第1场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 1,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-3-s-2",
+        "parent_client_id": "ch-3",
+        "title": "第2场 线索转折",
+        "summary": "第3章第2场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 2,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      },
+      {
+        "client_id": "ch-3-s-3",
+        "parent_client_id": "ch-3",
+        "title": "第3场 线索转折",
+        "summary": "第3章第3场：主角核对线索后发现矛盾，主动追查，付出暴露行踪的代价。",
+        "metadata": {
+          "scene_number": 3,
+          "purpose": "推进线索",
+          "location": "旧城",
+          "timeline": "傍晚",
+          "pov_character": "主角",
+          "characters": [
+            "主角"
+          ],
+          "entry_state": "尚未确认线索",
+          "exit_state": "确认矛盾并决定追查",
+          "emotional_residue": "警惕",
+          "unresolved_actions": [
+            "继续追查"
+          ]
+        }
+      }
+    ]
+  },
+  "invalid_cases": [
+    {
+      "name": "chapter_body_empty",
+      "field": "chapters",
+      "index": 0,
+      "key": "summary",
+      "value": "",
+      "reason": "creation_opening_summary_missing"
+    },
+    {
+      "name": "scene_body_empty",
+      "field": "sections",
+      "index": 0,
+      "key": "summary",
+      "value": " ",
+      "reason": "creation_opening_summary_missing"
+    },
+    {
+      "name": "summary_object",
+      "field": "chapters",
+      "index": 0,
+      "key": "summary",
+      "value": {
+        "goal": "已有目标"
+      },
+      "reason": "creation_opening_summary_missing"
+    },
+    {
+      "name": "missing_volume",
+      "field": "chapters",
+      "index": 0,
+      "key": "volume_id",
+      "value": "",
+      "reason": "creation_opening_parent_invalid"
+    },
+    {
+      "name": "foreign_volume",
+      "field": "chapters",
+      "index": 0,
+      "key": "volume_id",
+      "value": "another-session-volume",
+      "reason": "creation_opening_parent_invalid"
+    },
+    {
+      "name": "wrong_volume_range",
+      "field": "chapters",
+      "index": 0,
+      "key": "volume_id",
+      "value": "fixture-volume-b",
+      "reason": "creation_opening_parent_invalid"
+    },
+    {
+      "name": "orphan_scene",
+      "field": "sections",
+      "index": 0,
+      "key": "parent_client_id",
+      "value": "missing-chapter",
+      "reason": "creation_opening_parent_invalid"
+    },
+    {
+      "name": "duplicate_chapter_id",
+      "field": "chapters",
+      "index": 1,
+      "key": "client_id",
+      "value": "ch-1",
+      "reason": "creation_opening_structure_invalid"
+    },
+    {
+      "name": "index_binding_rejected",
+      "field": "chapters",
+      "index": 0,
+      "key": "parent_index",
+      "value": 0,
+      "reason": "creation_opening_structure_invalid"
+    },
+    {
+      "name": "nested_scenes_rejected",
+      "field": "chapters",
+      "index": 0,
+      "key": "scene_outline",
+      "value": [],
+      "reason": "creation_opening_structure_invalid"
+    },
+    {
+      "name": "wrong_node_type",
+      "field": "chapters",
+      "index": 0,
+      "key": "node_type",
+      "value": "volume",
+      "reason": "creation_opening_structure_invalid"
+    },
+    {
+      "name": "boolean_chapter_number",
+      "field": "chapters",
+      "index": 0,
+      "key": "chapter_number",
+      "value": true,
+      "reason": "creation_opening_structure_invalid"
+    }
+  ]
+}

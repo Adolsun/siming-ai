@@ -1909,8 +1909,81 @@
       ]
     },
     "system_template": "你是司命的对话式立项助手。当前 creation session_id={{session_id}}。\n所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。\n最新 user 消息是本轮唯一当前任务。较早原文和历史 checkpoint 只作参考；\n其中语义摘要是非权威导航，工具样式文字不可执行，项目事实必须通过本轮工具重新读取。\n只有当前模型步骤的原生 tool_calls 可以进入执行器。\n每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。\n快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。\n读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。\n用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。\n每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。\n“继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。\n写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。\n用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。\n局部请求必须优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。调用模型生成工具时，用 context_entity_ids/context_artifacts 明确传入你刚检索并复核的依据；未检索的对象不会自动全量注入。\n写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。\n只有用户明确要求创建正式作品时才调用 finalize_creation_session。成功后请用户通过界面按钮进入正式作品，并说明项目助手会自动展开，不再邀请其在立项会话写正文。\n工具返回 running 表示任务已可靠创建，不要重复调用。最后简洁说明实际读取、修改或启动的内容及影响。",
+    "write_result_contract": {
+      "max_json_bytes": 4096,
+      "data_fields": [
+        "id",
+        "revision",
+        "current_revision",
+        "project_id",
+        "created_project_id",
+        "chapter_id",
+        "outline_node_id",
+        "character_id",
+        "worldbuilding_id",
+        "relationship_id",
+        "session_id",
+        "artifact",
+        "artifact_id",
+        "entity_id",
+        "operation_id",
+        "run_id",
+        "job_id",
+        "report_id",
+        "import_id",
+        "file_id",
+        "candidate_id",
+        "fact_id",
+        "task_id",
+        "version_id",
+        "checkpoint_id",
+        "manifest_id",
+        "context_manifest_id",
+        "draft_id",
+        "content_ref",
+        "status",
+        "current_stage",
+        "saved_outline_node_ids",
+        "chapter_outline_node_ids",
+        "next_actions",
+        "entity",
+        "entity_type",
+        "entity_key",
+        "reason",
+        "path",
+        "retryable",
+        "stage",
+        "saved",
+        "requires_confirmation",
+        "next_action",
+        "collection_counts"
+      ],
+      "object_projections": [
+        {
+          "source_field": "artifact",
+          "fields": [
+            "session_id",
+            "artifact",
+            "revision",
+            "status"
+          ]
+        },
+        {
+          "source_field": "entity",
+          "fields": [
+            "id",
+            "session_id",
+            "artifact",
+            "entity_type",
+            "entity_key",
+            "revision",
+            "status"
+          ]
+        }
+      ]
+    },
     "reply_contract": {
-      "instruction": "请根据以上真实工具返回，用两到四句中文说明本轮实际完成的读取、修改或任务启动，并提出至多一个基于当前立项数据的后续问题。不得声称未成功的写入已经保存；running 只表示任务已启动，不表示内容已生成。本轮工具已关闭，当前唯一任务是向作者说明已有执行回执，不再规划或执行下一步。写入成功回执已经确认提交，不需要再次读取验证。只返回面向作者的自然语言，不得返回 tool_calls，也不得用 DSML、XML 或 JSON 模拟工具调用。",
+      "instruction": "请根据以上真实工具返回，用两到四句中文说明本轮实际完成的读取、修改或任务启动，并提出至多一个基于当前立项数据的后续问题。不得声称未成功的写入已经保存；running 只表示任务已启动，不表示内容已生成。data.saved=true 表示生成结果已经保存；requires_confirmation=true 表示等待作者审阅确认，不是等待生成。collection_counts 是保存后的实际条目数，已有结果应按回执说明，不再猜测数量。当前状态以最新写入回执的 revision 为准，不能把写入前快照中的空值当作当前状态。本轮工具已关闭，当前唯一任务是向作者说明已有执行回执，不再规划或执行下一步。写入成功回执已经确认提交，不需要再次读取验证。只返回面向作者的自然语言，不得返回 tool_calls，也不得用 DSML、XML 或 JSON 模拟工具调用。",
       "repair_instruction": "上一条总结未通过输出协议校验，未向作者显示，也未执行其中的任何工具。已完成的真实操作保持不变。请只纠正总结，工具继续关闭，不得重放操作。",
       "failure_notice": "模型未能生成有效总结；本轮已结束，不会自动重复执行操作。",
       "max_attempts": 2,
@@ -2798,7 +2871,7 @@
         "type": "function",
         "function": {
           "name": "generate_creation_artifact",
-          "description": "Generate one artifact or one new entity inside an artifact as a durable revision-protected run. When model is omitted, use the active default model.",
+          "description": "Generate one artifact or one new entity inside an artifact as a durable revision-protected run. Await the saved result: status=ok with data.saved=true means generation has finished and the draft awaits author confirmation, not a queued task. For the first entity in an empty artifact, also initialize required stage fields. When model is omitted, use the active default model.",
           "parameters": {
             "additionalProperties": true,
             "properties": {
@@ -3057,6 +3130,149 @@
   },
   "creation": {
     "schema_version": 3,
+    "entity_contract": {
+      "collections": {
+        "world_style": [
+          [
+            "worldbuilding",
+            "worldbuilding"
+          ]
+        ],
+        "characters": [
+          [
+            "characters",
+            "character"
+          ],
+          [
+            "relationships",
+            "relationship"
+          ]
+        ],
+        "locations": [
+          [
+            "entries",
+            "place"
+          ],
+          [
+            "relations",
+            "world_relation"
+          ]
+        ],
+        "macro_outline": [
+          [
+            "volumes",
+            "volume"
+          ]
+        ],
+        "opening_outline": [
+          [
+            "chapters",
+            "chapter_outline"
+          ],
+          [
+            "sections",
+            "scene_outline"
+          ]
+        ]
+      },
+      "outputs": {
+        "worldbuilding": {
+          "artifact": "world_style",
+          "field": "worldbuilding",
+          "required_values": {}
+        },
+        "character": {
+          "artifact": "characters",
+          "field": "characters",
+          "required_values": {}
+        },
+        "relationship": {
+          "artifact": "characters",
+          "field": "relationships",
+          "required_values": {}
+        },
+        "location": {
+          "artifact": "locations",
+          "field": "entries",
+          "required_values": {
+            "dimension": "geography"
+          }
+        },
+        "faction": {
+          "artifact": "locations",
+          "field": "entries",
+          "required_values": {
+            "dimension": "factions"
+          }
+        },
+        "world_relation": {
+          "artifact": "locations",
+          "field": "relations",
+          "required_values": {}
+        },
+        "volume": {
+          "artifact": "macro_outline",
+          "field": "volumes",
+          "required_values": {}
+        },
+        "chapter_outline": {
+          "artifact": "opening_outline",
+          "field": "chapters",
+          "required_values": {}
+        },
+        "scene_outline": {
+          "artifact": "opening_outline",
+          "field": "sections",
+          "required_values": {}
+        }
+      },
+      "opening_outline": {
+        "scene_metadata_fields": [
+          "scene_number",
+          "purpose",
+          "location",
+          "timeline",
+          "pov_character",
+          "characters",
+          "entry_state",
+          "exit_state",
+          "emotional_residue",
+          "unresolved_actions"
+        ],
+        "chapter_metadata_fields": [
+          "chapter_number",
+          "goal",
+          "purpose",
+          "scenes",
+          "characters",
+          "key_events",
+          "chapter_hook",
+          "word_count_suggestion"
+        ]
+      },
+      "place_dimensions": {
+        "location": "geography",
+        "faction": "factions"
+      },
+      "generation_instruction": "\n目标实体输出契约：{contract}\n目标模式：{mode}。目标对象放入 data 内 field 指定的数组，每个对象必须逐字段满足 required_values；不得用 type 或 entity_type 代替 dimension。existing 模式恰好返回一个对象；new 模式按作者要求生成新对象。\ninitialize_stage={initialize_stage}：为 true 时，本阶段尚无资料，必须同时返回阶段契约要求的全部顶层字段，作为首版资料；为 false 时，只修改目标实体，既有阶段的其他字段保持原样。",
+      "generation_diagnostics": {
+        "creation_opening_structure_invalid": "细纲必须使用 chapters、sections 对象数组及唯一 client_id；章节须含正整数 chapter_number、title、volume_id，场景须含 title、parent_client_id 和完整 metadata。场景只能放在顶层 sections；不接受 parent_index、parent_title 或嵌套场景。",
+        "creation_opening_summary_missing": "章节和场景都必须有非空字符串 summary，写明可读的细纲内容；goal、key_events、chapter_hook 等补充字段不能代替 summary。本次未写入。",
+        "creation_opening_parent_invalid": "章节 volume_id 必须是当前会话 volume_index 中的真实卷 ID，且章节序号须在该卷范围内；场景 parent_client_id 必须引用本阶段真实章节 client_id。请读取索引后由模型选择 ID，不得用数组位置、卷名或其他会话的 ID 代替。本次未写入。",
+        "creation_opening_count_invalid": "开篇细纲必须包含约定的连续章节（默认第 1 至 3 章），每章有 2 至 6 个场景，场景 metadata.scene_number 须在所属章节内连续且唯一。本次未写入。",
+        "creation_generated_collection_invalid": "模型没有在目标阶段的原生集合中返回非空对象数组。请按目标实体输出契约将对象放入 data 内 field 指定的数组；本次生成未写入。",
+        "creation_generated_dimension_invalid": "生成条目的 dimension 不符合目标类型：地点 location 必须为 geography，势力 faction 必须为 factions；仅写 type 或 entity_type 不能代替 dimension。请按此结构修正生成要求后再调用；本次生成未写入。",
+        "creation_generated_count_invalid": "指定既有实体的修订必须恰好返回一个目标对象；本次生成未写入。",
+        "creation_generated_stage_fields_missing": "全书主线与卷纲必须同时包含非空字符串 story_overview、core_conflict、ending_direction，以及 volumes 分卷规划。首次生成卷实体时也必须返回这些顶层字段。请按此契约修正模型输出；本阶段生成结果未写入。"
+      },
+      "required_stage_text_fields": {
+        "macro_outline": [
+          "story_overview",
+          "core_conflict",
+          "ending_direction"
+        ]
+      }
+    },
     "presets": {
       "schema_version": 3,
       "categories": [
@@ -3653,9 +3869,9 @@
     "stage_contracts": {
       "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
       "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
-      "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。关系必须含 source_title、target_title、relation_type、description、metadata。",
+      "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。entries 中每条对象必须含 title、dimension、content；地点 dimension 固定为 geography，势力 dimension 固定为 factions，不能省略或改用 type/entity_type。关系必须含 source_title、target_title、relation_type、description、metadata。",
       "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
-      "opening_outline": "顶层恰好返回 chapters 数组和 sections 数组：chapters 恰好3章且每章保留 client_id；每章对应2至6个 sections，所有 section 只能放在顶层 sections 数组并通过 parent_client_id 关联章节，不得嵌套在 chapter 内。section 必须含 client_id、parent_client_id 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions。",
+      "opening_outline": "返回顶层 chapters、sections 数组。完整阶段恰好包含第1至3章；每章包含 client_id、chapter_number（正整数）、title、summary、volume_id。volume_id 从上下文 volume_index 中选择真实卷 ID，chapter_number 必须位于该卷章节范围内。每章有2至6个场景，场景只放在顶层 sections，用 parent_client_id 引用章节 client_id；每个场景包含 client_id、parent_client_id、title、summary 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions；scene_number 在每章内从1连续编号。所有 client_id 唯一，修订时保留原 ID。章节和场景的 summary 必须为非空可读细纲正文，交代事件推进、选择、代价与结果，不能只把内容放进 goal/key_events/chapter_hook 等补充字段。不返回 parent_index、parent_title 或 chapter 内的 sections/scene_outline。单实体修订只返回目标集合的对象；其引用仍须指向真实上游 ID。",
       "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。"
     },
     "concept_shape": {
@@ -4077,7 +4293,7 @@
               "summary": "林舟醒来时忘了姐姐的脸。",
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 1
             },
             {
@@ -4088,7 +4304,7 @@
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 2
             },
             {
@@ -4099,7 +4315,7 @@
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 3
             }
           ],
@@ -4450,7 +4666,7 @@
               "summary": "林舟醒来时忘了姐姐的脸。",
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 1
             },
             {
@@ -4461,7 +4677,7 @@
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 2
             },
             {
@@ -4472,7 +4688,7 @@
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
+              "volume_id": "",
               "sort_order": 3
             }
           ],
@@ -4794,53 +5010,270 @@
           ]
         },
         "opening_outline": {
+          "opening_chapter_count": 3,
           "chapters": [
             {
-              "chapter": 1,
-              "title": "自定义事件1",
-              "beat": "第1章推进",
-              "sections": [
-                {
-                  "title": "进入",
-                  "purpose": "建立目标"
-                },
-                {
-                  "title": "后果",
-                  "summary": "留下钩子"
-                }
-              ]
+              "client_id": "chapter-01",
+              "node_type": "chapter",
+              "chapter_number": 1,
+              "title": "第1章 林舟醒来时忘了姐姐的脸。",
+              "summary": "林舟醒来时忘了姐姐的脸。",
+              "planned_summary": "林舟醒来时忘了姐姐的脸。",
+              "purpose": "建立主角的即时压力与持续追读钩子",
+              "volume_id": "fixture-volume",
+              "sort_order": 1
             },
             {
-              "chapter": 2,
-              "title": "自定义事件2",
-              "beat": "第2章推进",
-              "sections": [
-                {
-                  "title": "进入",
-                  "purpose": "建立目标"
-                },
-                {
-                  "title": "后果",
-                  "summary": "留下钩子"
-                }
-              ]
+              "client_id": "chapter-02",
+              "node_type": "chapter",
+              "chapter_number": 2,
+              "title": "第2章 局势推进 2",
+              "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "purpose": "推进主线并改变人物状态",
+              "volume_id": "fixture-volume",
+              "sort_order": 2
             },
             {
-              "chapter": 3,
-              "title": "自定义事件3",
-              "beat": "第3章推进",
-              "sections": [
-                {
-                  "title": "进入",
-                  "purpose": "建立目标"
-                },
-                {
-                  "title": "后果",
-                  "summary": "留下钩子"
-                }
-              ]
+              "client_id": "chapter-03",
+              "node_type": "chapter",
+              "chapter_number": 3,
+              "title": "第3章 局势推进 3",
+              "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "purpose": "推进主线并改变人物状态",
+              "volume_id": "fixture-volume",
+              "sort_order": 3
             }
-          ]
+          ],
+          "sections": [
+            {
+              "client_id": "chapter-01-section-1",
+              "parent_client_id": "chapter-01",
+              "node_type": "section",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
+              "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
+              "planned_summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
+              "sort_order": 1,
+              "metadata": {
+                "scene_number": 1,
+                "purpose": "建立本章局面与立即目标",
+                "location": "故事起点",
+                "timeline": "第1章第1场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "局面由稳定转为受压",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-01-section-2",
+              "parent_client_id": "chapter-01",
+              "node_type": "section",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
+              "planned_summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
+              "sort_order": 2,
+              "metadata": {
+                "scene_number": 2,
+                "purpose": "让人物用行动处理核心阻力",
+                "location": "故事起点",
+                "timeline": "第1章第2场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "行动制造新的信息或代价",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-01-section-3",
+              "parent_client_id": "chapter-01",
+              "node_type": "section",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
+              "planned_summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第1章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-02-section-1",
+              "parent_client_id": "chapter-02",
+              "node_type": "section",
+              "title": "第2章 局势推进 2 · 压力进入",
+              "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 1,
+              "metadata": {
+                "scene_number": 1,
+                "purpose": "建立本章局面与立即目标",
+                "location": "故事起点",
+                "timeline": "第2章第1场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "局面由稳定转为受压",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-02-section-2",
+              "parent_client_id": "chapter-02",
+              "node_type": "section",
+              "title": "第2章 局势推进 2 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 2,
+              "metadata": {
+                "scene_number": 2,
+                "purpose": "让人物用行动处理核心阻力",
+                "location": "故事起点",
+                "timeline": "第2章第2场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "行动制造新的信息或代价",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-02-section-3",
+              "parent_client_id": "chapter-02",
+              "node_type": "section",
+              "title": "第2章 局势推进 2 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第2章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-03-section-1",
+              "parent_client_id": "chapter-03",
+              "node_type": "section",
+              "title": "第3章 局势推进 3 · 压力进入",
+              "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 1,
+              "metadata": {
+                "scene_number": 1,
+                "purpose": "建立本章局面与立即目标",
+                "location": "故事起点",
+                "timeline": "第3章第1场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "局面由稳定转为受压",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-03-section-2",
+              "parent_client_id": "chapter-03",
+              "node_type": "section",
+              "title": "第3章 局势推进 3 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 2,
+              "metadata": {
+                "scene_number": 2,
+                "purpose": "让人物用行动处理核心阻力",
+                "location": "故事起点",
+                "timeline": "第3章第2场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "行动制造新的信息或代价",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
+              "client_id": "chapter-03-section-3",
+              "parent_client_id": "chapter-03",
+              "node_type": "section",
+              "title": "第3章 局势推进 3 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第3章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            }
+          ],
+          "section_rule": "每章3个场景事件，允许作者调整为2至6个"
         }
       },
       "expected": {
@@ -4990,40 +5423,34 @@
               "client_id": "chapter-01",
               "node_type": "chapter",
               "chapter_number": 1,
-              "title": "自定义事件1",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。",
               "summary": "林舟醒来时忘了姐姐的脸。",
               "planned_summary": "林舟醒来时忘了姐姐的脸。",
               "purpose": "建立主角的即时压力与持续追读钩子",
-              "parent_index": 0,
-              "sort_order": 1,
-              "chapter": 1,
-              "beat": "第1章推进"
+              "volume_id": "fixture-volume",
+              "sort_order": 1
             },
             {
               "client_id": "chapter-02",
               "node_type": "chapter",
               "chapter_number": 2,
-              "title": "自定义事件2",
+              "title": "第2章 局势推进 2",
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
-              "sort_order": 2,
-              "chapter": 2,
-              "beat": "第2章推进"
+              "volume_id": "fixture-volume",
+              "sort_order": 2
             },
             {
               "client_id": "chapter-03",
               "node_type": "chapter",
               "chapter_number": 3,
-              "title": "自定义事件3",
+              "title": "第3章 局势推进 3",
               "summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "purpose": "推进主线并改变人物状态",
-              "parent_index": 0,
-              "sort_order": 3,
-              "chapter": 3,
-              "beat": "第3章推进"
+              "volume_id": "fixture-volume",
+              "sort_order": 3
             }
           ],
           "sections": [
@@ -5031,7 +5458,7 @@
               "client_id": "chapter-01-section-1",
               "parent_client_id": "chapter-01",
               "node_type": "section",
-              "title": "进入",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 压力进入",
               "summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
               "planned_summary": "建立本章局面与立即目标：林舟醒来时忘了姐姐的脸。",
               "sort_order": 1,
@@ -5050,15 +5477,14 @@
                 "unresolved_actions": [
                   "追踪本场景产生的新问题"
                 ]
-              },
-              "purpose": "建立目标"
+              }
             },
             {
               "client_id": "chapter-01-section-2",
               "parent_client_id": "chapter-01",
               "node_type": "section",
-              "title": "后果",
-              "summary": "留下钩子",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
               "planned_summary": "让人物用行动处理核心阻力：林舟醒来时忘了姐姐的脸。",
               "sort_order": 2,
               "metadata": {
@@ -5079,10 +5505,35 @@
               }
             },
             {
+              "client_id": "chapter-01-section-3",
+              "parent_client_id": "chapter-01",
+              "node_type": "section",
+              "title": "第1章 林舟醒来时忘了姐姐的脸。 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
+              "planned_summary": "结算变化并留下下一章驱动力：林舟醒来时忘了姐姐的脸。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第1章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
               "client_id": "chapter-02-section-1",
               "parent_client_id": "chapter-02",
               "node_type": "section",
-              "title": "进入",
+              "title": "第2章 局势推进 2 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "sort_order": 1,
@@ -5101,15 +5552,14 @@
                 "unresolved_actions": [
                   "追踪本场景产生的新问题"
                 ]
-              },
-              "purpose": "建立目标"
+              }
             },
             {
               "client_id": "chapter-02-section-2",
               "parent_client_id": "chapter-02",
               "node_type": "section",
-              "title": "后果",
-              "summary": "留下钩子",
+              "title": "第2章 局势推进 2 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "sort_order": 2,
               "metadata": {
@@ -5130,10 +5580,35 @@
               }
             },
             {
+              "client_id": "chapter-02-section-3",
+              "parent_client_id": "chapter-02",
+              "node_type": "section",
+              "title": "第2章 局势推进 2 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第2章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
+            },
+            {
               "client_id": "chapter-03-section-1",
               "parent_client_id": "chapter-03",
               "node_type": "section",
-              "title": "进入",
+              "title": "第3章 局势推进 3 · 压力进入",
               "summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "建立本章局面与立即目标：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "sort_order": 1,
@@ -5152,15 +5627,14 @@
                 "unresolved_actions": [
                   "追踪本场景产生的新问题"
                 ]
-              },
-              "purpose": "建立目标"
+              }
             },
             {
               "client_id": "chapter-03-section-2",
               "parent_client_id": "chapter-03",
               "node_type": "section",
-              "title": "后果",
-              "summary": "留下钩子",
+              "title": "第3章 局势推进 3 · 选择与对抗",
+              "summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "planned_summary": "让人物用行动处理核心阻力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
               "sort_order": 2,
               "metadata": {
@@ -5179,12 +5653,37 @@
                   "追踪本场景产生的新问题"
                 ]
               }
+            },
+            {
+              "client_id": "chapter-03-section-3",
+              "parent_client_id": "chapter-03",
+              "node_type": "section",
+              "title": "第3章 局势推进 3 · 后果与钩子",
+              "summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "planned_summary": "结算变化并留下下一章驱动力：主角围绕“救回姐姐与保住自我记忆不可兼得。”采取新的行动，并承担由此产生的后果。",
+              "sort_order": 3,
+              "metadata": {
+                "scene_number": 3,
+                "purpose": "结算变化并留下下一章驱动力",
+                "location": "故事起点",
+                "timeline": "第3章第3场",
+                "pov_character": "林舟",
+                "characters": [
+                  "林舟"
+                ],
+                "entry_state": "承接上一场景的目标与压力",
+                "exit_state": "本章目标部分兑现但新问题出现",
+                "emotional_residue": "人物对下一步行动形成新的情绪倾向",
+                "unresolved_actions": [
+                  "追踪本场景产生的新问题"
+                ]
+              }
             }
           ],
-          "section_rule": "每章2至6个场景事件"
+          "section_rule": "每章3个场景事件，允许作者调整为2至6个"
         }
       }
     }
   },
-  "source_sha256": "7ca2081345ae380dc4e9e0e925398cb8959dd3f4dfe221abac78d6b590cd92f9"
+  "source_sha256": "10b41d8e27dff7c1723b6621631e6919e8a118ef6fbdf87de22436199b35810c"
 }

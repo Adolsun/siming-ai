@@ -122,6 +122,12 @@ def _ready_session(db) -> NovelCreationSession:
                 "relation_type": "connected_to",
                 "description": "双方通过封锁线与通行许可互相影响。",
             }]
+        if stage == "opening_outline":
+            from app.services.novel_creation_entities import creation_volume_index
+
+            volume_id = creation_volume_index(session)[0]["id"]
+            for chapter in data["chapters"]:
+                chapter["volume_id"] = volume_id
         save_stage(session, stage, data, confirm=stage != "final_review")
     db.commit()
     return session
@@ -153,7 +159,7 @@ def test_v2_draft_migrates_to_v3_as_exploration_without_losing_content():
 
 
 def test_opening_outline_contract_defaults_to_three_chapters():
-    assert "chapters 恰好3章" in _stage_contract("opening_outline")
+    assert "恰好包含第1至3章" in _stage_contract("opening_outline")
 
 
 def test_opening_outline_has_three_chapters_and_two_to_six_sections_each():
@@ -177,6 +183,10 @@ def test_existing_fifteen_chapter_opening_outline_remains_usable_after_upgrade()
     draft = deepcopy(session.draft_json)
     draft["form"]["opening_chapters"] = LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
     legacy_opening = derive_stage(session, "opening_outline", draft)
+    from app.services.novel_creation_entities import creation_volume_index
+
+    for chapter in legacy_opening["chapters"]:
+        chapter["volume_id"] = creation_volume_index(session)[0]["id"]
     draft["stages"]["opening_outline"]["data"] = legacy_opening
     session.draft_json = draft
 
@@ -1162,40 +1172,21 @@ def test_lifecycle_metadata_cannot_replace_a_macro_outline():
     assert "type" not in normalized
 
 
-def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_three_chapters():
+def test_opening_outline_rejects_nested_scenes_without_padding_from_baseline():
     db = _db()
     session = _ready_session(db)
     baseline = derive_stage(session, "opening_outline")
-    source = {
-        "chapters": [{
-            "chapter_number": 1,
-            "title": "死亡通知",
-            "summary": "林七收到未来死亡通知。",
-            "sections": [
-                {"title": "档案室异响", "summary": "通知从停机终端吐出。"},
-                {"title": "三日倒计时", "summary": "她确认通知带着自己的签名。"},
-            ],
-        }],
-    }
-
-    normalized = _normalize_stage_data("opening_outline", source, baseline)
-
-    _validate_stage("opening_outline", normalized)
-    assert len(normalized["chapters"]) == OPENING_OUTLINE_CHAPTER_COUNT
-    assert len([item for item in normalized["sections"] if item["parent_client_id"] == normalized["chapters"][0]["client_id"]]) == 2
-    assert all("sections" not in chapter for chapter in normalized["chapters"])
-    assert all(section["client_id"] and section["metadata"]["purpose"] for section in normalized["sections"])
+    source = deepcopy(session.draft_json["stages"]["opening_outline"]["data"])
+    source["chapters"][0]["sections"] = source.pop("sections")
+    with pytest.raises(ValueError, match="不接受 parent_index"):
+        _normalize_stage_data("opening_outline", source, baseline)
 
 
-def test_opening_outline_validation_names_the_failed_chapters_in_chinese():
-    chapters = [
-        {"client_id": f"chapter-{number:02d}", "title": f"第{number}章 失真记录"}
-        for number in range(1, OPENING_OUTLINE_CHAPTER_COUNT + 1)
-    ]
-
-    with pytest.raises(ValueError) as error:
-        _validate_stage("opening_outline", {"chapters": chapters, "sections": []})
-
-    assert "第1章 失真记录" in str(error.value)
-    assert "场景数量" in str(error.value)
-    assert "section" not in str(error.value)
+def test_opening_outline_validation_returns_actionable_path_for_missing_content():
+    db = _db()
+    session = _ready_session(db)
+    data = deepcopy(session.draft_json["stages"]["opening_outline"]["data"])
+    data["chapters"][0]["summary"] = ""
+    with pytest.raises(ValueError, match=r"chapters\[0\].summary") as error:
+        _validate_stage("opening_outline", data)
+    assert "非空字符串 summary" in str(error.value)

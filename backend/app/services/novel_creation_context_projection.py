@@ -209,8 +209,9 @@ def build_stage_generation_context(
             else []
         ),
         "referenced_artifacts": _referenced_artifacts(draft),
+        **({"volume_index": deepcopy(draft["_volume_index"])} if "_volume_index" in draft else {}),
         "evidence_policy": (
-            "Only baseline, selected_concept, retrieved_entities and explicit referenced_artifacts "
+            "Only baseline, selected_concept, retrieved_entities, volume_index and explicit referenced_artifacts "
             "are available. Do not invent omitted project facts."
         ),
     }, entity_target

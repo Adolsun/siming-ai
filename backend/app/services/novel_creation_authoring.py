@@ -4,10 +4,13 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.modules.creation.domain.generation_contract import validate_stage_text_fields
+from app.modules.creation.domain.opening_outline_contract import OPENING_OUTLINE_INSTRUCTION, validate_opening_outline
 from app.services.novel_creation_contract import (
     LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
     OPENING_OUTLINE_CHAPTER_COUNT,
 )
+
 _WORLD_STYLE_TEXT_FIELDS = ("writing_style", "world_tone", "story_structure", "pacing")
 _AUTHOR_FIELD_LABELS = {
     "writing_style": "正文风格",
@@ -122,7 +125,10 @@ def _stage_contract(
     stage: str,
     *,
     opening_chapter_count: int = OPENING_OUTLINE_CHAPTER_COUNT,
+    entity_target: dict[str, Any] | None = None,
 ) -> str:
+    from app.modules.creation.domain.generation_contract import entity_generation_instruction
+
     opening_chapter_count = (
         LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
         if opening_chapter_count == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
@@ -131,12 +137,20 @@ def _stage_contract(
     contracts = {
         "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
         "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
-        "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。关系必须含 source_title、target_title、relation_type、description、metadata。",
+        "locations": (
+            "返回 entries 数组和 relations 数组，不得重复实体或关系。"
+            "entries 中每条对象必须含 title、dimension、content；地点 dimension 固定为 geography，"
+            "势力 dimension 固定为 factions，不能省略或改用 type/entity_type。"
+            "关系必须含 source_title、target_title、relation_type、description、metadata。"
+        ),
         "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
-        "opening_outline": f"顶层恰好返回 chapters 数组和 sections 数组：chapters 恰好{opening_chapter_count}章且每章保留 client_id；每章对应2至6个 sections，所有 section 只能放在顶层 sections 数组并通过 parent_client_id 关联章节，不得嵌套在 chapter 内。section 必须含 client_id、parent_client_id 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions。",
+        "opening_outline": OPENING_OUTLINE_INSTRUCTION.format(count=opening_chapter_count),
         "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。",
     }
-    return contracts.get(stage, "保持输入结构，只提高具体性、一致性和可执行性。")
+    return (
+        contracts.get(stage, "保持输入结构，只提高具体性、一致性和可执行性。")
+        + entity_generation_instruction(entity_target)
+    )
 
 
 def _validate_stage(stage: str, data: dict[str, Any]) -> None:
@@ -193,13 +207,8 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
         if invalid_relations:
             raise ValueError("以下地点关系缺少端点、类型或引用了不存在的实体：" + "、".join(invalid_relations[:5]))
     if stage == "macro_outline":
-        missing = [
-            field for field in ("story_overview", "core_conflict", "ending_direction")
-            if not _text(data.get(field))
-        ]
+        validate_stage_text_fields(stage, data)
         volumes = data.get("volumes") if isinstance(data.get("volumes"), list) else []
-        if missing:
-            raise ValueError("全书主线与卷纲缺少：" + "、".join(missing))
         if not volumes:
             raise ValueError("全书主线与卷纲没有返回分卷规划")
         invalid_volumes = [
@@ -217,38 +226,7 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
 
 
 def _validate_opening_outline(data: dict[str, Any]) -> None:
-    chapters = data.get("chapters") if isinstance(data.get("chapters"), list) else []
-    sections = data.get("sections") if isinstance(data.get("sections"), list) else []
-    expected_chapter_count = _opening_outline_chapter_count(data)
-    if len(chapters) != expected_chapter_count:
-        raise ValueError(f"前{expected_chapter_count}章细纲必须恰好包含{expected_chapter_count}章，当前为{len(chapters)}章")
-    counts: dict[str, int] = {}
-    for section in sections:
-        if isinstance(section, dict):
-            parent = _text(section.get("parent_client_id"))
-            counts[parent] = counts.get(parent, 0) + 1
-    invalid = [
-        _text(chapter.get("title") or chapter.get("chapter_number") or chapter.get("client_id"))
-        or f"第{index + 1}章"
-        for index, chapter in enumerate(chapters)
-        if counts.get(_text(chapter.get("client_id")), 0) not in range(2, 7)
-    ]
-    if invalid:
-        raise ValueError("以下章节的场景数量不在2至6个之间：" + "、".join(invalid[:5]))
-    required_metadata = {
-        "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
-        "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
-    }
-    invalid_sections = [
-        _text(section.get("title") or section.get("client_id")) or f"第{index + 1}个场景"
-        for index, section in enumerate(sections)
-        if not isinstance(section, dict)
-        or not _text(section.get("client_id"))
-        or not _text(section.get("parent_client_id"))
-        or not required_metadata.issubset(set(section.get("metadata") or {}))
-    ]
-    if invalid_sections:
-        raise ValueError("以下场景缺少结构化信息：" + "、".join(invalid_sections[:5]))
+    validate_opening_outline(data)
 
 
 def _validate_compact_concepts(

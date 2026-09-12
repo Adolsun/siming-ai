@@ -37,6 +37,11 @@ def assess_creation_confirmation(
         isinstance(requested_data, dict) and requested_data == current_data
     ):
         action = "confirm_exact"
+    if action and stage == "opening_outline":
+        from app.modules.creation.domain.opening_outline_contract import validate_opening_outline
+        from app.services.novel_creation_entities import creation_volume_index
+
+        validate_opening_outline(current_data, volume_index=creation_volume_index(session))
     return ConfirmationDecision(current_data, stored_status, action)
 
 

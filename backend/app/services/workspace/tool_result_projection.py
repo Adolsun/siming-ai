@@ -16,6 +16,7 @@ from hashlib import sha256
 from typing import Any, Protocol
 
 from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS
+from app.modules.creation.domain.generation_contract import CREATION_GENERATION_DETAILS
 from app.modules.operations.application.trace_capture import record_payload
 from app.services.conversation_context.budget import RequestBudgetEnvelope
 
@@ -106,6 +107,7 @@ _DIAGNOSTIC_DETAILS = {
 }
 _DIAGNOSTIC_REASON_DETAILS = {
     **CREATION_REFERENCE_DETAILS,
+    **CREATION_GENERATION_DETAILS,
     "native_assistant_transaction_invalid": (
         "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
     ),
@@ -136,6 +138,7 @@ _DIAGNOSTIC_REASON_DETAILS = {
 # survive into a model, MCP client, run step, checkpoint receipt, REST or SSE.
 _SAFE_DIAGNOSTIC_REASONS = frozenset({
     *CREATION_REFERENCE_DETAILS,
+    *CREATION_GENERATION_DETAILS,
     "failed_write_limit",
     "history_sequence_gap",
     "invalid_turn_state",
@@ -458,7 +461,7 @@ def sanitize_diagnostic_tool_result(
         reason = source_data.get("reason")
         if isinstance(reason, str) and reason in _SAFE_DIAGNOSTIC_REASONS:
             safe_data["reason"] = reason
-        if isinstance(reason, str) and reason in CREATION_REFERENCE_DETAILS:
+        if isinstance(reason, str) and reason in (CREATION_REFERENCE_DETAILS | CREATION_GENERATION_DETAILS):
             path = source_data.get("path")
             if (isinstance(path, str) and 0 < len(path) <= 256 and path.startswith("$")
                     and all(char.isalnum() or char in "$._-[]" for char in path)):
@@ -509,10 +512,13 @@ def sanitize_diagnostic_tool_result(
         safe_data.get("reason"), _DIAGNOSTIC_DETAILS[status],
     )
     if safe_data.get("reason") == "native_tool_contract_invalid" and safe_data.get("path"):
-        detail = f"参数 {safe_data['path']} 校验失败（{safe_data.get('rule', 'schema')}）。" + detail
+        detail = (
+            f"参数 {safe_data['path']} 校验失败（{safe_data.get('rule', 'schema')}）。" + detail
+        )
         if safe_data.get("rule") == "list_type":
             detail = (
-                f"参数 {safe_data['path']} 必须直接传 JSON 数组（[...]），不能传包含数组文本的字符串。"
+                f"参数 {safe_data['path']} 必须直接传 JSON 数组（[...]），"
+                "不能传包含数组文本的字符串。"
                 "请修正该字段的类型；只改字符串内容或转义不能解决问题。本次未执行写入。"
             )
     return {
@@ -633,6 +639,14 @@ def _project_declared_data(
         source_data,
         contract.data_fields,
     )
+    for projection in contract.object_projections:
+        nested = (
+            source_data.get(projection.source_field) if isinstance(source_data, Mapping) else None
+        )
+        if isinstance(nested, Mapping):
+            selected[projection.source_field] = _selected_data(
+                tool_name, nested, projection.fields,
+            )
     return _apply_list_projections(
         tool_name,
         source_data,

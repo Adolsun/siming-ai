@@ -8,6 +8,7 @@ from typing import Any
 
 from app.architecture.tool_categories import TOOL_CATEGORY_CONTROLLER
 from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS
+from app.modules.creation.domain.generation_contract import CREATION_GENERATION_DETAILS
 from app.services.conversation_context.canonical import canonical_sha256
 from app.services.conversation_context.errors import (
     ConversationContextError,
@@ -55,6 +56,7 @@ def safe_creation_tool_result(
     raw_data = result.get("data") if isinstance(result.get("data"), dict) else {}
     raw_reason = str(raw_data.get("reason") or "").strip()
     if (raw_reason == "native_tool_contract_invalid" or raw_reason in CREATION_REFERENCE_DETAILS
+            or raw_reason in CREATION_GENERATION_DETAILS
             or raw_data.get("failure_class") == "invalid_tool_arguments"):
         from app.services.workspace.tool_result_projection import sanitize_diagnostic_tool_result
 

@@ -17,6 +17,7 @@ from app.database.session import Base
 from app.modules.model_runtime.domain.configuration import ModelProviderConfig
 from app.schemas.ai_writer import MobileProviderEnvelope
 from app.services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
+from app.services.novel_creation_entities import creation_volume_index
 from app.routers.novel_creation import (
     NovelCreationFinalizeRequest,
     NovelCreationSessionPatchRequest,
@@ -556,7 +557,15 @@ def test_compact_seed_can_drive_stages_and_project_materialization():
     save_stage(session, "constraints", session.draft_json["form"], confirm=True)
     save_stage(session, "concepts", {"options": session.draft_json["concepts"], "selected_concept_id": "concept-1"}, confirm=True)
     for stage in STAGE_ORDER[2:]:
-        save_stage(session, stage, derive_stage(session, stage), confirm=stage != "final_review")
+        data = derive_stage(session, stage)
+        if stage == "opening_outline":
+            # The synthetic model selects an explicit owned ID from the real index.
+            # A derived template cannot choose the chapter's business parent.
+            volume = creation_volume_index(session)[0]
+            for chapter in data["chapters"]:
+                assert volume["start_chapter"] <= chapter["chapter_number"] <= volume["end_chapter"]
+                chapter["volume_id"] = volume["id"]
+        save_stage(session, stage, data, confirm=stage != "final_review")
 
     project_payload = build_project_materialization_payload(session)
     assert project_payload["title"] == "Concept 1"

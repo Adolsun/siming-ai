@@ -3190,6 +3190,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     }
 
     private fun requireCreationReady(session: JsonObject) {
+        mobileCreationAgent.openingContract.validateSaved(session)
         val requiredStages = listOf("constraints", "concepts", "world_style", "characters", "locations", "macro_outline")
         val missing = requiredStages.filter { stage ->
             session.stageState(stage).string("status") != "confirmed"
@@ -3243,6 +3244,10 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             if (state.string("status") != "confirmed") continue
             var data = state["data"] as? JsonObject ?: continue
             if (stage == "concepts") data = ensureSelectedConcept(data)
+            if (stage == "macro_outline") data = mobileCreationAgent.openingContract.transferVolumes(local, data)
+            if (stage == "opening_outline") {
+                data = mobileCreationAgent.openingContract.transferOpening(data, remote["volume_index"] as JsonArray)
+            }
             onProgress("正在提交${creationStageLabel(stage)}…")
             remote = api.confirmNovelCreationStage(
                 connection,
@@ -3273,13 +3278,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val worldStyle = session.stageData("world_style")
         val characters = session.stageData("characters")
         val locations = session.stageData("locations")
-        val macro = session.stageData("macro_outline")
-        val opening = if (session.stageState("opening_outline").string("status") == "confirmed") {
-            session.stageData("opening_outline")
-        } else {
-            JsonObject(emptyMap())
-        }
         val projectId = UUID.randomUUID().toString()
+        val outlineRecords = mobileCreationAgent.openingContract.materialize(session, projectId)
         val title = concept.string("title").ifBlank { "未命名作品" }
         val projectTags = listOfNotNull(
             form.string("genre").takeIf(String::isNotBlank),
@@ -3397,62 +3397,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             }
         }
 
-        val volumeIds = mutableListOf<String>()
-        (macro["volumes"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
-            val id = UUID.randomUUID().toString()
-            volumeIds += id
-            saveEntity(projectId, "outline", id, buildJsonObject {
-                put("_record_type", "outline_node")
-                put("id", id)
-                put("project_id", projectId)
-                put("parent_id", JsonNull)
-                put("node_type", "volume")
-                put("title", row.string("title").ifBlank { "第 ${index + 1} 卷" }.take(200))
-                put("summary", row.string("summary"))
-                put("planned_summary", row.string("summary"))
-                put("status", "pending")
-                put("sort_order", index)
-                put("metadata_json", buildJsonObject {
-                    row["start_chapter"]?.let { put("start_chapter", it) }
-                    row["end_chapter"]?.let { put("end_chapter", it) }
-                })
-            })
-        }
-        val outlineIdsByClient = linkedMapOf<String, String>()
-        (opening["chapters"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
-            val id = UUID.randomUUID().toString()
-            outlineIdsByClient[row.string("client_id")] = id
-            val parentIndex = row.int("parent_index")
-            saveEntity(projectId, "outline", id, buildJsonObject {
-                put("_record_type", "outline_node")
-                put("id", id)
-                put("project_id", projectId)
-                put("parent_id", volumeIds.getOrNull(parentIndex)?.let(::JsonPrimitive) ?: JsonNull)
-                put("node_type", "chapter")
-                put("title", row.string("title").take(200))
-                put("summary", row.string("summary"))
-                put("planned_summary", row.string("planned_summary").ifBlank { row.string("summary") })
-                put("status", "pending")
-                put("sort_order", row.int("sort_order").takeIf { it > 0 } ?: index + 1)
-                outlineMetadata(row).takeIf(JsonObject::isNotEmpty)?.let { put("metadata_json", it) }
-            })
-        }
-        (opening["sections"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
-            val parent = outlineIdsByClient[row.string("parent_client_id")] ?: return@forEachIndexed
-            val id = UUID.randomUUID().toString()
-            saveEntity(projectId, "outline", id, buildJsonObject {
-                put("_record_type", "outline_node")
-                put("id", id)
-                put("project_id", projectId)
-                put("parent_id", parent)
-                put("node_type", "section")
-                put("title", row.string("title").take(200))
-                put("summary", row.string("summary"))
-                put("planned_summary", row.string("planned_summary").ifBlank { row.string("summary") })
-                put("status", "pending")
-                put("sort_order", row.int("sort_order").takeIf { it > 0 } ?: index + 1)
-                outlineMetadata(row).takeIf(JsonObject::isNotEmpty)?.let { put("metadata_json", it) }
-            })
+        outlineRecords.forEach { record ->
+            saveEntity(projectId, "outline", record.string("id"), record)
         }
         return projectId
     }
@@ -3473,25 +3419,6 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         "mentor", "guide", "导师", "师父", "师傅", "老师", "引路人" -> "mentor"
         "other", "其他", "路人", "背景角色" -> "other"
         else -> "supporting"
-    }
-
-    private fun outlineMetadata(row: JsonObject): JsonObject {
-        val metadata = ((row["metadata"] as? JsonObject)?.toMutableMap() ?: mutableMapOf())
-        listOf(
-            "scene_number",
-            "purpose",
-            "location",
-            "timeline",
-            "pov_character",
-            "characters",
-            "entry_state",
-            "exit_state",
-            "emotional_residue",
-            "unresolved_actions",
-        ).forEach { field ->
-            if (field !in metadata) row[field]?.let { metadata[field] = it }
-        }
-        return JsonObject(metadata)
     }
 
     private fun creationStageLabel(stage: String): String = CREATION_STAGE_LABELS[stage] ?: stage

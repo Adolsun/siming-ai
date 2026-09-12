@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from app.database.models import NovelCreationSession
+from app.services.novel_creation_conflicts import artifact_conflict_projection
 from app.services.novel_creation_contract import (
     IMPACT_DEPENDENCIES,
     LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
@@ -16,10 +17,7 @@ from app.services.novel_creation_contract import (
     STAGE_ORDER,
 )
 from app.services.novel_creation_failures import clear_stage_failure
-from app.services.novel_creation_conflicts import artifact_conflict_projection
-from app.services.novel_creation_patch import (
-    normalize_patch_operation, patch_parent, path_is_locked, pointer_parts,
-)
+from app.services.novel_creation_patch import normalize_patch_operation, patch_parent, path_is_locked, pointer_parts
 from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run  # noqa: F401
 from app.services.novel_creation_runs import create_run, fail_run, serialize_run  # noqa: F401
 
@@ -500,6 +498,9 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
     }
+    from app.services.novel_creation_entities import creation_volume_index
+
+    data["volume_index"] = creation_volume_index(session)
     data["stage_flow"] = build_stage_flow(session, projected_draft)
     if include_runs:
         data["runs"] = [serialize_run(run, include_events=False) for run in list(session.stage_runs or [])[-10:]]
@@ -1017,7 +1018,7 @@ def _opening_outline(project_seed: dict[str, Any], form: dict[str, Any]) -> dict
             "summary": summary,
             "planned_summary": summary,
             "purpose": _text(source.get("purpose"), "推进主线并改变人物状态"),
-            "parent_index": int(source.get("parent_index") or 0),
+            "volume_id": source.get("volume_id", ""),
             "sort_order": number,
         }
         chapters.append(chapter)
@@ -1240,6 +1241,11 @@ def save_stage(
 ) -> dict[str, Any]:
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
+    if stage == "opening_outline":
+        from app.modules.creation.domain.opening_outline_contract import validate_opening_outline
+        from app.services.novel_creation_entities import creation_volume_index
+
+        validate_opening_outline(data, volume_index=creation_volume_index(session))
     draft = deepcopy(initialize_session_draft(session))
     if stage == "constraints":
         # Keep the compatibility form snapshot and the editable constraints
@@ -1330,9 +1336,23 @@ def build_project_materialization_payload(session: NovelCreationSession) -> dict
     characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters")
     world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style")
     locations = _dict(stages.get("locations", {}).get("data")) or derive_stage(session, "locations")
-    macro = _dict(stages.get("macro_outline", {}).get("data")) or derive_stage(session, "macro_outline")
     opening_state = _dict(stages.get("opening_outline"))
     opening = _dict(opening_state.get("data")) if opening_state.get("status") == "confirmed" else {}
+    from app.modules.creation.domain.opening_outline_contract import (
+        normalize_opening_outline,
+        validate_opening_outline,
+    )
+    from app.services.novel_creation_entities import creation_volume_index
+
+    volume_index = creation_volume_index(session)
+    if opening_state.get("status") == "confirmed":
+        validate_opening_outline(opening, volume_index=volume_index)
+        opening = normalize_opening_outline(opening)
+    volumes = [
+        {**deepcopy(entity.data_json), "creation_entity_id": entity.id}
+        for entity in sorted(session.entities, key=lambda row: int(row.position or 0))
+        if entity.artifact_key == "macro_outline" and entity.entity_type == "volume" and entity.status == "active"
+    ]
     character_rows = _list(characters.get("characters"))
     protagonist = next((row for row in character_rows if row.get("role_type") == "protagonist"), character_rows[0] if character_rows else {})
     supporting = [row for row in character_rows if row is not protagonist]
@@ -1351,7 +1371,7 @@ def build_project_materialization_payload(session: NovelCreationSession) -> dict
         "forbidden_patterns": _rule_lines(world.get("forbidden_patterns", project_payload.get("forbidden_patterns"))),
         "worldbuilding": all_world,
         "worldbuilding_relations": _list(locations.get("relations")),
-        "volume_outline": _list(macro.get("volumes")),
+        "volume_outline": volumes,
         "outline": _list(opening.get("chapters")) + _list(opening.get("sections")),
         "apply_warnings": _list(final.get("warnings")),
         "novel_creation_schema_version": SCHEMA_VERSION,
