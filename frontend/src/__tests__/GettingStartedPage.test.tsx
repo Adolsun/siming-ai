@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Modal } from 'antd'
+import { message, Modal } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createSimingQueryClient } from '../shared/query/client'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }))
 vi.mock('../api/client', () => ({ apiClient: api }))
+vi.mock('antd', async (importOriginal) => ({
+  ...await importOriginal<typeof import('antd')>(),
+  message: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}))
 
 import { GettingStartedPanel } from '../pages/GettingStartedPage'
 
@@ -102,7 +106,9 @@ describe('GettingStartedPanel', () => {
       '/config/getting-started/opencode/path',
       { enabled: true },
     ))
-    expect(await screen.findByText(/请打开一个新终端后运行 opencode/)).toBeInTheDocument()
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith(
+      '已添加到当前用户 PATH；请打开一个新终端后运行 opencode。',
+    ))
   })
 
   it('keeps a later PATH action on the ready screen when the install prompt was skipped', async () => {
