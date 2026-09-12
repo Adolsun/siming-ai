@@ -636,21 +636,20 @@ internal class MobileCreationConversationAgent(
     }
 
     private fun creationDeclaredResultBytes(tool: String): Int = when {
-        tool == contract.categoryController || tool in contract.writeToolNames -> CREATION_STATUS_RESULT_BYTES
+        tool == contract.categoryController -> CREATION_STATUS_RESULT_BYTES
+        tool in contract.writeToolNames -> contract.writeResultMaxBytes
         tool in CREATION_LARGE_READ_TOOLS -> CREATION_LARGE_READ_RESULT_BYTES
         else -> CREATION_STANDARD_RESULT_BYTES
     }
 
     private fun creationModelVisibleResult(tool: String, raw: JsonObject): JsonObject {
-        val projected = if (tool == contract.categoryController || tool in contract.writeToolNames) {
+        val projected = if (tool in contract.writeToolNames) {
             buildJsonObject {
                 put("tool", raw.string("tool").ifBlank { tool })
                 put("status", raw.string("status"))
                 put("detail", raw.string("detail"))
                 val data = raw["data"] as? JsonObject
-                put("data", buildJsonObject {
-                    CREATION_RECEIPT_FIELDS.forEach { field -> data?.get(field)?.let { put(field, it) } }
-                })
+                put("data", contract.projectWriteResultData(data))
             }
         } else {
             raw
@@ -950,6 +949,7 @@ internal class MobileCreationConversationAgent(
                 put("field", field)
                 put("entity_type", target?.type ?: entityType)
                 put("mode", if (target == null) "new" else "existing")
+                put("initialize_stage", source.stageData(artifact).isEmpty())
                 target?.let {
                     put("id", it.id)
                     put("entity_key", entityKey(it.data))
@@ -958,7 +958,7 @@ internal class MobileCreationConversationAgent(
         }
         val entityBaseline = targetField?.let { field ->
             JsonObject(source.stageData(artifact).toMutableMap().apply {
-                ENTITY_FIELDS[artifact].orEmpty().forEach { (collection, _) ->
+                contract.entities.collections[artifact].orEmpty().forEach { (collection, _) ->
                     put(collection, JsonArray(emptyList()))
                 }
                 put(field, JsonArray(listOfNotNull(target?.data)))
@@ -968,6 +968,8 @@ internal class MobileCreationConversationAgent(
             stageAgent.generateStage(source, artifact, instruction, config, entityTarget, entityBaseline, contextEntities)
         } catch (error: CancellationException) {
             throw error
+        } catch (error: CreationGenerationException) {
+            return ToolExecution(source, JsonObject(error.diagnostic + ("tool" to JsonPrimitive(tool))))
         } catch (error: Exception) {
             return ToolExecution(source, result(tool, "error", error.message ?: "${stageLabel(artifact)}生成失败"))
         }
@@ -994,7 +996,12 @@ internal class MobileCreationConversationAgent(
         }
         return ToolExecution(
             updated,
-            result(tool, "ok", "${stageLabel(artifact)}已生成并写入草稿", artifactSnapshot(updated, artifact)),
+            result(tool, "ok", "${stageLabel(artifact)}已生成并写入草稿", buildJsonObject {
+                artifactSnapshot(updated, artifact).forEach { (key, value) -> put(key, value) }
+                put("saved", true)
+                put("requires_confirmation", true)
+                put("next_action", "审阅并确认本阶段，或编辑后重新生成")
+            }),
             wrote = true,
         )
     }
@@ -1058,12 +1065,18 @@ internal class MobileCreationConversationAgent(
 
     private fun artifactSnapshot(source: JsonObject, artifact: String): JsonObject = buildJsonObject {
         val state = source.stageState(artifact)
+        put("session_id", source.string("id"))
         put("artifact", artifact)
         put("label", stageLabel(artifact))
         put("revision", source.int("revision"))
         put("status", state.string("status").ifBlank { "pending" })
         put("source", state.string("source"))
         put("data", state["data"] ?: JsonNull)
+        put("collection_counts", buildJsonObject {
+            contract.entities.collections[artifact].orEmpty().forEach { (field, _) ->
+                (source.stageData(artifact)[field] as? JsonArray)?.let { put(field, it.size) }
+            }
+        })
     }
 
     private fun dependencySnapshot(artifact: String): JsonObject = buildJsonObject {
@@ -1092,13 +1105,15 @@ internal class MobileCreationConversationAgent(
 
     private fun listEntities(source: JsonObject, artifactFilter: String, typeFilter: String): List<JsonObject> {
         val result = mutableListOf<JsonObject>()
-        ENTITY_FIELDS.forEach { (artifact, mappings) ->
+        contract.entities.collections.forEach { (artifact, mappings) ->
             if (artifactFilter.isNotBlank() && artifact != artifactFilter) return@forEach
             val data = source.stageData(artifact)
-            mappings.forEach mapping@{ (field, type) ->
-                if (typeFilter.isNotBlank() && type != typeFilter) return@mapping
-                (data[field] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.forEachIndexed { index, row ->
-                    result += entityDescriptor(artifact, field, type, index, row)
+            mappings.forEach { (field, kind) ->
+                (data[field] as? JsonArray).orEmpty().forEachIndexed row@{ index, item ->
+                    val row = item as? JsonObject ?: return@row
+                    val type = contract.entities.entityType(kind, row)
+                    if (typeFilter.isNotBlank() && type != typeFilter) return@row
+                    result += entityDescriptor(source, artifact, field, type, index, row)
                 }
             }
         }
@@ -1106,18 +1121,28 @@ internal class MobileCreationConversationAgent(
     }
 
     private fun resolveEntity(source: JsonObject, entityId: String): LocalCreationEntity? {
+        val volumes = (source.stageData("macro_outline")["volumes"] as? JsonArray).orEmpty()
+        volumes.forEachIndexed { index, raw ->
+            val row = raw as? JsonObject ?: return@forEachIndexed
+            if (contract.entities.opening.volumeId(source, row) == entityId) {
+                return LocalCreationEntity(entityId, "macro_outline", "volumes", "volume", index, row,
+                    entityDescriptor(source, "macro_outline", "volumes", "volume", index, row))
+            }
+        }
         val parts = entityId.split(':')
         if (parts.size != 3) return null
         val artifact = parts[0]
         val field = parts[1]
         val index = parts[2].toIntOrNull() ?: return null
-        val type = ENTITY_FIELDS[artifact]?.firstOrNull { it.first == field }?.second ?: return null
+        if (artifact == "macro_outline") return null
+        val kind = contract.entities.collections[artifact]?.firstOrNull { it.first == field }?.second ?: return null
         val data = ((source.stageData(artifact)[field] as? JsonArray)?.getOrNull(index) as? JsonObject) ?: return null
-        return LocalCreationEntity(entityId, artifact, field, type, index, data, entityDescriptor(artifact, field, type, index, data))
+        val type = contract.entities.entityType(kind, data)
+        return LocalCreationEntity(entityId, artifact, field, type, index, data, entityDescriptor(source, artifact, field, type, index, data))
     }
 
-    private fun entityDescriptor(artifact: String, field: String, type: String, index: Int, data: JsonObject): JsonObject = buildJsonObject {
-        put("id", "$artifact:$field:$index")
+    private fun entityDescriptor(source: JsonObject, artifact: String, field: String, type: String, index: Int, data: JsonObject): JsonObject = buildJsonObject {
+        put("id", if (type == "volume") contract.entities.opening.volumeId(source, data) else "$artifact:$field:$index")
         put("artifact", artifact)
         put("entity_type", type)
         put("entity_key", entityKey(data).ifBlank { "$field-$index" })
@@ -1128,7 +1153,7 @@ internal class MobileCreationConversationAgent(
         data.string("name").ifBlank { data.string("title") }.ifBlank { data.string("id") }
 
     private fun entityFieldMapping(artifact: String, entityType: String): Pair<String, String>? =
-        ENTITY_FIELDS[artifact]?.firstOrNull { it.second == entityType }
+        contract.entities.output(artifact, entityType)?.let { it.string("field") to entityType }
 
     private fun applyChanges(source: JsonObject, changes: List<JsonObject>): JsonObject {
         var current: JsonElement = source
@@ -1292,25 +1317,6 @@ internal class MobileCreationConversationAgent(
             "list_creation_artifacts",
             "get_creation_entity",
             "list_creation_entities",
-        )
-        val CREATION_RECEIPT_FIELDS = setOf(
-            "reason", "path", "retryable",
-            "session_id",
-            "revision",
-            "artifact",
-            "artifact_id",
-            "entity_id",
-            "operation_id",
-            "created_project_id",
-            "stage",
-            "status",
-        )
-        val ENTITY_FIELDS = mapOf(
-            "world_style" to listOf("worldbuilding" to "worldbuilding"),
-            "characters" to listOf("characters" to "character", "relationships" to "relationship"),
-            "locations" to listOf("entries" to "location", "relations" to "world_relation"),
-            "macro_outline" to listOf("volumes" to "volume"),
-            "opening_outline" to listOf("chapters" to "chapter_outline", "sections" to "scene_outline"),
         )
     }
 }

@@ -23,8 +23,23 @@ from app.architecture.tool_categories import (
     tool_category_controller_schema,
 )
 from app.database.models import NovelCreationSession
-from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS, ENTITY_TYPES_BY_ARTIFACT
-from app.modules.assistant.infrastructure.runtime import get_compiled_prompt, render_prompt
+from app.modules.assistant.infrastructure.runtime import (
+    get_compiled_prompt,
+    render_prompt,
+)
+from app.modules.creation.domain.opening_outline_contract import SCENE_METADATA_FIELDS, CHAPTER_METADATA_FIELDS
+from app.modules.creation.domain.entity_contract import (
+    CREATION_REFERENCE_DETAILS,
+    ENTITY_COLLECTIONS,
+    ENTITY_OUTPUT_CONTRACTS,
+    ENTITY_TYPES_BY_ARTIFACT,
+    PLACE_ENTITY_DIMENSIONS,
+    REQUIRED_STAGE_TEXT_FIELDS,
+)
+from app.modules.creation.domain.generation_contract import (
+    CREATION_GENERATION_DETAILS,
+    ENTITY_GENERATION_INSTRUCTION,
+)
 from app.modules.creation.interfaces.agent_scope import (
     CREATION_AGENT_REVISION_TOOL_NAMES,
     CREATION_AGENT_WRITE_TOOL_NAMES,
@@ -326,21 +341,10 @@ def _creation_normalization_fixture(baseline_fixture: dict) -> dict:
                 for index in range(4)
             ],
         },
-        "opening_outline": {
-            "chapters": [
-                {
-                    "chapter": index + 1,
-                    "title": f"自定义事件{index + 1}",
-                    "beat": f"第{index + 1}章推进",
-                    "sections": [
-                        {"title": "进入", "purpose": "建立目标"},
-                        {"title": "后果", "summary": "留下钩子"},
-                    ],
-                }
-                for index in range(3)
-            ],
-        },
+        "opening_outline": deepcopy(baselines["opening_outline"]),
     }
+    for chapter in raw["opening_outline"]["chapters"]:
+        chapter["volume_id"] = "fixture-volume"
     expected = {
         stage: _normalize_stage_data(stage, deepcopy(data), deepcopy(baselines[stage]))
         for stage, data in raw.items()
@@ -368,6 +372,7 @@ def build_contract() -> dict:
     )
     baseline_fixture = _creation_baseline_fixture()
     mobile_creation_names = set(MOBILE_CREATION_AGENT_TOOL_NAMES)
+    creation_write_receipt = registry.get("patch_creation_entity").model_result_contract
     mobile_creation_schemas = [
         schema
         for schema in creation_agent_domain_tool_schemas()
@@ -417,6 +422,14 @@ def build_contract() -> dict:
             "reference_diagnostics": CREATION_REFERENCE_DETAILS,
             "entity_types_by_artifact": {key: sorted(value) for key, value in ENTITY_TYPES_BY_ARTIFACT.items()},
             "system_template": creation_agent_system_prompt("{{session_id}}"),
+            "write_result_contract": {
+                "max_json_bytes": creation_write_receipt.max_json_bytes,
+                "data_fields": list(creation_write_receipt.data_fields),
+                "object_projections": [
+                    {"source_field": item.source_field, "fields": list(item.fields)}
+                    for item in creation_write_receipt.object_projections
+                ],
+            },
             "reply_contract": {
                 "instruction": CREATION_REPLY_INSTRUCTION,
                 "repair_instruction": CREATION_REPLY_REPAIR_INSTRUCTION,
@@ -441,6 +454,20 @@ def build_contract() -> dict:
         },
         "creation": {
             "schema_version": 3,
+            "entity_contract": {
+                "collections": {stage: [list(pair) for pair in rows] for stage, rows in ENTITY_COLLECTIONS.items()},
+                "outputs": ENTITY_OUTPUT_CONTRACTS,
+                "opening_outline": {
+                    "scene_metadata_fields": list(SCENE_METADATA_FIELDS),
+                    "chapter_metadata_fields": list(CHAPTER_METADATA_FIELDS),
+                },
+                "place_dimensions": PLACE_ENTITY_DIMENSIONS,
+                "generation_instruction": ENTITY_GENERATION_INSTRUCTION,
+                "generation_diagnostics": CREATION_GENERATION_DETAILS,
+                "required_stage_text_fields": {
+                    stage: list(fields) for stage, fields in REQUIRED_STAGE_TEXT_FIELDS.items()
+                },
+            },
             "presets": get_presets(),
             "stage_order": list(STAGE_ORDER),
             "stage_labels": STAGE_LABELS,

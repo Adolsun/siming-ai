@@ -10,7 +10,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.database.models_support import generate_uuid
-from app.modules.creation.domain.entity_contract import ENTITY_COLLECTIONS, CreationReferenceError
+from app.modules.creation.domain.entity_contract import (
+    ENTITY_COLLECTIONS,
+    PLACE_ENTITY_DIMENSIONS,
+    CreationReferenceError,
+)
 from app.modules.creation.infrastructure.models import NovelCreationEntity, NovelCreationSession
 
 
@@ -21,8 +25,7 @@ def _text(value: Any) -> str:
 def _entity_type(default_type: str, row: dict[str, Any]) -> str:
     if default_type != "place":
         return default_type
-    dimension = _text(row.get("dimension")).lower()
-    if dimension in {"factions", "faction", "organization", "organisation", "势力", "组织"}:
+    if row.get("dimension") == PLACE_ENTITY_DIMENSIONS["faction"]:
         return "faction"
     return "location"
 
@@ -317,6 +320,21 @@ def list_creation_entities(
 
 def get_creation_entity(db: Session, entity_id: str) -> NovelCreationEntity | None:
     return db.get(NovelCreationEntity, entity_id)
+
+
+def creation_volume_index(session: NovelCreationSession) -> list[dict[str, Any]]:
+    """References exposed to the model and checked against this session at every write."""
+    return [
+        {
+            "id": item.id,
+            **{key: deepcopy(item.data_json.get(key)) for key in (
+                "client_id", "title", "start_chapter", "end_chapter",
+            )},
+        }
+        for item in sorted(session.entities, key=lambda row: int(row.position or 0))
+        if item.artifact_key == "macro_outline" and item.entity_type == "volume"
+        and item.status == "active"
+    ]
 
 
 def _entity_pointer(session: NovelCreationSession, entity: NovelCreationEntity) -> str:

@@ -34,6 +34,8 @@ internal class MobileCreationAgent(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    internal val openingContract get() = contract.entities.opening
+
     fun start(input: CreationStartInput): JsonObject {
         require(input.brief.isNotBlank()) { "先用一两句话告诉 AI 你想写什么" }
         val now = Instant.now().toString()
@@ -125,6 +127,7 @@ internal class MobileCreationAgent(
     } else {
         contract.stageMessages(source, stage, stageBaseline, instruction, entityTarget, contextEntities)
     }
+    val volumes = if (stage == "opening_outline") contract.entities.opening.volumeIndex(source) else null
     val maxTokens = if (stage == "concepts") 3_200 else 6_000
     val temperature = if (stage == "concepts") 0.8 else 0.65
     val creationExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
@@ -142,12 +145,14 @@ internal class MobileCreationAgent(
     var warning = ""
     var repairMethod = ""
     val data = try {
-        parseStageData(stage, raw, stageBaseline, entityTarget)
+        parseStageData(stage, raw, stageBaseline, entityTarget, volumes)
     } catch (initialError: Exception) {
         val (repairSystem, repairUser) = contract.repairMessages(
             raw,
             initialError.message.orEmpty(),
             stage,
+            entityTarget,
+            volumes,
         )
         val repaired = try {
             directApi.complete(
@@ -167,8 +172,9 @@ internal class MobileCreationAgent(
             )
         }
         val repairedData = try {
-            parseStageData(stage, repaired, stageBaseline, entityTarget)
+            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes)
         } catch (repairError: Exception) {
+            if (repairError is CreationGenerationException) throw repairError
             throw IllegalArgumentException(
                 "模型阶段输出无效，且同模型结构修复后仍不符合工具契约：${repairError.message.orEmpty()}",
                 initialError,
@@ -187,6 +193,7 @@ internal class MobileCreationAgent(
         sourceLabel = sourceLabel,
         warning = warning,
         repairMethod = repairMethod,
+        partial = entityTarget != null && entityTarget.string("initialize_stage") != "true",
     )
 }
 
@@ -195,24 +202,17 @@ internal class MobileCreationAgent(
         raw: String,
         stageBaseline: JsonObject,
         entityTarget: JsonObject?,
+        volumes: JsonArray?,
     ): JsonObject {
         val parsed = parseObject(raw)
         val rawData = (parsed["data"] as? JsonObject) ?: parsed
-        if (entityTarget != null) {
-            val rows = rawData[entityTarget.string("field")] as? JsonArray
-            require(!rows.isNullOrEmpty() && rows.all { it is JsonObject }) {
-                "模型没有在阶段集合中返回目标实体；不能用旧资料代替生成结果"
-            }
-            require(entityTarget.string("mode") != "existing" || rows.size == 1) {
-                "指定实体修订必须恰好返回一个目标对象"
-            }
-        }
+        contract.entities.validateGenerated(stage, rawData, entityTarget, volumes)
         val data = if (stage == "concepts") {
             normalizeConcepts(rawData)
         } else {
             normalizeStage(stage, rawData, stageBaseline)
         }
-        if (entityTarget == null) validateStage(stage, data)
+        if (entityTarget == null || entityTarget.string("initialize_stage") == "true") validateStage(stage, data)
         return data
     }
 
@@ -262,7 +262,11 @@ internal class MobileCreationAgent(
         sourceLabel: String,
         warning: String = "",
         repairMethod: String = "",
+        partial: Boolean = false,
     ): JsonObject = updateDraft(source) { draft ->
+        if (stage == "opening_outline") {
+            contract.entities.opening.validate(data, contract.entities.opening.volumeIndex(source), partial)
+        }
         val stages = (draft["stages"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         val previous = stages[stage] as? JsonObject
         val changed = previous?.get("data") != data
@@ -396,7 +400,7 @@ internal class MobileCreationAgent(
             "characters" -> normalizeCharacters(source, baseline)
             "locations" -> normalizeLocations(source, baseline)
             "macro_outline" -> normalizeMacroOutline(source, baseline)
-            "opening_outline" -> normalizeOpening(source, baseline)
+            "opening_outline" -> contract.entities.opening.normalize(raw)
             else -> JsonObject(merged)
         }
     }
@@ -522,101 +526,6 @@ internal class MobileCreationAgent(
         }
         normalized["stage_plan"] = JsonArray(stagePlan)
         return JsonObject(normalized)
-    }
-
-    private fun normalizeOpening(data: JsonObject, baseline: JsonObject): JsonObject {
-        var sourceChapters = dictRows(data["chapters"], "title")
-        val baseChapters = dictRows(baseline["chapters"], "title")
-        if (baseChapters.isNotEmpty()) {
-            sourceChapters = (sourceChapters + List(baseChapters.size) { JsonObject(emptyMap()) })
-                .take(baseChapters.size)
-        }
-        val chapters = mutableListOf<JsonObject>()
-        val sections = mutableListOf<JsonObject>()
-        val topSections = dictRows(data["sections"], "title")
-        val baseSections = dictRows(baseline["sections"], "title")
-        sourceChapters.forEachIndexed { index, source ->
-            val base = baseChapters.getOrNull(index) ?: JsonObject(emptyMap())
-            val originalId = source.string("client_id")
-            val chapterNumber = chapterNumber(
-                source["chapter_number"] ?: source["chapter"] ?: source["number"],
-                index + 1,
-            )
-            val chapterId = originalId.ifBlank {
-                base.string("client_id").ifBlank { "chapter-${chapterNumber.toString().padStart(2, '0')}" }
-            }
-            val chapter = base.toMutableMap().apply { putAll(source) }
-            val nestedSections = dictRows(chapter.remove("sections"), "title")
-            chapter["client_id"] = JsonPrimitive(chapterId)
-            chapter["chapter_number"] = JsonPrimitive(chapterNumber)
-            chapter["node_type"] = JsonPrimitive("chapter")
-            chapter["sort_order"] = JsonPrimitive(chapterNumber(chapter["sort_order"], chapterNumber))
-            chapter["title"] = JsonPrimitive(stringElement(chapter["title"]).ifBlank { "第${chapterNumber}章 未命名事件" })
-            chapter["summary"] = JsonPrimitive(firstText(chapter["summary"], chapter["planned_summary"], chapter["beat"]))
-            chapter["planned_summary"] = JsonPrimitive(firstText(chapter["planned_summary"], chapter["summary"]))
-            chapters += JsonObject(chapter)
-
-            val aliases = mutableSetOf(chapterId, chapterNumber.toString(), "chapter-${chapterNumber.toString().padStart(2, '0')}")
-            if (originalId.isNotBlank()) aliases += originalId
-            var matching = nestedSections.ifEmpty {
-                topSections.filter { it.string("parent_client_id") in aliases }
-            }
-            val baseChapterId = base.string("client_id").ifBlank { chapterId }
-            val fallbackSections = baseSections.filter { it.string("parent_client_id") == baseChapterId }
-            if (matching.size !in 2..6 && fallbackSections.isNotEmpty()) matching = fallbackSections
-            matching.take(6).forEachIndexed { sceneIndex, rawSection ->
-                sections += normalizeSection(
-                    rawSection,
-                    fallbackSections.getOrNull(sceneIndex) ?: JsonObject(emptyMap()),
-                    chapterId,
-                    chapterNumber,
-                    sceneIndex + 1,
-                )
-            }
-        }
-        return JsonObject(baseline.toMutableMap().apply {
-            putAll(data)
-            put("opening_chapter_count", JsonPrimitive(chapters.size))
-            put("chapters", JsonArray(chapters))
-            put("sections", JsonArray(sections))
-            put("section_rule", JsonPrimitive("每章2至6个场景事件"))
-        })
-    }
-
-    private fun normalizeSection(
-        section: JsonObject,
-        base: JsonObject,
-        chapterId: String,
-        chapterNumber: Int,
-        sceneNumber: Int,
-    ): JsonObject {
-        val item = base.toMutableMap().apply { putAll(section) }
-        item["client_id"] = JsonPrimitive(stringElement(item["client_id"]).ifBlank { "$chapterId-section-$sceneNumber" })
-        item["parent_client_id"] = JsonPrimitive(chapterId)
-        item["node_type"] = JsonPrimitive("section")
-        item["sort_order"] = JsonPrimitive(chapterNumber(item["sort_order"], sceneNumber))
-        item["title"] = JsonPrimitive(stringElement(item["title"]).ifBlank { "第${chapterNumber}章 · 场景$sceneNumber" })
-        item["summary"] = JsonPrimitive(firstText(item["summary"], item["planned_summary"], item["purpose"]))
-        item["planned_summary"] = JsonPrimitive(firstText(item["planned_summary"], item["summary"]))
-        val metadata = base.objectValue("metadata").toMutableMap().apply {
-            putAll((item["metadata"] as? JsonObject).orEmpty())
-        }
-        metadata["scene_number"] = JsonPrimitive(chapterNumber(metadata["scene_number"], sceneNumber))
-        metadata["purpose"] = JsonPrimitive(firstText(metadata["purpose"], item["purpose"], item["summary"]).ifBlank { "推进本章目标" })
-        metadata["location"] = JsonPrimitive(stringElement(metadata["location"]).ifBlank { "地点待定" })
-        metadata["timeline"] = JsonPrimitive(stringElement(metadata["timeline"]).ifBlank { "第${chapterNumber}章第${sceneNumber}场" })
-        metadata["pov_character"] = JsonPrimitive(stringElement(metadata["pov_character"]).ifBlank { "主角" })
-        if (metadata["characters"] !is JsonArray) {
-            metadata["characters"] = buildJsonArray { add(metadata.getValue("pov_character")) }
-        }
-        metadata["entry_state"] = JsonPrimitive(stringElement(metadata["entry_state"]).ifBlank { "承接上一场景" })
-        metadata["exit_state"] = JsonPrimitive(stringElement(metadata["exit_state"]).ifBlank { "产生新的行动压力" })
-        metadata["emotional_residue"] = JsonPrimitive(stringElement(metadata["emotional_residue"]).ifBlank { "情绪推动下一场景" })
-        if (metadata["unresolved_actions"] !is JsonArray) {
-            metadata["unresolved_actions"] = strings(listOf("追踪本场景产生的新问题"))
-        }
-        item["metadata"] = JsonObject(metadata)
-        return JsonObject(item)
     }
 
     internal fun baseline(session: JsonObject, stage: String): JsonObject {
@@ -825,7 +734,7 @@ internal class MobileCreationAgent(
                 put("summary", summary)
                 put("planned_summary", summary)
                 put("purpose", source.string("purpose").ifBlank { "推进主线并改变人物状态" })
-                put("parent_index", source.int("parent_index"))
+                put("volume_id", source.string("volume_id"))
                 put("sort_order", number)
             }
             val specs = listOf(
@@ -1029,11 +938,6 @@ internal class MobileCreationAgent(
 
     private fun JsonElement.primitiveInt(): Int? = (this as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
 
-    private fun chapterNumber(value: JsonElement?, fallback: Int): Int {
-        value?.primitiveInt()?.let { return it }
-        return Regex("\\d+").find(stringElement(value))?.value?.toIntOrNull() ?: fallback
-    }
-
     private fun validateStage(stage: String, data: JsonObject) {
         require(data.isNotEmpty()) { "模型没有返回可用的阶段对象" }
         when (stage) {
@@ -1082,9 +986,7 @@ internal class MobileCreationAgent(
                 require(invalid.isEmpty()) { "地点关系缺少端点、类型或引用了不存在的实体" }
             }
             "macro_outline" -> {
-                listOf("story_overview", "core_conflict", "ending_direction").forEach {
-                    require(data.string(it).isNotBlank()) { "全书主线缺少 $it" }
-                }
+                contract.entities.validateStageTextFields(stage, data)
                 val volumes = data.arrayValue("volumes").mapNotNull { it as? JsonObject }
                 require(volumes.isNotEmpty()) { "分卷规划为空" }
                 require(volumes.all {
@@ -1093,26 +995,7 @@ internal class MobileCreationAgent(
                         it.int("end_chapter") >= it.int("start_chapter")
                 }) { "分卷缺少有效章节范围或摘要" }
             }
-            "opening_outline" -> {
-                val chapters = data["chapters"] as? JsonArray ?: error("前三章细纲缺少 chapters")
-                val sections = data["sections"] as? JsonArray ?: error("前三章细纲缺少 sections")
-                val expected = if (data.int("opening_chapter_count") == 15) 15 else 3
-                require(chapters.size == expected) { "前${expected}章细纲必须恰好包含 $expected 章" }
-                chapters.forEach { chapter ->
-                    val id = chapter.jsonObject.string("client_id")
-                    val count = sections.count { (it as? JsonObject)?.string("parent_client_id") == id }
-                    require(count in 2..6) { "每章必须包含 2 至 6 个场景" }
-                }
-                val requiredMetadata = setOf(
-                    "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
-                    "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
-                )
-                require(sections.mapNotNull { it as? JsonObject }.all { section ->
-                    section.string("client_id").isNotBlank() &&
-                        section.string("parent_client_id").isNotBlank() &&
-                        requiredMetadata.all(section.objectValue("metadata")::containsKey)
-                }) { "开篇场景缺少结构化信息" }
-            }
+            "opening_outline" -> contract.entities.opening.validate(data)
             "final_review" -> require((data["ready"] as? JsonPrimitive)?.booleanOrNull != null) { "最终审阅缺少 ready" }
         }
     }

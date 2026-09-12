@@ -330,6 +330,45 @@ def test_running_write_status_uses_status_only_projection() -> None:
     assert projected.payload["data"] == {"operation_id": "operation-1"}
 
 
+@pytest.mark.parametrize("case", json.loads(
+    (Path(__file__).resolve().parents[2] / "contracts/fixtures/creation_write_receipts.json")
+    .read_text(encoding="utf-8").replace("DOCUMENT_BODY", "完整角色背景。" * 5_000)
+))
+def test_creation_write_receipts_preserve_metadata_without_echoing_documents(case):
+    tool = registry.get_spec(case["tool"])
+    raw = {"tool": case["tool"], "status": "ok", "detail": "saved", "data": case["data"]}
+    original = json.dumps(raw, ensure_ascii=False)
+
+    projected = model_tool_result_projector.project(tool, raw)
+
+    assert projected.payload == {
+        "tool": case["tool"], "status": "ok", "detail": "saved", "data": case["expected_data"],
+    }
+    assert len(projected.content.encode("utf-8")) <= tool.model_result_contract.max_json_bytes
+    assert len(original.encode("utf-8")) > tool.model_result_contract.max_json_bytes
+    assert json.dumps(raw, ensure_ascii=False) == original
+
+
+@pytest.mark.parametrize("name", [
+    "patch_creation_entity", "delete_creation_entity", "patch_creation_artifact",
+    "undo_creation_artifact", "restore_creation_artifact_version",
+])
+def test_all_creation_edits_use_the_same_bounded_artifact_receipt(name):
+    tool = registry.get_spec(name)
+    projected = model_tool_result_projector.project(tool, {
+        "tool": name, "status": "ok", "detail": "saved",
+        "data": {"artifact": {
+            "artifact": "characters", "revision": 9, "status": "generated",
+            "data": "背景" * 10_000,
+        }},
+    })
+
+    assert projected.payload["status"] == "ok"
+    assert projected.payload["data"] == {
+        "artifact": {"artifact": "characters", "revision": 9, "status": "generated"},
+    }
+
+
 def test_needs_confirmation_status_uses_declared_receipt_projection() -> None:
     tool = registry.get_spec("submit_context_evidence")
     projected = model_tool_result_projector.project(
