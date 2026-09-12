@@ -532,10 +532,10 @@ def _merge_entity_generation(
 
     merged = deepcopy(baseline)
     if target.get("initialize_stage"):
-        collection_fields = {field for field, _kind in ENTITY_COLLECTIONS.get(stage, ())}
+        target_field = candidates[0]["field"]
         merged.update({
             key: deepcopy(value) for key, value in generated.items()
-            if key not in collection_fields
+            if key != target_field
         })
     if target["mode"] == "existing":
         current = next(

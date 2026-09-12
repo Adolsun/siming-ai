@@ -25,6 +25,9 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                 }
                 if (!ids.add(row.text("client_id"))) entities.reject(structure, "$path.client_id")
                 if (!row.hasText("summary")) entities.reject("creation_opening_summary_missing", "$path.summary")
+                if ("planned_summary" in row && (row["planned_summary"] as? JsonPrimitive)?.isString != true) {
+                    entities.reject(structure, "$path.planned_summary")
+                }
                 listOf("parent_index", "parent_title", "sections", "scene_outline").forEach { name ->
                     if (name in row) entities.reject(structure, "$path.$name")
                 }
@@ -81,7 +84,7 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                         val row = raw.jsonObject
                         JsonObject(row.toMutableMap().apply {
                             put("node_type", JsonPrimitive(type))
-                            put("planned_summary", row.getValue("summary"))
+                            if (!row.hasText("planned_summary")) put("planned_summary", row.getValue("summary"))
                             put("sort_order", if (type == "chapter") row.getValue("chapter_number")
                                 else row.getValue("metadata").jsonObject.getValue("scene_number"))
                         })
@@ -89,6 +92,26 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                 }
             }
         })
+    }
+
+    fun validateLocks(data: JsonObject, baseline: JsonObject, paths: JsonArray) {
+        fun read(root: JsonElement, path: String): JsonElement? {
+            var cursor: JsonElement? = root
+            val parts = if (path in setOf("", "/")) emptyList() else path.trimStart('/').split('/')
+            parts.forEach { part ->
+                val key = part.replace("~1", "/").replace("~0", "~")
+                cursor = when (val value = cursor) {
+                    is JsonObject -> value[key]
+                    is JsonArray -> key.toIntOrNull()?.let(value::getOrNull)
+                    else -> null
+                }
+            }
+            return cursor
+        }
+        paths.forEach { raw ->
+            val path = raw.jsonPrimitive.content
+            if (read(data, path) != read(baseline, path)) entities.reject("creation_opening_locked_changed", path)
+        }
     }
 
     fun volumeIndex(session: JsonObject): JsonArray = JsonArray(volumeRows(session).map { row ->
@@ -149,7 +172,7 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
                 put("_record_type", "outline_node"); put("id", id); put("project_id", projectId)
                 put("parent_id", parent?.let(::JsonPrimitive) ?: JsonNull); put("node_type", type)
                 put("title", row.text("title").take(200)); put("summary", row.text("summary"))
-                put("planned_summary", row.text("summary")); put("status", "pending"); put("sort_order", order)
+                put("planned_summary", row.text("planned_summary").ifBlank { row.text("summary") }); put("status", "pending"); put("sort_order", order)
                 put("metadata_json", metadata)
             }
             return id

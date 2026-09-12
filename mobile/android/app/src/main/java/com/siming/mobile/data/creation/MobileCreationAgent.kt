@@ -121,7 +121,9 @@ internal class MobileCreationAgent(
     contextEntities: List<JsonObject> = emptyList(),
 ): JsonObject {
     require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
-    val stageBaseline = entityBaseline ?: baseline(source, stage)
+    val currentData = source.objectValue("draft").objectValue("stages").objectValue(stage)["data"] as? JsonObject
+    val stageBaseline = entityBaseline ?: if (stage == "opening_outline" && currentData != null) currentData else baseline(source, stage)
+    val openingLocks = source.objectValue("draft").objectValue("artifact_locks").arrayValue("opening_outline")
     val (system, user) = if (stage == "concepts") {
         contract.conceptMessages(source, instruction)
     } else {
@@ -145,7 +147,7 @@ internal class MobileCreationAgent(
     var warning = ""
     var repairMethod = ""
     val data = try {
-        parseStageData(stage, raw, stageBaseline, entityTarget, volumes)
+        parseStageData(stage, raw, stageBaseline, entityTarget, volumes, openingLocks)
     } catch (initialError: Exception) {
         val (repairSystem, repairUser) = contract.repairMessages(
             raw,
@@ -153,6 +155,7 @@ internal class MobileCreationAgent(
             stage,
             entityTarget,
             volumes,
+            openingLocks,
         )
         val repaired = try {
             directApi.complete(
@@ -172,7 +175,7 @@ internal class MobileCreationAgent(
             )
         }
         val repairedData = try {
-            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes)
+            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes, openingLocks)
         } catch (repairError: Exception) {
             if (repairError is CreationGenerationException) throw repairError
             throw IllegalArgumentException(
@@ -203,6 +206,7 @@ internal class MobileCreationAgent(
         stageBaseline: JsonObject,
         entityTarget: JsonObject?,
         volumes: JsonArray?,
+        openingLocks: JsonArray,
     ): JsonObject {
         val parsed = parseObject(raw)
         val rawData = (parsed["data"] as? JsonObject) ?: parsed
@@ -212,6 +216,7 @@ internal class MobileCreationAgent(
         } else {
             normalizeStage(stage, rawData, stageBaseline)
         }
+        if (stage == "opening_outline" && entityTarget == null) contract.entities.opening.validateLocks(data, stageBaseline, openingLocks)
         if (entityTarget == null || entityTarget.string("initialize_stage") == "true") validateStage(stage, data)
         return data
     }
@@ -560,7 +565,7 @@ internal class MobileCreationAgent(
             "locations" -> locationsBaseline(blueprint)
             "macro_outline" -> macroOutlineBaseline(draft, blueprint, form)
             "opening_outline" -> openingBaseline(blueprint, form)
-            "final_review" -> finalReviewBaseline(draft)
+            "final_review" -> finalReviewBaseline(session)
             else -> buildJsonObject {}
         }
     }
@@ -776,7 +781,8 @@ internal class MobileCreationAgent(
         }
     }
 
-    private fun finalReviewBaseline(draft: JsonObject): JsonObject {
+    private fun finalReviewBaseline(session: JsonObject): JsonObject {
+        val draft = session.objectValue("draft")
         val required = listOf("constraints", "concepts", "world_style", "characters", "locations", "macro_outline")
         val stages = draft.objectValue("stages")
         val openingState = stages.objectValue("opening_outline")
@@ -789,13 +795,10 @@ internal class MobileCreationAgent(
             .map { "${contract.stageLabels[it]}尚未确认或需要重新生成" }
             .toMutableList()
         if (openingConfirmed) {
-            val expected = if (opening.int("opening_chapter_count") == 15) 15 else 3
-            val chapters = opening.arrayValue("chapters").mapNotNull { it as? JsonObject }
-            if (chapters.size != expected) blocking += "已确认的前${expected}章细纲不完整"
-            val counts = opening.arrayValue("sections").mapNotNull { it as? JsonObject }
-                .groupingBy { it.string("parent_client_id") }.eachCount()
-            if (chapters.any { it.string("client_id").isBlank() || counts[it.string("client_id")] !in 2..6 }) {
-                blocking += "已确认的开篇细纲中，每章必须包含2至6个场景事件"
+            try {
+                contract.entities.opening.validate(opening, contract.entities.opening.volumeIndex(session))
+            } catch (error: CreationGenerationException) {
+                blocking += error.message.orEmpty()
             }
         }
         if (characters.arrayValue("characters").isEmpty()) blocking += "缺少角色档案"

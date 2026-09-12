@@ -1,8 +1,13 @@
 """Shared creation-output diagnostics without validator import cycles."""
 
+from __future__ import annotations
+
 from typing import Any
 
 OPENING_OUTLINE_DETAILS = {
+    "creation_opening_locked_changed": (
+        "生成结果修改了已锁定的细纲字段；请保留该 JSON Pointer 对应的原值后修正输出。本次未写入。"
+    ),
     "creation_opening_structure_invalid": (
         "细纲必须使用 chapters、sections 对象数组及唯一 client_id；章节须含正整数 "
         "chapter_number、title、volume_id，场景须含 title、parent_client_id 和完整 metadata。"
@@ -22,8 +27,6 @@ OPENING_OUTLINE_DETAILS = {
         "场景 metadata.scene_number 须在所属章节内连续且唯一。本次未写入。"
     ),
 }
-
-
 CREATION_GENERATION_DETAILS = {
     **OPENING_OUTLINE_DETAILS,
     "creation_generated_collection_invalid": (

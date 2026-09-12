@@ -3256,6 +3256,7 @@
       },
       "generation_instruction": "\n目标实体输出契约：{contract}\n目标模式：{mode}。目标对象放入 data 内 field 指定的数组，每个对象必须逐字段满足 required_values；不得用 type 或 entity_type 代替 dimension。existing 模式恰好返回一个对象；new 模式按作者要求生成新对象。\ninitialize_stage={initialize_stage}：为 true 时，本阶段尚无资料，必须同时返回阶段契约要求的全部顶层字段，作为首版资料；为 false 时，只修改目标实体，既有阶段的其他字段保持原样。",
       "generation_diagnostics": {
+        "creation_opening_locked_changed": "生成结果修改了已锁定的细纲字段；请保留该 JSON Pointer 对应的原值后修正输出。本次未写入。",
         "creation_opening_structure_invalid": "细纲必须使用 chapters、sections 对象数组及唯一 client_id；章节须含正整数 chapter_number、title、volume_id，场景须含 title、parent_client_id 和完整 metadata。场景只能放在顶层 sections；不接受 parent_index、parent_title 或嵌套场景。",
         "creation_opening_summary_missing": "章节和场景都必须有非空字符串 summary，写明可读的细纲内容；goal、key_events、chapter_hook 等补充字段不能代替 summary。本次未写入。",
         "creation_opening_parent_invalid": "章节 volume_id 必须是当前会话 volume_index 中的真实卷 ID，且章节序号须在该卷范围内；场景 parent_client_id 必须引用本阶段真实章节 client_id。请读取索引后由模型选择 ID，不得用数组位置、卷名或其他会话的 ID 代替。本次未写入。",
@@ -5685,5 +5686,5 @@
       }
     }
   },
-  "source_sha256": "10b41d8e27dff7c1723b6621631e6919e8a118ef6fbdf87de22436199b35810c"
+  "source_sha256": "b10bb523b1d7ab5d43c5b68b692dce2cd6f5b7de482cb4b4faf839a23e385de3"
 }

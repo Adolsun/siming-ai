@@ -5,7 +5,10 @@ from copy import deepcopy
 from typing import Any
 
 from app.modules.creation.domain.generation_contract import validate_stage_text_fields
-from app.modules.creation.domain.opening_outline_contract import OPENING_OUTLINE_INSTRUCTION, validate_opening_outline
+from app.modules.creation.domain.opening_outline_contract import (
+    OPENING_OUTLINE_INSTRUCTION,
+    validate_opening_outline,
+)
 from app.services.novel_creation_contract import (
     LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
     OPENING_OUTLINE_CHAPTER_COUNT,

@@ -326,9 +326,7 @@ def _outline_node(db, project_id, item, index, volumes, by_client_id):
     )
     db.add(node)
     db.flush()
-    client_id = _text(item.get("client_id"))
-    if client_id:
-        by_client_id[client_id] = node
+    by_client_id[item["client_id"]] = node
     return node
 
 
