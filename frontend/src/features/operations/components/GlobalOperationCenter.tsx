@@ -16,6 +16,7 @@ import {
 } from '..'
 import type { OperationRun } from '..'
 import { RuntimeStatusTags } from '../../../shared/ui/runtime'
+import { ContextInspectorButton } from '../../../shared/ui/ContextInspectorButton'
 import { apiDateTimeMs, parseApiDateTime } from '../../../utils/dateTime'
 
 const { Paragraph, Text, Title } = Typography
@@ -140,6 +141,7 @@ function OperationItem({ operation, history, onAction, onDelete, onOpen, deleteP
           ) : null}
         </div>
         <Space size={4}>
+          <ContextInspectorButton correlationId={operation.source_id || operation.id} />
           {operation.status !== 'waiting_user' && (operation.attention?.action_url || operation.resume_url) && (
             <Button size="small" onClick={() => onOpen(operation)}>
               {operation.attention?.action_label || '查看'}

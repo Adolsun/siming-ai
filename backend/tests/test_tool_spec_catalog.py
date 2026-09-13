@@ -109,7 +109,7 @@ def test_unmigrated_tool_keeps_legacy_schema_projection():
     assert schema.get("required", []) == tool.required
 
 
-@pytest.mark.parametrize("field", ["facts", "candidates"])
+@pytest.mark.parametrize("field", ["candidates"])
 @pytest.mark.parametrize("invalid", ['[{"payload": {}}]', {"payload": {}}, ["record"], None])
 def test_cataloging_rejects_encoded_arrays_before_execution(field, invalid):
     spec = registry.get_spec(f"save_external_cataloging_{field}")
@@ -117,12 +117,10 @@ def test_cataloging_rejects_encoded_arrays_before_execution(field, invalid):
         spec.validate_input({"job_id": "job-1", "chapter_id": "chapter-1", field: invalid})
 
 
-def test_cataloging_fact_contract_preserves_native_structures_and_rejects_unknown_type():
-    spec = registry.get_spec("save_external_cataloging_facts")
-    record = {"fact_type": "chapter_overview", "payload": {"summary": "雨夜发现缺失的七分钟"}}
-    validated = spec.validate_input({"job_id": "job-1", "chapter_id": "chapter-1", "facts": [record]})
-    assert validated.facts[0].payload == record["payload"]
+def test_cataloging_plan_contract_preserves_native_records_and_rejects_unknown_type():
+    spec = registry.get_spec("save_external_cataloging_candidates")
+    record = {"type": "chapter_link", "characters": [{"name": "角色", "appearance_type": "出场"}]}
+    spec.validate_input({"job_id": "job-1", "chapter_id": "chapter-1", "candidates": [record]})
     assert _openai_parameters(spec.name) == spec.mcp_schema()["inputSchema"]
-    with pytest.raises(ValidationError):
-        spec.validate_input({"job_id": "job-1", "chapter_id": "chapter-1",
-                             "facts": [{**record, "fact_type": "人物事实"}]})
+    with pytest.raises(ValueError):
+        spec.validate_input({"job_id": "job-1", "chapter_id": "chapter-1", "candidates": [{**record, "type": "人物事实"}]})

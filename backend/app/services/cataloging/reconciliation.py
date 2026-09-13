@@ -162,7 +162,7 @@ def prepare_reconciled_payload(
     previous = previous_applied_candidate(db, candidate, prepared)
     if (
         previous
-        and candidate.item_type in {"character_update", "character_state_update"}
+        and candidate.item_type in {"character_update", "character_state_update", "worldbuilding_update", "worldbuilding_timeline", "outline_update"}
         and prepared.get("id")
         and previous.target_id != prepared["id"]
     ):
@@ -171,20 +171,6 @@ def prepare_reconciled_payload(
         return prepared
     previous_payload = candidate_payload(previous)
     if previous.target_id:
-        if candidate.item_type in {"worldbuilding_create", "worldbuilding_update"}:
-            previous_entry = db.get(WorldbuildingEntry, previous.target_id)
-            if previous_entry is None or not is_current_worldbuilding_status(
-                previous_entry.status
-            ):
-                # An author may explicitly retire a chapter-derived card after
-                # reviewing an earlier catalog run.  A later version must not
-                # silently undo that decision merely because the model emits
-                # the same reconciliation key again.
-                prepared["_cataloging_suppressed_target_id"] = previous.target_id
-                prepared["_cataloging_suppressed_target_status"] = (
-                    previous_entry.status if previous_entry is not None else "deleted"
-                )
-                return prepared
         prepared["_cataloging_previous_payload"] = previous_payload
         if candidate.item_type == "character_update":
             previous_apply = (
@@ -205,14 +191,14 @@ def prepare_reconciled_payload(
         if candidate.item_type in {
             "outline_create",
             "outline_update",
-            "worldbuilding_create",
-            "worldbuilding_update",
         }:
             prepared["id"] = previous.target_id
         elif candidate.item_type not in {
             "character_create",
             "character_update",
             "character_state_update",
+            "worldbuilding_create",
+            "worldbuilding_update",
         }:
             prepared["_cataloging_target_id"] = previous.target_id
     return prepared
@@ -568,7 +554,7 @@ def reconcile_successful_run(db: Session, run: CatalogingChapterRun) -> dict[str
     from ..rag.indexer import delete_source_index
 
     for entry in chapter_owned_entries:
-        if str(entry.id) in direct_world_ids:
+        if str(entry.id) in direct_world_ids or str(entry.id) in world_ids:
             continue
         shared_link = (
             db.query(ChapterWorldbuilding.id)

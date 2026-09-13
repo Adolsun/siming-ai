@@ -17,20 +17,9 @@ from app.services.novel_creation_contract import (
     STAGE_ORDER,
 )
 from app.services.novel_creation_failures import clear_stage_failure
-from app.services.novel_creation_patch import (
-    normalize_patch_operation,
-    patch_parent,
-    path_is_locked,
-    pointer_parts,
-)
-from app.services.novel_creation_runs import (  # noqa: F401  # noqa: F401
-    add_run_event,
-    complete_run,
-    confirm_run,
-    create_run,
-    fail_run,
-    serialize_run,
-)
+from app.services.novel_creation_patch import normalize_patch_operation, patch_parent, path_is_locked, pointer_parts
+from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run  # noqa: F401
+from app.services.novel_creation_runs import create_run, fail_run, serialize_run  # noqa: F401
 
 _PRESET_ROWS: tuple[tuple[str, str, str, tuple[str, ...], dict[str, Any]], ...] = (
     ("xuanhuan", "玄幻奇幻", "力量体系、升级兑现与世界奇观", ("东方玄幻", "高武世界", "异世大陆", "诡秘奇幻"), {

@@ -24,8 +24,6 @@ from ..schemas.cataloging import (
     CatalogingStartRequest,
 )
 from ..services.cataloging.candidate_io import candidate_payload, candidate_to_dict
-from ..services.cataloging.candidate_store import recover_candidates_from_raw_output
-from ..services.cataloging.candidate_validation import candidate_coverage_error_message
 from ..services.cataloging.job_control import (
     cancel_job,
     first_blocking_run,
@@ -34,11 +32,11 @@ from ..services.cataloging.job_control import (
     pause_job,
     refresh_job_progress,
     reset_run_for_retry,
-    reset_run_for_resolution_retry,
+    reset_run_for_plan_repair,
     resume_job,
     set_job_execution_mode,
 )
-from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
+from ..services.cataloging.fact_store import fact_to_dict
 from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import (
     apply_pending_cataloging_run,
@@ -354,24 +352,22 @@ async def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Ses
     )
 
 
-@router.post("/projects/{project_id}/cataloging/{job_id}/rerun-resolution-current")
-async def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Session = Depends(get_db)):
+@router.post("/projects/{project_id}/cataloging/{job_id}/repair-plan-current")
+async def repair_current_cataloging_plan(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
     run = first_blocking_run(db, job)
     if not run:
-        run = cataloging_queries(db).first_resolution_candidate(job.id)
+        run = cataloging_queries(db).first_plan_candidate(job.id)
     if not run:
-        raise ValidationError("当前没有可重跑第二阶段的章节")
-    if not load_facts_for_run(db, run):
-        raise ValidationError("当前章节没有已保存事实，请使用完整重试")
+        raise ValidationError("当前没有需要修正建档计划的章节")
     try:
-        reset_run_for_resolution_retry(db, job, run)
+        reset_run_for_plan_repair(db, job, run)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     commit_session(db)
     worker_queued = queue_managed_cataloging_job(job)
-    message = "已保留事实并开始重跑第二阶段" if worker_queued else "已保留事实，等待外部 Agent 重跑第二阶段"
+    message = "已保留候选并开始修正本章计划" if worker_queued else "已保留候选，等待外部 Agent 修正本章计划"
     return ApiResponse.success(
         data={
             "job": job_to_dict(job),
@@ -389,35 +385,20 @@ def recover_current_cataloging_chapter(project_id: str, job_id: str, db: Session
     run = first_blocking_run(db, job)
     if not run or run.status != "failed":
         raise ValidationError("当前没有可转入人工确认的失败章节")
-    recovered = recover_candidates_from_raw_output(db, job, run)
+    from ..services.cataloging.plan_validation import validate_complete_plan
+    try:
+        validate_complete_plan(db, run)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     coverage = candidate_coverage_for_run(db, run)
-    observed_coverage = recovered.get("coverage") or coverage
-    if not coverage.has_chapter_summary and not observed_coverage.has_chapter_summary:
-        raise ValidationError("当前章节缺少 chapter_summary，请先手动新增章节摘要候选项")
-    if not coverage.is_complete:
-        effective_coverage = observed_coverage if observed_coverage.cli_parity_missing else coverage
-        raise ValidationError(
-            candidate_coverage_error_message(
-                effective_coverage,
-                prefix="当前章节候选仍不完整",
-            )
-            + "；请重试当前章节或手动补充对应候选项"
-        )
     recover_failed_run_for_review(db, job, run)
     commit_session(db)
-    recovered_count = len([
-        result
-        for result in recovered.get("results", [])
-        if result.get("candidate")
-    ])
-    message = "当前章节已转入人工确认"
-    if recovered_count:
-        message = f"已从模型原始输出恢复 {recovered_count} 个候选项，当前章节已转入人工确认"
+    message = "当前完整计划已转入人工确认"
     return ApiResponse.success(
         data={
             "job": job_to_dict(job),
             "run": run_to_dict(run),
-            "recovered_candidates": recovered_count,
+            "recovered_candidates": 0,
             "coverage": coverage.to_dict(),
         },
         message=message,

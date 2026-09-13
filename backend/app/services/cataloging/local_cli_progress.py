@@ -1,4 +1,4 @@
-"""Bound candidate-stage CLI work by committed progress, not process output."""
+"""Bound CLI planning by committed progress, not process output."""
 from __future__ import annotations
 
 import time
@@ -11,7 +11,7 @@ CHECKPOINT_TERMINAL = "cataloging_checkpoint_committed"
 
 
 class CandidateProgressProbe:
-    """One instance spans all category switches in a candidate-stage turn."""
+    """One instance spans all category switches in a planning turn."""
 
     def __init__(self, *, category_file, chapter_run_id, session_factory,
                  clock=time.monotonic, timeout_seconds=600, poll_seconds=1):
@@ -75,7 +75,7 @@ class CandidateProgressProbe:
                 self.failures = 0
                 continue
             self.failures += 1
-            errors = data.get("validation_errors") or data.get("missing_required_items")
+            errors = data.get("candidate_errors") or data.get("validation_errors") or data.get("missing_required_items")
             self.last_error = (
                 "；".join(str(item) for item in errors[:3])
                 if isinstance(errors, list) and errors
@@ -85,8 +85,8 @@ class CandidateProgressProbe:
         if self.failures >= 3:
             return STALL_PREFIX + "候选连续三次提交未产生有效进展。" + self._detail()
         if now - self.last_progress >= self.timeout_seconds:
-            return STALL_PREFIX + f"候选阶段已连续 {self.timeout_seconds:g} 秒没有保存进展。" + self._detail()
+            return STALL_PREFIX + f"建档计划已连续 {self.timeout_seconds:g} 秒没有保存进展。" + self._detail()
         return None
 
     def _detail(self):
-        return "已停止本轮 CLI，保留已保存事实和候选。最近问题：" + self.last_error
+        return "已停止本轮 CLI，保留已保存计划和候选。最近问题：" + self.last_error

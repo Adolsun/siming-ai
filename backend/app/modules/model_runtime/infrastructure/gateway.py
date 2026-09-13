@@ -35,6 +35,7 @@ from app.modules.model_runtime.domain.policy import (
     local_runtime_disabled,
     local_runtime_disabled_message,
 )
+from app.modules.operations.interfaces.trace_observer import observed
 
 from .local_cli import (
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
@@ -563,6 +564,7 @@ class LLMGateway:
         return await asyncio.wait_for(generator.__anext__(), timeout=timeout_seconds)
 
     @classmethod
+    @observed(kind="model", inputs=("messages", "model", "tools", "extra_body"))
     async def chat_completion(
         cls,
         messages: list[dict],
@@ -638,6 +640,7 @@ class LLMGateway:
         return result
 
     @classmethod
+    @observed(kind="model", inputs=("messages", "model", "tools", "extra_body"))
     async def stream_chat_completion(
         cls,
         messages: list[dict],
@@ -814,6 +817,7 @@ class LLMGateway:
         )
 
     @classmethod
+    @observed(kind="model", inputs=("messages", "model", "tools", "extra_body"))
     async def stream_chat_completion_with_tools(
         cls,
         messages: list[dict],

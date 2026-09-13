@@ -56,6 +56,7 @@ import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import { apiDateTimeMs, formatApiDateTime } from '../utils/dateTime'
 import { AssistantMessageTime } from './assistant/MessageTime'
+import { ContextInspectorButton } from '../shared/ui/ContextInspectorButton'
 import { ReasoningDisclosure } from './assistant/ReasoningDisclosure'
 import {
   runCreationAgentTurn,
@@ -3652,6 +3653,7 @@ function GuiAssistantChat() {
                   <div className="gui-chat-msg-role">
                     <span>{msg.role === 'user' ? '你' : '司命'}</span>
                     <AssistantMessageTime value={msg.created_at} />
+                    {msg.role === 'assistant' && msg.id && <ContextInspectorButton correlationId={msg.id} />}
                   </div>
                   <div className="gui-chat-msg-content">
                     {msg.status === 'error' && <Tag color="error" className="gui-chat-msg-status">执行失败</Tag>}

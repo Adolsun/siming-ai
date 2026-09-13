@@ -10,6 +10,8 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from alembic.script.revision import RevisionError
+from alembic.util.exc import CommandError
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
@@ -18,8 +20,9 @@ from alembic import command
 from ..architecture.uow import commit_connection, rollback_connection
 from ..core.config import get_settings
 from ..version import APP_VERSION
-from .backup import backup_sqlite_database
+from .backup import backup_sqlite_database, sqlite_database_path
 from .session import Base, engine
+from .write_coordination import DatabaseWriteCoordinator
 
 logger = logging.getLogger(__name__)
 SCHEMA_EPOCH = "3.0"
@@ -94,16 +97,11 @@ def _normalize_retired_revision(
 
     with target_engine.begin() as connection:
         result = connection.execute(
-            text(
-                "UPDATE alembic_version SET version_num = :target "
-                "WHERE version_num = :current"
-            ),
+            text("UPDATE alembic_version SET version_num = :target WHERE version_num = :current"),
             {"current": current, "target": target},
         )
         if result.rowcount != 1:
-            raise RuntimeError(
-                f"Could not normalize retired revision {current!r} to {target!r}."
-            )
+            raise RuntimeError(f"Could not normalize retired revision {current!r} to {target!r}.")
         if "siming_schema_metadata" in inspect(connection).get_table_names():
             connection.execute(
                 text(
@@ -181,9 +179,7 @@ def _set_sqlite_foreign_keys(connection, *, enabled: bool) -> None:
     if connection.in_transaction():
         commit_connection(connection)
     expected = 1 if enabled else 0
-    connection.exec_driver_sql(
-        f"PRAGMA foreign_keys={'ON' if enabled else 'OFF'}"
-    )
+    connection.exec_driver_sql(f"PRAGMA foreign_keys={'ON' if enabled else 'OFF'}")
     if connection.in_transaction():
         commit_connection(connection)
     actual = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
@@ -194,18 +190,21 @@ def _set_sqlite_foreign_keys(connection, *, enabled: bool) -> None:
         raise RuntimeError(f"SQLite foreign keys could not be {state} for migration")
 
 
-def _migration_path_contains(
+def _migration_path(
     config: Config,
     *,
     current: str | None,
     head: str,
-    revision: str,
-) -> bool:
+) -> tuple[str, ...]:
     scripts = ScriptDirectory.from_config(config)
-    return any(
-        candidate.revision == revision
-        for candidate in scripts.iterate_revisions(head, current)
-    )
+    try:
+        return tuple(candidate.revision for candidate in scripts.iterate_revisions(head, current))
+    except (CommandError, RevisionError) as exc:
+        raise RuntimeError(
+            f"Database revision {current!r} cannot be upgraded by Siming {APP_VERSION} "
+            f"(schema head {head!r}). Update Siming and the configured MCP command to "
+            "a compatible version. No migration or backup was started."
+        ) from exc
 
 
 def _upgrade_schema(
@@ -264,24 +263,23 @@ def bootstrap_database(
     url = database_url or settings.database_url
     config = alembic_config(url)
     backup_path: Path | None = None
+    lease = None
     try:
+        database_path = sqlite_database_path(url)
+        if database_path is not None:
+            # Separate from transaction write leases: a migration performs many
+            # transactions and must not deadlock its own coordinated writes.
+            # Re-read the revision only after acquiring this cross-process lease.
+            coordinator = DatabaseWriteCoordinator(
+                database_path.with_name(f"{database_path.name}.bootstrap"),
+                timeout=60,
+            )
+            lease = coordinator.acquire()
         head = _head_revision(config)
         current = _current_revision(target_engine)
         mode = "versioned"
         retired_revision = str(current or "")
         retired_target = _retired_revision_target(config, current)
-        if retired_target:
-            backup_path = backup_sqlite_database(
-                url,
-                reason=f"pre-{APP_VERSION}-retired-revision",
-            )
-            _normalize_retired_revision(
-                target_engine,
-                current=retired_revision,
-                target=retired_target,
-            )
-            current = retired_target
-            mode = "retired_revision_normalized"
         if current is None:
             mode, detail = _classify_unversioned_schema(target_engine)
             if mode == "unknown":
@@ -291,6 +289,22 @@ def bootstrap_database(
                     message=detail,
                     read_only=True,
                 )
+        # An old MCP process can repeatedly reconnect to a newer desktop DB.
+        # Validate the entire path before copying data or normalizing a marker.
+        migration_path = _migration_path(config, current=retired_target or current, head=head)
+        if retired_target:
+            backup_path = backup_sqlite_database(
+                url,
+                reason=f"pre-{APP_VERSION}-retired-revision",
+                automatic=True,
+            )
+            _normalize_retired_revision(
+                target_engine,
+                current=retired_revision,
+                target=retired_target,
+            )
+            current = retired_target
+            mode = "retired_revision_normalized"
         if current == head:
             if refresh_current_metadata:
                 _record_schema_epoch(target_engine, head)
@@ -309,15 +323,10 @@ def bootstrap_database(
             backup_path = backup_sqlite_database(
                 url,
                 reason=f"pre-{APP_VERSION}",
+                automatic=True,
             )
         relax_sqlite_foreign_keys = (
-            target_engine.dialect.name == "sqlite"
-            and _migration_path_contains(
-                config,
-                current=current,
-                head=head,
-                revision=SQLITE_FK_RELAXED_REVISION,
-            )
+            target_engine.dialect.name == "sqlite" and SQLITE_FK_RELAXED_REVISION in migration_path
         )
         _upgrade_schema(
             target_engine,
@@ -351,3 +360,6 @@ def bootstrap_database(
             read_only=True,
             backup_path=str(backup_path) if backup_path else None,
         )
+    finally:
+        if lease is not None:
+            lease.release()

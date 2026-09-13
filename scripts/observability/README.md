@@ -2,7 +2,7 @@
 
 使用源码可用的 [Phoenix](https://arize.com/docs/phoenix/self-hosting/deployment-options/terminal)
 和 [OpenTelemetry](https://opentelemetry.io/docs/languages/python/instrumentation/)。
-Phoenix 展示模型请求、提供商响应、工具参数和结果；司命仍调用同一个业务执行器和原来的 API 地址。
+Phoenix 可展示明确导入的历史记录。产品中的新请求由司命原生调用查看器采集，不需要启动 Phoenix。
 本目录只用于诊断，不进入安装包，不修改正式依赖锁和模型配置。
 
 Phoenix 20.9.0 主体采用 [Elastic License 2.0](https://github.com/Arize-ai/phoenix/blob/main/LICENSE)，
@@ -52,43 +52,26 @@ Python 3.11 下三个 dataclass 默认值改用等价 factory；gRPC 固定监�
 历史节点的 `0 ms` 表示耗时未知；费用未采集，Phoenix 显示的 `$0` 不能解释为免费。
 报告的输入 token 包括可能命中缓存的输入，不等于实际计费金额；缺少的输出 token 不补零。
 
-## 采集新请求
+## 查看新请求
 
-给现有的后端开发/测试 Python 环境安装轻量 SDK（不要把 Phoenix 服务的依赖装入后端环境）：
+使用司命内置的“查看本轮调用”，从项目助手消息、立项会话、上下文治理或任务列表进入。
+默认保存调用摘要；选择“完整记录 60 分钟”或“持续完整记录”后，再发起需要诊断的任务。
+PC/Gateway 的记录保存在独立诊断 SQLite 库，Android 直连记录保存在手机独立 Room 库。
+两端可以分页查看、清理和导出诊断 ZIP，不需要本目录的 Python 环境或外部服务。
 
-```powershell
-<后端Python> -m pip install -r scripts/observability/requirements-sdk.txt
-<后端Python> scripts/observability/run_backend.py `
-  --database '<测试数据库或明确选定的测试副本>' --port 8011
-```
+原有 `live_capture.py` 与 `run_backend.py` 已随内置采集移除，避免维护第二条 HTTP monkeypatch 路径。
+导出包目前用于离线检查；尚未提供原生 ZIP 到 Phoenix 的导入器或 OTLP 自动上传。
+历史导入器继续只处理已保存的旧立项记录，缺失的原请求不会补造。
 
-这是普通后端的诊断启动入口。它要求显式指定数据库，使用 `app.main:app` 的相同业务实现，
-项目名为 `siming-api-live`。需要让测试前端连接此后端，再使用正常的模型配置发起测试。
-已经运行的安装版和独立 Android 进程不会被自动附加采集。
-
-采集在 HTTPX 异步发送边界执行，位于提供商参数适配之后：记录实际 JSON 请求体，
-并旁路观察返回字节；不会更换 API 域名/路径，不使用代理，不额外调用模型。
-OpenAI 兼容接口的 messages、tools、thinking，以及 JSON/SSE 响应字段可查看。
-API 的原始返回与业务执行器返回分别保留，不把生成前的参数失败误记为提供商失败。
-提供商未返回的隐藏内容无法采集。
-
-HTTP 头和 URL 查询串不采集；显式凭据字段会替换为 `[REDACTED]`。
-每次请求/响应采集上限 16 MiB，超限标记 `*_capture_truncated`，不截断实际 API 数据。
-流式 gzip/deflate 会解码；其他压缩类型标记 `response_decoding`，不可视为完整可读响应。
-关闭/取消的流标记真实状态，不把部分响应当成完整响应。
-CLI 外部进程和 Android 独立请求不经过此 Python 入口，需要各自接入同一 OTLP 协议，不能冒充已覆盖。
+实现、采集边界及验收见 [内置查看器说明](../../docs/context-inspector-plan.md)。
+CLI 只记录司命提供给进程的输入和进程实际暴露的输出；外部进程内的 API 交互不可见。
+`reasoning_content` 只展示提供商实际返回的字段。
 
 ## 验证
 
 ```powershell
-<后端Python> -m pytest scripts/observability -q
+<后端Python> -m pytest backend/tests/test_context_trace_capture.py backend/tests/test_context_trace_contract.py -q
 ```
 
-测试使用 HTTPX MockTransport，不发送真实提供商请求、不消耗模型 token。覆盖：
-DeepSeek 适配器的请求地址/请求体、思考字段、工具调用、gzip 分块响应、400 响应、取消、
-本地 collector 限制，以及历史导入不改数据库、不伪造请求/耗时/token。
-额外后端服务的启动验证被自动审批拦截，改用进程内 ASGI 请求验证：调用真实工具执行器，
-核对父子 trace、引用错误和数据库 revision 均正确。不能把模拟验证表述为已经附加到正在运行的安装版。
-
-后续比较压缩策略时，优先统计真实请求的消息/工具组成、输入与缓存用量、失败和重试次数，
-再比较相同任务的完成率、状态和写入结果。当前变更不新增上下文压缩策略。
+测试使用合成记录、临时数据库与 HTTP mock，不发送真实模型请求。
+外部 Phoenix 的历史导入测试仍位于本目录，不影响安装版的原生采集实现。

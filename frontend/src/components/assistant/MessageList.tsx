@@ -18,6 +18,7 @@ import { findStorageHealth, StorageRepairActions } from '../StorageRepairActions
 import { PersistentOutcome } from '../interaction'
 import type { OperationOutcome } from '../interaction'
 import { AssistantMessageTime } from './MessageTime'
+import { ContextInspectorButton } from '../../shared/ui/ContextInspectorButton'
 import { ReasoningDisclosure } from './ReasoningDisclosure'
 import type {
   WorkspaceAssistantMessage,
@@ -335,6 +336,7 @@ export function MessageList({
                   {item.role === 'user' ? '你' : SCOPE_LABEL}
                 </Tag>
                 <AssistantMessageTime value={item.created_at} />
+                {item.role === 'assistant' && item.id && <ContextInspectorButton correlationId={item.id} />}
               </div>
               {item.role === 'assistant' && (
                 <ReasoningDisclosure

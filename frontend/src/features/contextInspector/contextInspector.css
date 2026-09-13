@@ -1,0 +1,17 @@
+.context-inspector { --trace-line: var(--border-color, #dce3e6); display: grid; gap: 16px; }
+.context-inspector-toolbar { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.context-inspector-caption { font-size: 12px; opacity: .65; margin-top: 4px; }
+.context-inspector-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 55vh; gap: 24px; }
+.context-inspector-traces { display: flex; flex-direction: column; gap: 6px; border-right: 1px solid var(--trace-line); padding-right: 14px; max-height: 68vh; overflow: auto; }
+.context-inspector-traces > button, .context-inspector-steps > button { border: 1px solid transparent; color: inherit; background: transparent; text-align: left; cursor: pointer; border-radius: 6px; padding: 10px; }
+.context-inspector-traces > button { display: grid; gap: 6px; }
+.context-inspector button.trace-selected { background: rgba(38, 135, 120, .09); border-color: #5caa9d; }
+.context-inspector button:focus-visible { outline: 2px solid #258570; outline-offset: 2px; }
+.context-inspector-detail { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.context-inspector-steps { display: flex; flex-direction: column; max-height: 230px; overflow: auto; border-bottom: 1px solid var(--trace-line); padding-bottom: 12px; }
+.context-inspector-steps > button { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
+.context-inspector-steps > button > span:last-child { opacity: .6; font-size: 12px; }
+.context-inspector-payloads { display: flex; flex-wrap: wrap; gap: 8px; }
+.context-inspector-content { min-width: 0; }
+.context-inspector-content pre { max-height: 42vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.75; padding: 16px; border: 1px solid var(--trace-line); border-radius: 6px; }
+@media (max-width: 720px) { .context-inspector-layout { grid-template-columns: 1fr; } .context-inspector-traces { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--trace-line); } }

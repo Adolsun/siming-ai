@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-08-30",
+  "contract_version": "2026-09-12",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
@@ -60,7 +60,8 @@
         "catalogingCancel": "chapter.cataloging",
         "projectExport": "authoring.export",
         "projectExportDownload": "authoring.export",
-        "projectPackageExport": "authoring.exchange_package"
+        "projectPackageExport": "authoring.exchange_package",
+        "contextTrace": "context.inspector"
       },
       "ignore_symbols": {
         "authoringCollection": "Generic route factory; individual authoring capabilities own the semantic decision.",
@@ -291,25 +292,25 @@
               "path": "backend/app/services/gateway_legacy_replication.py",
               "contains": "if spec.model is Chapter and row_existed:"
             },
-        {
-          "path": "backend/app/modules/story/infrastructure/chapters.py",
-          "contains": "cataloging_required=bool(str(payload.get(\"content\") or \"\").strip())"
-        }
+            {
+              "path": "backend/app/modules/story/infrastructure/chapters.py",
+              "contains": "cataloging_required=bool(str(payload.get(\"content\") or \"\").strip())"
+            }
           ]
         },
         "android_standalone": {
           "support": "sync_replay",
           "source_refs": [
-        {
-          "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-          "contains": "if (call.name == \"chapter_writer\" && result.string(\"status\") == \"ok\")"
-        },
-        {
-          "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
-          "contains": "const val GENERATED = \"generated\""
-        }
-      ],
-      "notes": "草稿和 ContextManifest 先写入本机运行日志，写作模型随后立即停止；正式章节保存及是否启动建档由作者在界面选择。"
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "if (call.name == \"chapter_writer\" && result.string(\"status\") == \"ok\")"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "const val GENERATED = \"generated\""
+            }
+          ],
+          "notes": "草稿和 ContextManifest 先写入本机运行日志，写作模型随后立即停止；正式章节保存及是否启动建档由作者在界面选择。"
         }
       },
       "side_effects": [
@@ -331,14 +332,14 @@
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
           "contains": "standaloneAuthoringSnapshotDropsVersionRowsButKeepsDedicatedContextEntities"
         },
-      {
-        "path": "backend/tests/test_gateway_authoring_side_effect_parity.py",
-        "contains": "test_mobile_replay_matches_pc_save_only_lifecycle_and_is_idempotent"
-      },
-      {
-        "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
-        "contains": "draft journal marks explicit author save without losing audit record"
-      }
+        {
+          "path": "backend/tests/test_gateway_authoring_side_effect_parity.py",
+          "contains": "test_mobile_replay_matches_pc_save_only_lifecycle_and_is_idempotent"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
+          "contains": "draft journal marks explicit author save without losing audit record"
+        }
       ]
     },
     {
@@ -1354,6 +1355,80 @@
       ]
     },
     {
+      "id": "context.inspector",
+      "area": "context",
+      "summary": "本机上下文调用记录、按消息查看与脱敏诊断包",
+      "status": "aligned",
+      "authority": {
+        "type": "shared_generated_contract",
+        "entrypoint": "siming.context_trace.v1",
+        "source_refs": [
+          {
+            "path": "contracts/context-trace-v1.schema.json",
+            "contains": "Siming context trace"
+          },
+          {
+            "path": "backend/app/routers/context_traces.py",
+            "contains": "/context-traces"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/observability/TraceInspectionRepository.kt",
+              "contains": "contextTraceRequest"
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/ContextInspectorWorkspace.kt",
+              "contains": "此手机"
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/observability/TraceHttpInterceptor.kt",
+              "contains": "class TraceHttpInterceptor"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/observability/ContextTraceStore.kt",
+              "contains": "class ContextTraceStore"
+            }
+          ]
+        }
+      },
+      "side_effects": [
+        "diagnostic_store"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "set_replacement"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_context_trace_contract.py",
+          "contains": "test_shared_fixture_and_real_events_follow_same_schema"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/observability/ContextTraceTest.kt",
+          "contains": "shared redaction and event fixtures"
+        }
+      ],
+      "known_gaps": []
+    },
+    {
       "id": "context.selection",
       "area": "context",
       "summary": "模型驱动的正文/大纲上下文检索与复核",
@@ -1988,7 +2063,7 @@
               "contains": "internal fun mobileChapterWriteRunId("
             }
           ],
-      "limitations": "写章前创建或校验 ContextManifest，并在生成开始前一次性消费选择令牌；生成前持久化运行、成功后原子保存草稿与完整清单。同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。"
+          "limitations": "写章前创建或校验 ContextManifest，并在生成开始前一次性消费选择令牌；生成前持久化运行、成功后原子保存草稿与完整清单。同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。"
         }
       },
       "side_effects": [
@@ -2011,10 +2086,10 @@
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
           "contains": "model changes make a cached manifest stale"
         },
-      {
-        "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
-        "contains": "draft journal marks explicit author save without losing audit record"
-      }
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
+          "contains": "draft journal marks explicit author save without losing audit record"
+        }
       ],
       "known_gaps": [
         "手机独立写章已具备持久 ContextManifest、取消状态和跨重启防重；仍缺 PC 语义检索和数据库级 AgentRun 审计。"

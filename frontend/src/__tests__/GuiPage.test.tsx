@@ -1,7 +1,9 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import GuiPage from '../pages/GuiPage'
+import SystemNav from '../components/SystemNav'
+import { CONTEXT_INSPECTOR_OPEN } from '../shared/contextInspector'
 
 vi.mock('../pages/SettingsPage', () => ({ default: () => <div>设置页</div> }))
 vi.mock('../pages/ExternalAgentPage', () => ({ default: () => <div>外部 Agent 页</div> }))
@@ -63,5 +65,20 @@ describe('GuiPage responsive navigation', () => {
     expect(screen.getByText('创作控制台')).toBeInTheDocument()
     expect(screen.getByText('创作入口')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '收起导航' })).toBeInTheDocument()
+  })
+
+  it.each(['desktop', 'library'] as const)('opens all calls from %s without a project or reply', (entry) => {
+    const opened = vi.fn()
+    window.addEventListener(CONTEXT_INSPECTOR_OPEN, opened)
+    try {
+      render(<MemoryRouter>{entry === 'desktop' ? <GuiPage /> : <SystemNav current="dashboard" />}</MemoryRouter>)
+      fireEvent.click(screen.getByRole(entry === 'desktop' ? 'menuitem' : 'button', { name: /调用记录/ }))
+      expect(opened).toHaveBeenCalledOnce()
+      const request = (opened.mock.calls[0][0] as CustomEvent).detail
+      expect(request.scope).toBeUndefined()
+      expect(request.correlationId).toBeUndefined()
+    } finally {
+      window.removeEventListener(CONTEXT_INSPECTOR_OPEN, opened)
+    }
   })
 })

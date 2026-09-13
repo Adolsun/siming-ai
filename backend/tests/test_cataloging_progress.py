@@ -22,7 +22,8 @@ from app.database.models import (
 )
 from app.routers import cataloging as router
 from app.services.cataloging import launcher, orchestrator, progress
-from app.services.cataloging.fact_store import SOURCE_FACT_TYPES
+from app.modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
+from tests.test_cataloging_plan import plan_rows
 from tests.test_cataloging_candidate_repair import summary_payload
 
 
@@ -41,7 +42,7 @@ def catalog(tmp_path, monkeypatch):
     chapter_file = tmp_path / "chapter.txt"
     chapter_file.write_text("核验工作已经完成。", encoding="utf-8")
     monkeypatch.setattr(
-        orchestrator, "ensure_chapter_mirror", lambda *a, **kw: (tmp_path, chapter_file)
+        __import__("app.services.workspace.tools.external_cataloging", fromlist=["x"]), "ensure_chapter_mirror", lambda *a, **kw: (tmp_path, chapter_file)
     )
     # Operation heartbeats have their own global DB factory; keep that IO in
     # this database too. Worker, queue, extraction, apply, and HTTP are real.
@@ -117,20 +118,23 @@ class Observer:
 
 
 def model_rows():
-    summary = summary_payload()
-    summary["summary_text"] = (
-        "本章完成核验，所有材料已经逐项对照，记录了核验结论并保留原始凭证。" * 4
-    )
-    return [
-        {"type": "chapter_summary", "payload": summary},
-        {
-            "character_ids": [],
-            "type": "outline_create",
-            "node_type": "chapter",
-            "title": "核验",
-            "summary": "核验工作完毕。",
-        },
-    ]
+    return plan_rows()
+
+
+async def native_step(messages, calls, job_id):
+    step = (len(messages) - 2) // 2
+    if step == 0:
+        name, args = "set_tool_categories", {"enabled_categories": ["cataloging"]}
+    elif step == 1:
+        name, args = "get_next_external_cataloging_chapter", {"job_id": job_id, "include_prompt_pack": False}
+    else:
+        chapter = json.loads(messages[-1]["content"])["data"]
+        rows = model_rows()
+        rows[1]["title"] = chapter["title"]
+        name, args = "save_external_cataloging_candidates", {"job_id": job_id,
+            "chapter_id": chapter["chapter_id"], "candidates": rows, "finalize": True}
+    yield {"type": "tool_call_delta", "index": 0, "id": f"call-{len(calls)}", "name": name,
+           "arguments_delta": json.dumps(args, ensure_ascii=False)}
 
 
 def test_retry_worker_runs_once_with_two_observers_and_disconnect_reconnect(catalog, monkeypatch):
@@ -145,14 +149,10 @@ def test_retry_worker_runs_once_with_two_observers_and_disconnect_reconnect(cata
             if len(calls) == 1:
                 entered.set()
                 await release.wait()
-                rows = [{"fact_type": "chapter_overview", "payload": {"summary": "核验工作完毕。"}}]
-            else:
-                rows = model_rows()
-            for row in rows:
-                yield json.dumps(row, ensure_ascii=False) + "\n"
-                await asyncio.sleep(0)
+            async for chunk in native_step(messages, calls, job_id):
+                yield chunk
 
-        monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", model)
+        monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion_with_tools", model)
         observers = []
         try:
             async with httpx.AsyncClient(
@@ -180,26 +180,25 @@ def test_retry_worker_runs_once_with_two_observers_and_disconnect_reconnect(cata
                 assert job.status == "completed", job.error
                 assert (
                     db.query(CatalogingFact)
-                    .filter(CatalogingFact.fact_type.in_(SOURCE_FACT_TYPES))
+                    .filter(CatalogingFact.fact_type.in_(CATALOGING_FACT_TYPES))
                     .count()
-                    == 1
+                    == 0
                 )
                 assert db.query(CatalogingCandidate).count() == 2
                 assert all(row.status == "applied" for row in db.query(CatalogingCandidate))
-            assert len(calls) == 2  # One fact request, one candidate request.
+            assert len(calls) == 3  # Category selection, source read, one plan submission.
             for observer in (phone, reconnected):
                 events = observer.events()
                 assert events[-1]["type"] == "completed"
-                assert any(e.get("fact", {}).get("id") for e in events)
                 assert any(
-                    e["type"] == "cataloging_stage" and "第二阶段" in e.get("message", "")
+                    e["type"] == "candidate_created"
                     for e in events
                 )
             finished = Observer(app, job_id)
             observers.append(finished)
             await asyncio.wait_for(finished.task, 3)
             assert finished.events()[-1]["type"] == "completed"
-            assert len(calls) == 2
+            assert len(calls) == 3
         finally:
             release.set()
             for observer in observers:
@@ -230,7 +229,7 @@ def test_observing_inactive_jobs_is_read_only(catalog, monkeypatch, backend, sta
         pytest.fail("Observing must not launch or execute a worker")
 
     monkeypatch.setattr(launcher, "queue_cataloging_job", forbidden)
-    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", forbidden)
+    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion_with_tools", forbidden)
 
     async def check():
         observer = Observer(app, job_id)
@@ -256,15 +255,10 @@ def test_manual_confirmation_continues_without_opening_a_progress_stream(
 
     async def model(messages, **kwargs):
         calls.append(messages)
-        rows = (
-            [{"fact_type": "chapter_overview", "payload": {"summary": "核验工作完毕。"}}]
-            if len(calls) == 1
-            else model_rows()
-        )
-        for row in rows:
-            yield json.dumps(row, ensure_ascii=False) + "\n"
+        async for chunk in native_step(messages, calls, job_id):
+            yield chunk
 
-    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", model)
+    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion_with_tools", model)
 
     async def check():
         async with httpx.AsyncClient(
@@ -304,7 +298,7 @@ def test_manual_confirmation_continues_without_opening_a_progress_stream(
             job = db.get(CatalogingJob, job_id)
             assert job.status == "completed", job.error
             assert all(c.status == "applied" for c in db.query(CatalogingCandidate))
-        assert len(calls) == 2
+        assert len(calls) == 3
 
     asyncio.run(check())
 
@@ -329,15 +323,10 @@ def test_explicit_skip_queues_the_next_chapter_without_a_stream(catalog, monkeyp
 
     async def model(messages, **kwargs):
         calls.append(messages)
-        rows = (
-            [{"fact_type": "chapter_overview", "payload": {"summary": "后续核验完毕。"}}]
-            if len(calls) == 1
-            else model_rows()
-        )
-        for row in rows:
-            yield json.dumps(row, ensure_ascii=False) + "\n"
+        async for chunk in native_step(messages, calls, job_id):
+            yield chunk
 
-    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", model)
+    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion_with_tools", model)
 
     async def check():
         async with httpx.AsyncClient(
@@ -356,6 +345,6 @@ def test_explicit_skip_queues_the_next_chapter_without_a_stream(catalog, monkeyp
                 "completed",
             ]
             assert db.query(CatalogingFact).filter_by(chapter_id="c").count() == 0
-        assert len(calls) == 2
+        assert len(calls) == 3
 
     asyncio.run(check())

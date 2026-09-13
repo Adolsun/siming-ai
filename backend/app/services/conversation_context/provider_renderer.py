@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from app.modules.operations.application.trace_capture import record_lazy
+
 from .canonical import canonical_json, text_sha256
 from .checkpoint_renderer import render_checkpoint_reference
 from .context_frame import ContextFrame
@@ -97,6 +99,7 @@ def render_context_frame(
     on the final native message sequence.
     """
 
+    record_lazy("context_frame", frame.to_dict)
     if verify_prompt_hash and text_sha256(system_prompt) != frame.system_contract.prompt_hash:
         raise ValueError("system prompt does not match ContextFrame prompt_hash")
     if require_sendable:

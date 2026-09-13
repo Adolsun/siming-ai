@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
-
 from app.architecture.uow import commit_session
 from app.database.session import SessionLocal
 from app.modules.assistant.application.system_conversations import SystemConversationStore
@@ -20,6 +18,8 @@ from app.modules.assistant.infrastructure.system_conversations import (
     SqlAlchemySystemConversationStore,
 )
 from app.modules.creation.interfaces.session_dependencies import novel_creation_session_store
+from app.modules.operations.application.trace_capture import correlate, record_business_event
+from app.modules.operations.application.trace_decorators import observed
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.conversation_context import (
     ConversationContextError,
@@ -54,6 +54,7 @@ from app.services.workspace.tool_result_projection import (
     max_model_visible_result_tokens_for_open_tool_schemas,
     max_native_tool_transaction_wrapper_tokens,
 )
+from sqlalchemy.orm import Session
 
 TurnPublisher = Callable[[dict[str, Any]], Awaitable[None]]
 TurnProducer = Callable[[TurnPublisher], Awaitable[None]]
@@ -251,6 +252,7 @@ async def _emit(
         "message": str(event.get("message") or "")[:500],
         "data": dict(event.get("data") or {}),
     }
+    record_business_event(safe_event)
     context.audit_events.append(safe_event)
     await publish(safe_event)
 
@@ -794,9 +796,11 @@ async def _persist_turn_error(
             commit_session(context.db)
         except Exception:
             context.db.rollback()
+    record_business_event({"type": "error", "message": safe_message, "data": safe_error_data})
     await publish({"type": "error", "message": safe_message, "data": safe_error_data})
 
 
+@observed(kind="turn", scope_kind="creation_session", scope_id="request.session_id", correlations={"turn_id": "request.client_turn_id", "conversation_id": "request.conversation_id", "assistant_message_id": "request.assistant_message_id"})
 async def produce_creation_agent_turn(
     request: CreationAgentTurnInput,
     publish: TurnPublisher,
@@ -826,8 +830,10 @@ async def produce_creation_agent_turn(
         if await _recover_existing_turn(context, publish):
             return
         _bind_pending_turn(context)
+        correlate(conversation_id=context.conversation_id, assistant_message_id=context.assistant_message_id)
         await _execute_agent(context, source_session, publish)
     except CreationTurnSuperseded:
+        record_business_event({"type": "superseded"})
         await publish(
             {
                 "type": "superseded",

@@ -74,6 +74,7 @@ def _register_routers(app: FastAPI) -> None:
         characters,
         config,
         context_governance,
+        context_traces,
         conversation_context,
         conversation_transcript_import,
         deconstruct,
@@ -117,6 +118,7 @@ def _register_routers(app: FastAPI) -> None:
         system_assistant,
         narrative_governance,
         context_governance,
+        context_traces,
         operations,
         project_package,
     )
@@ -276,6 +278,9 @@ def create_app(*, run_startup: bool = True) -> FastAPI:
         GatewayRequestLimitMiddleware,
         enabled=settings.gateway_enabled,
     )
+    from .trace_identity import TraceIdentityMiddleware
+
+    app.add_middleware(TraceIdentityMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
     _register_routers(app)

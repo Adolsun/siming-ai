@@ -309,6 +309,7 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
             )
         },
         actions = {
+            ContextInspectorButton(label = "调用记录")
             Icon(
                 when {
                     connection != null -> Icons.Outlined.CloudQueue

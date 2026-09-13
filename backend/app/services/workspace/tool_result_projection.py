@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from app.modules.creation.domain.entity_contract import CREATION_REFERENCE_DETAILS
 from app.modules.creation.domain.generation_contract import CREATION_GENERATION_DETAILS
+from app.modules.operations.application.trace_capture import record_payload
 from app.services.conversation_context.budget import RequestBudgetEnvelope
 
 from ...architecture.tool_result_policy import (
@@ -449,6 +450,7 @@ def sanitize_diagnostic_tool_result(
     function at the authoritative executor boundary before persistence.
     """
 
+    record_payload("tool_receipt", {"tool": tool_name, "result": dict(result)})
     status = str(result.get("status") or "error").strip().lower()
     if status not in _DIAGNOSTIC_STATUSES:
         return _json_clone(tool_name, result)

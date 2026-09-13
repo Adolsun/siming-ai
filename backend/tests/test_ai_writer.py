@@ -63,6 +63,15 @@ async def async_dict_chunks(*chunks: dict):
         yield chunk
 
 
+def native_test_batch(*calls, reasoning=""):
+    return async_dict_chunks(
+        *({"type": "tool_call_delta", "index": index, "id": call_id, "name": name,
+           "arguments_delta": json.dumps(arguments, ensure_ascii=False)}
+          for index, (call_id, name, arguments) in enumerate(calls)),
+        {"type": "done", "finish_reason": "tool_calls", "reasoning_content": reasoning},
+    )
+
+
 class AIChapterDraftFlowTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -113,6 +122,124 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         return response.json()["data"]["id"]
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_unopened_tool_batch_is_corrected_before_chapter_draft(
+        self, mock_execute, mock_stream, _mock_supports,
+    ):
+        project_id = self.create_project("Captured tool-name failure")
+        outline_id = self.create_outline(project_id, "下一章")
+
+        async def execute(_db, _project_id, action, **_kwargs):
+            name = action["tool"]
+            if name == "chapter_writer":
+                return {
+                    "tool": name, "status": "ok", "turn_terminal": True,
+                    "turn_directive": "end_after_draft",
+                    "data": {"draft_id": "recovered-draft", "outline_node_id": outline_id,
+                             "project_id": project_id, "title": "下一章", "content": "正文草稿",
+                             "draft_status": "pending", "word_count": 4},
+                }
+            return {"tool": name, "status": "ok", "data": {"items": []}}
+
+        mock_execute.side_effect = execute
+        mock_stream.side_effect = [
+            native_test_batch(("categories", "set_tool_categories", {
+                "enabled_categories": ["story_knowledge", "writing_context"],
+            })),
+            # Captured 17:13 batch: a valid read plus an invented tool name.
+            native_test_batch(
+                ("call_00_eeryXAFoIwHhm5ChaRim9002", "list_chapters", {"limit": 10}),
+                ("call_01_dPy589D2drZG1udGAptF0881", "list_outline_tree", {"root_id": ""}),
+                reasoning="provider continuation must remain exact",
+            ),
+            native_test_batch(
+                ("corrected-chapters", "list_chapters", {"limit": 10}),
+                ("corrected-outline", "search_outline_tree", {"limit": 10}),
+            ),
+            native_test_batch(("writer", "chapter_writer", {"outline_node_id": outline_id})),
+        ]
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={"scope": "project", "message": "继续写下一章", "model": "openai:gpt-test"},
+        )
+        self.assertIn("recovered-draft", response.text)
+        self.assertIn("章节草稿已生成并载入正文编辑器", response.text)
+        self.assertEqual(mock_stream.call_count, 4)  # terminal draft needs no extra model step
+        self.assertEqual([call.args[2]["tool"] for call in mock_execute.await_args_list],
+                         ["list_chapters", "search_outline_tree", "chapter_writer"])
+        correction = mock_stream.call_args_list[2].kwargs
+        offered = {tool["function"]["name"] for tool in correction["tools"]}
+        self.assertIn("search_outline_tree", offered)
+        self.assertNotIn("list_outline_tree", offered)
+        self.assertEqual(correction["tools"], mock_stream.call_args_list[1].kwargs["tools"])
+        denied_assistant = next(message for message in correction["messages"]
+                                if any(call["id"] == "call_01_dPy589D2drZG1udGAptF0881"
+                                       for call in message.get("tool_calls", [])))
+        self.assertEqual(denied_assistant["reasoning_content"], "provider continuation must remain exact")
+        for call in denied_assistant["tool_calls"]:
+            receipt = next(message for message in correction["messages"]
+                           if message.get("tool_call_id") == call["id"])
+            result = json.loads(receipt["content"])
+            self.assertEqual(result["status"], "error")
+            self.assertFalse(result["data"]["executed"])
+            self.assertEqual(set(result["data"]["available_tools"]), offered)
+            self.assertEqual(result["data"]["unavailable_tools"], ["list_outline_tree"])
+        with SessionLocal() as db:
+            rejected = db.query(AssistantRunStep).filter_by(project_id=project_id, status="error").all()
+            self.assertEqual(len(rejected), 2)
+            from app.services.workspace.run_recovery import retry_step
+            for step in rejected:
+                self.assertTrue(json.loads(step.request_json)["native_batch_rejected"])
+                with self.assertRaisesRegex(ValueError, "不能单独重放"):
+                    asyncio.run(retry_step(db, step.run_id, step.id))
+            self.assertEqual(db.query(Chapter).count(), 0)
+            self.assertEqual(db.query(Character).count(), 0)
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_unopened_tools_stop_after_two_corrections_even_with_valid_steps_between(
+        self, mock_execute, mock_stream, _mock_supports,
+    ):
+        project_id = self.create_project("Bounded name correction")
+        mock_execute.return_value = {"tool": "list_chapters", "status": "ok", "data": {"items": []}}
+        streams = [native_test_batch(("categories", "set_tool_categories", {
+            "enabled_categories": ["story_knowledge"],
+        }))]
+        for attempt in range(3):
+            if attempt:
+                streams.append(native_test_batch((f"read-{attempt}", "list_chapters", {"limit": 1})))
+            streams.append(native_test_batch(
+                (f"write-{attempt}", "create_character", {"name": "不应写入"}),
+                (f"unavailable-{attempt}", "list_outline_tree", {"root_id": ""}),
+            ))
+        mock_stream.side_effect = streams
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={"scope": "project", "message": "继续写下一章", "model": "openai:gpt-test"},
+        )
+        self.assertEqual(mock_stream.call_count, 6)
+        self.assertEqual([call.args[2]["tool"] for call in mock_execute.await_args_list],
+                         ["list_chapters", "list_chapters"])
+        events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                  if line.startswith("data: {")]
+        error = next(event for event in events if event.get("type") == "error")
+        self.assertEqual(error["code"], ConversationContextErrorCode.PROTOCOL_INVALID.value)
+        self.assertIn("list_outline_tree", error["message"])
+        self.assertIn("两次自动修正", error["message"])
+        with SessionLocal() as db:
+            self.assertEqual(db.query(Character).count(), 0)
+            rejected = db.query(AssistantRunStep).filter_by(project_id=project_id, status="error").all()
+            self.assertEqual(len(rejected), 6)
+            self.assertEqual({step.step_type for step in rejected}, {"control"})
+            message = db.query(AssistantMessage).filter_by(role="assistant").one()
+            persisted = public_message_payload(json.loads(message.payload_json))["assistant_error"]
+            self.assertEqual(persisted["message"], error["message"])
+            self.assertEqual(persisted["details"]["native_tool_name_rejections"], 3)
+            self.assertFalse(persisted["details"]["retryable"])
 
     def test_embedded_run_projection_is_a_strict_allowlist(self):
         secret = "sk-legacy-run-payload-secret"

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
 from app.modules.continuity.domain.candidate_contract import candidate_record_schema
-from app.modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
 from app.modules.story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 from app.services.task_context_delivery import CONTEXT_PAGE_INPUTS
 
@@ -92,7 +91,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="list_cataloging_facts",
-        description="Read a complete page of saved first-stage facts. Follow next_arguments while has_more is true before resolving candidates; reduce limit if a page exceeds capacity.",
+        description="Read historical cataloging audit records. These are not the current plan's identity decisions; current planning reads the chapter and real archives.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "chapter_run_id": {"type": "string", "description": "Optional chapter run ID"},
@@ -132,7 +131,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="retry_current_cataloging_chapter",
-        description="Retry the failed or waiting current cataloging chapter from stage one.",
+        description="Discard unapplied candidates and generate a fresh plan for the current chapter.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "run_now": {
@@ -146,8 +145,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         handler_name="retry_current_cataloging_chapter",
     ),
     ToolDef(
-        name="rerun_cataloging_resolution_current",
-        description="Retry only the second cataloging stage for the current chapter, reusing saved facts.",
+        name="repair_cataloging_plan_current",
+        description="Resume the current chapter plan while preserving accepted candidates and author edits; correct only failed fields or missing objects.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "run_now": {
@@ -158,7 +157,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         required=["job_id"],
         tool_type="write",
         estimated_cost="medium",
-        handler_name="rerun_cataloging_resolution_current",
+        handler_name="repair_cataloging_plan_current",
     ),
     ToolDef(
         name="pause_cataloging_job",
@@ -702,11 +701,6 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         description="Get the next pending chapter for external cataloging. Returns chapter text, character/wb indexes, and prompt pack. API-free.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
-            "phase": {
-                "type": "string",
-                "enum": ["facts", "candidates"],
-                "description": "facts extracts the current chapter; candidates resolves its saved facts against the current archive.",
-            },
             "include_content": {
                 "type": "boolean",
                 "description": "Whether to return chapter text in the tool result. Set false when the Agent can read content_file_path directly.",
@@ -715,10 +709,6 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "boolean",
                 "description": "Whether to include the full prompt pack in the tool result. Set false when the task file already contains the shared prompt.",
             },
-            "include_context_indexes": {
-                "type": "boolean",
-                "description": "Whether to return character/worldbuilding/outline indexes. Set false when the Agent can search the project mirror directly.",
-            },
         },
         required=["job_id"],
         tool_type="read",
@@ -726,72 +716,24 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         handler_name="get_next_external_cataloging_chapter",
     ),
     ToolDef(
-        name="save_external_cataloging_facts",
-        description="Save facts extracted by the external model. API-free.",
+        name="read_cataloging_archive",
+        description="Read real project archive IDs. Omit ids for a paginated index; then select at most 5 IDs to read complete records. Identity decisions belong to the Agent.",
         input_schema={
-            "job_id": {"type": "string", "description": "Cataloging job ID"},
-            "chapter_id": {"type": "string", "description": "Chapter ID"},
-            "facts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "fact_type": {"type": "string", "enum": list(CATALOGING_FACT_TYPES)},
-                        "payload": {"type": "object"},
-                        "evidence": {"type": "string"},
-                    },
-                    "required": ["fact_type", "payload"],
-                },
-                "description": "Extracted records with fact_type and object payload. Include exactly one chapter_overview whose four required scope arrays exactly match the stable/non-archival character and worldbuilding facts. Relationship endpoints must be stable characters in cataloging_characters. Do not send flat untyped facts or duplicate identities.",
-            },
+            "kind": {"type": "string", "enum": ["character", "worldbuilding", "outline", "relationship"]},
+            "ids": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+            "cursor": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         },
-        required=["job_id", "chapter_id", "facts"],
-        tool_type="write",
-        writes_project_data=True,
-        risk_level="low",
-        estimated_cost="free",
-        handler_name="save_external_cataloging_facts",
+        required=["kind"], tool_type="read", estimated_cost="free",
+        handler_name="read_cataloging_archive",
     ),
     ToolDef(
         name="save_external_cataloging_candidates",
-        description=(
-            "Save one incremental batch toward a chapter's complete candidate set. "
-            "For Siming-managed jobs each call accepts at most 3 records; the first call "
-            "must contain exactly chapter_summary and the chapter-level outline. Continue "
-            "only with returned missing items. A later single chapter_summary may set "
-            "coverage_manifest_mode='replace' with all five manifest fields to remove an "
-            "overdeclared alias without changing scene_count. A later single chapter_link may set "
-            "chapter_link_mode='replace' with all five aggregate arrays to remove a wrong alias or "
-            "endpoint from the retained link. When a source fact label resolves to a differently "
-            "titled active world card, put that exact label in the card's source_fact_titles. "
-            "A state update that changes an existing "
-            "appearance or age must include the exact current *_before value and a verbatim chapter "
-            "*_evidence excerpt. A state update that changes an existing "
-            "non-empty items_or_assets must copy it exactly to items_or_assets_before and retain it in "
-            "the new full value. Section candidates require explicit scene_number within the source "
-            "scene plan. Use scene_repair to reconcile the source scenes and retained candidates. "
-            "Repair scene drift with a single scene_outline_replace object: expected_candidate_ids "
-            "lists ALL current section candidate IDs, and sections contains the complete corrected "
-            "1..N outline_create/section objects, preserving all source events and scene state. "
-            "The entire scene set is replaced atomically; only unedited pending scenes in this run "
-            "are eligible. Empty entity lists are valid. API-free."
-        ),
+        description="Stage structured changes from one chapter plan. Send chapter_summary with real ID bindings first. Repair only rejected records. finalize=true requests completeness validation; manual mode waits for author confirmation.",
         input_schema={
-            "job_id": {"type": "string", "description": "Cataloging job ID"},
-            "chapter_id": {"type": "string", "description": "Chapter ID"},
-            "candidates": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": (
-                    "Native candidate objects for the next incremental batch. Siming-managed "
-                    "calls allow at most 3; the first call is exactly chapter_summary plus the "
-                    "chapter-level outline. A manifest replacement must be the only record in "
-                    "its call and include scene_count, characters, worldbuilding, relationships, "
-                    "and character_profiles. A chapter-link replacement must be the only record "
-                    "in its call and include characters, worldbuilding_titles, locations, items, "
-                    "and events."
-                ),
-            },
+            "job_id": {"type": "string"}, "chapter_id": {"type": "string"},
+            "candidates": {"type": "array", "items": {"type": "object"}},
+            "finalize": {"type": "boolean"},
         },
         required=["job_id", "chapter_id", "candidates"],
         tool_type="write",

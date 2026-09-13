@@ -65,28 +65,28 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         prompt = pack["system_prompt"]
         self.assertIn("get_prompt_pack", prompt)
         self.assertIn("start_external_cataloging_job", prompt)
-        self.assertIn("save_external_cataloging_facts", prompt)
-        self.assertIn("list_cataloging_facts", prompt)
+        self.assertIn("read_cataloging_archive", prompt)
+        self.assertIn("character_bindings", prompt)
         self.assertIn("save_external_cataloging_candidates", prompt)
         self.assertIn("apply_pending_cataloging", prompt)
-        self.assertIn("phase=\"facts\"", prompt)
-        self.assertIn("phase=\"candidates\"", prompt)
-        self.assertIn("读取章节正文和档案镜像", prompt)
+        self.assertIn("finalize", prompt)
+        self.assertIn("worldbuilding_bindings", prompt)
+        self.assertIn("读取只读镜像", prompt)
         self.assertNotIn("merged", prompt)
 
     def test_pack_requires_unified_outline_granularity(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]
         self.assertIn('node_type="section"', prompt)
-        self.assertIn("parent_title", prompt)
-        self.assertIn("2-6", prompt)
+        self.assertIn("scene_number", prompt)
+        self.assertIn("1..N", prompt)
         self.assertIn("内部建档、外部 MCP 建档、本机 CLI 建档", prompt)
 
     def test_pack_requires_explicit_governance_coverage_and_stable_resolution_identity(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]
         self.assertIn("narrative_review", prompt)
-        self.assertIn("没有发现时各数组也写 []", prompt)
+        self.assertIn("narrative_state", prompt)
         self.assertIn("resolves_item_id", prompt)
         self.assertIn("不得按标题猜测", prompt)
 
@@ -97,17 +97,17 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("relationships", prompt)
         self.assertIn("character_profiles", prompt)
         self.assertIn("character_relationship", prompt)
-        self.assertIn("core_motivation", prompt)
-        self.assertIn("未具名岗位", prompt)
-        self.assertIn("不得创建角色卡", prompt)
+        self.assertIn("role_type", prompt)
+        self.assertIn("身份未确认", prompt)
+        self.assertIn("不必生成空白角色卡", prompt)
 
-    def test_pack_requires_atomic_summary_outline_skeleton(self):
+    def test_pack_requires_plan_before_dependent_records_and_explicit_finalization(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]
-        self.assertIn("首个响应对象", prompt)
-        self.assertIn('"chapter_outline"', prompt)
-        self.assertIn("不能只返回摘要后结束", prompt)
-        self.assertIn("空数组是合法结果", prompt)
+        self.assertIn("先提交摘要计划", prompt)
+        self.assertIn("candidate_errors", prompt)
+        self.assertIn("finalize=true", prompt)
+        self.assertIn("candidates=[]", prompt)
 
     def test_seed_contains_one_cataloging_workflow(self):
         source = Path(__file__).resolve().parents[1] / "app" / "services" / "prompt_packs" / "seed.py"

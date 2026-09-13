@@ -5,13 +5,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingCandidate, Chapter, OutlineNode
-from ...modules.continuity.domain.cataloging_contract import (
-    canonical_chapter_link_characters,
-)
+from ...database.models import CatalogingCandidate, Chapter, OutlineNode, Character, WorldbuildingEntry
 from .facts import record_cataloging_fact
 from .links import link_chapter_character, link_chapter_worldbuilding, link_outline_characters
-from .lookups import find_character_by_name_or_id, find_worldbuilding_by_title_or_id
+from .plan_contract import bound_entity
 
 
 def apply_chapter_link(
@@ -22,23 +19,12 @@ def apply_chapter_link(
 ) -> dict[str, Any]:
     linked = {"characters": [], "worldbuilding": [], "outline": None}
     linked_character_ids: list[str] = []
-    normalized_character_links = canonical_chapter_link_characters(payload)
+    normalized_character_links = payload.get("characters", [])
     worldbuilding_titles = list(payload.get("worldbuilding_titles") or [])
-    generic_endpoints = [payload.get("source"), payload.get("target")]
-    for value in generic_endpoints:
-        name = str(value or "").strip()
-        if not name or name == chapter.title:
-            continue
-        character = find_character_by_name_or_id(db, chapter.project_id, name)
-        entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, name)
-        if entry and name not in worldbuilding_titles:
-            worldbuilding_titles.append(name)
-            continue
-
     for item in normalized_character_links:
         name = item["name"]
         appearance_type = item["appearance_type"]
-        character = find_character_by_name_or_id(db, chapter.project_id, name)
+        character = bound_entity(db, candidate, name, Character)
         if character:
             linked_character_ids.append(character.id)
             link_chapter_character(
@@ -52,7 +38,7 @@ def apply_chapter_link(
                 linked["characters"].append(character.name)
 
     for title in worldbuilding_titles:
-        entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, title)
+        entry = bound_entity(db, candidate, title, WorldbuildingEntry)
         if entry:
             link_chapter_worldbuilding(
                 db,
@@ -83,10 +69,6 @@ def apply_chapter_link(
             "importance",
             "appearance_order",
             "description",
-            "source",
-            "target",
-            "relation",
-            "chapter",
         )
         if payload.get(key) not in (None, "", [], {})
     }

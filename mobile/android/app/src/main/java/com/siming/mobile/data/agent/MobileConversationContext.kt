@@ -84,6 +84,7 @@ internal data class MobileTranscriptMessage(
     }
 
     fun displayMessage(): MobileAssistantMessage = MobileAssistantMessage(
+        turnId = turnId,
         id = id,
         role = role,
         content = content,
@@ -941,37 +942,7 @@ internal object MobileNativeToolBudgetContract {
         requestBudget: MobileRequestBudgetEnvelope,
         resultJsonBytes: (String, JsonObject) -> Int = ::declaredResultJsonBytes,
     ): MobileNativeToolBatchAdmission {
-        val rawCalls = assistantPayload.array("tool_calls").objects("tool_calls")
-        val payloadCalls = rawCalls.map { rawCall ->
-            val function = rawCall["function"] as? JsonObject
-                ?: throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
-                    "原生 tool_call 缺少 function 对象",
-                )
-            val id = rawCall.string("id")
-            val name = function.string("name")
-            if (id.isBlank() || name.isBlank()) {
-                throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
-                    "原生 tool_call 必须完整保留 ID、名称和 JSON arguments 字符串",
-                )
-            }
-            requireMobileNativeToolArgumentsObject(rawCall)
-            id to name
-        }
-        if (payloadCalls.map { it.first }.distinct().size != payloadCalls.size) {
-            throw MobileConversationContextException(
-                MobileConversationContextErrorCode.PROTOCOL_INVALID,
-                "原生 tool_call ID 重复，整批未执行",
-            )
-        }
-        val payloadNames = payloadCalls.map { it.second }
-        if (payloadNames != orderedToolNames) {
-            throw MobileConversationContextException(
-                MobileConversationContextErrorCode.PROTOCOL_INVALID,
-                "原生 assistant 事务与解析后的工具调用批次不一致",
-            )
-        }
+        val rawCalls = validateMobileNativeAssistantCalls(assistantPayload, orderedToolNames)
         val assistantBytes = mobileCanonicalJson(assistantPayload).toByteArray(Charsets.UTF_8).size
         val available = requestBudget.toolTransactionBudgetTokens
         val declared = rawCalls.zip(orderedToolNames).sumOf { (call, tool) ->
@@ -1017,6 +988,45 @@ internal object MobileNativeToolBudgetContract {
         mobileCanonicalJson(result).toByteArray(Charsets.UTF_8).size <=
             declaredResultJsonBytes(toolName, arguments)
 
+}
+
+/** Structural validation is shared by executable batches and exact denial receipts. */
+internal fun validateMobileNativeAssistantCalls(
+    assistantPayload: JsonObject,
+    orderedToolNames: List<String>,
+): List<JsonObject> {
+    val rawCalls = assistantPayload.array("tool_calls").objects("tool_calls")
+    val payloadCalls = rawCalls.map { rawCall ->
+        val function = rawCall["function"] as? JsonObject
+            ?: throw MobileConversationContextException(
+                MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                "原生 tool_call 缺少 function 对象",
+            )
+        val id = rawCall.string("id")
+        val name = function.string("name")
+        if (id.isBlank() || name.isBlank()) {
+            throw MobileConversationContextException(
+                MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                "原生 tool_call 必须完整保留 ID、名称和 JSON arguments 字符串",
+            )
+        }
+        requireMobileNativeToolArgumentsObject(rawCall)
+        id to name
+    }
+    if (payloadCalls.map { it.first }.distinct().size != payloadCalls.size) {
+        throw MobileConversationContextException(
+            MobileConversationContextErrorCode.PROTOCOL_INVALID,
+            "原生 tool_call ID 重复，整批未执行",
+        )
+    }
+    val payloadNames = payloadCalls.map { it.second }
+    if (payloadNames != orderedToolNames) {
+        throw MobileConversationContextException(
+            MobileConversationContextErrorCode.PROTOCOL_INVALID,
+            "原生 assistant 事务与解析后的工具调用批次不一致",
+        )
+    }
+    return rawCalls
 }
 
 internal data class MobileToolCallRecord(

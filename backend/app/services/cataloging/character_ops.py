@@ -25,6 +25,7 @@ from .character_targets import (
     validate_character_profile_target,
     validate_character_state_target,
 )
+from .plan_contract import bound_entity
 from .lookups import find_character_by_name_or_id
 from .merge import merge_json_list, merge_short_text, merge_text
 from .snapshots import chapter_change_title, character_snapshot
@@ -153,7 +154,7 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
 
 
 def apply_character_timeline(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id") or payload.get("name"))
+    character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id"))
     if not character:
         raise ValueError("时间线关联角色不存在")
     description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
@@ -218,16 +219,16 @@ def apply_character_timeline(db: Session, candidate: CatalogingCandidate, chapte
 
 
 def apply_character_relationship(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    source_name = str(payload.get("source_name") or payload.get("character_a") or "").strip()
-    target_name = str(payload.get("target_name") or payload.get("character_b") or "").strip()
+    source_name = str(payload.get("source_name") or "").strip()
+    target_name = str(payload.get("target_name") or "").strip()
     if not source_name or not target_name:
         raise ValueError("角色关系缺少 source_name 或 target_name")
     if source_name == target_name:
         raise ValueError("角色关系不能指向同一角色")
-    source = find_character_by_name_or_id(db, chapter.project_id, source_name)
+    source = bound_entity(db, candidate, source_name, Character)
     if not source:
         raise ValueError(f"角色关系来源角色不存在：{source_name}；必须先生成角色档案候选")
-    target = find_character_by_name_or_id(db, chapter.project_id, target_name)
+    target = bound_entity(db, candidate, target_name, Character)
     if not target:
         raise ValueError(f"角色关系目标角色不存在：{target_name}；必须先生成角色档案候选")
 
@@ -543,8 +544,7 @@ def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def _is_placeholder_character_name(name: str | None) -> bool:
-    text = str(name or "").strip()
-    return not text or text in PLACEHOLDER_CHARACTER_NAMES or text.startswith("未命名")
+    return not isinstance(name, str) or not name.strip()
 
 
 def _aliases_from_payload(payload: dict[str, Any], canonical_name: str | None = None) -> list[str]:

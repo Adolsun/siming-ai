@@ -1,0 +1,22 @@
+{
+  "max_rejections": 3,
+  "offered_tools": ["set_tool_categories", "list_chapters", "search_outline_tree"],
+  "assistant": {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "provider continuation fixture",
+    "provider_state": [{"type": "reasoning", "encrypted_content": "opaque-test-state"}],
+    "tool_calls": [
+      {"id": "call_00_eeryXAFoIwHhm5ChaRim9002", "type": "function", "function": {"name": "list_chapters", "arguments": "{\"limit\": 10}"}},
+      {"id": "call_01_dPy589D2drZG1udGAptF0881", "type": "function", "function": {"name": "list_outline_tree", "arguments": "{\"root_id\": \"\"}"}}
+    ]
+  },
+  "denial_data": {
+    "reason": "native_tool_not_open",
+    "unavailable_tools": ["list_outline_tree"],
+    "available_tools": ["list_chapters", "search_outline_tree", "set_tool_categories"],
+    "batch_call_count": 2,
+    "executed": false,
+    "retryable": true
+  }
+}

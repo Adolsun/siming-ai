@@ -94,6 +94,7 @@ internal fun CreationConversationWorkspace(
         contentPadding = PaddingValues(16.dp, 10.dp, 16.dp, 112.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item { ContextInspectorButton(kind = "creation_session", scopeId = session.string("id")) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回 AI 立项") }
@@ -228,6 +229,9 @@ internal fun CreationConversationWorkspace(
             }
         } else {
             items(messages, key = { it.string("id").ifBlank { "${it.string("role")}:${it.string("created_at")}:${it.string("content").hashCode()}" } }) { message ->
+                if (message.string("role") == "assistant") ContextInspectorButton(
+                    kind = "creation_session", scopeId = session.string("id"),
+                    correlationId = message.string("id").removeSuffix(":assistant"), label = "查看本轮调用")
                 AgentBubble(
                     role = message.string("role"),
                     content = message.string("content"),

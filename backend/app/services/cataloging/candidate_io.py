@@ -14,11 +14,6 @@ def candidate_payload(candidate: CatalogingCandidate) -> dict[str, Any]:
         parsed = json.loads(text)
         if not isinstance(parsed, dict):
             return {}
-        if candidate.item_type == "chapter_summary":
-            summary = derive_chapter_summary_text(parsed)
-            if summary:
-                parsed.setdefault("summary_text", summary)
-                parsed.setdefault("summary", summary)
         return parsed
     except Exception:
         return {}

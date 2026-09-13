@@ -105,6 +105,13 @@ def is_loopback_client(scope: Scope) -> bool:
 # Keep this list in FastAPI/OpenAPI template form so contract tests can compare
 # it directly with the published PC API instead of maintaining a second dialect.
 REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
+    "/api/v1/context-traces/settings": frozenset({"GET", "PUT"}),
+    "/api/v1/context-traces/search": frozenset({"POST"}),
+    "/api/v1/context-traces": frozenset({"DELETE"}),
+    "/api/v1/context-traces/{trace_id}": frozenset({"GET"}),
+    "/api/v1/context-traces/{trace_id}/events": frozenset({"GET"}),
+    "/api/v1/context-traces/{trace_id}/payloads/{payload_id}": frozenset({"GET"}),
+    "/api/v1/context-traces/{trace_id}/export": frozenset({"GET"}),
     # Novel creation is a canonical PC workspace. These routes let a paired
     # phone resume that same session instead of maintaining an Android-only
     # wizard or a second persistence shape.
@@ -114,12 +121,10 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/novel-creation/finalize": frozenset({"POST"}),
     "/api/v1/novel-creation/sessions/{session_id}": frozenset({"GET", "PATCH", "DELETE"}),
     (
-        "/api/v1/novel-creation/sessions/{session_id}/conversations/"
-        "{conversation_id}/context-state"
+        "/api/v1/novel-creation/sessions/{session_id}/conversations/{conversation_id}/context-state"
     ): frozenset({"GET"}),
     (
-        "/api/v1/novel-creation/sessions/{session_id}/conversations/"
-        "{conversation_id}/checkpoints"
+        "/api/v1/novel-creation/sessions/{session_id}/conversations/{conversation_id}/checkpoints"
     ): frozenset({"GET"}),
     (
         "/api/v1/novel-creation/sessions/{session_id}/conversations/"
@@ -139,19 +144,13 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/projects/{project_id}/chapters": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/chapter-drafts/pending": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/chapter-drafts/{draft_id}": frozenset({"DELETE"}),
-    "/api/v1/projects/{project_id}/chapters/{chapter_id}": frozenset(
-        {"GET", "PUT", "DELETE"}
-    ),
-    "/api/v1/projects/{project_id}/chapters/{chapter_id}/de-ai-preview": frozenset(
-        {"POST"}
-    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}": frozenset({"GET", "PUT", "DELETE"}),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/de-ai-preview": frozenset({"POST"}),
     "/api/v1/projects/{project_id}/chapters/{chapter_id}/quality-score-preview": frozenset(
         {"POST"}
     ),
     "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots": frozenset({"GET"}),
-    "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots/diff": frozenset(
-        {"GET"}
-    ),
+    "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots/diff": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/chapters/{chapter_id}/snapshots/{snapshot_id}": frozenset(
         {"GET"}
     ),
@@ -160,36 +159,24 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     ),
     "/api/v1/projects/{project_id}/outline": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/outline-drafts/pending": frozenset({"GET"}),
-    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}": frozenset(
-        {"PUT", "DELETE"}
-    ),
-    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/confirm": frozenset(
-        {"POST"}
-    ),
-    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/regenerate": frozenset(
-        {"POST"}
-    ),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}": frozenset({"PUT", "DELETE"}),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/confirm": frozenset({"POST"}),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/regenerate": frozenset({"POST"}),
     "/api/v1/projects/{project_id}/outline/reorder": frozenset({"PUT"}),
     "/api/v1/projects/{project_id}/outline/{node_id}": frozenset({"PUT", "DELETE"}),
     "/api/v1/projects/{project_id}/characters": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/characters/relationships": frozenset({"GET"}),
-    "/api/v1/projects/{project_id}/characters/{character_id}": frozenset(
-        {"GET", "PUT", "DELETE"}
-    ),
+    "/api/v1/projects/{project_id}/characters/{character_id}": frozenset({"GET", "PUT", "DELETE"}),
     "/api/v1/projects/{project_id}/characters/{character_id}/appearances/{chapter_id}": frozenset(
         {"PUT", "DELETE"}
     ),
-    "/api/v1/projects/{project_id}/characters/{character_id}/relationships": frozenset(
-        {"PUT"}
-    ),
+    "/api/v1/projects/{project_id}/characters/{character_id}/relationships": frozenset({"PUT"}),
     "/api/v1/projects/{project_id}/characters/{character_id}/versions": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/characters/{character_id}/versions/{version_id}": frozenset(
         {"GET"}
     ),
     "/api/v1/projects/{project_id}/worldbuilding": frozenset({"GET", "POST"}),
-    "/api/v1/projects/{project_id}/worldbuilding/{entry_id}": frozenset(
-        {"PUT", "DELETE"}
-    ),
+    "/api/v1/projects/{project_id}/worldbuilding/{entry_id}": frozenset({"PUT", "DELETE"}),
     "/api/v1/projects/{project_id}/worldbuilding/{entry_id}/versions": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/worldbuilding/{entry_id}/timeline": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/creation-brief": frozenset({"GET", "PATCH"}),
@@ -198,52 +185,35 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/projects/{project_id}/stats/history": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/stats/goal": frozenset({"PUT"}),
     "/api/v1/projects/{project_id}/narrative-governance/items": frozenset({"POST"}),
-    "/api/v1/projects/{project_id}/ai/workspace-assistant/stream": frozenset(
-        {"POST", "HEAD"}
-    ),
+    "/api/v1/projects/{project_id}/ai/workspace-assistant/stream": frozenset({"POST", "HEAD"}),
     "/api/v1/projects/{project_id}/ai/assistant/conversations": frozenset({"GET"}),
     # This literal action must precede the generic conversation-detail path.
-    (
-        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
-        "transcript-import"
-    ): frozenset(
+    ("/api/v1/projects/{project_id}/ai/assistant/conversations/transcript-import"): frozenset(
         {"POST"}
     ),
     "/api/v1/projects/{project_id}/ai/assistant/conversations/{conversation_id}": frozenset(
         {"GET"}
     ),
     (
-        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
-        "{conversation_id}/context-state"
-    ): frozenset(
-        {"GET"}
-    ),
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/{conversation_id}/context-state"
+    ): frozenset({"GET"}),
     (
-        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
-        "{conversation_id}/checkpoints"
-    ): frozenset(
-        {"GET"}
-    ),
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/{conversation_id}/checkpoints"
+    ): frozenset({"GET"}),
     # Literal actions must precede the generic checkpoint-detail template:
     # remote authorization intentionally accepts the first path match.
     (
         "/api/v1/projects/{project_id}/ai/assistant/conversations/"
         "{conversation_id}/checkpoints/rebuild"
-    ): frozenset(
-        {"POST"}
-    ),
+    ): frozenset({"POST"}),
     (
         "/api/v1/projects/{project_id}/ai/assistant/conversations/"
         "{conversation_id}/checkpoints/{checkpoint_id}/cancel"
-    ): frozenset(
-        {"POST"}
-    ),
+    ): frozenset({"POST"}),
     (
         "/api/v1/projects/{project_id}/ai/assistant/conversations/"
         "{conversation_id}/checkpoints/{checkpoint_id}"
-    ): frozenset(
-        {"GET", "DELETE"}
-    ),
+    ): frozenset({"GET", "DELETE"}),
     "/api/v1/projects/{project_id}/ai/assistant/runs": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/ai/assistant/runs/{run_id}": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/ai/assistant/runs/{run_id}/cancel": frozenset({"POST"}),
@@ -430,26 +400,13 @@ class GatewayAuthenticationMiddleware:
                 "/api/v1/projects",
                 "/api/v1/import/project-file",
                 "/api/v1/projects/project-package/import",
-            } or matched_template.startswith("/api/v1/novel-creation/")
+            } or matched_template.startswith(("/api/v1/novel-creation/", "/api/v1/context-traces"))
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", project_id):
             return False
 
-        from ..database.session import SessionLocal
-        from ..modules.gateway.infrastructure.models import SyncProject
+        from ..modules.gateway.interfaces.project_access import is_project_shared
 
-        db = SessionLocal()
-        try:
-            enabled = (
-                db.query(SyncProject.project_id)
-                .filter(
-                    SyncProject.project_id == project_id,
-                    SyncProject.status == "enabled",
-                )
-                .first()
-            )
-            return enabled is not None
-        finally:
-            db.close()
+        return is_project_shared(project_id)
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
@@ -499,9 +456,7 @@ class GatewayRequestLimitMiddleware:
     # Transcript import is a bulk, attacker-controlled JSON endpoint even in
     # desktop mode.  Keep its memory/rate boundary active on loopback too;
     # ``enabled`` only controls the broader set of Gateway-only limits.
-    ALWAYS_LIMITED_SUFFIXES = (
-        "/ai/assistant/conversations/transcript-import",
-    )
+    ALWAYS_LIMITED_SUFFIXES = ("/ai/assistant/conversations/transcript-import",)
 
     BODY_LIMITS = {
         "/api/v1/pairing/start": 16 * 1024,
@@ -708,14 +663,18 @@ class SecurityHeadersMiddleware:
                     headers.append(
                         (b"strict-transport-security", b"max-age=31536000; includeSubDomains")
                     )
-                if str(scope.get("path") or "") in {
-                    "/api/v1/pairing/start",
-                    "/api/v1/pairing/complete",
-                    "/api/v1/auth/refresh",
-                    "/api/v1/auth/admin/login",
-                    "/api/v1/auth/admin/session",
-                    "/api/v1/auth/admin/logout",
-                } and b"cache-control" not in existing:
+                if (
+                    str(scope.get("path") or "")
+                    in {
+                        "/api/v1/pairing/start",
+                        "/api/v1/pairing/complete",
+                        "/api/v1/auth/refresh",
+                        "/api/v1/auth/admin/login",
+                        "/api/v1/auth/admin/session",
+                        "/api/v1/auth/admin/logout",
+                    }
+                    and b"cache-control" not in existing
+                ):
                     headers.append((b"cache-control", b"no-store"))
                 message["headers"] = headers
             await send(message)

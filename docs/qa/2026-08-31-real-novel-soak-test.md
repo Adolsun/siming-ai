@@ -1,5 +1,7 @@
 # 司命长篇真实创作与高可用性测试
 
+> 历史排查记录：文中的旧建档阶段和工具仅说明当时行为；现行流程见[统一建档计划](../agent/external-no-api-cataloging.md)。
+
 远程 `main` 合并后的代码复验、256K 未知模型兜底策略和最终回归见
 [`2026-09-04-upstream-integration.md`](./2026-09-04-upstream-integration.md)；本文保留真实创作过程、逐章证据和当时发现的问题。
 

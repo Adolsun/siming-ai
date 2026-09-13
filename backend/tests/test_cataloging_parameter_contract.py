@@ -10,7 +10,7 @@ from app.mcp.adapter import execute_tool, list_mcp_tools
 from app.modules.continuity.domain.candidate_contract import candidate_contract_examples
 from app.services.cataloging import orchestrator
 from app.services.cataloging.candidate_store import create_candidate_from_raw
-from app.services.cataloging.jsonl import normalize_candidate
+from app.services.cataloging.records import normalize_candidate
 from app.services.workspace.executor import execute_workspace_action
 from app.services.workspace.registry import registry
 from tests.test_cataloging_character_targets import archive as archive_fixture
@@ -54,7 +54,7 @@ def test_managed_cli_schema_exposes_its_actual_batch_limit_without_changing_unbo
 
 def test_mcp_returns_exact_repair_context_then_accepts_corrected_field(archive):
     db, chapter, character, job, run = archive
-    run.status = "facts_saved"
+    run.status = "extracting"
     chapter.content = "主角换上红衣，继续核对资料。"
     db.commit()
     candidate = {"type": "character_state_update", "id": character.id, "name": character.name,
@@ -71,11 +71,11 @@ def test_mcp_returns_exact_repair_context_then_accepts_corrected_field(archive):
     repair = failure["data"]["candidate_errors"][0]["repair_context"]
     assert repair["expected_value"] == character.appearance
     assert "accepted_candidates" in failure["data"]["recovery_context"]
-    assert db.query(CatalogingCandidate).count() == 0
+    assert db.query(CatalogingCandidate).filter(CatalogingCandidate.item_type != "chapter_summary").count() == 0
     candidate["appearance_before"] = repair["expected_value"]
     success = invoke()
     assert success["data"]["candidates_saved"] == 1
-    assert json.loads(db.query(CatalogingCandidate).one().raw_payload)["appearance"] == "红衣"
+    assert json.loads(db.query(CatalogingCandidate).filter(CatalogingCandidate.item_type != "chapter_summary").one().raw_payload)["appearance"] == "红衣"
     assert character.appearance == "短发"  # Still staged for author/apply flow.
 
 
@@ -83,10 +83,10 @@ def test_mcp_returns_exact_repair_context_then_accepts_corrected_field(archive):
     ("role_type", "主角，穿越者", "protagonist", "enum"),
     ("aliases", '["旧称"]', ["旧称"], "type"),
 ])
-@pytest.mark.parametrize("route", ["mcp", "api-tool", "api-jsonl"])
+@pytest.mark.parametrize("route", ["mcp", "api-tool"])
 def test_invalid_field_is_not_defaulted_and_corrected_record_is_accepted(archive, field, bad, good, rule, route):
     db, chapter, character, job, run = archive
-    run.status = "facts_saved"
+    run.status = "extracting"
     db.commit()
     raw = {"type": "character_update", "id": character.id, "name": character.name,
            "personality": "认真核对证据", field: bad}
@@ -101,14 +101,14 @@ def test_invalid_field_is_not_defaulted_and_corrected_record_is_accepted(archive
         return json.loads(result.content[0]["text"])
 
     failure = invoke(raw)
-    assert db.query(CatalogingCandidate).count() == 0
+    assert db.query(CatalogingCandidate).filter(CatalogingCandidate.item_type != "chapter_summary").count() == 0
     if route == "api-jsonl":
         assert field in failure["error"]
     else:
         assert failure["data"]["path"] in (f"$.candidates[0].{field}", f"$.candidates.0.{field}")
         assert failure["data"]["rule"] == rule
     success = invoke({**raw, field: good})
-    candidate = db.query(CatalogingCandidate).one()
+    candidate = db.query(CatalogingCandidate).filter(CatalogingCandidate.item_type != "chapter_summary").one()
     assert json.loads(candidate.raw_payload)[field] == good, success
     assert character.personality is None
 
@@ -137,50 +137,10 @@ def test_api_never_guesses_candidate_type_from_natural_language_or_fields(record
 
 
 def test_explicit_chapter_link_is_never_changed_into_a_character_relationship():
-    result = normalize_candidate({"type": "chapter_link", "source": "甲", "target": "乙", "relation": "grandfather_of"})
-    assert result["item_type"] == "chapter_link"
+    with pytest.raises(ValueError, match="additionalProperties"):
+        normalize_candidate({"type": "chapter_link", "source": "甲", "target": "乙", "relation": "grandfather_of"})
 
 
 def test_world_dimension_must_be_model_selected_not_inferred_from_category():
     with pytest.raises(ValueError, match="dimension"):
         normalize_candidate({"type": "worldbuilding_create", "title": "宗门", "category": "宗门", "content": "有独立组织的门派"})
-
-
-def test_api_gateway_corrects_enum_on_next_request_without_repeating_saved_candidates(archive, monkeypatch):
-    db, chapter, character, job, run = archive
-    calls = []
-    retained_ids = []
-
-    async def stream(messages, **kwargs):
-        calls.append(messages)
-        if len(calls) == 1:
-            yield json.dumps({"fact_type": "chapter_overview", "payload": {"summary": "主角认真核对档案。"}}) + "\n"
-            return
-        record = {"type": "character_update", "id": character.id, "name": character.name,
-                  "personality": "认真核对证据", "role_type": "主角，穿越者"}
-        if len(calls) == 2:
-            rows = [
-                {"type": "chapter_summary", "payload": summary_payload(character_profiles=[character.name])},
-                {"character_ids": [], "type": "outline_create", "title": chapter.title, "node_type": "chapter", "summary": "核对档案。"},
-                record,
-            ]
-        else:
-            feedback = messages[1]["content"]
-            assert "role_type" in feedback and "protagonist" in feedback
-            retained_ids[:] = [row.id for row in db.query(CatalogingCandidate)]
-            assert all(identity in feedback for identity in retained_ids)
-            rows = [{**record, "role_type": "protagonist"}]
-        yield "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
-
-    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", stream)
-
-    async def collect():
-        return [event async for event in orchestrator._extract_run(db, job, run)]
-
-    asyncio.run(collect())
-    assert len(calls) == 3, run.error  # Facts, initial candidates, corrected candidate only.
-    assert run.status == "awaiting_confirmation" and run.error is None
-    rows = db.query(CatalogingCandidate).all()
-    assert len(rows) == 3 and set(retained_ids) <= {row.id for row in rows}
-    profile = next(row for row in rows if row.item_type == "character_update")
-    assert json.loads(profile.raw_payload)["role_type"] == "protagonist"

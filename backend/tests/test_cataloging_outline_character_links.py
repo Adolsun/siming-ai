@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, Chapter, Character, CharacterVersion, OutlineNode, Project
 from app.services.cataloging.applier import apply_candidates_for_run
+from tests.cataloging_plan_fixtures import complete_fixture_plan
 from app.services.cataloging.candidate_store import create_candidate_from_raw
 from app.services.cataloging.candidate_validation import inspect_candidate_coverage
 from tests.test_cataloging_reconciliation import _candidate, _new_run, _summary
@@ -93,6 +94,7 @@ def test_new_character_ids_bind_chapter_and_scenes_and_all_profile_fields_surviv
         for order, (kind, payload) in enumerate(rows):
             _candidate(db, job, run, kind, payload, order)
         db.flush()
+        complete_fixture_plan(db, job, run)
         events = apply_candidates_for_run(db, job, run)
         assert all(event["type"] == "candidate_applied" for event in events), events
         db.commit()

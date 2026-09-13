@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.modules.operations.application.trace_decorators import observed
+
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -497,6 +499,7 @@ def context_state_payload(
     }
 
 
+@observed(kind="checkpoint", inputs=("checkpoint_id", "expected_revision"), capture_output=False)
 def publish_or_resolve_checkpoint_race(
     *,
     store: ConversationContextStore,

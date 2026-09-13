@@ -54,7 +54,12 @@ def _merge_candidate_payload(
     incoming: dict[str, Any],
     *,
     item_type: str = "",
+    _schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if item_type:
+        from ...modules.continuity.domain.candidate_contract import candidate_payload_schema
+        _schema = candidate_payload_schema(item_type)
+    properties = (_schema or {}).get("properties", {})
     coverage_manifest_mode = (
         str(incoming.get("coverage_manifest_mode") or "").strip().lower()
         if item_type == "chapter_summary"
@@ -67,16 +72,13 @@ def _merge_candidate_payload(
         # replace only the complete manifest. The workspace tool validates the
         # full shape and source scene count before this reaches the store.
         merged = dict(existing)
-        old_manifest = existing.get("coverage_manifest")
         new_manifest = incoming.get("coverage_manifest")
         if isinstance(new_manifest, dict):
             replacement = dict(new_manifest)
-            if isinstance(old_manifest, dict):
-                old_scene_count = _positive_int(old_manifest.get("scene_count"))
-                new_scene_count = _positive_int(replacement.get("scene_count"))
-                if old_scene_count or new_scene_count:
-                    replacement["scene_count"] = max(old_scene_count, new_scene_count)
             merged["coverage_manifest"] = replacement
+        for field in ("scenes", "character_bindings", "worldbuilding_bindings"):
+            if field in incoming:
+                merged[field] = incoming[field]
         merged.pop("coverage_manifest_mode", None)
         return merged
 
@@ -112,8 +114,11 @@ def _merge_candidate_payload(
 
     merged = dict(existing)
     for key, value in incoming.items():
+        if item_type == "chapter_summary" and key in {"scenes", "character_bindings", "worldbuilding_bindings"}:
+            merged[key] = value
+            continue
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_candidate_payload(merged[key], value)
+            merged[key] = _merge_candidate_payload(merged[key], value, _schema=properties.get(key))
             continue
         if (
             item_type == "chapter_link"
@@ -129,7 +134,17 @@ def _merge_candidate_payload(
         # Explicit empty arrays/objects still matter when the old payload did
         # not declare the field.  Do not let a later empty value erase richer
         # data that was already staged.
-        if key not in merged or value not in (None, "", [], {}):
+        replace_invalid = False
+        if key in merged and key in properties and value in (None, "", [], {}):
+            from ...architecture.tool_spec import ToolInputSchemaValidationError, _validate_exported_schema
+            try:
+                _validate_exported_schema(properties[key], merged[key])
+            except ToolInputSchemaValidationError:
+                # A model-supplied []/null can repair a legacy wrong type.
+                # The caller validates the incoming and final payloads; no
+                # coercion or inferred replacement value is performed here.
+                replace_invalid = True
+        if key not in merged or value not in (None, "", [], {}) or replace_invalid:
             merged[key] = value
     if item_type == "chapter_summary":
         old_manifest = existing.get("coverage_manifest")
@@ -139,10 +154,6 @@ def _merge_candidate_payload(
                 old_manifest,
                 new_manifest,
             )
-        old_scene_count = _positive_int(existing.get("scene_count"))
-        new_scene_count = _positive_int(incoming.get("scene_count"))
-        if old_scene_count or new_scene_count:
-            merged["scene_count"] = max(old_scene_count, new_scene_count)
         # This is a write-control marker, never archival chapter metadata.
         merged.pop("coverage_manifest_mode", None)
     if item_type == "chapter_link":

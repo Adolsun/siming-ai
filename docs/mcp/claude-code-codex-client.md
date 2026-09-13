@@ -534,85 +534,20 @@ finalize_creation_session({"session_id": "SESSION_ID"})
 
 ### Cataloging Without Siming API
 
-After importing a novel, you can catalog it (extract characters, worldbuilding,
-outline, and chapter summaries) without Siming's model API:
+After importing a novel, an external Agent can read the full chapter and real archive records, then submit one coherent cataloging plan without calling Siming's model API. See [the current cataloging workflow](../agent/external-no-api-cataloging.md) for the authoritative contract.
 
-For long Claude Code / Codex conversations, treat Siming's tool results as the
-current source of truth. If the agent is unsure what to do next, call
-`get_moshu_usage_guide({"scenario":"cataloging_no_api","no_api":true})` again.
-For Chinese novels, keep all archive data in Chinese: character names, aliases,
-chapter titles, summaries, outline nodes, facts, evidence, and worldbuilding.
-Do not translate to English or pinyin unless the user explicitly requests it.
+Each model turn starts with `set_tool_categories`. Once the needed tools are open, read `get_prompt_pack(pack_id="cataloging_external_no_api")`, use the bound task or `start_external_cataloging_job`, then process each chapter in this order:
 
-```
-# 0. Ask Siming which workflow to use
-get_moshu_usage_guide({
-  "scenario": "cataloging_no_api",
-  "no_api": true
-})
-
-# 1. Get the cataloging prompt pack
-get_prompt_pack({
-  "scope": "cataloging",
-  "mode": "external_no_api"
-})
-
-# 2. Start external cataloging job
-start_external_cataloging_job({
-  "project_id": "YOUR_PROJECT_ID"
-})
-
-# 3A. Fact stage can be parallel. Multiple agents may fetch different chapters.
-get_next_external_cataloging_chapter({
-  "job_id": "JOB_ID",
-  "phase": "facts"
-})
-# [Analyze the chapter text and extract facts only]
-
-save_external_cataloging_facts({
-  "job_id": "JOB_ID",
-  "chapter_id": "CHAPTER_ID",
-  "facts": [...]
-})
-
-# 3B. Candidate stage must be serial by chapter_order. Always ask Siming
-# which chapter is allowed next; never use fact-completion order.
-get_next_external_cataloging_chapter({
-  "job_id": "JOB_ID",
-  "phase": "candidates"
-})
-# [Generate candidates for the returned chapter only]
-
-save_external_cataloging_candidates({
-  "job_id": "JOB_ID",
-  "chapter_id": "CHAPTER_ID",
-  "candidates": [...]
-})
-
-# 4. Apply this chapter's candidates before generating candidates for the next chapter
-apply_pending_cataloging({
-  "job_id": "JOB_ID"
-})
-
-# 5. Verify this chapter wrote real project data
-verify_external_cataloging_progress({
-  "job_id": "JOB_ID"
-})
-
-# 6. Repeat candidate-stage steps in chapter_order; then do final verification
-get_project_archive_status({})
+```text
+get_next_external_cataloging_chapter(job_id)
+read_cataloging_archive(kind, ids?, cursor?, limit?)
+save_external_cataloging_candidates(job_id, chapter_id, candidates, finalize=false)
+save_external_cataloging_candidates(job_id, chapter_id, candidates, finalize=true)
+apply_pending_cataloging(job_id)  # only when authorized; managed auto applies on finalization
+verify_external_cataloging_progress(job_id)
 ```
 
-`save_external_cataloging_candidates` only stages data. The data is not visible
-as real characters, outline nodes, worldbuilding, or chapter summaries until
-`apply_pending_cataloging` succeeds. If `verify_external_cataloging_progress`
-reports `pending_candidates > 0` or `chapters_awaiting_confirmation > 0`, apply
-the pending chapter before moving to the next chapter.
-
-Fact extraction may be parallel, but candidate generation is intentionally
-serialized. Candidate generation merges into cumulative character backgrounds,
-current status, outline nodes, and worldbuilding entries, so it must follow
-`chapter_order` rather than the order in which fact extraction finishes.
+Bind all calls to the same real `project_id`. Submit the chapter summary plan before its dependent candidates, use native JSON arrays and exact entity IDs, and repair only rejected fields or missing objects. An empty candidate array may finalize an already saved plan. Manual mode waits for the author. Do not move to the next chapter until the current chapter is applied and verified; all formal writes for a chapter are transactional. Finish by checking `get_project_archive_status` for the target project. Preserve the original language of the novel.
 
 ### Tools That Work Without Siming API
 
@@ -636,7 +571,7 @@ current status, outline nodes, and worldbuilding entries, so it must follow
 | `start_novel_creation_session` | Start new novel creation |
 | Canonical creation data tools | Read and patch the session's structured artifacts |
 | `finalize_creation_session` | Create a formal project from the structured session |
-| Canonical staged cataloging tools | Extract facts, resolve candidates, and apply chapter summary, outline, character, worldbuilding and narrative-state updates |
+| Canonical cataloging tools | Read archives, stage a chapter plan, validate and atomically apply its changes |
 | `search_chapters` | Search existing chapters |
 | `search_characters` | Search characters |
 | `search_worldbuilding` | Search worldbuilding |
@@ -644,8 +579,8 @@ current status, outline nodes, and worldbuilding entries, so it must follow
 | `detect_forbidden_patterns` | Check for AI patterns |
 | `start_external_cataloging_job` | Start API-free cataloging job |
 | `get_next_external_cataloging_chapter` | Get next chapter for cataloging |
-| `save_external_cataloging_facts` | Save extracted facts |
-| `save_external_cataloging_candidates` | Save proposed candidates |
+| `read_cataloging_archive` | Read paginated archive IDs and complete selected records |
+| `save_external_cataloging_candidates` | Incrementally stage and explicitly finalize a chapter plan |
 | `verify_external_cataloging_progress` | Check cataloging progress |
 
 ### Tools That Require Siming API

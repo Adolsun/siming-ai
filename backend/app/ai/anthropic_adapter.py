@@ -1,6 +1,7 @@
 """Anthropic Claude adapter using the official anthropic SDK."""
 import json
-from typing import Any, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from anthropic import (
     APIConnectionError,
@@ -9,9 +10,18 @@ from anthropic import (
     AsyncAnthropic,
     AuthenticationError,
 )
+from anthropic._constants import DEFAULT_LIMITS, DEFAULT_TIMEOUT
+
+from app.modules.operations.infrastructure.http_trace import ObservedHttpClient
 
 from ..core.exceptions import LLMError
 from .base import BaseAdapter
+
+
+class TracedAnthropicHttpClient(ObservedHttpClient):
+    def __init__(self, **kwargs):
+        super().__init__(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS, follow_redirects=True, **kwargs)
+
 
 
 def _convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -40,7 +50,7 @@ def _anthropic_continuation_blocks(message: dict) -> list[dict]:
     return blocks
 
 
-def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[Optional[str], list[dict]]:
+def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str | None, list[dict]]:
     """Convert OpenAI-style messages to Anthropic format, handling all role types.
 
     Anthropic uses 'system' as a top-level param, 'user'/'assistant' in messages.
@@ -210,7 +220,7 @@ class AnthropicAdapter(BaseAdapter):
         return "anthropic"
 
     def _get_client(self) -> AsyncAnthropic:
-        kwargs = {"api_key": self.api_key}
+        kwargs = {"api_key": self.api_key, "http_client": TracedAnthropicHttpClient()}
         if self.base_url:
             kwargs["base_url"] = self.base_url
         return AsyncAnthropic(**kwargs)
@@ -220,10 +230,10 @@ class AnthropicAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict:
         client = self._get_client()
         system, anthropic_messages = _convert_messages_for_anthropic(messages)
@@ -283,8 +293,8 @@ class AnthropicAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """Text-only streaming — no tool calls surfaced."""
         client = self._get_client()
@@ -324,10 +334,10 @@ class AnthropicAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Streaming chat completion that yields both text and tool call deltas.
 

@@ -480,6 +480,7 @@ class GatewayService(GatewayTokenMixin):
         backup_path = backup_sqlite_database(
             str(target_engine.url),
             reason=f"pre-sync-{project_id[:8]}",
+            automatic=True,
         )
         config = self.db.get(SyncProject, project_id)
         if config is None:

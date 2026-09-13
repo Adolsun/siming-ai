@@ -262,7 +262,7 @@ def test_http_retry_schedules_worker_from_the_route_event_loop():
         engine.dispose()
 
 
-def test_http_full_retry_accepts_paused_facts_saved_unit():
+def test_http_full_retry_accepts_paused_extracting_unit():
     from app.routers.cataloging import retry_current_cataloging_chapter
 
     engine, db = _database()
@@ -288,7 +288,7 @@ def test_http_full_retry_accepts_paused_facts_saved_unit():
             raw_payload=json.dumps({"summary": "discard me", "scenes": []}),
             status="active",
         ))
-        run.status = "facts_saved"
+        run.status = "extracting"
         job.status = "paused"
         db.commit()
 
@@ -312,8 +312,8 @@ def test_http_full_retry_accepts_paused_facts_saved_unit():
         engine.dispose()
 
 
-def test_http_resolution_retry_preserves_facts_and_requeues_managed_job():
-    from app.routers.cataloging import rerun_current_cataloging_resolution
+def test_http_plan_repair_preserves_facts_and_requeues_managed_job():
+    from app.routers.cataloging import repair_current_cataloging_plan
 
     engine, db = _database()
     try:
@@ -350,14 +350,14 @@ def test_http_resolution_retry_preserves_facts_and_requeues_managed_job():
             return_value=True,
         ) as queued:
             response = asyncio.run(
-                rerun_current_cataloging_resolution("project-1", job.id, db)
+                repair_current_cataloging_plan("project-1", job.id, db)
             )
 
         db.refresh(run)
         assert response.code == 0
         assert response.data["worker_queued"] is True
-        assert response.message == "已保留事实并开始重跑第二阶段"
-        assert run.status == "facts_saved"
+        assert response.message == "已保留候选并开始修正本章计划"
+        assert run.status == "extracting"
         assert db.query(CatalogingFact).filter_by(id=fact.id).count() == 1
         queued.assert_called_once_with(job)
     finally:
@@ -366,8 +366,8 @@ def test_http_resolution_retry_preserves_facts_and_requeues_managed_job():
         engine.dispose()
 
 
-def test_http_resolution_retry_can_repair_a_completed_projection():
-    from app.routers.cataloging import rerun_current_cataloging_resolution
+def test_http_plan_repair_can_repair_a_completed_projection():
+    from app.routers.cataloging import repair_current_cataloging_plan
 
     engine, db = _database()
     try:
@@ -415,20 +415,20 @@ def test_http_resolution_retry_can_repair_a_completed_projection():
             return_value=True,
         ) as queued:
             response = asyncio.run(
-                rerun_current_cataloging_resolution("project-1", job.id, db)
+                repair_current_cataloging_plan("project-1", job.id, db)
             )
 
         db.refresh(run)
         db.refresh(job)
         assert response.code == 0
         assert response.data["worker_queued"] is True
-        assert run.status == "facts_saved"
+        assert run.status == "extracting"
         assert run.completed_at is None
         assert job.status == "running"
         assert job.completed_chapters == 0
         assert job.completed_at is None
         assert db.query(CatalogingFact).filter_by(id=fact.id).count() == 1
-        assert db.query(CatalogingFact).filter_by(id=derived_fact_id).count() == 0
+        assert db.query(CatalogingFact).filter_by(id=derived_fact_id).count() == 1
         queued.assert_called_once_with(job)
     finally:
         db.close()
@@ -436,61 +436,6 @@ def test_http_resolution_retry_can_repair_a_completed_projection():
         engine.dispose()
 
 
-def test_candidate_replay_exposes_only_source_facts_to_the_agent():
-    from app.services.cataloging.fact_store import load_facts_for_run
-    from app.services.workspace.tools.cataloging import list_cataloging_facts
-
-    engine, db = _database()
-    try:
-        _chapter(db)
-        job, _ = create_and_queue_cataloging_job(
-            db,
-            "project-1",
-            ["chapter-1"],
-            backend_override="local_cli_agent",
-            provider_override="opencode_cli",
-            model_override="opencode_cli:opencode/big-pickle",
-            trigger_source="manual",
-            run_now=False,
-        )
-        run = db.query(CatalogingChapterRun).filter_by(job_id=job.id).one()
-        source_fact = CatalogingFact(
-            job_id=job.id,
-            chapter_run_id=run.id,
-            project_id="project-1",
-            chapter_id="chapter-1",
-            fact_type="chapter_overview",
-            raw_payload=json.dumps({"summary": "真实正文事实", "scenes": []}),
-            status="active",
-        )
-        projection_fact = CatalogingFact(
-            job_id=job.id,
-            chapter_run_id=run.id,
-            project_id="project-1",
-            chapter_id="chapter-1",
-            fact_type="section_scene_state",
-            raw_payload=json.dumps({"scene_number": 7, "title": "旧错误投影"}),
-            status="active",
-        )
-        db.add_all([source_fact, projection_fact])
-        db.commit()
-
-        loaded = load_facts_for_run(db, run)
-        listed = asyncio.run(list_cataloging_facts(
-            db,
-            "project-1",
-            {"job_id": job.id, "chapter_run_id": run.id, "limit": 10},
-        ))
-
-        assert [item["fact_type"] for item in loaded] == ["chapter_overview"]
-        assert listed["data"]["total"] == 1
-        assert [item["fact_type"] for item in listed["data"]["items"]] == [
-            "chapter_overview"
-        ]
-    finally:
-        db.close()
-        Base.metadata.drop_all(engine)
-        engine.dispose()
 
 
 def test_repeated_start_reuses_completed_same_chapter_version():

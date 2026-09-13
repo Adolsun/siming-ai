@@ -77,9 +77,9 @@ class GetMoshuUsageGuideTest(unittest.TestCase):
         self.assertIn("start_external_cataloging_job", text)
         self.assertIn("apply_pending_cataloging", text)
         self.assertIn("start_cataloging_job", text)
-        self.assertIn("phase='facts'", text)
-        self.assertIn("phase='candidates'", text)
-        self.assertIn("save_external_cataloging_facts", text)
+        self.assertIn("read_cataloging_archive", text)
+        self.assertIn("finalize", text)
+        self.assertIn("save_external_cataloging_candidates", text)
         self.assertIn("save_external_cataloging_candidates", text)
 
     def test_quickstart_tells_external_agents_to_store_long_content(self):

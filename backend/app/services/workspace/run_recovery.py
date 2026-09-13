@@ -20,7 +20,11 @@ from .assistant_public_errors import safe_tool_execution_failure
 from .executor import execute_workspace_action
 from .idempotency import generate_idempotency_key
 from .run_log import finish_run_step, mark_assistant_run, start_run_step
-from .run_step_payloads import DIRECT_MCP_RETRY_BLOCK_REASON, deserialize_step_request
+from .run_step_payloads import (
+    DIRECT_MCP_RETRY_BLOCK_REASON,
+    deserialize_step_request,
+    step_request_retry_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,9 @@ async def retry_step(
     # Tool execution is only safe when the exact argument object is available.
     # Historical values that were hard-truncated are rejected before
     # idempotency calculation or any business tool can run.
+    retry_block = step_request_retry_block_reason(original.request_json)
+    if retry_block:
+        raise ValueError(retry_block)
     args = deserialize_step_request(original.request_json)
 
     if not original.tool:

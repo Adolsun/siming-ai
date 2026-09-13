@@ -106,13 +106,13 @@ class SqlAlchemyCatalogingQueries:
             CatalogingChapterRun.status == "awaiting_confirmation",
         ).order_by(CatalogingChapterRun.chapter_order.asc()).first()
 
-    def first_resolution_candidate(self, job_id: str):
+    def first_plan_candidate(self, job_id: str):
         return self.session.query(CatalogingChapterRun).filter(
             CatalogingChapterRun.job_id == job_id,
             CatalogingChapterRun.status.in_(
                 [
                     "extracting",
-                    "facts_saved",
+                    "extracting",
                     "awaiting_confirmation",
                     "failed",
                     "completed",

@@ -9,6 +9,7 @@ import { Button, Layout, Menu, Tooltip, Typography } from 'antd'
 import {
   ApiOutlined,
   BookOutlined,
+  BranchesOutlined,
   CodeOutlined,
   HddOutlined,
   HomeOutlined,
@@ -26,6 +27,7 @@ import ModelCenterPage from './ModelCenterPage'
 import TabCache from '../components/TabCache'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 import AppVersion from '../components/AppVersion'
+import { openContextInspector } from '../shared/contextInspector'
 import { GettingStartedPanel } from './GettingStartedPage'
 import './GuiPage.css'
 
@@ -63,6 +65,7 @@ const MENU_ITEMS = [
     type: 'group' as const,
     label: '系统',
     children: [
+      { key: 'context-inspector', icon: <BranchesOutlined />, label: '调用记录' },
       { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
       { key: 'terminal', icon: <CodeOutlined />, label: '运行日志' },
     ],
@@ -153,7 +156,10 @@ function GuiPage() {
         <Menu
           mode="inline"
           selectedKeys={[activeTab]}
-          onClick={({ key }) => setActiveTab(key as GuiTab)}
+          onClick={({ key }) => {
+            if (key === 'context-inspector') openContextInspector({})
+            else setActiveTab(key as GuiTab)
+          }}
           items={navigationItems}
           inlineCollapsed={navigationCollapsed}
           className="gui-page-menu"

@@ -1,5 +1,7 @@
 # 建档后的角色刷新与大纲人物关联
 
+本记录来自 `D:/AI/simingdevelop1`，描述来源目录的现场核对与验证。当前 `codex/context-inspector` 分支的合并验证及安装包状态见 [稳定性补丁合并记录](2026-09-12-stability-patch-integration.md)。
+
 ## 现场核对
 
 2026-09-12 对本机第一章的建档记录、角色数据库和 HTTP 角色接口进行只读核对：

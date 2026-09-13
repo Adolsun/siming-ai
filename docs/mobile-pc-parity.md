@@ -4,7 +4,7 @@
 
 PC 是小说数据、领域副作用和上下文治理的唯一权威实现。Android 在线模式应尽量作为薄客户端；离线模式只允许可验证回放的修订；手机独立 Agent 的降级能力必须显式记录。
 
-当前共登记 **27** 项能力：**10** 项已对齐、**17** 项部分对齐、**0** 项待实现。
+当前共登记 **28** 项能力：**11** 项已对齐、**17** 项部分对齐、**0** 项待实现。
 
 ## 总览
 
@@ -26,6 +26,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 | `character.ai_config` | GET/PUT /characters/{character_id}/ai-config | 调用 PC 权威接口 | 修订队列回放 | 尚未支持 | 部分对齐 |
 | `character.relationships` | GET /characters/relationships; PUT /characters/{character_id}/relationships | 调用 PC 权威接口 | 修订队列回放 | 明确降级实现 | 部分对齐 |
 | `character.versions` | GET /characters/{character_id}/versions[/{version_id}] | 调用 PC 只读接口 | 明确阻止 | 尚未支持 | 部分对齐 |
+| `context.inspector` | siming.context_trace.v1 | 调用 PC 权威接口 | 本地副本 | 调用 PC 权威接口 | 已对齐 |
 | `context.selection` | prepare_task_context -> search_task_context -> submit_context_evidence | 调用 PC 权威接口 | 明确阻止 | 明确降级实现 | 部分对齐 |
 | `governance.items` | /narrative-governance/items[/{type}/{id}] | 调用 PC 权威接口 | 修订队列回放 | 明确降级实现 | 部分对齐 |
 | `novel_creation.session` | /api/v1/novel-creation/* | 调用 PC 权威接口 | 本地副本 | 明确降级实现 | 部分对齐 |
@@ -234,6 +235,17 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 独立 Agent：** 尚未支持：独立 Agent 不维护角色版本账本。
 - **已知缺口：**
   - Android 当前只读查看，尚未提供角色历史恢复。
+
+### `context.inspector` — 本机上下文调用记录、按消息查看与脱敏诊断包
+
+- **权威入口：** `siming.context_trace.v1`（`shared_generated_contract`）
+- **状态：** 已对齐
+- **副作用：** diagnostic_store
+- **幂等策略：** `set_replacement`；必须防重
+- **PC：** PC 权威实现
+- **Android 在线：** 调用 PC 权威接口
+- **Android 离线：** 本地副本
+- **Android 独立 Agent：** 调用 PC 权威接口
 
 ### `context.selection` — 模型驱动的正文/大纲上下文检索与复核
 

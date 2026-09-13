@@ -363,11 +363,7 @@ def _ensure_chapter_file(
 
 
 def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:
-    if run.status == "awaiting_confirmation" and mode == "auto":
-        return "apply"
-    if run.status == "facts_saved":
-        return "candidates"
-    return "facts"
+    return "apply" if run.status == "awaiting_confirmation" and mode == "auto" else "planning"
 
 
 def _task_text(
@@ -395,73 +391,14 @@ def _task_text(
 4. 禁止再次领取或处理下一章；下一章必须由司命启动全新的 CLI 回合。
 """
     else:
-        if stage == "facts":
-            stage_steps = f"""
-## 本轮唯一任务：只保存事实，不生成候选
-0. 立即调用 `report_agent_plan`，上报本轮计划：读取控制状态、领取 facts 阶段章节、读取章节文件、保存事实、验证进度。
-1. 调用 `get_next_external_cataloging_chapter`：
-   - `project_id="{job.project_id}"`
-   - `job_id="{job.id}"`
-   - `phase="facts"`
-   - `include_content=false`
-   - `include_prompt_pack=false`
-   - `include_context_indexes=false`
-   - `run_id="{agent_run_id}"`
-2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
-3. 调用 `report_agent_progress` 说明正在读取章节文件；随后裸读章节文件。
-4. 按共享提示词抽取不限数量的事实；调用 `save_external_cataloging_facts` 保存。
-   事实必须充分覆盖章节，不得为了缩短 JSON 而漏信息。
-   工具参数 `facts` 必须直接传原生 JSON 数组，数组元素直接传对象；禁止先序列化成 JSON 字符串。
-5. 调用 `verify_external_cataloging_progress`，然后结束本轮。
-6. 本轮禁止调用 `save_external_cataloging_candidates`、`apply_pending_cataloging`，
-   禁止处理下一章；候选阶段必须由司命启动下一次 CLI 回合。
-"""
-        else:
-            phase = "candidates"
-            chapter_outline_type = (
-                "outline_update" if chapter.outline_node_id else "outline_create"
-            )
-            chapter_outline_target = (
-                f'，并逐字携带 id="{chapter.outline_node_id}"'
-                if chapter.outline_node_id
-                else ""
-            )
-            fact_steps = """
-3. 本章事实已经保存。调用 `report_agent_progress` 说明正在恢复第二阶段。
-4. 调用 `list_cataloging_facts`，使用本任务中的 chapter_run_id；
-   has_more=true 时逐页使用 next_arguments，读完全部事实后再结合相关档案生成候选。
-"""
-            stage_steps = f"""
-## 本轮执行步骤
-0. 立即调用 `report_agent_plan`，上报本轮将读取文件、保存结构化结果并验证进度。
-1. 调用 `get_next_external_cataloging_chapter`：
-   - `project_id="{job.project_id}"`
-   - `job_id="{job.id}"`
-   - `phase="{phase}"`
-   - `include_content=false`
-   - `include_prompt_pack=false`
-   - `include_context_indexes=false`
-   - `run_id="{agent_run_id}"`
-2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
-{fact_steps}
-6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后分小批保存候选。
-7. 读取每次保存返回值；不完整时只补齐 missing_required_items；若清单漏项，可单独重发一条 chapter_summary 作幂等增补；若清单误把同一身份的别名或近义标题列成多个实体，则单独重发一条带 coverage_manifest_mode="replace" 的 chapter_summary，并给出五个字段齐全的纠正清单；若章节关联只缺少项目，可重发聚合 chapter_link 增补同一条记录；若既有 chapter_link 含清单外别名、误称或错误端点，则单独重发一条带 chapter_link_mode="replace" 的 chapter_link，并完整提供 characters、worldbuilding_titles、locations、items、events 五个数组；不得重发章级大纲；auto_applied=true 时禁止再次 save/apply；等待确认时立即停止。
-8. 仅在 auto_applied=true 后调用一次 `verify_external_cataloging_progress`，然后结束本轮。
-9. 验证完成后必须立即结束当前 CLI 回合。禁止重复保存、重复应用，禁止再次领取章节。
-"""
-            managed_override = f"""
-## 司命托管候选事务约束（优先于共享提示词）
-1. `candidates` 必须是原生 JSON 数组，不得传 JSON 字符串或聚合包装对象。每次调用最多 3 个候选；首次调用必须恰好 2 个并依次为：
-   - 一条完整、实质性的 `chapter_summary`；
-   - 一条 node_type="chapter" 的 `{chapter_outline_type}`{chapter_outline_target}。
-   首次不得夹带其他候选；后续不得重复章级大纲。只有 missing_required_items 明确要求修正 coverage_manifest 时，才可单独重发一条 chapter_summary，系统会更新同一张摘要卡而不是新增重复卡。漏项直接增补；若误列别名或近义标题，设置 coverage_manifest_mode="replace" 并提交完整的 scene_count、characters、worldbuilding、relationships、character_profiles，替换操作不得与任何其他候选同批。既有聚合 chapter_link 含清单外别名、误称或错误端点时，单独提交 chapter_link_mode="replace"，并完整给出 characters、worldbuilding_titles、locations、items、events 五个数组；系统替换同一条关联候选，不新增第二条。
-2. chapter_summary.coverage_manifest.scene_count 必须逐字采用 `chapter_overview.payload.scenes` 的数组长度，不得按 outline_fact 数量、段落或主观判断重算。section 节点总数必须恰好等于这个 scene_count；多个 outline_fact 属于同一场景时合并进同一个 section。每条必须明确填 scene_number。若返回 scene_repair，须按 source_scenes 完整重排全部场景，不得只改末条。单独提交一个 scene_outline_replace 对象，expected_candidate_ids 填当前全部 section 候选真实ID，sections 数组提交全部N条完整 outline_create/section 候选；所有场景修正一起通过才会替换，不得遗漏审批等中间事件。
-3. coverage_manifest.characters 只列稳定、可持续识别的人物。未具名岗位、临时称谓或泛指参与者只写进摘要、场景与章节事件，不得创建或更新角色、状态、关系、档案或角色章节关联。`栏目负责人`、`综合科记录人` 这类未具名岗位不是角色卡。
-4. 先读当前 worldbuilding 镜像。coverage_manifest.worldbuilding 只使用当前 active 设定的精确标题；UUID 只能放在 `id` 字段，不能当标题；别名、近义词和同一设定的拆分说法不能重复列入。事实中的 canonical_title_hint 是事实标签；应根据编号、正文和现有内容解析到 active 条目的精确 id/title。两者不同时，在承接该事实的世界观候选用 source_fact_titles 列出原事实标签，显式声明映射。已有设定使用精确 id 的 update/timeline，确有全新稳定规则时才 create。
-5. 全章只保存一条聚合 `chapter_link`，一次列全稳定角色、世界观标题、章级大纲、地点、物件和事件；不得按角色、设定或事件各建一条 link。characters 中每个角色只出现一次，由你选择一个 appearance_type。
-6. character_relationship 仅用于正文明确确认或改变、且会持续影响后文的稳定关系；同一有向角色对只能选择一个当前 relationship_type，不得同时声明近义类型。本章没有这种变化时 relationships=[] 且不生成关系候选。character_profiles 仅列全新角色或本章确有稳定档案变化的角色；普通出场、提及和当前状态变化不要求 character_update。
-7. character_state_update 只使用已读角色卡中的稳定主名；只提交本章有依据的变化字段。电话或消息参与者未明示实时地点时省略 current_location，不得把通话另一端的场景地点写给该人物。appearance 或 age 仅在正文明确变化时提交；修改已有值必须附逐字复制当前值的 appearance_before/age_before，以及本章正文逐字摘录的 appearance_evidence/age_evidence，否则省略。items_or_assets 是整字段替换：已有非空值且本章确需更新时，必须用 items_or_assets_before 逐字复制当前完整值，新值也必须逐字包含旧值并在其后追加本章状态；不得把同场其他人物经手的物件归给当前角色。已有角色必须用真实 id 更新，禁止同名 character_create。解决叙事治理项必须带真实 resolves_item_id 或 resolves_dedupe_key；找不到就保留待复核，不得按标题猜测关闭。
-8. 每次保存后只根据返回的 missing_required_items 组织下一批，仍然最多 3 个。除用于补充 coverage_manifest 的单条 chapter_summary 或补充遗漏关联的单条聚合 chapter_link 外，已通过候选不得重发；auto_applied=true 后只验证一次并结束。托管自动模式会在候选完整时由工具事务内应用，禁止调用 apply_pending_cataloging。
+        stage_steps = f"""
+## 本轮唯一任务：完成本章建档计划
+0. 所需类别开放后，用 report_agent_plan 上报读取、规划、提交和验证步骤。
+1. get_next_external_cataloging_chapter(job_id="{job.id}", include_content=false, include_prompt_pack=false)。
+2. 只处理绑定的 chapter_id="{chapter.id}"，阅读本章文件与需要的真实档案；可通过 read_cataloging_archive 取得数据库权威记录。
+3. 由你统一决定身份、场景与变更，先保存摘要计划，再分批提交相关候选；完整后 finalize=true。
+4. 返回错误时只修正失败字段或对象。auto_applied=true 后只 verify_external_cataloging_progress 一次并结束；manual 等待作者确认。
+5. 禁止处理下一章；下一章由司命开启新的回合。
 """
 
     return f"""# 司命本机 CLI 作品建档任务
@@ -487,7 +424,7 @@ def _task_text(
 - 数据库是唯一权威写入源；项目目录是只读镜像。
 - 可以使用文件读取、Glob、Grep 搜索 `{project_folder}`。
 - 禁止直接修改 `chapters/`、`characters/`、`worldbuilding/`、`outline/`、`relationships/`。
-- 所有事实、候选和应用操作必须调用 Siming MCP 工具。
+- 所有候选和应用操作必须调用 Siming MCP 工具。
 - 每个 MCP 调用都必须带 `project_id="{job.project_id}"` 和 `run_id="{agent_run_id}"`。
 - 不要创建 candidates.jsonl、临时档案或其他旁路数据文件。
 
@@ -505,7 +442,7 @@ def _task_text(
 {managed_override}
 
 ## 输出约束
-不要在最终回复里复制章节、完整事实或完整候选。只简短说明本章处理结果；正式数据必须已经通过 MCP 保存。
+不要在最终回复里复制章节、完整候选。只简短说明本章处理结果；正式数据必须已经通过 MCP 保存。
 """
 
 
@@ -633,7 +570,7 @@ async def _run_cli_turn(
         progress_probe = CandidateProgressProbe(
             category_file=category_file, chapter_run_id=run.id,
             session_factory=SessionLocal,
-        ) if stage == "candidates" else None
+        ) if stage == "planning" else None
         for _step in range(8):
             state = read_tool_category_state(category_file)
             prompt = _task_prompt(task_file, job, run, chapter, agent_run_id, stage)

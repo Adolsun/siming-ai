@@ -110,6 +110,7 @@ npm run build
 - [ADR 005：Prompt 与 Tool 契约](adr-005-prompt-and-tool-contracts.md)
 - [ADR 006：前端状态与契约](adr-006-frontend-state-and-contracts.md)
 - [ADR 007：Agent 会话上下文与原生工具边界](adr-007-agent-conversation-context.md)
+- [内置上下文查看实施方案（准备完成，待实施）](../context-inspector-plan.md)
 - [数据库恢复](../operations/database-recovery.md)
 - [Android/PC 能力一致性](../mobile-pc-parity.md)
 - [Gateway 威胁模型](../security/gateway-threat-model.md)

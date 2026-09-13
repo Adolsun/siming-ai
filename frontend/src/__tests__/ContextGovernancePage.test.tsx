@@ -73,11 +73,11 @@ describe('ContextGovernancePage', () => {
     render(<ContextGovernancePage projectId="p1" />)
 
     expect(await screen.findByText('Rebuild pending')).toBeInTheDocument()
-    expect(screen.getByText('writing')).toBeInTheDocument()
-    expect(screen.getByText('320 / 8500 tokens')).toBeInTheDocument()
+    expect(screen.getByText('章节写作')).toBeInTheDocument()
+    expect(screen.getByText('约 320 / 8500 tokens')).toBeInTheDocument()
   })
 
-  it('labels an unknown model as a bounded 256K fallback', async () => {
+  it('does not invent a model capacity when the manifest has no model name', async () => {
     const unknownModelManifest = { ...manifest, model: '' }
     api.get.mockImplementation((url: string) => {
       if (url.includes('context-governance-status')) {
@@ -91,7 +91,8 @@ describe('ContextGovernancePage', () => {
 
     render(<ContextGovernancePage projectId="p1" />)
 
-    expect(await screen.findByText('未知模型（256K 临时兜底）')).toBeInTheDocument()
+    expect(await screen.findByText('未记录模型名称')).toBeInTheDocument()
+    expect(screen.queryByText(/256K/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Agent 会阻断/)).not.toBeInTheDocument()
   })
 
@@ -99,7 +100,7 @@ describe('ContextGovernancePage', () => {
     mockLoad()
     render(<ContextGovernancePage projectId="p1" />)
 
-    await screen.findByText('writing')
+    await screen.findByText('章节写作')
     const view = document.querySelector('.anticon-eye')?.closest('button')
     expect(view).not.toBeNull()
     fireEvent.click(view as HTMLButtonElement)
@@ -131,7 +132,7 @@ describe('ContextGovernancePage', () => {
     })
     render(<ContextGovernancePage projectId="p1" />)
 
-    await screen.findByText('editing')
+    await screen.findByText('正文修改')
     const views = Array.from(document.querySelectorAll('.anticon-eye'))
       .map((icon) => icon.closest('button'))
       .filter((button): button is HTMLButtonElement => Boolean(button))
@@ -143,14 +144,14 @@ describe('ContextGovernancePage', () => {
       secondDetail.resolve({ data: { data: secondManifest } })
       await secondDetail.promise
     })
-    expect(await screen.findByText('Manifest · editing')).toBeInTheDocument()
+    expect(await screen.findByText('参考资料 · 正文修改')).toBeInTheDocument()
 
     await act(async () => {
       firstDetail.resolve({ data: { data: manifest } })
       await firstDetail.promise
     })
-    expect(screen.getByText('Manifest · editing')).toBeInTheDocument()
-    expect(screen.queryByText('Manifest · writing')).not.toBeInTheDocument()
+    expect(screen.getByText('参考资料 · 正文修改')).toBeInTheDocument()
+    expect(screen.queryByText('参考资料 · 章节写作')).not.toBeInTheDocument()
   })
 
   it('requires and submits an override reason', async () => {
@@ -158,7 +159,7 @@ describe('ContextGovernancePage', () => {
     api.post.mockResolvedValue({ data: { code: 0 } })
     render(<ContextGovernancePage projectId="p1" />)
 
-    await screen.findByText('writing')
+    await screen.findByText('章节写作')
     const override = document.querySelector('.anticon-safety-certificate')?.closest('button')
     expect(override).not.toBeNull()
     fireEvent.click(override as HTMLButtonElement)

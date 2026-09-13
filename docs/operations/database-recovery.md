@@ -24,7 +24,15 @@ The working copy may contain private novel data. Do not attach it to public issu
 
 ## Automatic Backups
 
-Backups are written beside the database under `backups/` and include the application version and UTC timestamp. The SQLite backup API captures committed WAL data. A backup is not accepted until its integrity check returns `ok`.
+Backups are written beside the database under `backups/`. Automatic schema-upgrade and initial-sync snapshots include the reason and UTC timestamp in their names. **Only the latest verified automatic backup is retained for each database.** A successful backup may retire the previous snapshot even when its contents differ. Copy any snapshot you want to archive to a separate location or give it an explicit/manual name.
+
+The SQLite online backup API captures committed WAL data. The destination is checkpointed to a standalone database and must pass `PRAGMA integrity_check` before publication. Only then are older generated upgrade/sync backups and their temporary sidecars removed. Explicit/manual snapshots use a `manual-` name and are outside automatic retention; files for other databases and filesystem links are also excluded.
+
+Backup creation is serialized across processes. It uses one reusable temporary filename, removes failed-attempt sidecars, and checks available space for the copy plus a 32 MiB reserve before writing. An interrupted copy can be cleaned on the next backup attempt. While a new backup is being created, the previous verified copy and the in-progress copy may coexist; a failed copy never replaces the previous recovery backup. Locked historical files are reported and retried on the next successful backup.
+
+Startup verifies the complete migration path before any backup or retired-version normalization. A client that cannot recognize a newer schema enters read-only recovery without copying the database. Updating the configured external MCP command is necessary when it still points to an older installation/source checkout.
+
+Android's independent local database uses Room migrations and does not run this Alembic backup workflow. Gateway-backed mobile operations use the same server backup policy described here.
 
 ## Read-Only Recovery
 

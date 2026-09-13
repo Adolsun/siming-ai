@@ -223,9 +223,15 @@ async def application_lifespan(app: FastAPI) -> AsyncIterator[None]:
     installed_handler, previous_handler = _install_windows_transport_exception_filter(loop)
     app.state.runtime_bootstrap = RuntimeBootstrapStatus()
     try:
+        from ..modules.operations.infrastructure.trace_runtime import start_trace_store
+
+        await asyncio.to_thread(start_trace_store, get_settings().database_url)
         app.state.runtime_bootstrap = await _bootstrap_runtime(app)
         yield
     finally:
+        from ..modules.operations.infrastructure.trace_runtime import stop_trace_store
+
+        await asyncio.to_thread(stop_trace_store)
         await asyncio.to_thread(_shutdown_runtime)
         if loop.get_exception_handler() is installed_handler:
             loop.set_exception_handler(previous_handler)

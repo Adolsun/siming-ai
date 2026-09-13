@@ -24,7 +24,8 @@ from app.architecture.tool_status import (
 )
 from app.core.utils import utc_isoformat
 from app.services.chapter_writing_constraints import recommended_han_character_target
-from app.services.workspace.assistant_public_errors import public_model_error_message
+from app.services.conversation_context import ConversationContextError, ConversationContextErrorCode
+from app.services.workspace.assistant_public_errors import public_context_failure, public_model_error_message
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9._:/-]{1,255}$")
 _SUCCESS_STATUSES = TOOL_SUCCESS_STATUSES
@@ -58,6 +59,18 @@ def _public_tool_remediation(
     capacity = _capacity_remediation(value)
     if status in _ERROR_STATUSES and capacity is not None:
         return capacity
+
+    if status in _ERROR_STATUSES and isinstance(value, Mapping):
+        data = value.get("data") or value.get("remediation")
+        if isinstance(data, Mapping) and (data.get("reason") or data.get("code")) == "native_tool_not_open":
+            retryable = data.get("retryable") is True
+            return {
+                "code": "native_tool_not_open",
+                "message": "本批包含当前未开放的工具，整批未执行。" + (
+                    "正在让模型按当前工具清单修正。" if retryable else "自动修正已停止。"
+                ),
+                "retryable": retryable,
+            }
 
     if (
         tool != "save_external_chapter_draft"
@@ -303,6 +316,10 @@ def _public_failure(value: Any) -> dict[str, Any] | None:
     if not code:
         return None
     details = value.get("details") if isinstance(value.get("details"), Mapping) else {}
+    if code == "conversation_protocol_invalid" and details.get("reason") == "native_tool_not_open":
+        return public_context_failure(ConversationContextError(
+            ConversationContextErrorCode.PROTOCOL_INVALID, "", details=dict(details),
+        )).to_dict()
     retryable = bool(details.get("retryable"))
     projected_details: dict[str, Any] = {"retryable": retryable}
     error_id = _safe_identifier(details.get("error_id"))

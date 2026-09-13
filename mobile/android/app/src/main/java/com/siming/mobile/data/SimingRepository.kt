@@ -100,6 +100,7 @@ class SimingRepository(context: Context) {
     private val tokenStore = SecureTokenStore(appContext)
     private val directApiStore = SecureApiConfigStore(appContext)
     private val api = GatewayApi(tokenStore)
+    private val contextTraceStore = runCatching { com.siming.mobile.data.observability.ContextTraceStore.get(appContext) }.getOrNull()
     private val directApi = DirectApiClient(allowCleartextForTests = BuildConfig.DEBUG)
     private val mobileAssistantConversationStore = MobileAssistantConversationStore(appContext)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }

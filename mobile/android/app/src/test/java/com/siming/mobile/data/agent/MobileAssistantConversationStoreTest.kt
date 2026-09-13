@@ -199,8 +199,11 @@ class MobileAssistantConversationStoreTest {
                     projectId = "project-1",
                     turnContext = turn,
                     transaction = rejected,
-                    admission = admission,
-                    overCapacityDetail = "workspace transaction exceeds the protocol",
+                    recoveryFits = admission.recoveryFits,
+                    terminalError = MobileConversationContextException(
+                        MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+                        "workspace transaction exceeds the protocol",
+                    ),
                     afterPersist = {},
                 )
             }

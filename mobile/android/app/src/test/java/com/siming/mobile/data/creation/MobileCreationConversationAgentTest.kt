@@ -248,6 +248,17 @@ class MobileCreationConversationAgentTest {
         val persisted = AtomicInteger()
         val background = "完整角色背景。".repeat(500)
         val reply = "角色姓名已更新为林遥，原有背景已保留。"
+        val deliveredReceipt = java.util.concurrent.atomic.AtomicReference<JsonObject>()
+        val captures = java.util.Collections.synchronizedList(mutableListOf<Pair<JsonObject, String>>())
+        val previousSink = com.siming.mobile.data.observability.MobileTrace.sink
+        com.siming.mobile.data.observability.MobileTrace.sink = object : com.siming.mobile.data.observability.ContextTraceSink {
+            override fun mode() = "full"
+            override fun submit(event: JsonObject, content: String?): Boolean {
+                if (content != null) captures += event to content
+                return true
+            }
+        }
+        try {
         val base = session()
         val source = JsonObject(base.toMutableMap().apply {
             put("draft", JsonObject(base.getValue("draft").jsonObject.toMutableMap().apply {
@@ -293,6 +304,7 @@ class MobileCreationConversationAgentTest {
                         assertTrue(body.getValue("tools").jsonArray.isEmpty())
                         val message = body.getValue("messages").jsonArray.last().jsonObject
                         val receipt = Json.parseToJsonElement(message.string("content")).jsonObject
+                        deliveredReceipt.set(receipt)
                         assertEquals("ok", receipt.string("status"))
                         val data = receipt.getValue("data").jsonObject
                         savedEntityId = data.string("id")
@@ -320,7 +332,18 @@ class MobileCreationConversationAgentTest {
                 .getValue("characters").jsonObject.getValue("data").jsonObject.getValue("characters").jsonArray.first().jsonObject
             assertEquals("林遥", character.string("name"))
             assertEquals(background, character.string("background"))
+            fun captured(layer: String) = captures.single { (event, content) ->
+                event.getValue("data").jsonObject.string("layer") == layer &&
+                    Json.parseToJsonElement(content).jsonObject.string("tool") == "patch_creation_entity"
+            }
+            val raw = captured("tool_receipt")
+            val projected = captured("model_visible_tool_result")
+            assertTrue(raw.second.contains(background))
+            assertFalse(projected.second.contains(background))
+            assertEquals(deliveredReceipt.get(), Json.parseToJsonElement(projected.second))
+            assertEquals(raw.first["span_id"], projected.first["span_id"])
         }
+        } finally { com.siming.mobile.data.observability.MobileTrace.sink = previousSink }
     }
 
     @Test

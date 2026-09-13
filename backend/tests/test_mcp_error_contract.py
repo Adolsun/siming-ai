@@ -65,7 +65,7 @@ class McpErrorContractTest(unittest.TestCase):
                 pass
             exc = PendingRollbackError("previous statement failed")
 
-        payload = _build_error_payload(tool_name="save_external_cataloging_facts", exc=exc)
+        payload = _build_error_payload(tool_name="save_external_cataloging_candidates", exc=exc)
 
         self.assertEqual(payload["error_type"], "PendingRollbackError")
         self.assertNotIn("Tool execution failed", payload["detail"])

@@ -8,6 +8,8 @@ package com.siming.mobile.data.network
  */
 internal object PcApiPaths {
     const val RUNTIME_CAPABILITIES = "/api/v1/runtime/capabilities"
+    const val CONTEXT_TRACES = "/api/v1/context-traces"
+    fun contextTrace(suffix: String): String = CONTEXT_TRACES + if (suffix.isBlank()) "" else "/$suffix"
     const val PROJECTS = "/api/v1/projects"
     const val IMPORT_PROJECT_FILE = "/api/v1/import/project-file"
     const val PROJECT_PACKAGE_IMPORT = "/api/v1/projects/project-package/import"

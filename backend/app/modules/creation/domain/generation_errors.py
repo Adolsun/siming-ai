@@ -1,4 +1,4 @@
-"""Safe, structured diagnostics for all creation output contracts."""
+"""Shared creation-output diagnostics without validator import cycles."""
 
 from __future__ import annotations
 

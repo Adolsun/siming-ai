@@ -95,6 +95,22 @@ internal class MobileCreationConversationAgent(
         turnContext: MobileAssistantTurnContext,
         config: DirectApiConfig,
         onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
+    ): MobileCreationConversationResult = com.siming.mobile.data.observability.MobileTrace.turn(
+        "creation_session", source.string("id"), buildJsonObject {
+            put("turn_id", turnContext.turnId); put("conversation_id", turnContext.conversationId); put("user_message_id", turnContext.userMessageId)
+        },
+    ) { executeTurn(source, message, storageId, conversation, turnContext, config, onProgress).also {
+        com.siming.mobile.data.observability.MobileTrace.current.get()?.businessStatus = it.status
+    } }
+
+    private suspend fun executeTurn(
+        source: JsonObject,
+        message: String,
+        storageId: String,
+        conversation: MobileConversationSnapshot,
+        turnContext: MobileAssistantTurnContext,
+        config: DirectApiConfig,
+        onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
     ): MobileCreationConversationResult {
         require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
         var working = source
@@ -294,8 +310,12 @@ internal class MobileCreationConversationAgent(
                     projectId = storageId,
                     turnContext = turnContext,
                     transaction = deliveredTransaction(turn, calls, rejectedResults),
-                    admission = batchAdmission,
-                    overCapacityDetail = "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行",
+                    recoveryFits = batchAdmission.recoveryFits,
+                    terminalError = MobileConversationContextException(
+                        MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+                        "工具批次无法在当前模型预算内恢复，已保留进度；本批次未执行。" +
+                            "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行。",
+                    ),
                 ) { runtime ->
                     deliveredTransactions.clear()
                     deliveredTransactions += runtime.activeTransactions
@@ -370,6 +390,10 @@ internal class MobileCreationConversationAgent(
             val modelVisibleResults = mutableListOf<JsonObject>()
             for (call in calls) {
                 var attemptedWrite = false
+                com.siming.mobile.data.observability.MobileTrace.span("tool", call.name) {
+                com.siming.mobile.data.observability.MobileTrace.payload("tool_arguments", buildJsonObject {
+                    put("tool_call_id", call.id); put("arguments", call.arguments)
+                })
                 val execution = try {
                     when {
                         call.name !in availableTools -> ToolExecution(
@@ -414,6 +438,8 @@ internal class MobileCreationConversationAgent(
                         result(call.name, "error", error.message ?: "工具执行失败"),
                     )
                 }
+                com.siming.mobile.data.observability.MobileTrace.toolOutcome(execution.result)
+                com.siming.mobile.data.observability.MobileTrace.payload("tool_receipt", execution.result)
                 working = execution.session
                 execution.createdProjectId?.let { createdProjectId = it }
                 toolResults += execution.result
@@ -447,6 +473,8 @@ internal class MobileCreationConversationAgent(
                     ))
                 }
                 val modelVisibleResult = creationModelVisibleResult(call.name, execution.result)
+                com.siming.mobile.data.observability.MobileTrace.toolOutcome(modelVisibleResult)
+                com.siming.mobile.data.observability.MobileTrace.payload("model_visible_tool_result", modelVisibleResult)
                 val toolMessage = buildJsonObject {
                     put("role", "tool")
                     put("tool_call_id", call.id)
@@ -454,6 +482,7 @@ internal class MobileCreationConversationAgent(
                 }
                 turnProtocolMessages += toolMessage
                 modelVisibleResults += modelVisibleResult
+                }
             }
             val runtime = conversationStore.recordDeliveredToolTransaction(
                 projectId = storageId,

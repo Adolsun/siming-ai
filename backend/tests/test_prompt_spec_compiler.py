@@ -42,7 +42,6 @@ def test_builtin_prompt_catalog_compiles_against_workspace_tools():
         "assistant.chapter.quality",
         "assistant.chapter.quality.public",
         "creation.novel.stage",
-        "continuity.cataloging.facts",
         "continuity.cataloging.candidates",
         "continuity.cataloging.external",
     }
@@ -90,7 +89,7 @@ def test_creation_and_continuity_facades_render_compiled_sources():
     external = render_external_cataloging_prompt()
 
     assert "概念" in creation and "按作者本轮要求生成" in creation
-    assert "character_state_update" in candidates
-    assert "phase=\"facts\"" in external
-    assert "phase=\"candidates\"" in external
+    assert "character_bindings" in candidates
+    assert "read_cataloging_archive" in external
+    assert "finalize=true" in external
     assert candidates in external
