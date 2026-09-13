@@ -126,8 +126,7 @@ API-free 工具（可以自由使用）：
 - save_external_chapter_draft → 携带选择令牌保存一份未入库草稿；成功后立即结束本轮
 - save_external_outline_draft → 携带规划令牌保存一份未写入正式大纲的提案；成功后立即结束本轮
 - record_external_quality_review → 可选的独立质量评审记录；基础写作任务不要调用
-- start_external_cataloging_job / get_next_external_cataloging_chapter(phase="facts") / save_external_cataloging_facts → 外部建档事实阶段
-- get_next_external_cataloging_chapter(phase="candidates") / list_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging / verify_external_cataloging_progress → 外部建档候选、应用与验证阶段
+- start_external_cataloging_job / get_next_external_cataloging_chapter / read_cataloging_archive / save_external_cataloging_candidates → 同一 Agent 完成本章建档计划
 - get_project_archive_status → 验证数据
 - get_prompt_pack → 获取写作方法论
 - remember / recall / forget → 记忆管理
@@ -139,8 +138,8 @@ API-free 工具（可以自由使用）：
 2. 写章节正文时，必须先建立精简基线，再按需检索并提交精确来源；看到 submit_context_evidence 返回的 task_context 与选择令牌后，才能在下一模型步骤生成正文并调用 save_external_chapter_draft。保存成功后立即停止。不得在同一 AI 回合写入正式章节；作者会在界面选择“保存并建档”或“仅保存”。
 3. 新章草稿只能关联尚未写入正式正文的章级大纲。已有正式章节的改写不走章节写作草稿路径；应由作者在编辑器中修改，或另行发起可审核的独立修订。
 4. 补写新章大纲时，使用 prepare_task_context(task_type="outline_planning") 建立位置与文风基线，再按需检索并提交精确来源；在下一模型步骤生成节点并调用 save_external_outline_draft。成功后立即停止，不得创建正式大纲或继续写正文。作者在界面编辑、确认或放弃提案。
-5. 建档按章节顺序执行 facts → candidates → apply → verify：facts 阶段只读当前章并保存事实，candidates 阶段读取事实与当前档案并保存完整候选；不要把完整 facts 或 candidates 数组贴在聊天回复里。
-6. 前一章应用并验证完成后才能处理下一章；不要并行抽取后续章节，也不要跳过事实阶段直接保存候选。
+5. 建档由同一 Agent 读取当前章与真实档案，提交一份含明确实体绑定的计划；使用原生 candidates 数组增量保存，finalize=true 后才验证完整性并按授权整章应用。不要把完整候选数组贴在聊天回复里。
+6. 前一章应用并验证完成后才能处理下一章；不要并行处理后续章节。字段错误只修正失败对象，已接受候选保留；手动模式等待作者确认。
 7. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
 
 工作方式：

@@ -17,14 +17,14 @@ from ....database.models import (
     CatalogingJob,
 )
 from ....services.cataloging.candidate_io import candidate_to_dict
-from ....services.cataloging.fact_store import SOURCE_FACT_TYPES, fact_to_dict, load_facts_for_run
+from ....services.cataloging.fact_store import fact_to_dict
 from ....services.cataloging.job_control import (
     cancel_job,
     first_blocking_run,
     first_retryable_run,
     pause_job,
     refresh_job_progress,
-    reset_run_for_resolution_retry,
+    reset_run_for_plan_repair,
     reset_run_for_retry,
     resume_job,
     set_job_execution_mode,
@@ -195,7 +195,6 @@ async def list_cataloging_facts(db: Session, project_id: str, args: dict[str, An
     query = db.query(CatalogingFact).filter(
         CatalogingFact.job_id == job.id,
         CatalogingFact.status == "active",
-        CatalogingFact.fact_type.in_(SOURCE_FACT_TYPES),
     )
     chapter_run_id = _managed_cataloging_run_id(job) or str(args.get("chapter_run_id") or "").strip()
     if chapter_run_id:
@@ -336,30 +335,30 @@ async def retry_current_cataloging_chapter(db: Session, project_id: str, args: d
     }
 
 
-async def rerun_cataloging_resolution_current(db: Session, project_id: str, args: dict[str, Any]) -> dict:
+async def repair_cataloging_plan_current(db: Session, project_id: str, args: dict[str, Any]) -> dict:
     job = _get_job(db, project_id, args)
     if not job:
-        return {"tool": "rerun_cataloging_resolution_current", "status": "skipped", "detail": "未找到建档任务"}
+        return {"tool": "repair_cataloging_plan_current", "status": "skipped", "detail": "未找到建档任务"}
     run = first_blocking_run(db, job)
     if not run:
         run = (
             db.query(CatalogingChapterRun)
             .filter(CatalogingChapterRun.job_id == job.id)
-            .filter(CatalogingChapterRun.status == "facts_saved")
+            .filter(CatalogingChapterRun.status == "extracting")
             .order_by(CatalogingChapterRun.chapter_order.asc())
             .first()
         )
-    if not run or not load_facts_for_run(db, run):
-        return {"tool": "rerun_cataloging_resolution_current", "status": "skipped", "detail": "当前章节没有可复用事实，无法只重跑第二阶段"}
-    reset_run_for_resolution_retry(db, job, run)
+    if not run:
+        return {"tool": "repair_cataloging_plan_current", "status": "skipped", "detail": "当前没有需要修正的建档计划"}
+    reset_run_for_plan_repair(db, job, run)
     db.flush()
     worker_queued = queue_managed_cataloging_job(
         job,
         run_now=bool(args.get("run_now", True)),
     )
-    detail = "已保留事实并开始重跑第二阶段" if worker_queued else "已保留事实，等待外部 Agent 重跑第二阶段"
+    detail = "已保留候选并开始修正本章计划" if worker_queued else "已保留候选，等待外部 Agent 修正本章计划"
     return {
-        "tool": "rerun_cataloging_resolution_current",
+        "tool": "repair_cataloging_plan_current",
         "status": "ok",
         "detail": detail,
         "data": {

@@ -10,8 +10,7 @@ const { Text } = Typography
 
 const catalogingStageLabel: Record<string, string> = {
   queued: '准备中',
-  facts: '事实抽取',
-  candidates: '候选生成',
+  planning: '生成建档计划',
   apply: '写入档案',
   completed: '处理完成',
 }
@@ -19,13 +18,12 @@ const catalogingStageLabel: Record<string, string> = {
 interface CatalogingJobControlCardProps {
   job: CatalogingJob | null
   currentRun?: CatalogingRun
-  factCount?: number
   candidateCount?: number
   progress: number
   streaming: boolean
   onApplyPending: () => void
   onRetryCurrent: () => void
-  onRerunResolutionCurrent: () => void
+  onRepairPlanCurrent: () => void
   onRecoverCurrent: () => void
   onSkipCurrent: () => void
   onPauseCurrentJob: () => void
@@ -37,13 +35,12 @@ interface CatalogingJobControlCardProps {
 function CatalogingJobControlCard({
   job,
   currentRun,
-  factCount = 0,
   candidateCount = 0,
   progress,
   streaming,
   onApplyPending,
   onRetryCurrent,
-  onRerunResolutionCurrent,
+  onRepairPlanCurrent,
   onRecoverCurrent,
   onSkipCurrent,
   onPauseCurrentJob,
@@ -72,7 +69,7 @@ function CatalogingJobControlCard({
     outcome = completed ? 'partial_success' : 'blocked'
     outcomeTitle = '当前章节遇到问题，任务已停在最近检查点'
     result = {
-      summary: `${job.error || '当前章节建档未完成。'} 已写入的档案会保留，重试只补未完成部分；尚未写入时会重新生成。`,
+      summary: `${job.error || '当前章节建档未完成。'} 已完成章节和暂存候选均保留；选择“保留候选并修正”可继续处理当前计划。`,
       completed: completed ? [`${completed} 章已完成`] : [],
       incomplete: [`${Math.max(0, total - completed)} 章尚未完成`],
     }
@@ -128,7 +125,7 @@ function CatalogingJobControlCard({
               {job.current_stage && (
                 <Tag color="processing">{catalogingStageLabel[job.current_stage] || job.current_stage}</Tag>
               )}
-              <Text type="secondary">已保存 {factCount} 条事实 · {candidateCount} 条候选</Text>
+              <Text type="secondary">已暂存 {candidateCount} 条候选</Text>
             </Space>
             {(job.current_message || job.last_activity_at) && (
               <Space wrap>
@@ -146,8 +143,8 @@ function CatalogingJobControlCard({
         {outcome && <PersistentOutcome outcome={outcome} title={outcomeTitle} result={result} />}
         {job.status === 'waiting_confirmation' && (
           <PersistentActionBar label="作品建档操作">
-            <Button onClick={onRetryCurrent}>重试当前章节</Button>
-            <Button onClick={onRerunResolutionCurrent}>重跑候选生成</Button>
+            <Button onClick={onRetryCurrent}>重新生成当前章</Button>
+            <Button onClick={onRepairPlanCurrent}>保留候选并修正</Button>
             <Button danger onClick={onSkipCurrent}>显式跳过当前章节</Button>
             <Button danger onClick={onCancelCurrentJob}>取消任务</Button>
             <Button type="primary" icon={<StepForwardOutlined aria-hidden="true" />} onClick={onApplyPending}>
@@ -157,11 +154,11 @@ function CatalogingJobControlCard({
         )}
         {job.status === 'paused_on_failure' && (
           <PersistentActionBar label="作品建档恢复操作">
-            <Button onClick={onRerunResolutionCurrent}>重跑候选生成</Button>
+            <Button onClick={onRetryCurrent}>重新生成当前章</Button>
             <Button onClick={onRecoverCurrent}>使用候选项确认</Button>
             <Button danger onClick={onSkipCurrent}>显式跳过当前章节</Button>
             <Button danger onClick={onCancelCurrentJob}>取消任务</Button>
-            <Button type="primary" onClick={onRetryCurrent}>重试当前章节</Button>
+            <Button type="primary" onClick={onRepairPlanCurrent}>保留候选并修正</Button>
           </PersistentActionBar>
         )}
         {['queued', 'running'].includes(job.status) && (

@@ -22,11 +22,9 @@ class ExternalCatalogingToolsRegisteredTest(unittest.TestCase):
         td = registry.get("get_next_external_cataloging_chapter")
         self.assertIsNotNone(td)
 
-    def test_save_facts_registered(self):
-        td = registry.get("save_external_cataloging_facts")
-        self.assertIsNotNone(td)
-        self.assertEqual(td.tool_type, "write")
-        self.assertTrue(td.writes_project_data)
+    def test_archive_reader_replaces_the_old_fact_writer(self):
+        self.assertIsNone(registry.get("save_external_cataloging_facts"))
+        self.assertEqual(registry.get("read_cataloging_archive").tool_type, "read")
 
     def test_save_candidates_registered(self):
         td = registry.get("save_external_cataloging_candidates")
@@ -58,7 +56,7 @@ class ExternalCatalogingToolsRegisteredTest(unittest.TestCase):
         from app.mcp.adapter import list_mcp_tools
         tools = list_mcp_tools(permission_pack="project_writing")
         names = {t.name for t in tools}
-        self.assertIn("save_external_cataloging_facts", names)
+        self.assertIn("read_cataloging_archive", names)
         self.assertIn("save_external_cataloging_candidates", names)
 
 

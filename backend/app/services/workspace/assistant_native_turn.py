@@ -24,6 +24,8 @@ from app.services.workspace.assistant_public_projection import public_tool_log
 from app.services.workspace.assistant_turn_state import WorkspaceAssistantTurnState
 from app.services.workspace.assistant_turn_support import workspace_category_result
 from app.services.workspace.native_tool_batch import (
+    MAX_NATIVE_TOOL_NAME_REJECTIONS,
+    NativeToolBatchNotOpen,
     NativeToolBatchValidationError,
     is_cataloging_mutation,
     validate_workspace_native_tool_batch,
@@ -85,7 +87,29 @@ class WorkspaceNativeTurn:
         # Provider streaming is an unbounded concurrency window.  Revalidate
         # the durable run before consuming protocol state or admitting calls.
         self.state.require_current_run()
-        tool_calls = self._validated_tool_calls(capture, iteration, tool_schemas)
+        try:
+            tool_calls = self._validated_tool_calls(capture, iteration, tool_schemas)
+        except NativeToolBatchNotOpen as error:
+            transaction = self._transaction(capture, error.calls, iteration)
+            # Admit only the exact denied transaction, never business results
+            # or a valid prefix. The next step still uses the context governor.
+            error.recovery_fits = True
+            denied = transaction
+            for call in transaction.calls:
+                denied = denied.add_result(NativeToolResult(
+                    call_id=call.call_id,
+                    content=json.dumps(error.model_error_result(call.name), ensure_ascii=False,
+                                       allow_nan=False, separators=(",", ":")),
+                ))
+            budget = self.state.request_budget
+            error.recovery_fits = budget is not None and len(json.dumps(
+                denied.native_messages(), ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            ).encode("utf-8")) <= budget.tool_transaction_budget_tokens
+            async for event in self._persist_batch_denial(
+                capture, error.calls, transaction, error, iteration,
+            ):
+                yield event
+            return
         transaction, admission_error = self._admit(capture, tool_calls, iteration)
         if admission_error is not None:
             async for event in self._persist_batch_denial(
@@ -240,6 +264,8 @@ class WorkspaceNativeTurn:
                 resolve_tool=self.registry.get,
                 require_initial_controller=not self.state.category_selected,
             )
+        except NativeToolBatchNotOpen:
+            raise
         except NativeToolBatchValidationError as exc:
             raise self._protocol_error(
                 exc.message,
@@ -257,23 +283,12 @@ class WorkspaceNativeTurn:
         if not calls:
             return None, None
         names = [str(call["function"]["name"]) for call in calls]
-        provider_state = tuple(
-            dict(item) for item in capture.provider_state if isinstance(item, dict)
-        )
-        payload: dict[str, Any] = {
-            "role": "assistant",
-            "content": capture.reply_text,
-            "tool_calls": calls,
-        }
-        if capture.reasoning:
-            payload["reasoning_content"] = capture.reasoning
-        if provider_state:
-            payload["provider_state"] = list(provider_state)
+        transaction = self._transaction(capture, calls, iteration)
         error: ToolResultBatchOverCapacity | None = None
         try:
             declared = declared_model_results_for_tool_names(names, resolve_tool=self.registry.get)
             admit_native_assistant_transaction(
-                payload, declared, request_budget=self.state.request_budget,
+                transaction.native_messages()[0], declared, request_budget=self.state.request_budget,
             )
             self.state.consecutive_capacity_rejections = 0
         except ToolResultBatchOverCapacity as exc:
@@ -285,13 +300,20 @@ class WorkspaceNativeTurn:
                 tools=names,
                 reason="native_tool_contract_invalid",
             ) from exc
+        return transaction, error
+
+    def _transaction(
+        self, capture: NativeStepCapture, calls: list[dict[str, Any]], iteration: int,
+    ) -> ToolTransaction:
         state = self.state
         return ToolTransaction(
             transaction_id=f"{state.assistant_run.id}:transaction:{iteration}",
             assistant_message_id=f"{state.assistant_message.id}:tool-assistant:{iteration}",
             assistant_content=capture.reply_text,
             assistant_reasoning_content=capture.reasoning,
-            assistant_provider_state=provider_state,
+            assistant_provider_state=tuple(
+                dict(item) for item in capture.provider_state if isinstance(item, dict)
+            ),
             calls=tuple(
                 NativeToolCall(
                     call_id=str(call["id"]),
@@ -300,23 +322,32 @@ class WorkspaceNativeTurn:
                 )
                 for call in calls
             ),
-        ), error
+        )
 
     async def _persist_batch_denial(
         self,
         capture: NativeStepCapture,
         calls: list[dict[str, Any]],
         transaction: ToolTransaction | None,
-        error: ToolResultBatchOverCapacity,
+        error: ToolResultBatchOverCapacity | NativeToolBatchNotOpen,
         iteration: int,
     ) -> AsyncGenerator[str, None]:
         if transaction is None:
             raise AssertionError("rejected tool batch must not be empty")
         state = self.state
-        state.consecutive_capacity_rejections += 1
+        name_rejection = isinstance(error, NativeToolBatchNotOpen)
+        if name_rejection:
+            # Bound the entire author turn, including interleaved valid calls.
+            state.native_tool_name_rejections += 1
+            rejection_count = state.native_tool_name_rejections
+            rejection_limit = MAX_NATIVE_TOOL_NAME_REJECTIONS
+        else:
+            state.consecutive_capacity_rejections += 1
+            rejection_count = state.consecutive_capacity_rejections
+            rejection_limit = MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS
         can_continue = (
             error.recovery_fits
-            and state.consecutive_capacity_rejections < MAX_CONSECUTIVE_TOOL_CAPACITY_REJECTIONS
+            and rejection_count < rejection_limit
         )
         error.recovery_fits = can_continue
         self._mark_delivered_transactions_consumed()
@@ -326,7 +357,7 @@ class WorkspaceNativeTurn:
             definition = self.registry.get(name)
             step_type = (
                 "control"
-                if name == TOOL_CATEGORY_CONTROLLER
+                if name_rejection or name == TOOL_CATEGORY_CONTROLLER
                 else (
                     "write"
                     if definition is not None and definition.tool_type == "write"
@@ -340,12 +371,14 @@ class WorkspaceNativeTurn:
                 tool=name,
                 iteration=iteration,
                 request={
+                    "native_batch_rejected": True,
                     "native_call_id": str(call["id"]),
                     "arguments": json.loads(call["function"]["arguments"]),
                     **({"native_assistant_transaction": transaction.to_dict()}
                        if call_index == 0 else {}),
                 },
-                detail="工具结果批次容量校验未通过，业务处理器未执行",
+                detail=("工具名称校验未通过，整批业务处理器未执行" if name_rejection
+                        else "工具结果批次容量校验未通过，业务处理器未执行"),
             )
             if step is None:
                 raise LLMError("拒绝结果未能写入持久 RunStep，本轮已停止")
@@ -379,7 +412,13 @@ class WorkspaceNativeTurn:
                     "step_id": step.id,
                 }
             )
+        state.tool_transactions.append(transaction.mark_delivered())
         if not can_continue:
+            if name_rejection:
+                raise self._protocol_error(
+                    error.message, iteration, **error.details,
+                    native_tool_name_rejections=rejection_count,
+                )
             raise ConversationContextError(
                 (ConversationContextErrorCode.PROTOCOL_INVALID
                  if error.reason == "native_assistant_transaction_invalid"
@@ -389,13 +428,16 @@ class WorkspaceNativeTurn:
                          "iteration": iteration,
                          "consecutive_rejections": state.consecutive_capacity_rejections},
             )
-        state.tool_transactions.append(transaction.mark_delivered())
         state.loop_action = "continue"
         yield state.event(
             {
                 "type": "iteration_end",
                 "iteration": iteration,
-                "message": "本批工具超过剩余容量，尚未执行；正在让模型调整调用数量或读取范围",
+                "message": (
+                    f"模型调用了未开放的工具，整批未执行；正在按当前工具清单修正（{rejection_count}/2）"
+                    if name_rejection else
+                    "本批工具超过剩余容量，尚未执行；正在让模型调整调用数量或读取范围"
+                ),
             }
         )
 

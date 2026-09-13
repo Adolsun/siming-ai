@@ -7,7 +7,7 @@ import type { CatalogingJob } from '../pages/catalogingTypes'
 const handlers = {
   onApplyPending: vi.fn(),
   onRetryCurrent: vi.fn(),
-  onRerunResolutionCurrent: vi.fn(),
+  onRepairPlanCurrent: vi.fn(),
   onRecoverCurrent: vi.fn(),
   onSkipCurrent: vi.fn(),
   onPauseCurrentJob: vi.fn(),
@@ -35,7 +35,7 @@ describe('CatalogingJobControlCard', () => {
         job={{
           ...job('running'),
           current_chapter_id: 'chapter-13',
-          current_stage: 'candidates',
+          current_stage: 'planning',
           current_message: '模型进程仍在计算',
           last_activity_at: '2026-08-31T12:34:56Z',
         }}
@@ -44,9 +44,8 @@ describe('CatalogingJobControlCard', () => {
           chapter_id: 'chapter-13',
           chapter_title: '潮痕之上',
           chapter_order: 12,
-          status: 'facts_saved',
+          status: 'extracting',
         }}
-        factCount={19}
         candidateCount={0}
         progress={60}
         streaming
@@ -55,11 +54,11 @@ describe('CatalogingJobControlCard', () => {
     )
 
     expect(screen.getByText('当前章节：潮痕之上')).toBeInTheDocument()
-    expect(screen.getByText('事实已保存，正在生成候选')).toBeInTheDocument()
-    expect(screen.getByText('候选生成')).toBeInTheDocument()
+    expect(screen.getByText('正在生成建档计划')).toBeInTheDocument()
+    expect(screen.getByText('生成建档计划')).toBeInTheDocument()
     expect(screen.getByText('模型进程仍在计算')).toBeInTheDocument()
     expect(screen.getByText(/最近活动：/)).toBeInTheDocument()
-    expect(screen.getByText('已保存 19 条事实 · 0 条候选')).toBeInTheDocument()
+    expect(screen.getByText('已暂存 0 条候选')).toBeInTheDocument()
   })
 
   it('shows automatic candidate application as progress, not a user confirmation barrier', () => {
@@ -78,7 +77,6 @@ describe('CatalogingJobControlCard', () => {
           chapter_order: 12,
           status: 'awaiting_confirmation',
         }}
-        factCount={19}
         candidateCount={8}
         progress={60}
         streaming
@@ -120,8 +118,11 @@ describe('CatalogingJobControlCard', () => {
 
     expect(screen.getByText('当前章节遇到问题，任务已停在最近检查点')).toBeInTheDocument()
     expect(screen.getAllByText(/第13章候选格式不完整/)).toHaveLength(1)
-    expect(screen.getByText(/已写入的档案会保留，重试只补未完成部分/)).toBeInTheDocument()
+    expect(screen.getByText(/已完成章节和暂存候选均保留/)).toBeInTheDocument()
     expect(screen.getByText('未完成：8 章尚未完成')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '保留候选并修正' }))
+    expect(handlers.onRepairPlanCurrent).toHaveBeenCalled()
+    expect(handlers.onRetryCurrent).not.toHaveBeenCalled()
   })
 
   it('presents source-coverage differences as review work instead of a failed rerun', () => {

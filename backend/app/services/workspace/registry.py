@@ -340,16 +340,6 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
             "validation_errors", "validation_error_count", "validation_errors_has_more",
         ),
     ),
-    "save_external_cataloging_facts": ModelResultContract(
-        policy=ModelResultPolicy.STATUS_ONLY,
-        max_json_bytes=8 * 1024,
-        data_fields=(
-            "job_id", "project_id", "chapter_id", "facts_saved", "chapter_run_status",
-            "candidate_generation_allowed", "candidate_gate_note", "blocking_run",
-            "validation_errors", "validation_error_count", "validation_errors_has_more",
-            "allowed_fact_types", "next_tool", "next_arguments",
-        ),
-    ),
     "save_external_cataloging_candidates": ModelResultContract(
         policy=ModelResultPolicy.STATUS_ONLY,
         max_json_bytes=64 * 1024,
@@ -544,12 +534,11 @@ class ToolRegistry(ToolSpecRegistryMixin):
                 "report_agent_plan",
                 "report_agent_progress",
                 "report_context_selected",
-                "get_next_external_cataloging_chapter",
-                "save_external_cataloging_facts",
+                "get_next_external_cataloging_chapter", "read_cataloging_archive",
                 "save_external_cataloging_candidates",
                 "verify_external_cataloging_progress",
                 "get_cataloging_control_state",
-                "list_cataloging_facts",
+                "list_cataloging_candidates",
             }
             return [
                 td
@@ -670,7 +659,7 @@ _TOOL_REGISTRATION_ORDER = (
     "update_cataloging_candidate",
     "apply_pending_cataloging",
     "retry_current_cataloging_chapter",
-    "rerun_cataloging_resolution_current",
+    "repair_cataloging_plan_current",
     "pause_cataloging_job",
     "resume_cataloging_job",
     "cancel_cataloging_job",
@@ -815,8 +804,7 @@ _TOOL_REGISTRATION_ORDER = (
     "read_imported_file",
     "get_mcp_permission_status",
     "start_external_cataloging_job",
-    "get_next_external_cataloging_chapter",
-    "save_external_cataloging_facts",
+    "get_next_external_cataloging_chapter", "read_cataloging_archive",
     "save_external_cataloging_candidates",
     "verify_external_cataloging_progress",
     "get_project_archive_status",

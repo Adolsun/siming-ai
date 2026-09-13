@@ -28,7 +28,7 @@ INTERNAL_LLM_TOOLS = [
     "start_cataloging_job",
     "resume_cataloging_job",
     "retry_current_cataloging_chapter",
-    "rerun_cataloging_resolution_current",
+    "repair_cataloging_plan_current",
     "start_deconstruct_job",
 ]
 
@@ -101,8 +101,8 @@ async def get_moshu_usage_guide(
                 "如果需要 Siming 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='cataloging')，再通过 AgentRun 事件查看进度。",
                 "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
                 "调用 start_external_cataloging_job 创建外部建档任务。",
-                "逐章调用 get_next_external_cataloging_chapter(phase='facts')，只读当前章并调用 save_external_cataloging_facts。",
-                "再领取同一章 phase='candidates'，调用 list_cataloging_facts，读取当前档案镜像并调用 save_external_cataloging_candidates -> apply_pending_cataloging。",
+                "逐章 get_next_external_cataloging_chapter → read_cataloging_archive → save_external_cataloging_candidates(finalize=true)。",
+                "完整计划按授权调用 apply_pending_cataloging；托管 auto 模式已返回 auto_applied=true 时不重复应用，manual 模式等待作者确认。",
                 "每章 apply 后调用 verify_external_cataloging_progress；前一章完成前不得处理下一章。发现缺项时只补工具明确列出的缺项。",
                 "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后再报告完成。",
             ],
@@ -114,7 +114,7 @@ async def get_moshu_usage_guide(
                 "只有用户明确授权使用司命内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm，且系统设置里的模型 API 可用。",
                 "调用 start_cataloging_job；前端会显示实时进度。",
-                "失败时使用 retry_current_cataloging_chapter 或 rerun_cataloging_resolution_current。",
+                "失败时使用 retry_current_cataloging_chapter 或 repair_cataloging_plan_current。",
                 "完成后调用 get_project_archive_status 验证数据。",
             ],
         },

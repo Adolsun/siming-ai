@@ -105,8 +105,7 @@ def _workflow_section(task_type: str) -> str:
 3. Call `get_prompt_pack` with `pack_id="cataloging_external_no_api"`.
 4. Call `start_external_cataloging_job`.
 5. Process chapters strictly in `chapter_order` through facts, candidates, apply, and verification.
-6. Facts: `get_next_external_cataloging_chapter(phase="facts", include_content=false)` -> `prepare_task_context(task_type="cataloging", chapter_id=...)` -> read only the current chapter -> `submit_context_evidence` -> `save_external_cataloging_facts`.
-7. Candidates: `get_next_external_cataloging_chapter(phase="candidates", include_content=false)` -> `list_cataloging_facts` -> read the current archive mirror -> `save_external_cataloging_candidates` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
+6. Plan: get_next_external_cataloging_chapter -> read chapter and needed real archive records -> save_external_cataloging_candidates(finalize=true).
 8. Finish applying and verifying the current chapter before fetching the next chapter.
 9. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
 """

@@ -5,9 +5,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingCandidate, Chapter
+from ...database.models import CatalogingCandidate, Chapter, Character
 from ..character_merge_service import merge_characters
-from .lookups import find_character_by_name_or_id
+from .plan_contract import bound_entity
 
 
 def apply_character_merge_candidate(
@@ -16,12 +16,12 @@ def apply_character_merge_candidate(
     chapter: Chapter,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    primary_name = str(payload.get("primary_name") or payload.get("canonical_name") or "").strip()
+    primary_name = str(payload.get("primary_name") or "").strip()
     secondary_name = str(payload.get("secondary_name") or "").strip()
     if not primary_name or not secondary_name:
         raise ValueError("角色合并候选缺少 primary_name 或 secondary_name")
-    primary = find_character_by_name_or_id(db, chapter.project_id, primary_name)
-    secondary = find_character_by_name_or_id(db, chapter.project_id, secondary_name)
+    primary = bound_entity(db, candidate, primary_name, Character)
+    secondary = bound_entity(db, candidate, secondary_name, Character)
     if not primary or not secondary:
         raise ValueError("角色合并需要两个已存在角色")
     result = merge_characters(
@@ -32,7 +32,7 @@ def apply_character_merge_candidate(
         {
             **payload,
             "confidence": candidate.confidence,
-            "reason": payload.get("confidence_reason") or payload.get("background_append") or candidate.evidence,
+            "reason": payload.get("reason") or candidate.evidence,
         },
         source_chapter=chapter,
     )

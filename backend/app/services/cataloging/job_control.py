@@ -257,7 +257,7 @@ def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun 
 def first_retryable_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:
     """Return the current unit accepted by every full-retry transport.
 
-    A paused candidate turn remains ``facts_saved``.  Treating only failures
+    A paused candidate turn remains ``extracting``.  Treating only failures
     and confirmation waits as retryable made REST reject the same unit that
     the workspace/MCP tool could reset, and forced users to preserve facts
     they had explicitly chosen to discard.
@@ -269,7 +269,7 @@ def first_retryable_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun
         .filter(CatalogingChapterRun.status.in_([
             "failed",
             "awaiting_confirmation",
-            "facts_saved",
+            "extracting",
         ]))
         .order_by(CatalogingChapterRun.chapter_order.asc())
         .first()
@@ -286,7 +286,7 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     ).first():
         # Domain writes have already committed. Retain their audit trail and
         # source facts, and let the model repair only the outstanding work.
-        reset_run_for_resolution_retry(db, job, run)
+        reset_run_for_plan_repair(db, job, run)
         return
     candidate_ids = [
         row.id
@@ -318,38 +318,21 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     refresh_job_progress(db, job)
 
 
-def reset_run_for_resolution_retry(
+def reset_run_for_plan_repair(
     db: Session, job: CatalogingJob, run: CatalogingChapterRun
 ) -> None:
-    from .fact_store import clear_derived_facts_for_run
 
     validate_cataloging_run_source(db, job, run)
     if job.status == "cancelled" or run.status == "skipped_by_user":
         raise ValueError("已取消或跳过的建档章节不能重试")
 
-    candidate_ids = [
-        row.id
-        for row in db.query(CatalogingCandidate.id)
-        .filter(
-            CatalogingCandidate.chapter_run_id == run.id,
-            CatalogingCandidate.status != "applied",
-        )
-        .all()
-    ]
-    if candidate_ids:
-        db.query(CatalogingApplyLog).filter(
-            CatalogingApplyLog.candidate_id.in_(candidate_ids)
-        ).delete(synchronize_session=False)
-        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(
-            synchronize_session=False
-        )
+    # A model correction resumes the retained plan. Only an explicit full
+    # retry discards it; accepted candidates and the author's edits survive.
     has_applied = db.query(CatalogingCandidate.id).filter(
         CatalogingCandidate.chapter_run_id == run.id,
         CatalogingCandidate.status == "applied",
     ).first() is not None
-    if not has_applied:
-        clear_derived_facts_for_run(db, run)
-    run.status = "facts_saved"
+    run.status = "extracting"
     run.completed_at = None
     run.error = None
     if not has_applied:

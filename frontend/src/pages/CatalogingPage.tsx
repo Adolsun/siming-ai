@@ -406,12 +406,12 @@ function CatalogingPage({ projectId, focusJobId, active = true }: CatalogingPage
     }
   }
 
-  const rerunResolutionCurrent = async () => {
+  const repairPlanCurrent = async () => {
     if (!job) return
     const jobId = job.id
     setLoading(true)
     try {
-      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/rerun-resolution-current`)
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/repair-plan-current`)
       if (activeJobIdRef.current !== jobId) return
       const data = await fetchJob(jobId)
       if (activeJobIdRef.current !== jobId) return
@@ -419,7 +419,7 @@ function CatalogingPage({ projectId, focusJobId, active = true }: CatalogingPage
       await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
       streamJob(jobId)
     } catch (err: any) {
-      if (activeJobIdRef.current === jobId) message.error(err.message || '重跑候选生成失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '继续修正建档计划失败')
     } finally {
       if (activeJobIdRef.current === jobId) setLoading(false)
     }
@@ -579,13 +579,12 @@ function CatalogingPage({ projectId, focusJobId, active = true }: CatalogingPage
       <CatalogingJobControlCard
         job={job}
         currentRun={currentRun}
-        factCount={facts.length}
         candidateCount={candidates.length}
         progress={progress}
         streaming={streaming}
         onApplyPending={applyPending}
         onRetryCurrent={retryCurrent}
-        onRerunResolutionCurrent={rerunResolutionCurrent}
+        onRepairPlanCurrent={repairPlanCurrent}
         onRecoverCurrent={recoverCurrent}
         onSkipCurrent={skipCurrent}
         onPauseCurrentJob={pauseCurrentJob}

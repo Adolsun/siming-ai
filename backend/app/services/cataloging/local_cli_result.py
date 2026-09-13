@@ -26,8 +26,7 @@ def _committed_stage_action(db: Session, job: CatalogingJob, run: CatalogingChap
     if job.status in {"cancelled", "paused", "failed", "paused_on_failure"}:
         return "return"
     advanced = {
-        "facts": {"facts_saved", "awaiting_confirmation", "applying", *_TERMINAL_RUNS},
-        "candidates": {"awaiting_confirmation", "applying", *_TERMINAL_RUNS},
+        "planning": {"awaiting_confirmation", "applying", *_TERMINAL_RUNS},
         "apply": _TERMINAL_RUNS,
     }
     if run.status not in advanced.get(stage, set()):
@@ -67,13 +66,9 @@ def agent_tool_event_count(
 
 
 def _turn_has_no_saved_progress(stage: str, status: str) -> bool:
-    if stage == "facts":
+    if stage == "planning":
         return status in {"pending", "in_progress", "extracting"}
-    if stage == "candidates":
-        return status == "facts_saved"
-    if stage == "apply":
-        return status == "awaiting_confirmation"
-    return False
+    return stage == "apply" and status == "awaiting_confirmation"
 
 
 def handle_cli_turn_exception(
@@ -191,8 +186,6 @@ async def handle_cli_turn_result(
             attempt = no_save_attempts.get(attempt_key, 0) + 1
             no_save_attempts[attempt_key] = attempt
             if attempt < _MAX_NO_SAVE_ATTEMPTS:
-                if stage == "facts":
-                    run.status = "pending"
                 job.status = "running"
                 job.blocked_chapter_id = None
                 job.error = None

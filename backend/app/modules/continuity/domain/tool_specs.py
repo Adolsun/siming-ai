@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
 from ...story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 from .candidate_contract import candidate_record_schema
-from .cataloging_contract import CatalogingFactType
 
 
 class CompatibleInput(BaseModel):
@@ -39,28 +38,28 @@ class GetNarrativeLedgerInput(CompatibleInput):
     storyline: str = ""
 
 
-class CatalogingFactInput(CompatibleInput):
-    fact_type: CatalogingFactType
-    payload: dict[str, Any]
-    evidence: str | None = None
-    confidence: float | None = None
-
-
-class SaveExternalCatalogingFactsInput(CompatibleInput):
-    job_id: str = Field(min_length=1)
-    chapter_id: str = Field(min_length=1)
-    facts: list[CatalogingFactInput]
-
-
 class SaveExternalCatalogingCandidatesInput(CompatibleInput):
     job_id: str = Field(min_length=1)
     chapter_id: str = Field(min_length=1)
+    finalize: bool = Field(
+        default=False,
+        description=(
+            "Set true only when this chapter plan is complete; "
+            "schema/coverage must pass before apply."
+        ),
+    )
+    reject_candidate_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit IDs of unedited, unapplied candidates in this chapter "
+            "that the Agent retracts while correcting its plan."
+        ),
+    )
     candidates: list[dict[str, Any]] = Field(
-        min_length=1,
         description=(
             "Native JSON candidate objects with a canonical type and fields at the same level. "
             "Never encode objects/arrays as strings. A chapter_link is one aggregate record, "
-            "not one record per entity. Managed CLI calls allow at most 3 records. "
+            "not one record per entity. Submit summary plan before dependent records. "
             "After rejection, correct candidate_errors using recovery_context; "
             "do not resend accepted records."
         ),
@@ -110,7 +109,6 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "inspect_story_granularity": InspectStoryGranularityInput,
     "repair_story_granularity": RepairStoryGranularityInput,
     "get_narrative_ledger": GetNarrativeLedgerInput,
-    "save_external_cataloging_facts": SaveExternalCatalogingFactsInput,
     "save_external_cataloging_candidates": SaveExternalCatalogingCandidatesInput,
     "save_external_outline_draft": SaveExternalOutlineDraftInput,
 }

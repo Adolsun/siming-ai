@@ -9,7 +9,6 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.architecture.uow import commit_session
 
 from ...core.numbers import extract_chapter_number
 from ...database.models import (
@@ -39,12 +38,13 @@ def detect_fts5_available(db: Session) -> bool:
     if _fts5_available is not None:
         return _fts5_available
     try:
-        db.execute(text("CREATE VIRTUAL TABLE temp.__fts5_test USING fts5(content)"))
-        db.execute(text("DROP TABLE temp.__fts5_test"))
-        commit_session(db)
+        # Capability detection must never commit or roll back its caller's
+        # writes (cataloging includes index cleanup in the chapter savepoint).
+        with db.begin_nested():
+            db.execute(text("CREATE VIRTUAL TABLE temp.__fts5_test USING fts5(content)"))
+            db.execute(text("DROP TABLE temp.__fts5_test"))
         _fts5_available = True
     except Exception:
-        db.rollback()
         _fts5_available = False
     return _fts5_available
 

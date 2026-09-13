@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, CatalogingCandidate, Chapter, ChapterCharacter, Character, Project
 from app.services.cataloging.chapter_link_ops import apply_chapter_link
-from app.services.cataloging.jsonl import normalize_candidate
+from app.services.cataloging.records import normalize_candidate
 from app.modules.continuity.domain.cataloging_contract import (
     validate_coverage_manifest_relationships,
 )
@@ -41,6 +41,17 @@ def test_chapter_link_persists_explicit_appearance_type_and_replaces_it():
         db.add_all([project, chapter, shen, luo])
         db.flush()
 
+        from app.services.cataloging.orchestrator import create_cataloging_job
+        from tests.test_cataloging_plan import plan_rows
+        import json
+        job = create_cataloging_job(db, project.id, "manual", "test:model", [chapter.id])
+        run = job.chapter_runs[0]
+        candidate.job_id, candidate.chapter_run_id = job.id, run.id
+        plan = plan_rows()[0]
+        plan["character_bindings"] = [{"name": person.name, "id": person.id, "decision": "existing", "reason": "已读真实档案"} for person in (shen, luo)]
+        db.add(CatalogingCandidate(job_id=job.id, chapter_run_id=run.id, project_id=project.id,
+            chapter_id=chapter.id, item_type="chapter_summary", raw_payload=json.dumps(plan)))
+        db.flush()
         apply_chapter_link(
             db,
             candidate,
@@ -100,14 +111,6 @@ def test_chapter_link_normalization_requires_model_classification():
         raise AssertionError("Unclassified chapter character link was accepted")
 
 
-def test_preclassification_character_names_are_normalized_at_protocol_boundary():
-    normalized = normalize_candidate(
-        {"type": "chapter_link", "character_names": ["沈砚"]}
-    )
-    assert "character_names" not in normalized["payload"]
-    assert normalized["payload"]["characters"] == [
-        {"name": "沈砚", "appearance_type": "出场"}
-    ]
 
 
 def test_chapter_link_rejects_two_appearance_types_for_one_character():

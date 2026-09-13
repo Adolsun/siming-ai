@@ -1685,7 +1685,7 @@ def test_managed_cataloging_env_cannot_override_explicit_direct_workspace_pack()
             [
                 json.dumps({"jsonrpc": "2.0", "id": 140, "method": "tools/list"}),
                 _tool_call(
-                    "save_external_cataloging_facts",
+                    "save_external_cataloging_candidates",
                     {"project_id": project.id},
                     call_id=141,
                 ),

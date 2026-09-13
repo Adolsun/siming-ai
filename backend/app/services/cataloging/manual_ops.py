@@ -146,9 +146,9 @@ def apply_pending_cataloging_run(
     job.blocked_chapter_id = None
     job.error = None
 
-    if not applied_coverage.is_complete:
+    if has_failed or not applied_coverage.is_complete:
         run.status = "failed"
-        run.error = candidate_coverage_error_message(
+        run.error = next((event["error"] for event in events if event.get("type") == "candidate_apply_failed"), None) or candidate_coverage_error_message(
             applied_coverage,
             prefix="关键候选未完成写入",
         )

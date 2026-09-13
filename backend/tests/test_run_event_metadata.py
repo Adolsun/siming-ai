@@ -28,7 +28,7 @@ def test_classify_empty_and_invalid_model_responses():
 
 def test_classify_tool_schema_errors_without_treating_cataloging_as_login():
     detail = (
-        "save_external_cataloging_facts: 工具参数不符合当前 JSON Schema，本次未执行。"
+        "save_external_cataloging_candidates: 工具参数不符合当前 JSON Schema，本次未执行。"
         "请核对必填字段及类型；对象和数组必须直接传入。"
     )
 
@@ -39,7 +39,7 @@ def test_classify_tool_schema_errors_without_treating_cataloging_as_login():
     assert classify_failure("Login required") == "auth"
 
     payload = json.loads(merge_event_metadata(
-        json.dumps({"tool": "save_external_cataloging_facts"}),
+        json.dumps({"tool": "save_external_cataloging_candidates"}),
         event_type="tool_result",
         status="error",
         message=detail,

@@ -58,6 +58,7 @@ class WorkspaceAssistantTurnState:
     category_selected: bool = False
     request_budget: RequestBudgetEnvelope | None = None
     consecutive_capacity_rejections: int = 0
+    native_tool_name_rejections: int = 0
     observed_category_version: int = 0
     workspace_tool_names: list[str] = field(default_factory=list)
     workspace_tool_name_set: set[str] = field(default_factory=set)

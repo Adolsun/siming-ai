@@ -93,10 +93,11 @@ TOOL_NAMES_BY_CATEGORY: dict[str, frozenset[str]] = {
         "get_cataloging_control_state", "set_cataloging_mode",
         "list_cataloging_candidates", "list_cataloging_facts",
         "update_cataloging_candidate", "apply_pending_cataloging",
-        "retry_current_cataloging_chapter", "rerun_cataloging_resolution_current",
+        "retry_current_cataloging_chapter", "repair_cataloging_plan_current",
         "pause_cataloging_job", "resume_cataloging_job", "cancel_cataloging_job",
         "start_external_cataloging_job", "get_next_external_cataloging_chapter",
-        "save_external_cataloging_facts", "save_external_cataloging_candidates",
+        "read_cataloging_archive",
+        "save_external_cataloging_candidates",
         "verify_external_cataloging_progress", "get_project_archive_status",
     }),
     "analysis_governance": frozenset({

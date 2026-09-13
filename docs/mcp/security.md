@@ -57,7 +57,7 @@ These tools mutate the database. They are denied until a confirmation-token mode
 | `pause_*` | `pause_cataloging_job` |
 | `resume_*` | `resume_cataloging_job` |
 | `cancel_*` | `cancel_cataloging_job` |
-| `rerun_*` | `rerun_cataloging_resolution_current`, `rerun_failed_deconstruct_chunks` |
+| `repair_*` / `rerun_*` | `repair_cataloging_plan_current`, `rerun_failed_deconstruct_chunks` |
 | `ensure_*` | `ensure_builtin_skills` |
 | `reset_*` | `reset_skill` |
 | `forget` | Memory deletion tool |

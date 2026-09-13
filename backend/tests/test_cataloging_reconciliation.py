@@ -22,7 +22,7 @@ from app.database.models import (
     WorldbuildingEntry,
     WorldbuildingTimeline,
 )
-from app.services.cataloging.applier import apply_candidates_for_run
+from tests.cataloging_plan_fixtures import apply_fixture_plan as apply_candidates_for_run
 from app.services.cataloging.chapter_rollback import rollback_cataloging_from_chapter
 from app.services.cataloging.orchestrator import create_cataloging_job
 
@@ -381,7 +381,6 @@ def test_recataloging_replaces_projection_without_losing_outline_position():
             "chapter_link",
             {
                 "outline_title": "立项旧名",
-                "source": "立项旧名",
                 "characters": [],
                 "worldbuilding_titles": [],
             },
@@ -711,15 +710,13 @@ def test_revised_chapter_supersedes_unshared_worldbuilding_removed_from_projecti
             {"character_ids": [], "node_type": "chapter", "title": chapter.title, "summary": "新摘要"},
             2,
         )
-        # A model may repeat an older card in the weak chapter link even though
-        # the revised projection no longer contains a direct worldbuilding
-        # candidate for it.  That link must not keep the obsolete card active.
+        # The new plan explicitly omits the old entity, including its links.
         _candidate(
             db,
             second_job,
             second_run,
             "chapter_link",
-            {"worldbuilding_titles": ["错误站点"]},
+            {"worldbuilding_titles": []},
             3,
         )
         db.flush()
@@ -935,7 +932,10 @@ def test_recataloging_does_not_reactivate_worldbuilding_retired_by_author():
             1,
         )
         db.flush()
-        events = apply_candidates_for_run(db, second_job, second_run)
+        from tests.cataloging_plan_fixtures import complete_fixture_plan
+        from app.services.cataloging.applier import apply_candidates_for_run as apply_plan
+        complete_fixture_plan(db, second_job, second_run)
+        events = apply_plan(db, second_job, second_run)
         db.commit()
 
         db.refresh(entry)
@@ -943,13 +943,10 @@ def test_recataloging_does_not_reactivate_worldbuilding_retired_by_author():
         db.refresh(second_candidate)
         assert entry.status == "superseded"
         assert db.query(WorldbuildingEntry).filter_by(project_id=project.id).count() == 1
-        assert db.query(ChapterWorldbuilding).filter_by(chapter_id=chapter.id).count() == 0
-        assert second_candidate.status == "applied"
-        assert second_candidate.target_id == entry.id
-        assert second_candidate.target_type == "worldbuilding_suppressed"
-        assert "未重新激活或新建重复词条" in (second_run.review_warning or "")
-        assert events[0]["data"]["old_value"]["status"] == "superseded"
-        assert events[0]["data"]["new_value"]["status"] == "superseded"
+        assert db.query(ChapterWorldbuilding).filter_by(chapter_id=chapter.id).count() == 1
+        assert second_candidate.status == "apply_failed"
+        assert events[0]["chapter_rolled_back"]
+        assert "重新激活" in events[0]["error"]
     finally:
         db.close()
         Base.metadata.drop_all(engine)

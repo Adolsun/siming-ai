@@ -1,4 +1,4 @@
-"""Candidate field schemas shared by model tools and API JSONL ingestion.
+"""Candidate field schemas shared by native Agent tools and the transactional applier.
 
 These describe structure only. Archive identity and source-evidence checks stay
 at the transactional write boundary; invalid values are never guessed/coerced.
@@ -15,7 +15,7 @@ MANAGED_CATALOGING_MAX_CANDIDATES = 3
 
 
 def _object(properties, required=()):
-    result = {"type": "object", "properties": properties}
+    result = {"type": "object", "properties": properties, "additionalProperties": False}
     if required:
         result["required"] = list(required)
     return result
@@ -125,15 +125,9 @@ _WORLD = {
     "title": TEXT,
     "content": TEXT,
     "dimension": _enum("geography", "history", "factions", "power_system", "races", "culture"),
-    "source_fact_titles": _strings(),
-    "identity_resolution": _object(
-        {
-            "decision": _enum("create"),
-            "reviewed_existing_ids": _strings(),
-            "reason": {"type": "string", "minLength": 1},
-        },
-        ("decision", "reviewed_existing_ids", "reason"),
-    ),
+    "source_labels": _strings(),
+    "client_id": TEXT,
+
 }
 _OUTLINE = {
     **{
@@ -143,7 +137,7 @@ _OUTLINE = {
             "summary",
             "actual_summary",
             "planned_summary",
-            "parent_title",
+            "parent_id",
             "purpose",
             "location",
             "timeline",
@@ -154,6 +148,7 @@ _OUTLINE = {
         )
     },
     "node_type": _enum("chapter", "section", "volume"),
+    "status": _enum("pending", "in_progress", "completed"),
     "scene_number": {"type": "integer", "minimum": 1},
     "characters": _strings(),
     "character_ids": {**_strings(), "uniqueItems": True},
@@ -162,6 +157,18 @@ _OUTLINE = {
 
 CANDIDATE_FIELDS = {
     "chapter_summary": {
+        "scenes": {"type": "array", "minItems": 1, "items": TEXT},
+        **{key: {"type": "array", "items": _object({
+            "name": {"type": "string", "minLength": 1},
+            "id": {
+                "type": "string",
+                "description": "Existing ID, or a new canonical UUID reused as client_id.",
+            },
+            "decision": _enum("existing", "new"),
+            "source_labels": _strings(),
+            "reason": {"type": "string", "minLength": 1},
+        }, ("name", "id", "decision", "reason"))}
+           for key in ("character_bindings", "worldbuilding_bindings")},
         "summary_text": TEXT,
         "key_events": _strings(),
         "characters": _strings(),
@@ -187,11 +194,13 @@ CANDIDATE_FIELDS = {
             }
         ),
         "narrative_review": {"type": "object"},
+        "governance_candidates": {"type": "array", "items": {"type": "object"}},
     },
     "outline_create": _OUTLINE,
     "outline_update": _OUTLINE,
     "character_create": {
         **_PROFILE,
+        **_STATE,
         "client_id": {
             "type": "string",
             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -200,9 +209,10 @@ CANDIDATE_FIELDS = {
     },
     "character_update": _PROFILE,
     "character_state_update": _STATE,
-    "character_timeline": {"name": TEXT, "event_description": TEXT},
+    "character_timeline": {"name": TEXT, "event_description": TEXT, "emotional_state_change": TEXT},
     "character_relationship": {**RELATIONSHIP["properties"], "description": TEXT},
-    "character_merge_candidate": {"primary_name": TEXT, "secondary_name": TEXT, "reason": TEXT},
+    "character_merge_candidate": {"primary_name": TEXT, "secondary_name": TEXT, "reason": TEXT,
+                                  "aliases": _strings(), "background_append": TEXT},
     "worldbuilding_create": _WORLD,
     "worldbuilding_update": _WORLD,
     "worldbuilding_timeline": {**_WORLD, "event_description": TEXT},
@@ -217,10 +227,17 @@ CANDIDATE_FIELDS = {
 }
 
 _REQUIRED_FIELDS = {
-    "character_create": ("name",),
+    "chapter_summary": (
+        "summary_text", "coverage_manifest", "scenes", "character_bindings",
+        "worldbuilding_bindings", "narrative_state", "narrative_review",
+    ),
+    "character_create": ("name", "client_id"),
     "character_update": ("id",),
-    "worldbuilding_create": ("title", "dimension"),
-    "worldbuilding_update": ("id",),
+    "character_state_update": ("id",),
+    "character_timeline": ("id",),
+    "worldbuilding_create": ("title", "dimension", "client_id"),
+    "worldbuilding_update": ("id", "title"),
+    "worldbuilding_timeline": ("id", "title", "event_description"),
     "outline_create": ("title", "node_type", "summary", "character_ids"),
     "outline_update": ("id", "title", "node_type", "summary", "character_ids"),
     "character_relationship": ("source_name", "target_name", "relationship_type"),
@@ -231,7 +248,11 @@ _REQUIRED_FIELDS = {
 def candidate_payload_schema(item_type: str) -> dict[str, Any]:
     properties = {
         "id": TEXT,
-        "target_id": TEXT,
+        "type": _enum(item_type),
+        "description": TEXT,
+        "event_type": TEXT,
+        "sort_order": {"type": "integer", "minimum": 0},
+        "change_summary": TEXT,
         "evidence": TEXT,
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         **CANDIDATE_FIELDS.get(item_type, {}),
@@ -279,9 +300,11 @@ def candidate_record_schema() -> dict[str, Any]:
 def validate_candidate_fields(item_type: str, payload: dict[str, Any]) -> None:
     """Validate supplied fields before normalization can discard malformed data."""
     schema = candidate_payload_schema(item_type)
-    if item_type == "worldbuilding_create":
-        schema["required"] = ["dimension"]
+    schema["required"] = list(_REQUIRED_FIELDS.get(item_type, ()))
     _validate_exported_schema(schema, payload)
+    if item_type == "chapter_link":
+        from .cataloging_contract import canonical_chapter_link_characters
+        canonical_chapter_link_characters(payload)
 
 
 def candidate_contract_examples() -> list[dict[str, Any]]:
@@ -290,6 +313,8 @@ def candidate_contract_examples() -> list[dict[str, Any]]:
         {
             "type": "chapter_summary",
             "summary_text": "本章已确认的事件摘要",
+            "scenes": ["本章场景"],
+            "character_bindings": [], "worldbuilding_bindings": [],
             "coverage_manifest": {
                 "scene_count": 1,
                 "characters": [],

@@ -18,7 +18,7 @@ CATALOGING_MCP_TOOL_NAMES = (
     "report_agent_progress",
     "report_context_selected",
     "get_next_external_cataloging_chapter",
-    "save_external_cataloging_facts",
+    "read_cataloging_archive",
     "save_external_cataloging_candidates",
     "verify_external_cataloging_progress",
     "get_cataloging_control_state",

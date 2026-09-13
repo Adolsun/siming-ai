@@ -40,7 +40,7 @@ def test_three_rejections_stop_with_actionable_reason(harness):
     reason = probe()
     assert reason.startswith(STALL_PREFIX)
     assert "最多 3 条" in reason
-    assert "保留已保存事实和候选" in reason
+    assert "保留已保存计划和候选" in reason
 
 
 def test_read_tools_and_category_switch_do_not_reset_failure_budget(harness):

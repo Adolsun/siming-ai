@@ -20,6 +20,47 @@ class NativeToolBatchValidationError(ValueError):
         self.details = {"reason": reason, **details}
 
 
+MAX_NATIVE_TOOL_NAME_REJECTIONS = 3
+
+
+class NativeToolBatchNotOpen(NativeToolBatchValidationError):
+    """Structurally valid calls retained only to receipt a whole-batch denial."""
+
+    def __init__(self, calls: list[dict[str, Any]], allowed_tool_names: set[str] | frozenset[str]) -> None:
+        unavailable = [call for call in calls if call["function"]["name"] not in allowed_tool_names]
+        first = unavailable[0]
+        super().__init__(
+            "native_tool_not_open",
+            "模型调用了本步骤未开放的工具，整批未执行。",
+            call_index=calls.index(first),
+            call_id=first["id"],
+            tool=first["function"]["name"],
+            tools=list(dict.fromkeys(call["function"]["name"] for call in unavailable)),
+        )
+        self.calls = calls
+        self.allowed_tool_names = sorted(allowed_tool_names)
+        self.recovery_fits = False
+
+    def model_error_result(self, tool_name: str) -> dict[str, Any]:
+        return {
+            "tool": tool_name,
+            "status": "error",
+            "detail": (
+                "本批次含有当前未开放的工具，所有调用均未执行。请根据本步骤实际提供的工具名称与"
+                "参数 Schema 重新选择调用；需要其他能力时单独调用 set_tool_categories。"
+                "不要猜测工具别名，也不要把同批其他调用当作已成功。"
+            ),
+            "data": {
+                "reason": self.reason,
+                "unavailable_tools": self.details["tools"],
+                "available_tools": self.allowed_tool_names,
+                "batch_call_count": len(self.calls),
+                "executed": False,
+                "retryable": self.recovery_fits,
+            },
+        }
+
+
 @dataclass(frozen=True)
 class ValidatedNativeToolBatch:
     calls: tuple[dict[str, Any], ...]
@@ -61,17 +102,8 @@ def validate_workspace_native_tool_batch(
         require_initial_controller=require_initial_controller,
         singleton_cataloging_tools=singleton_cataloging_tools,
     )
-    for index, call in enumerate(calls):
-        name = str(call["function"]["name"])
-        if name not in allowed_tool_names:
-            raise NativeToolBatchValidationError(
-                "native_tool_not_open",
-                "模型调用了本步骤未声明的原生工具，整批未执行。",
-                call_index=index,
-                call_id=str(call["id"]),
-                tool=name,
-                tools=[name],
-            )
+    if any(name not in allowed_tool_names for name in names):
+        raise NativeToolBatchNotOpen(calls, allowed_tool_names)
     return ValidatedNativeToolBatch(tuple(calls), arguments_by_id)
 
 
@@ -193,6 +225,8 @@ def _validate_batch_semantics(
 
 
 __all__ = [
+    "MAX_NATIVE_TOOL_NAME_REJECTIONS",
+    "NativeToolBatchNotOpen",
     "NativeToolBatchValidationError",
     "ValidatedNativeToolBatch",
     "validate_workspace_native_tool_batch",

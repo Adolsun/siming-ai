@@ -45,6 +45,8 @@ class ToolInputSchemaValidationError(ValueError):
         if self.rule == "enum" and isinstance(self.expected, list):
             choices = "、".join(str(item) for item in self.expected)
             return f"{location} 必须是以下值之一：{choices}"
+        if self.rule == "additionalProperties" and isinstance(self.expected, list):
+            return f"{location} 含未声明字段（additionalProperties）：" + "、".join(self.expected)
         if self.rule in {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}:
             return f"{location} 未满足 {self.rule}={self.expected}"
         return f"{location} 未通过 {self.rule or 'schema'} 校验"
@@ -92,6 +94,9 @@ def _validate_exported_schema(schema: dict[str, Any], value: Any) -> None:
                     ) from exc
         if rule == "required" and isinstance(expected, list) and isinstance(exc.value, dict):
             expected = [field for field in expected if field not in exc.value]
+        if rule == "additionalProperties" and isinstance(exc.value, dict):
+            properties = getattr(exc, "definition", {}).get("properties", {})
+            expected = sorted(set(exc.value) - set(properties))
         raise ToolInputSchemaValidationError(
             path=path,
             rule=rule,

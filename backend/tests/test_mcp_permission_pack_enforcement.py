@@ -79,7 +79,7 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         names = {t.name for t in tools}
         self.assertEqual(len(names), 9)
         self.assertIn("get_next_external_cataloging_chapter", names)
-        self.assertIn("save_external_cataloging_facts", names)
+        self.assertIn("save_external_cataloging_candidates", names)
         self.assertIn("save_external_cataloging_candidates", names)
         self.assertNotIn("apply_pending_cataloging", names)
         self.assertIn("report_agent_progress", names)

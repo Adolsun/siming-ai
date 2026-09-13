@@ -1449,11 +1449,11 @@
           "list_cataloging_facts",
           "list_cataloging_jobs",
           "pause_cataloging_job",
-          "rerun_cataloging_resolution_current",
+          "read_cataloging_archive",
+          "repair_cataloging_plan_current",
           "resume_cataloging_job",
           "retry_current_cataloging_chapter",
           "save_external_cataloging_candidates",
-          "save_external_cataloging_facts",
           "set_cataloging_mode",
           "start_cataloging_job",
           "start_external_cataloging_job",
@@ -5735,5 +5735,5 @@
       }
     }
   },
-  "source_sha256": "56039c5e5136321cd7e182b541e3c7eb17e9811a903e369da5e083ae16172e99"
+  "source_sha256": "83eee2a4ffba9a5a3ad7a19973dce104a7a297171d3e3e887eaea918f66ba774"
 }

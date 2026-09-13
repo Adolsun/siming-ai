@@ -162,6 +162,7 @@ internal class MobileWorkspaceAgent(
         var activeCategories = emptyList<String>()
         var categorySelected = false
         var consecutiveCapacityRejections = 0
+        var nativeToolNameRejections = 0
         while (true) {
             val scopedTools = contract.toolSchemas(activeCategories)
             val requestToolChoice = if (categorySelected) "auto" else "required"
@@ -247,14 +248,6 @@ internal class MobileWorkspaceAgent(
                 )
             }
             val calledToolNames = turn.toolCalls.map(DirectAgentToolCall::name)
-            val undeclared = calledToolNames.filterNot(offeredToolNames::contains)
-            if (undeclared.isNotEmpty()) {
-                throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
-                    "模型调用了本步骤未声明的原生工具，整批未执行：${undeclared.joinToString()}",
-                )
-            }
-
             val categoryCall = turn.toolCalls.firstOrNull { it.name == contract.toolCategories.controller }
             if (categoryCall != null && turn.toolCalls.size != 1) {
                 throw MobileConversationContextException(
@@ -275,11 +268,18 @@ internal class MobileWorkspaceAgent(
                     "草稿生成工具必须是模型步骤中唯一的业务调用，整批未执行",
                 )
             }
-            var batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            val nameRejection = rejectMobileUnopenedToolBatch(
+                assistantPayload = turn.assistantMessage,
+                orderedToolNames = calledToolNames,
+                offeredToolNames = offeredToolNames,
+                requestBudget = prepared.budget,
+                rejectionCount = nativeToolNameRejections + 1,
+            )
+            val admission = if (nameRejection == null) MobileNativeToolBudgetContract.admitExactAssistantTransaction(
                 assistantPayload = turn.assistantMessage,
                 orderedToolNames = calledToolNames,
                 requestBudget = prepared.budget,
-            )
+            ) else null
             currentConversation = consumeDeliveredTransactions(
                 projectId = projectId,
                 turnContext = turnContext,
@@ -287,6 +287,26 @@ internal class MobileWorkspaceAgent(
                 deliveredTransactions = deliveredTransactions,
                 executionLedger = executionLedger,
             )
+            if (nameRejection != null) {
+                nativeToolNameRejections += 1
+                persistRejectedMobileNativeToolBatch(
+                    conversationStore = conversationStore,
+                    projectId = projectId,
+                    turnContext = turnContext,
+                    transaction = deliveredTransaction(turn, turn.toolCalls, nameRejection.results),
+                    recoveryFits = nameRejection.recoveryFits,
+                    terminalError = nameRejection.failure,
+                ) { runtime ->
+                    deliveredTransactions.clear()
+                    deliveredTransactions += runtime.activeTransactions
+                    onEvent(event(type = "status", detail =
+                        "模型调用了未开放的工具，整批未执行；" + if (nameRejection.recoveryFits) {
+                            "正在按当前工具清单修正（$nativeToolNameRejections/2）"
+                        } else "自动修正已停止。"))
+                }
+                continue
+            }
+            var batchAdmission = requireNotNull(admission)
             if (!batchAdmission.accepted) {
                 consecutiveCapacityRejections += 1
                 batchAdmission = batchAdmission.copy(recoveryFits = batchAdmission.recoveryFits &&
@@ -300,9 +320,12 @@ internal class MobileWorkspaceAgent(
                     projectId = projectId,
                     turnContext = turnContext,
                     transaction = transaction,
-                    admission = batchAdmission,
-                    overCapacityDetail =
-                        "模型返回的原生 assistant 工具事务超过容量协议；逐调用拒绝已记录，整批业务处理器未执行",
+                    recoveryFits = batchAdmission.recoveryFits,
+                    terminalError = MobileConversationContextException(
+                        MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+                        "工具批次无法在当前模型预算内恢复，已保留进度；本批次未执行。" +
+                            "逐调用拒绝已记录，整批业务处理器未执行。",
+                    ),
                 ) { runtime ->
                     deliveredTransactions.clear()
                     deliveredTransactions += runtime.activeTransactions

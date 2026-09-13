@@ -59,69 +59,63 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
     candidates.sort(key=_candidate_apply_sort_key)
 
     events: list[dict[str, Any]] = []
-    for candidate in candidates:
-        candidate.status = "applying"
-        candidate.updated_at = datetime.utcnow()
-        db.flush()
-        try:
-            # A rejected candidate must not leave half-written domain rows or
-            # poison the Session for the remaining candidates in this batch.
-            with db.begin_nested():
+    failed_id = candidates[0].id if candidates else None
+    try:
+        with db.begin_nested():
+            from .plan_validation import validate_complete_plan
+            validate_complete_plan(db, run)
+            for candidate in candidates:
+                failed_id = candidate.id
+                candidate.status = "applying"
+                candidate.updated_at = datetime.utcnow()
                 result = apply_candidate(db, candidate)
                 _mark_applied(db, job, run, candidate, result)
                 db.flush()
-            warning = str(result.get("review_warning") or "").strip()
-            if warning and warning not in str(run.review_warning or ""):
-                run.review_warning = "；".join(
-                    value
-                    for value in (str(run.review_warning or "").strip("； "), warning)
-                    if value
-                )[:4000]
-            events.append({
-                "type": "candidate_applied",
-                "candidate": candidate_to_dict(candidate),
-                "detail": result.get("detail"),
-                "data": result,
-            })
-        except DatabaseWriteLockTimeout:
+                warning = str(result.get("review_warning") or "").strip()
+                if warning and warning not in str(run.review_warning or ""):
+                    run.review_warning = "；".join(filter(None, [run.review_warning, warning]))[:4000]
+                events.append({"type": "candidate_applied", "candidate": candidate_to_dict(candidate),
+                               "detail": result.get("detail"), "data": result})
+            applied_candidates = [candidate for candidate in candidates if candidate.status == "applied"]
+            coverage = inspect_candidate_coverage_items(applied_candidates)
+            if coverage.narrative_assessed:
+                source = coverage.governance_review_source or "provided"
+                confidence = {
+                    "llm": 0.8,
+                    "provided": 0.7,
+                    "fallback": 0.55,
+                }.get(source, 0.6)
+                record_chapter_governance_review(
+                    db,
+                    job.project_id,
+                    run.chapter,
+                    source=source,
+                    findings_count=coverage.governance_findings_count,
+                    confidence=confidence,
+                    evidence=(
+                        f"作品建档已汇总检查本章叙事状态；发现 {coverage.governance_findings_count} 条治理线索。"
+                        if coverage.governance_findings_count
+                        else "作品建档已显式检查本章叙事状态，本版本未产生结构化治理线索。"
+                    ),
+                )
+            # Reconciliation is part of applying a complete chapter projection.  Keep
+            # the public event stream backward-compatible: callers expect one event per
+            # candidate and do not need an extra synthetic candidate event here.
+            reconcile_successful_run(db, run)
+            validate_complete_plan(db, run)
+    except DatabaseWriteLockTimeout:
+        raise
+    except Exception as exc:
+        # The savepoint has rolled back all formal data and success events.
+        failed = db.get(CatalogingCandidate, failed_id) if failed_id else None
+        if failed is None:
             raise
-        except Exception as exc:
-            candidate.status = "apply_failed"
-            candidate.error = str(exc)
-            events.append({
-                "type": "candidate_apply_failed",
-                "candidate": candidate_to_dict(candidate),
-                "error": str(exc),
-            })
-        finally:
-            candidate.updated_at = datetime.utcnow()
-            db.flush()
-    applied_candidates = [candidate for candidate in candidates if candidate.status == "applied"]
-    coverage = inspect_candidate_coverage_items(applied_candidates)
-    if coverage.narrative_assessed:
-        source = coverage.governance_review_source or "provided"
-        confidence = {
-            "llm": 0.8,
-            "provided": 0.7,
-            "fallback": 0.55,
-        }.get(source, 0.6)
-        record_chapter_governance_review(
-            db,
-            job.project_id,
-            run.chapter,
-            source=source,
-            findings_count=coverage.governance_findings_count,
-            confidence=confidence,
-            evidence=(
-                f"作品建档已汇总检查本章叙事状态；发现 {coverage.governance_findings_count} 条治理线索。"
-                if coverage.governance_findings_count
-                else "作品建档已显式检查本章叙事状态，本版本未产生结构化治理线索。"
-            ),
-        )
-    # Reconciliation is part of applying a complete chapter projection.  Keep
-    # the public event stream backward-compatible: callers expect one event per
-    # candidate and do not need an extra synthetic candidate event here.
-    reconcile_successful_run(db, run)
+        failed.status = "apply_failed"
+        failed.error = str(exc)
+        failed.updated_at = datetime.utcnow()
+        db.flush()
+        return [{"type": "candidate_apply_failed", "candidate": candidate_to_dict(failed),
+                 "error": str(exc), "chapter_rolled_back": True}]
     return events
 
 
@@ -139,7 +133,10 @@ def _candidate_apply_sort_key(candidate: CatalogingCandidate) -> tuple[Any, ...]
 
 
 def apply_candidate(db: Session, candidate: CatalogingCandidate) -> dict[str, Any]:
-    payload = prepare_reconciled_payload(db, candidate, candidate_payload(candidate))
+    from ...modules.continuity.domain.candidate_contract import validate_candidate_fields
+    payload = candidate_payload(candidate)
+    validate_candidate_fields(candidate.item_type, payload)
+    payload = prepare_reconciled_payload(db, candidate, payload)
     chapter = db.query(Chapter).filter(Chapter.id == candidate.chapter_id).first()
     if not chapter:
         raise ValueError("章节不存在")

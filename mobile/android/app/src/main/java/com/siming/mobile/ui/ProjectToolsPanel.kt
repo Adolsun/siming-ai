@@ -117,7 +117,7 @@ internal fun ProjectToolsPanel(
                         ) {
                             Icon(Icons.Outlined.AutoAwesome, null)
                             Spacer(Modifier.width(7.dp))
-                            Text(if (online) "开始全书建档" else "连接 PC 后建档")
+                            Text(if (online) "开始全书建档" else "连接服务后建档")
                         }
                     }
                 }

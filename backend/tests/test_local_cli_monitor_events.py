@@ -17,7 +17,7 @@ NARRATIVE = "沈砚需要授权才能查阅档案。The note says permission req
 
 
 @pytest.mark.parametrize("event", [
-    {"type": "tool_use", "part": {"type": "tool", "tool": "siming_turn_save_external_cataloging_facts",
+    {"type": "tool_use", "part": {"type": "tool", "tool": "siming_turn_save_external_cataloging_candidates",
       "state": {"status": "completed", "input": {"facts": [{"payload": {"summary": NARRATIVE}}]},
                 "output": "Saved 19 facts"}}},
     {"type": "text", "part": {"text": NARRATIVE}},
@@ -42,7 +42,7 @@ def test_native_errors_still_stop_the_cli(detect, message):
 
 def test_completed_cataloging_receipt_does_not_stop_a_real_subprocess():
     payload = json.dumps({"type": "tool_use", "part": {
-        "tool": "siming_turn_save_external_cataloging_facts",
+        "tool": "siming_turn_save_external_cataloging_candidates",
         "state": {"status": "completed", "input": {"facts": [{"payload": {"summary": NARRATIVE}}]},
                   "output": "Saved 19 facts"},
     }}, ensure_ascii=False).encode("utf-8") + b"\n"

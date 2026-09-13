@@ -8,13 +8,11 @@ from sqlalchemy.orm import Session
 from ...database.models import CatalogingCandidate, Chapter, OutlineNode
 from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 from ..story_granularity import (
-    chapter_outline_node,
-    extract_chapter_number,
     normalize_section_scene_state,
 )
 from .facts import record_cataloging_fact
 from .links import link_outline_characters, resolve_outline_characters
-from .lookups import find_outline_by_title_or_id, next_outline_sort_order, normalize_lookup
+from .lookups import next_outline_sort_order
 from .snapshots import outline_snapshot
 
 
@@ -27,12 +25,10 @@ def apply_outline(
 ) -> dict[str, Any]:
     character_ids = outline_character_ids(payload)
     resolve_outline_characters(db, chapter.project_id, character_ids)
-    title = str(payload.get("title") or payload.get("target_name") or chapter.title).strip()
+    title = payload["title"].strip()
     if not title:
         raise ValueError("大纲标题为空")
-    node_type = str(payload.get("node_type") or "chapter")[:20]
-    if node_type == "scene":
-        node_type = "section"
+    node_type = payload["node_type"]
     scene_number = None
     if node_type == "section":
         try:
@@ -42,19 +38,7 @@ def apply_outline(
         if scene_number <= 0:
             raise ValueError("场景大纲缺少有效的 scene_number，拒绝写入不稳定场景标识")
         payload["scene_number"] = scene_number
-    node = _find_outline_for_candidate(
-        db,
-        chapter,
-        payload.get("id") or title,
-        node_type,
-        exact=create,
-        scene_number=scene_number,
-    )
-    parent = _resolve_requested_parent(
-        db,
-        chapter.project_id,
-        payload.get("parent_id") or payload.get("parent_title"),
-    )
+    node, parent = validate_outline_target(db, chapter, payload, create=create)
     if node_type == "volume":
         parent_id = None
     elif node_type == "chapter":
@@ -71,7 +55,7 @@ def apply_outline(
             )
             parent_id = volume.id
     else:
-        chapter_parent = chapter_outline_node(db, chapter.project_id, chapter)
+        chapter_parent = _linked_chapter_outline(db, chapter)
         if not chapter_parent and parent and parent.node_type == "chapter":
             chapter_parent = parent
         if not chapter_parent:
@@ -168,80 +152,59 @@ def apply_outline(
     }
 
 
-def _find_exact_outline(db: Session, project_id: str, value: Any) -> OutlineNode | None:
-    text = str(value or "").strip()
-    if not text:
+def _linked_chapter_outline(db: Session, chapter: Chapter) -> OutlineNode | None:
+    if not chapter.outline_node_id:
         return None
-    return (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id)
-        .filter((OutlineNode.id == text) | (OutlineNode.title == text))
-        .order_by(OutlineNode.updated_at.desc())
-        .first()
-    )
+    node = db.get(OutlineNode, chapter.outline_node_id)
+    if node is None or node.project_id != chapter.project_id or node.node_type != "chapter":
+        raise ValueError("当前章节的大纲绑定无效；请先修正章节与章级大纲的关联")
+    return node
 
 
-def _find_outline_for_candidate(
-    db: Session,
-    chapter: Chapter,
-    value: Any,
-    node_type: str,
-    *,
-    exact: bool,
-    scene_number: Any = None,
-) -> OutlineNode | None:
-    if node_type == "chapter" and chapter.outline_node_id:
-        linked = db.query(OutlineNode).filter(
-            OutlineNode.project_id == chapter.project_id,
-            OutlineNode.id == chapter.outline_node_id,
-            OutlineNode.node_type == "chapter",
-        ).first()
-        if linked:
-            # The saved chapter-to-outline relation is the authoritative
-            # identity.  Cataloging may update that node's projection fields,
-            # but it must never swap or delete the node as a side effect of a
-            # model-proposed title.  Historical duplicate cleanup belongs in
-            # an explicit migration/repair operation, outside normal writes.
-            return linked
-    if node_type == "section":
-        numbered = _find_cataloged_section_by_scene_number(
-            db,
-            chapter,
-            scene_number,
-        )
-        if numbered:
-            return numbered
-    node = (
-        _find_exact_outline(db, chapter.project_id, value)
-        if exact
-        else find_outline_by_title_or_id(db, chapter.project_id, value)
-    )
-    if node or node_type != "section":
-        return node
+def validate_outline_target(
+    db: Session, chapter: Chapter, payload: dict[str, Any], *, create: bool,
+) -> tuple[OutlineNode | None, OutlineNode | None]:
+    """Validate explicit IDs and stable chapter/scene projection identities."""
+    node_type = payload["node_type"]
+    linked = _linked_chapter_outline(db, chapter)
+    identity = payload.get("id")
+    node = db.get(OutlineNode, identity) if identity else None
+    if identity:
+        if node is None or node.project_id != chapter.project_id or node.node_type != node_type:
+            raise ValueError("outline.id 不存在、不属于当前作品或节点类型不符")
+        if node_type != "volume":
+            if node.source_chapter_id not in {None, chapter.id}:
+                raise ValueError("outline.id 已属于其他章节")
+            if db.query(Chapter).filter(Chapter.outline_node_id == node.id, Chapter.id != chapter.id).first():
+                raise ValueError("outline.id 已绑定其他章节")
+        if node_type == "chapter" and linked is not None and node.id != linked.id:
+            raise ValueError("outline.id 必须使用当前章节已绑定的大纲 ID")
+        if node_type == "section":
+            if not linked or node.parent_id != linked.id:
+                raise ValueError("场景大纲 ID 必须属于本章大纲")
+            number = (node.metadata_json or {}).get("scene_number")
+            if number is not None and number != payload.get("scene_number"):
+                raise ValueError("场景大纲 ID 与 scene_number 不一致")
+    elif not create:
+        raise ValueError("outline_update 必须提供真实 ID")
+    elif node_type == "chapter":
+        node = linked
+    elif node_type == "section":
+        node = _find_cataloged_section_by_scene_number(db, chapter, payload.get("scene_number"))
 
-    # Builds predating the hierarchy fix stored a bare scene title, while the
-    # current normalization uses "chapter / scene".  Match only within the
-    # same source chapter so re-cataloging repairs the old row instead of
-    # creating a duplicate or touching an identically named scene elsewhere.
-    title = str(value or "").strip()
-    suffix = title.rsplit("/", 1)[-1].strip()
-    wanted = normalize_lookup(suffix)
-    if not wanted:
-        return None
-    candidates = (
-        db.query(OutlineNode)
-        .filter(
-            OutlineNode.project_id == chapter.project_id,
-            OutlineNode.node_type == "section",
-            OutlineNode.source_chapter_id == chapter.id,
-        )
-        .order_by(OutlineNode.updated_at.desc())
-        .all()
-    )
-    return next(
-        (candidate for candidate in candidates if normalize_lookup(candidate.title) == wanted),
-        None,
-    )
+    parent_id = payload.get("parent_id")
+    parent = db.get(OutlineNode, parent_id) if parent_id else None
+    if parent_id:
+        if parent is None or parent.project_id != chapter.project_id:
+            raise ValueError("outline.parent_id 必须是当前作品真实大纲 ID，不能使用标题")
+        expected_type = "volume" if node_type == "chapter" else "chapter"
+        if node_type == "volume" or parent.node_type != expected_type:
+            raise ValueError("outline.parent_id 的节点类型不符")
+        if node_type == "chapter" and node is not None and parent.id != node.parent_id:
+            raise ValueError("建档不能移动已绑定章节；parent_id 必须保留原父节点")
+        if node_type == "section" and (linked is None or parent.id != linked.id):
+            raise ValueError("场景大纲 parent_id 必须是本章大纲 ID")
+    return node, parent
 
 
 def _find_cataloged_section_by_scene_number(
@@ -266,6 +229,7 @@ def _find_cataloged_section_by_scene_number(
         .order_by(OutlineNode.created_at.asc(), OutlineNode.id.asc())
         .all()
     )
+    matches = []
     for row in rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         try:
@@ -273,21 +237,10 @@ def _find_cataloged_section_by_scene_number(
         except (TypeError, ValueError):
             continue
         if observed == wanted:
-            return row
-    return None
-
-
-def _resolve_requested_parent(db: Session, project_id: str, value: Any) -> OutlineNode | None:
-    """Resolve either a UUID or a provider-supplied title to a real node.
-
-    API models commonly put a chapter title in ``parent_id``.  Persisting that
-    title in the UUID column makes the section look like a root node and also
-    leaves a broken foreign key.  Never pass an unresolved provider value
-    through to storage.
-    """
-
-    text = str(value or "").strip()
-    return find_outline_by_title_or_id(db, project_id, text) if text else None
+            matches.append(row)
+    if len(matches) > 1:
+        raise ValueError("本章存在重复场景序号，请由模型选择实际场景 ID")
+    return matches[0] if matches else None
 
 
 def _volume_for_chapter(db: Session, chapter: Chapter) -> OutlineNode:
@@ -297,22 +250,12 @@ def _volume_for_chapter(db: Session, chapter: Chapter) -> OutlineNode:
         .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
         .all()
     )
-    chapter_number = extract_chapter_number(chapter.title)
     if volumes:
-        if chapter_number is not None:
-            ranged: list[tuple[int, OutlineNode]] = []
-            for volume in volumes:
-                metadata = volume.metadata_json if isinstance(volume.metadata_json, dict) else {}
-                try:
-                    start = int(metadata.get("start_chapter") or 0)
-                    end = int(metadata.get("end_chapter") or 0)
-                except (TypeError, ValueError):
-                    continue
-                if start and (not end or start <= chapter_number <= end):
-                    ranged.append((start, volume))
-            if ranged:
-                return max(ranged, key=lambda item: item[0])[1]
-        return volumes[0]
+        defaults = [volume for volume in volumes
+                    if (volume.metadata_json or {}).get("source") == "cataloging_default_volume"]
+        if len(defaults) == 1:
+            return defaults[0]
+        raise ValueError("新章节尚未绑定大纲，请读取大纲索引并填写所属卷的真实 parent_id")
 
     volume = OutlineNode(
         project_id=chapter.project_id,
@@ -337,7 +280,7 @@ def _volume_for_chapter(db: Session, chapter: Chapter) -> OutlineNode:
 
 
 def _ensure_chapter_container(db: Session, chapter: Chapter) -> OutlineNode:
-    existing = chapter_outline_node(db, chapter.project_id, chapter)
+    existing = _linked_chapter_outline(db, chapter)
     if existing:
         return existing
     volume = _volume_for_chapter(db, chapter)

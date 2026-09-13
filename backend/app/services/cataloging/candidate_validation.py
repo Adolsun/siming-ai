@@ -11,10 +11,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import (
-    CatalogingCandidate,
     CatalogingChapterRun,
     Character,
-    CharacterAlias,
     ChapterCharacter,
     OutlineNode,
     WorldbuildingEntry,
@@ -22,24 +20,25 @@ from ...database.models import (
 from ...database.query_filters import current_worldbuilding_clause
 from ...modules.continuity.domain.outline_character_contract import outline_character_ids
 from ..story_granularity import CandidateCoverage, inspect_candidate_coverage_items
-from .repair_identity import (
-    canonicalize,
-    has_stable_profile_evidence,
-    is_anonymous_character,
-    worldbuilding_alias_map,
-)
-from .candidate_source_expectations import (
-    _candidate_context,
-    _canonical_display_identity,
-    _display_identity_references_content,
-    _non_archival_fact_names,
-    _source_expectations,
-    _source_fact_payloads,
-    _value_items,
-    _worldbuilding_candidate_documents,
-    _worldbuilding_candidate_source_resolutions,
-    _worldbuilding_term_is_covered,
-)
+
+def _candidate_context(items: list[Any]) -> tuple[str, str]:
+    for item in items:
+        if isinstance(item, dict):
+            run_id = str(item.get("chapter_run_id") or "").strip()
+            chapter_id = str(item.get("chapter_id") or "").strip()
+        else:
+            run_id = str(getattr(item, "chapter_run_id", "") or "").strip()
+            chapter_id = str(getattr(item, "chapter_id", "") or "").strip()
+        if run_id or chapter_id:
+            return run_id, chapter_id
+    return "", ""
+
+
+
+
+def _value_items(value):
+    return value if isinstance(value, list) else [] if value is None else [value]
+
 
 _MISSING_ITEM_LABELS = {
     "source characters missing from coverage_manifest.characters": "原文角色未进入章节覆盖清单",
@@ -61,7 +60,7 @@ _MISSING_ITEM_LABELS = {
         "章节摘要少于40个非空白字符，不能作为可靠建档摘要"
     ),
     "chapter_overview scenes disagree with coverage_manifest.scene_count": (
-        "事实阶段场景数与章节覆盖清单不一致"
+        "计划场景数与章节覆盖清单不一致"
     ),
 }
 
@@ -160,16 +159,7 @@ def _character_identity_index(
         character_query = character_query.filter(Character.created_at <= created_before)
     characters = character_query.all()
     by_id = {row.id: _identity(row.name) for row in characters if _identity(row.name)}
-    alias_query = db.query(CharacterAlias).filter(CharacterAlias.project_id == project_id)
-    if created_before is not None:
-        alias_query = alias_query.filter(CharacterAlias.created_at <= created_before)
-    aliases = alias_query.all()
     identity_map = {canonical: canonical for canonical in by_id.values()}
-    for alias in aliases:
-        canonical = by_id.get(alias.character_id)
-        alias_identity = _identity(alias.alias)
-        if canonical and alias_identity:
-            identity_map[alias_identity] = canonical
     # Model-selected database IDs are explicit references, not display names.
     # Validate coverage against the same project-scoped records used to apply.
     identity_map.update({_identity(identity): canonical for identity, canonical in by_id.items()})
@@ -212,36 +202,10 @@ def _candidate_character_name(item: Any) -> str:
     )
 
 
-def _anonymous_with_stable_cards(items: Iterable[Any]) -> set[str]:
-    return {
-        name
-        for item in items
-        if _candidate_status(item) != "rejected"
-        and _candidate_type(item) in {"character_create", "character_update"}
-        and (name := _candidate_character_name(item))
-        and is_anonymous_character(name)
-        and has_stable_profile_evidence(_candidate_payload(item))
-    }
 
 
-def _reject_weak_anonymous_cards(items: Iterable[Any], unresolved: set[str]) -> bool:
-    changed = False
-    for item in items:
-        if _candidate_type(item) not in {"character_create", "character_update"}:
-            continue
-        if _candidate_character_name(item) not in unresolved:
-            continue
-        if isinstance(item, dict):
-            if item.get("status") != "rejected":
-                item["status"] = "rejected"
-                item["error"] = "身份未确认且缺少稳定档案，已保留为章节线索"
-                changed = True
-            continue
-        if _candidate_status(item) != "rejected":
-            item.status = "rejected"
-            item.error = "身份未确认且缺少稳定档案，已保留为章节线索"
-            changed = True
-    return changed
+
+
 
 
 def _candidate_character_identity_map(
@@ -249,13 +213,7 @@ def _candidate_character_identity_map(
     base_map: dict[str, str],
     by_id: dict[str, str],
 ) -> dict[str, str]:
-    """Include aliases from staged character cards without trusting conflicts.
-
-    Candidate aliases are part of the same transactional write set as the
-    coverage manifest.  Ignoring them makes a fact such as ``特昂糖`` fail to
-    match the staged canonical card ``陆糖 (alias: 特昂糖)``.  An alias claimed
-    by multiple cards remains deliberately unresolved.
-    """
+    """Compare coverage using the exact IDs declared by current model cards."""
 
     targets: dict[str, set[str]] = defaultdict(set)
     for alias, canonical in base_map.items():
@@ -272,8 +230,8 @@ def _candidate_character_identity_map(
             or payload.get("target_name")
         )
         target_id = str(
-            payload.get("character_id")
-            or payload.get("target_id")
+            payload.get("id")
+            or payload.get("client_id")
             or getattr(item, "target_id", "")
             or ""
         ).strip()
@@ -283,10 +241,8 @@ def _candidate_character_identity_map(
         targets[canonical].add(canonical)
         if raw_name:
             targets[raw_name].add(canonical)
-        for alias in _value_items(payload.get("aliases")):
-            alias_identity = _identity(alias)
-            if alias_identity:
-                targets[alias_identity].add(canonical)
+        if target_id:
+            targets[_identity(target_id)].add(canonical)
     resolved = {
         alias: next(iter(canonicals))
         for alias, canonicals in targets.items()
@@ -296,28 +252,7 @@ def _candidate_character_identity_map(
     return resolved
 
 
-def _apply_identity_hints(
-    identity_map: dict[str, str],
-    facts: list[tuple[str, dict[str, Any]]],
-) -> dict[str, str]:
-    """Resolve an identity hint only when it has one known card as anchor."""
 
-    result = dict(identity_map)
-    for fact_type, payload in facts:
-        if fact_type != "identity_hint":
-            continue
-        names = {
-            _identity(item)
-            for item in _value_items(payload.get("names") or payload.get("aliases"))
-            if _identity(item)
-        }
-        anchors = {result[name] for name in names if name in result}
-        if len(anchors) != 1:
-            continue
-        canonical = next(iter(anchors))
-        for name in names:
-            result[name] = canonical
-    return result
 
 
 def _relationship_endpoints(keys: Iterable[str]) -> set[str]:
@@ -352,7 +287,7 @@ def _canonicalize_coverage(
 ) -> CandidateCoverage:
     def identities(values: Iterable[str]) -> tuple[str, ...]:
         return tuple(
-            sorted({_canonical_display_identity(value, identity_map) for value in values if value})
+            sorted({identity_map.get(value, value) for value in values if value})
         )
 
     def relationships(values: Iterable[str]) -> tuple[str, ...]:
@@ -407,14 +342,7 @@ def _reconcile_candidate_policy(
     the validator makes API, local CLI and MCP callers execute the same code.
     """
 
-    stable_anonymous = _anonymous_with_stable_cards(items)
-    unresolved = {
-        name
-        for name in coverage.declared_character_identities
-        if name not in existing_characters
-        and name not in stable_anonymous
-        and is_anonymous_character(name)
-    }
+    unresolved: set[str] = set()
 
     declared_characters = set(coverage.declared_character_identities)
     states = set(coverage.character_state_identities) & declared_characters
@@ -442,18 +370,6 @@ def _reconcile_candidate_policy(
     declared_worldbuilding = set(coverage.declared_worldbuilding_identities)
     raw_worldbuilding = set(coverage.worldbuilding_candidate_identities)
     worldbuilding_links = set(coverage.chapter_link_worldbuilding_identities)
-    aliases = worldbuilding_alias_map(
-        declared_worldbuilding
-        | raw_worldbuilding
-        | worldbuilding_links
-        | existing_worldbuilding,
-        declared_worldbuilding,
-        existing_worldbuilding,
-    )
-    declared_worldbuilding = canonicalize(declared_worldbuilding, aliases)
-    raw_worldbuilding = canonicalize(raw_worldbuilding, aliases)
-    worldbuilding_links = canonicalize(worldbuilding_links, aliases)
-    existing_worldbuilding = canonicalize(existing_worldbuilding, aliases)
     covered_worldbuilding = raw_worldbuilding | (
         declared_worldbuilding & worldbuilding_links & existing_worldbuilding
     )
@@ -533,34 +449,14 @@ def _prepare_database_coverage(
     characters, existing, database_identity_map, by_id = _character_identity_index(
         db,
         project_id,
-        created_before=source_baseline,
+        created_before=None,
     )
-    facts = _source_fact_payloads(db, items)
-    identity_map = _apply_identity_hints(
-        _candidate_character_identity_map(items, database_identity_map, by_id),
-        facts,
-    )
+    identity_map = _candidate_character_identity_map(items, database_identity_map, by_id)
     coverage = _canonicalize_coverage(coverage, identity_map)
-    unresolved_before_reconcile = {
-        name
-        for name in coverage.declared_character_identities
-        if name not in existing
-        and name not in _anonymous_with_stable_cards(items)
-        and is_anonymous_character(name)
-    }
-    if _reject_weak_anonymous_cards(items, unresolved_before_reconcile):
-        coverage = inspect_candidate_coverage_items(items)
-        identity_map = _apply_identity_hints(
-            _candidate_character_identity_map(items, database_identity_map, by_id),
-            facts,
-        )
-        coverage = _canonicalize_coverage(coverage, identity_map)
     entry_query = db.query(WorldbuildingEntry).filter(
         WorldbuildingEntry.project_id == project_id,
         current_worldbuilding_clause(WorldbuildingEntry.status),
     )
-    if source_baseline is not None:
-        entry_query = entry_query.filter(WorldbuildingEntry.created_at <= source_baseline)
     existing_worldbuilding = {
         title for row in entry_query.all() if (title := _identity(row.title))
     }
@@ -574,162 +470,10 @@ def _prepare_database_coverage(
 
 
 def validate_candidate_source_character_grounding(
-    db: Session,
-    project_id: str,
-    run: CatalogingChapterRun,
-    normalized: dict[str, Any],
+    db: Session, project_id: str, run: CatalogingChapterRun, normalized: dict[str, Any],
 ) -> None:
-    """Reject character bindings that the current chapter did not establish.
-
-    The facts model owns the semantic decision about who appears in the
-    chapter.  Candidate resolution may use the archive to select an existing
-    card, but it must not turn an unnamed role into an old named character.
-    This check only compares the model's structured identities with the
-    current chapter, its saved facts, and project-scoped IDs/aliases.
-    """
-
-    preview = {
-        "item_type": str(normalized.get("item_type") or ""),
-        "status": "pending",
-        "payload": normalized.get("payload")
-        if isinstance(normalized.get("payload"), dict)
-        else {},
-        "target_id": normalized.get("target_id"),
-        "target_name": normalized.get("target_name"),
-        "chapter_run_id": run.id,
-        "chapter_id": run.chapter_id,
-    }
-    staged = (
-        db.query(CatalogingCandidate)
-        .filter(
-            CatalogingCandidate.chapter_run_id == run.id,
-            CatalogingCandidate.status != "rejected",
-        )
-        .all()
-    )
-    context_items: list[Any] = [*staged, preview]
-    facts = _source_fact_payloads(db, context_items)
-    # Manual candidate entry may legitimately operate without a facts stage.
-    # The strict binding rule applies once the two-stage cataloging contract
-    # has established a source snapshot.
-    if not facts:
-        return
-
-    source_baseline = run.started_at or run.created_at
-    characters, _existing, base_identity_map, by_id = _character_identity_index(
-        db,
-        project_id,
-        created_before=source_baseline,
-    )
-    identity_map = _apply_identity_hints(
-        _candidate_character_identity_map(context_items, base_identity_map, by_id),
-        facts,
-    )
-    grounded, _worldbuilding, _relationships, _profiles = _source_expectations(
-        db,
-        project_id,
-        context_items,
-        characters,
-        identity_map,
-        source_baseline,
-    )
-    chapter = run.chapter
-    chapter_content = str(chapter.content or "") if chapter is not None else ""
-    non_archival = _non_archival_fact_names(facts)
-
-    def supported(value: Any) -> bool:
-        raw = str(value or "").strip()
-        if not raw:
-            return True
-        identity = _identity(raw)
-        canonical = _canonical_display_identity(identity, identity_map)
-        if identity in non_archival or canonical in non_archival:
-            return False
-        return bool(
-            identity in grounded
-            or canonical in grounded
-            or _display_identity_references_content(raw, chapter_content)
-        )
-
-    def display_value(value: Any) -> str:
-        if isinstance(value, dict):
-            value = (
-                value.get("name")
-                or value.get("character_name")
-                or value.get("source_name")
-                or value.get("target_name")
-            )
-        return str(value or "").strip()
-
-    unsupported: list[str] = []
-
-    def require(values: Any) -> None:
-        for value in _value_items(values):
-            text = display_value(value)
-            if text and not supported(text):
-                unsupported.append(text)
-
-    item_type = preview["item_type"]
-    payload = preview["payload"]
-    if item_type in {
-        "character_create",
-        "character_update",
-        "character_state_update",
-        "character_timeline",
-    }:
-        identity_values = [
-            normalized.get("target_id"),
-            normalized.get("target_name"),
-            payload.get("id"),
-            payload.get("character_id"),
-            payload.get("name"),
-            payload.get("character_name"),
-            *_value_items(payload.get("aliases")),
-        ]
-        if not any(supported(value) for value in identity_values if value):
-            require(
-                payload.get("name")
-                or payload.get("character_name")
-                or normalized.get("target_name")
-                or normalized.get("target_id")
-                or payload.get("id")
-            )
-    elif item_type == "character_relationship":
-        require(payload.get("source_name") or payload.get("source") or payload.get("character_a"))
-        require(payload.get("target_name") or payload.get("target") or payload.get("character_b"))
-    elif item_type == "character_merge_candidate":
-        require(payload.get("primary_name") or payload.get("primary_character_name"))
-        require(payload.get("secondary_name") or payload.get("secondary_character_name"))
-
-    if item_type == "chapter_summary":
-        require(payload.get("characters"))
-        manifest = payload.get("coverage_manifest")
-        if isinstance(manifest, dict):
-            require(manifest.get("characters"))
-            require(manifest.get("character_profiles"))
-            for relationship in _value_items(manifest.get("relationships")):
-                if isinstance(relationship, dict):
-                    require(relationship.get("source_name") or relationship.get("source"))
-                    require(relationship.get("target_name") or relationship.get("target"))
-    elif item_type in {"outline_create", "outline_update"}:
-        require(payload.get("characters"))
-        require(payload.get("pov_character"))
-    elif item_type == "chapter_link":
-        require(payload.get("characters"))
-    elif item_type in {
-        "worldbuilding_create",
-        "worldbuilding_update",
-        "worldbuilding_timeline",
-    }:
-        require(payload.get("affected_characters"))
-
-    unsupported = list(dict.fromkeys(unsupported))
-    if unsupported:
-        names = "、".join(unsupported)
-        raise ValueError(
-            "候选人物没有本版正文或事实阶段的身份依据："
-            f"{names}；不得把未具名角色绑定到旧档案人物，请保留原文身份或移除该人物引用"
-        )
+    from .plan_contract import validate_plan_references
+    validate_plan_references(db, project_id, run, normalized)
 
 
 def _referential_missing(
@@ -765,92 +509,17 @@ def _referential_missing(
 
 
 def _source_review_warnings(
-    db: Session,
-    project_id: str,
-    items: list[Any],
-    coverage: CandidateCoverage,
-    characters: list[Character],
-    identity_map: dict[str, str],
-    source_baseline: Any,
+    db: Session, project_id: str, items: list[Any], coverage: CandidateCoverage,
+    characters: list[Character], identity_map: dict[str, str], source_baseline: Any,
 ) -> list[str]:
+    # Semantic completeness belongs to the same Agent that reads the chapter.
+    # The application checks the plan's explicit coverage and real references.
     warnings = list(coverage.review_warnings)
-    summary_lengths = [
-        len(re.sub(r"\s+", "", str(
-            _candidate_payload(item).get("summary_text")
-            or _candidate_payload(item).get("summary")
-            or ""
-        )))
-        for item in items
-        if _candidate_status(item) != "rejected"
-        and _candidate_type(item) == "chapter_summary"
-    ]
-    if summary_lengths and max(summary_lengths) < 40:
-        warnings.append("chapter summary has fewer than 40 non-whitespace characters")
-
-    source_scene_counts = [
-        len(_value_items(payload.get("scenes")))
-        for fact_type, payload in _source_fact_payloads(db, items)
-        if fact_type == "chapter_overview"
-        and _value_items(payload.get("scenes"))
-    ]
-    if source_scene_counts:
-        source_scene_count = max(source_scene_counts)
-        if coverage.scene_count != source_scene_count:
-            warnings.append(
-                "chapter_overview scenes disagree with coverage_manifest.scene_count: "
-                f"facts={source_scene_count}, manifest={coverage.scene_count}"
-            )
-    expected_characters, expected_worldbuilding, relationships, profiles = (
-        _source_expectations(
-            db,
-            project_id,
-            items,
-            characters,
-            identity_map,
-            source_baseline,
-        )
-    )
-    undeclared_characters = sorted(
-        expected_characters - set(coverage.declared_character_identities)
-    )
-    if undeclared_characters:
-        warnings.append(
-            "source characters missing from coverage_manifest.characters: "
-            + "、".join(undeclared_characters)
-        )
-    documents = _worldbuilding_candidate_documents(items)
-    source_resolutions = _worldbuilding_candidate_source_resolutions(items)
-    declared_worldbuilding = set(coverage.declared_worldbuilding_identities)
-    undeclared_worldbuilding = sorted({
-        term for term in expected_worldbuilding
-        if not _worldbuilding_term_is_covered(
-            term,
-            declared_worldbuilding,
-            documents,
-            source_resolutions,
-        )
-    })
-    if undeclared_worldbuilding:
-        warnings.append(
-            "source worldbuilding missing from coverage_manifest.worldbuilding: "
-            + "、".join(undeclared_worldbuilding)
-        )
-    undeclared_relationships = sorted(
-        relationships - set(coverage.declared_relationship_identities)
-    )
-    if undeclared_relationships:
-        warnings.append(
-            "source relationships missing from coverage_manifest.relationships: "
-            + "、".join(undeclared_relationships)
-        )
-    undeclared_profiles = sorted(
-        profiles - set(coverage.declared_character_profile_identities)
-    )
-    if undeclared_profiles:
-        warnings.append(
-            "source character profile evidence missing from coverage_manifest.character_profiles: "
-            + "、".join(undeclared_profiles)
-        )
+    for item in items:
+        if _candidate_type(item) == "chapter_summary" and _candidate_status(item) != "rejected":
+            summary = _candidate_payload(item).get("summary_text", "")
+            if len("".join(str(summary).split())) < 40:
+                warnings.append("chapter summary has fewer than 40 non-whitespace characters")
     return warnings
 
 

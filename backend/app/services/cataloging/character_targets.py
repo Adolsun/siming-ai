@@ -147,15 +147,12 @@ def validate_character_state_target(
 
     if item_type != "character_state_update":
         return None
-    target_id = payload.get("id") or payload.get("character_id")
-    name = payload.get("name") or payload.get("character_name")
+    target_id = payload.get("id")
     query = db.query(Character).filter(Character.project_id == project_id)
     if target_id:
         character = query.filter(Character.id == str(target_id)).first()
-    elif isinstance(name, str) and name.strip():
-        character = query.filter(Character.name == name.strip()).first()
     else:
-        character = None
+        raise ValueError("character_state_update.id 必须使用当前计划中模型选择的真实 ID")
     # A new character may be staged in the same transaction before its state.
     if character is None:
         return character

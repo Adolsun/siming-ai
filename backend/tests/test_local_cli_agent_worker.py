@@ -128,15 +128,15 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
             project_folder=project_folder,
             chapter=chapter,
             chapter_file=chapter_file,
-            stage="facts",
+            stage="planning",
         )
 
         self.assertIn(str(chapter_file), task)
-        self.assertIn('phase="facts"', task)
-        self.assertIn("save_external_cataloging_facts", task)
-        self.assertIn("`facts` 必须直接传原生 JSON 数组", task)
+        self.assertIn("read_cataloging_archive", task)
+        self.assertIn("save_external_cataloging_candidates", task)
+        self.assertIn("原生 candidates 数组", task)
         self.assertNotIn(chapter.content, task)
-        self.assertEqual(_turn_stage(run, "auto"), "facts")
+        self.assertEqual(_turn_stage(run, "auto"), "planning")
 
     def test_worker_marks_run_failed_when_cli_reports_quota(self):
         project = self._project()

@@ -10,50 +10,20 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import Character, CharacterAlias, OutlineNode, WorldbuildingEntry
+from ...database.models import Character, OutlineNode, WorldbuildingEntry
 from ...database.query_filters import current_worldbuilding_clause
-from .name_utils import normalize_name_key, split_character_name
 
 
 def find_character_by_name_or_id(db: Session, project_id: str, value: Any) -> Character | None:
     text = str(value or "").strip()
-    if not text:
-        return None
-    for term in [text, *split_character_name(text)]:
-        character = _find_character_exact(db, project_id, term)
-        if character:
-            return character
-    normalized = normalize_name_key(text)
-    if normalized:
-        for character in db.query(Character).filter(Character.project_id == project_id).all():
-            if normalize_name_key(character.name) == normalized:
-                return character
-            if normalized in {normalize_name_key(part) for part in split_character_name(character.name)}:
-                return character
-            for alias in character.aliases or []:
-                if normalize_name_key(alias.alias) == normalized:
-                    return character
-    return None
+    rows = db.query(Character).filter(Character.project_id == project_id,
+        (Character.id == text) | (Character.name == text)).all()
+    if len(rows) > 1:
+        raise ValueError("角色引用不唯一；请由模型选择真实 ID")
+    return rows[0] if rows else None
 
 
-def _find_character_exact(db: Session, project_id: str, text: str) -> Character | None:
-    if not text:
-        return None
-    character = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter((Character.id == text) | (Character.name == text))
-        .first()
-    )
-    if character:
-        return character
-    alias = (
-        db.query(CharacterAlias)
-        .filter(CharacterAlias.project_id == project_id, CharacterAlias.alias == text)
-        .order_by(CharacterAlias.updated_at.desc())
-        .first()
-    )
-    return alias.character if alias else None
+
 
 
 def find_worldbuilding_by_title_or_id(
@@ -81,44 +51,9 @@ def find_worldbuilding_by_title_or_id(
     exact = current.filter(WorldbuildingEntry.title == text).first()
     if exact:
         return exact
-    normalized = normalize_lookup(text)
-    if not normalized:
-        return None
-    return next(
-        (
-            entry
-            for entry in current.all()
-            if normalize_lookup(entry.title) == normalized
-        ),
-        None,
-    )
-
-
-def find_outline_by_title_or_id(db: Session, project_id: str, value: Any) -> OutlineNode | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    exact = (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id)
-        .filter((OutlineNode.id == text) | (OutlineNode.title == text))
-        .order_by(OutlineNode.updated_at.desc())
-        .first()
-    )
-    if exact:
-        return exact
-
-    normalized = normalize_lookup(text)
-    for node in (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id)
-        .order_by(OutlineNode.updated_at.desc())
-        .all()
-    ):
-        node_title = normalize_lookup(node.title)
-        if node_title and (node_title == normalized or normalized in node_title or node_title in normalized):
-            return node
     return None
+
+
 
 
 def next_outline_sort_order(db: Session, project_id: str, parent_id: str | None) -> int:

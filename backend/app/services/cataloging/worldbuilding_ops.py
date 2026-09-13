@@ -22,7 +22,7 @@ from .lookups import find_worldbuilding_by_title_or_id, next_worldbuilding_sort_
 from .merge import merge_text
 from .snapshots import chapter_change_title, worldbuilding_snapshot
 
-PLACEHOLDER_WORLDBUILDING_TITLES = {"未命名", "未命名设定", "未知", "无标题", "设定名"}
+
 
 
 def apply_worldbuilding(
@@ -39,42 +39,25 @@ def apply_worldbuilding(
     if not content:
         raise ValueError("世界观内容为空")
     dimension = _normalize_dimension(payload.get("dimension"), payload)
-    suppressed_target_id = str(
-        payload.get("_cataloging_suppressed_target_id") or ""
-    ).strip()
-    if suppressed_target_id:
-        entry = db.get(WorldbuildingEntry, suppressed_target_id)
-        if entry is not None and entry.project_id != chapter.project_id:
-            raise ValueError("已停用世界观目标不属于当前作品")
-        snapshot = worldbuilding_snapshot(entry) if entry else None
-        status = str(
-            payload.get("_cataloging_suppressed_target_status") or "superseded"
-        )
-        warning = (
-            f"世界观“{title}”对应的旧建档目标已由作者标记为{status}，"
-            "本次重建档保留候选审计，但未重新激活或新建重复词条。"
-        )
-        return {
-            "target_type": "worldbuilding_suppressed",
-            "target_id": suppressed_target_id,
-            "old_value": snapshot,
-            "new_value": snapshot,
-            "detail": warning,
-            "review_warning": warning,
-        }
     entry_id = str(payload.get("id") or "").strip()
     if not create and not entry_id:
         raise ValueError("世界观更新必须使用上下文中已有条目的精确 ID")
-    entry = _find_current_worldbuilding_target(
-        db,
-        chapter.project_id,
-        entry_id or title,
-        explicit_id=entry_id,
-    )
-    if entry_id and not entry:
-        raise ValueError("世界观更新目标 ID 不存在或不属于当前作品")
+    if create:
+        client_id = payload.get("client_id")
+        if entry_id or not client_id or db.get(WorldbuildingEntry, client_id) is not None:
+            raise ValueError("新设定必须使用未占用的 client_id；已有设定使用 worldbuilding_update")
+        collision = db.query(WorldbuildingEntry).filter_by(project_id=chapter.project_id, title=title).first()
+        if collision:
+            raise ValueError(f"设定标题已存在，不能通过 create 覆盖或重新激活；请读取档案 ID={collision.id}")
+        entry = None
+    else:
+        entry = _find_current_worldbuilding_target(db, chapter.project_id, entry_id, explicit_id=entry_id)
+        if not entry:
+            raise ValueError("世界观更新目标 ID 不存在、已停用或不属于当前作品")
     old = worldbuilding_snapshot(entry) if entry else None
     if not entry:
+        if not dimension:
+            raise ValueError("worldbuilding_create.dimension 必填")
         entry = WorldbuildingEntry(
             project_id=chapter.project_id,
             dimension=dimension,
@@ -86,11 +69,13 @@ def apply_worldbuilding(
             status="active",
             confidence=float_or_none(candidate.confidence),
         )
+        if payload.get("client_id"):
+            entry.id = payload["client_id"]
         db.add(entry)
         db.flush()
     else:
         entry.status = "active"
-        entry.dimension = dimension
+        entry.dimension = dimension or entry.dimension
         if content:
             previous = payload.get("_cataloging_previous_payload")
             previous = previous if isinstance(previous, dict) else {}
@@ -143,24 +128,7 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
     if entry_id and not entry:
         raise ValueError("世界观时间线目标 ID 不存在或不属于当前作品")
     if not entry:
-        title = str(payload.get("title") or "").strip()
-        if not title or _is_placeholder_worldbuilding_title(title):
-            raise ValueError("世界观时间线缺少可识别设定标题或ID")
-        dimension = _normalize_dimension(payload.get("dimension"), payload)
-        entry = WorldbuildingEntry(
-            project_id=chapter.project_id,
-            dimension=dimension,
-            title=title[:200],
-            content=str(payload.get("event_description") or payload.get("content") or "")[:12000],
-            sort_order=next_worldbuilding_sort_order(db, chapter.project_id, dimension),
-            first_seen_chapter_id=chapter.id,
-            last_updated_chapter_id=chapter.id,
-        )
-        db.add(entry)
-        db.flush()
-        ensure_worldbuilding_version(db, entry, chapter, payload)
-    else:
-        entry.status = "active"
+        raise ValueError("世界观时间线需要计划内已创建的真实设定 ID")
     description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
     if not description:
         raise ValueError("世界观时间线事件为空")
@@ -225,7 +193,7 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
 
 def _is_placeholder_worldbuilding_title(title: str | None) -> bool:
     text = str(title or "").strip()
-    return not text or text in PLACEHOLDER_WORLDBUILDING_TITLES or text.startswith("未命名")
+    return not text
 
 
 def _find_current_worldbuilding_target(
@@ -291,87 +259,13 @@ def ensure_worldbuilding_version(
     ))
 
 
-DIMENSION_ALIASES = {
-    "geo": "geography",
-    "location": "geography",
-    "place": "geography",
-    "map": "geography",
-    "地理": "geography",
-    "地点": "geography",
-    "地图": "geography",
-    "地貌": "geography",
-    "区域": "geography",
-    "历史": "history",
-    "时间线": "history",
-    "过往": "history",
-    "传说": "history",
-    "起源": "history",
-    "history_line": "history",
-    "faction": "factions",
-    "organization": "factions",
-    "sect": "factions",
-    "势力": "factions",
-    "组织": "factions",
-    "宗门": "factions",
-    "门派": "factions",
-    "家族": "factions",
-    "阵营": "factions",
-    "power": "power_system",
-    "magic": "power_system",
-    "cultivation": "power_system",
-    "power_systems": "power_system",
-    "修炼体系": "power_system",
-    "修炼": "power_system",
-    "力量体系": "power_system",
-    "功法": "power_system",
-    "境界": "power_system",
-    "阵法": "power_system",
-    "法术": "power_system",
-    "灵力": "power_system",
-    "规则": "power_system",
-    "种族": "races",
-    "族群": "races",
-    "生物": "races",
-    "妖兽": "races",
-    "魔族": "races",
-    "race": "races",
-    "species": "races",
-    "习俗": "culture",
-    "文化": "culture",
-    "制度": "culture",
-    "礼仪": "culture",
-    "节日": "culture",
-    "生活": "culture",
-}
 
 
-DIMENSION_KEYWORDS = [
-    ("factions", ["宗门", "门派", "家族", "王朝", "朝廷", "组织", "势力", "阵营", "公会", "帮派"]),
-    ("power_system", ["修炼", "境界", "功法", "灵气", "灵力", "法术", "术法", "阵法", "符", "血脉", "病毒", "诅咒", "封印", "规则"]),
-    ("geography", ["山", "谷", "城", "村", "镇", "河", "海", "岛", "洞", "矿", "地域", "地图", "方位", "边境"]),
-    ("races", ["妖兽", "灵兽", "魔族", "妖族", "血魔", "种族", "族群", "生灵"]),
-    ("history", ["历史", "传说", "起源", "前代", "旧事", "纪年", "年代", "传承", "遗迹", "灭亡"]),
-    ("culture", ["习俗", "节日", "礼仪", "制度", "风俗", "饮食", "服饰", "婚丧", "规矩"]),
-]
 
 
-def _normalize_dimension(value: Any, payload: dict[str, Any] | None = None) -> str:
-    raw = str(value or "").strip()
-    normalized = raw.lower().replace("-", "_").replace(" ", "_")
-    if normalized in WORLD_DIMENSIONS:
-        return normalized
-    if raw in DIMENSION_ALIASES:
-        return DIMENSION_ALIASES[raw]
-    if normalized in DIMENSION_ALIASES:
-        return DIMENSION_ALIASES[normalized]
-
-    text = ""
-    if payload:
-        text = " ".join(
-            str(payload.get(key) or "")
-            for key in ["title", "name", "content", "event_description", "evidence"]
-        )
-    for dimension, keywords in DIMENSION_KEYWORDS:
-        if any(keyword in raw or keyword in text for keyword in keywords):
-            return dimension
-    return "culture"
+def _normalize_dimension(value: Any, payload: dict[str, Any] | None = None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in WORLD_DIMENSIONS:
+        raise ValueError("dimension 必须使用工具契约中的枚举值")
+    return value

@@ -3210,7 +3210,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/cataloging/{job_id}/rerun-resolution-current": {
+    "/api/v1/projects/{project_id}/cataloging/{job_id}/repair-plan-current": {
         parameters: {
             query?: never;
             header?: never;
@@ -3219,8 +3219,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Rerun Current Cataloging Resolution */
-        post: operations["rerun_current_cataloging_resolution_api_v1_projects__project_id__cataloging__job_id__rerun_resolution_current_post"];
+        /** Repair Current Cataloging Plan */
+        post: operations["repair_current_cataloging_plan_api_v1_projects__project_id__cataloging__job_id__repair_plan_current_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16533,7 +16533,7 @@ export interface operations {
             };
         };
     };
-    rerun_current_cataloging_resolution_api_v1_projects__project_id__cataloging__job_id__rerun_resolution_current_post: {
+    repair_current_cataloging_plan_api_v1_projects__project_id__cataloging__job_id__repair_plan_current_post: {
         parameters: {
             query?: never;
             header?: never;

@@ -310,8 +310,12 @@ internal class MobileCreationConversationAgent(
                     projectId = storageId,
                     turnContext = turnContext,
                     transaction = deliveredTransaction(turn, calls, rejectedResults),
-                    admission = batchAdmission,
-                    overCapacityDetail = "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行",
+                    recoveryFits = batchAdmission.recoveryFits,
+                    terminalError = MobileConversationContextException(
+                        MobileConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY,
+                        "工具批次无法在当前模型预算内恢复，已保留进度；本批次未执行。" +
+                            "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行。",
+                    ),
                 ) { runtime ->
                     deliveredTransactions.clear()
                     deliveredTransactions += runtime.activeTransactions

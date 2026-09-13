@@ -11,6 +11,7 @@ LEGACY_TRUNCATION_SUFFIX = "...[truncated]"
 DIRECT_MCP_RETRY_BLOCK_REASON = (
     "Direct MCP 步骤不能脱离原 lease 重试；请发起新的作者消息。"
 )
+NATIVE_BATCH_RETRY_BLOCK_REASON = "本批工具尚未执行且需要模型重新选择，不能单独重放；请重新发起任务。"
 
 _UNRECOVERABLE_REQUEST_MESSAGE = (
     "该步骤的历史请求参数不完整，无法安全重试；请重新发起原任务。"
@@ -106,9 +107,11 @@ def step_request_retry_block_reason(raw: str | None) -> str | None:
     """Return a user-facing reason when a persisted request cannot be replayed."""
 
     try:
-        deserialize_step_request(raw)
+        request = deserialize_step_request(raw)
     except UnrecoverableStepRequest as exc:
         return str(exc)
+    if request.get("native_batch_rejected") is True:
+        return NATIVE_BATCH_RETRY_BLOCK_REASON
     return None
 
 

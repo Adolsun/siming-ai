@@ -10,29 +10,23 @@ from sqlalchemy.orm import Session
 from ...database.models import (
     CatalogingCandidate,
     CatalogingChapterRun,
-    CatalogingFact,
 )
 from ..story_granularity import SECTION_SCENE_STATE_FIELDS, normalize_node_type
 from .candidate_io import candidate_payload
 
 
-def source_overview_scenes(db: Session, run: CatalogingChapterRun) -> list[Any] | None:
-    plans = []
-    for fact in db.query(CatalogingFact).filter_by(
-        chapter_run_id=run.id, fact_type="chapter_overview", status="active",
-    ).order_by(CatalogingFact.id).all():
-        try:
-            payload = json.loads(fact.raw_payload or "{}")
-        except (TypeError, ValueError):
-            continue
-        scenes = payload.get("scenes") if isinstance(payload, dict) else None
-        if isinstance(scenes, list):
-            plans.append(scenes)
-    return max(plans, key=len) if plans else None
+def plan_scenes(db: Session, run: CatalogingChapterRun) -> list[Any] | None:
+    summary = db.query(CatalogingCandidate).filter_by(
+        chapter_run_id=run.id, item_type="chapter_summary",
+    ).filter(CatalogingCandidate.status != "rejected").first()
+    if summary is None:
+        return None
+    scenes = candidate_payload(summary).get("scenes")
+    return scenes if isinstance(scenes, list) else None
 
 
-def source_overview_scene_count(db: Session, run: CatalogingChapterRun) -> int | None:
-    scenes = source_overview_scenes(db, run)
+def plan_scene_count(db: Session, run: CatalogingChapterRun) -> int | None:
+    scenes = plan_scenes(db, run)
     return len(scenes) if scenes is not None else None
 
 
@@ -46,7 +40,7 @@ def active_scene_candidates(db: Session, run: CatalogingChapterRun) -> list[Cata
 
 
 def scene_repair_context(db: Session, run: CatalogingChapterRun) -> dict[str, Any]:
-    scenes = source_overview_scenes(db, run)
+    scenes = plan_scenes(db, run)
     sections = active_scene_candidates(db, run)
     declared = None
     for row in db.query(CatalogingCandidate).filter_by(
@@ -84,14 +78,12 @@ def validate_scene_candidate(
         normalize_node_type(payload.get("node_type")) == "section"
     )
     if item_type == "chapter_summary":
-        count = source_overview_scene_count(db, run)
+        scenes = payload.get("scenes")
         manifest = payload.get("coverage_manifest")
-        if count and isinstance(manifest, dict) and manifest.get("scene_count") != count:
-            raise ValueError(
-                f"coverage_manifest.scene_count 必须等于 chapter_overview.scenes 的长度 {count} "
-                f"(facts={count}, manifest={manifest.get('scene_count')})；"
-                "不能按事件条数重新分场或扩大总数掩盖越界候选"
-            )
+        if not isinstance(scenes, list) or not scenes:
+            raise ValueError("chapter_summary.scenes 必须是同一建档计划确定的非空场景数组")
+        if not isinstance(manifest, dict) or manifest.get("scene_count") != len(scenes):
+            raise ValueError("coverage_manifest.scene_count 必须等于本次计划 scenes 的长度")
     if not is_section:
         return []
 
@@ -103,8 +95,8 @@ def validate_scene_candidate(
     if isinstance(count, int) and count > 0 and number > count:
         raise ValueError(
             f"section.scene_number={number} 越界；本章场景范围为 1..{count}。"
-            "按 chapter_overview.scenes 合并同场事件，不得将事件条数当场景数。"
-            "该候选未保存；不要仅换编号覆盖已有场景，须核对完整源场景和已保存候选。"
+            "按 chapter_summary.scenes 合并同场事件，不得将事件条数当场景数。"
+            "该候选未保存；不要仅换编号覆盖已有场景，须核对完整计划场景和已保存候选。"
         )
     if not replacing_plan and isinstance(count, int) and count > 0:
         existing_numbers = [item["payload"].get("scene_number")
@@ -124,7 +116,7 @@ def is_scene_replacement(raw: dict[str, Any]) -> bool:
 
 
 def validate_scene_replacement(db: Session, run: CatalogingChapterRun, raw: dict[str, Any]):
-    from .jsonl import normalize_candidate
+    from .records import normalize_candidate
 
     payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else raw
     expected = payload.get("expected_candidate_ids")
@@ -136,7 +128,7 @@ def validate_scene_replacement(db: Session, run: CatalogingChapterRun, raw: dict
     context = scene_repair_context(db, run)
     count = context["source_scene_count"] or context["declared_scene_count"]
     if not isinstance(count, int) or count <= 0:
-        raise ValueError("场景重排需要已保存的源场景或场景数声明")
+        raise ValueError("场景重排需要已保存的计划场景或场景数声明")
     if not isinstance(sections, list) or len(sections) != count:
         raise ValueError(
             f"scene_outline_replace.sections 必须一次提交全部 {count} 个场景，不能只修最后一条"

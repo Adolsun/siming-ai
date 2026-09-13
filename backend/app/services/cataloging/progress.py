@@ -28,6 +28,7 @@ POLL_SECONDS = 0.5
 _PROGRESS_EVENT = "cataloging_progress"
 _DETAIL_TYPES = {
     "cataloging_stage",
+    "cataloging_tool_result",
     "cataloging_retry",
     "cataloging_warning",
     "parse_warning",
@@ -51,6 +52,8 @@ def record_cataloging_progress(db: Session, job: CatalogingJob, raw: str) -> Non
     operation = job.operation
     if operation is None:
         return
+    if event.get("stage") == "planning":
+        operation.phase = "planning"
     payload = {key: value for key, value in event.items() if key not in {"run", "job"}}
     if event.get("run"):
         payload["chapter_run_id"] = event["run"]["id"]

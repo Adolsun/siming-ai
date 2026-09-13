@@ -6,9 +6,8 @@ import pytest
 
 from app.database.models import CatalogingCandidate
 from app.services.cataloging import orchestrator
-from app.services.cataloging.candidate_retry import candidate_coverage_error, candidate_retry_reason
+from app.services.cataloging.candidate_retry import candidate_coverage_error
 from app.services.cataloging.candidate_store import create_candidate_from_raw
-from app.services.cataloging.fact_store import create_fact
 from app.services.workspace.tools.external_cataloging import save_external_cataloging_candidates
 from tests.test_cataloging_candidate_repair import summary_payload
 from tests.test_cataloging_character_targets import archive as archive_fixture
@@ -29,13 +28,8 @@ def section(number, summary=None, **extra):
 
 def checkpoint(archive, *, legacy_extra=False):
     db, chapter, _, job, run = archive
-    create_fact(db, job, run, {"fact_type": "chapter_overview", "payload": {
-        "summary": "核对档案", "scenes": [
-            {"summary": text} for text in ("接电话并核验", "向科长请示", "副馆长批准", "签字发现线索")
-        ],
-    }}, 0)
     for i, raw in enumerate([
-        {"type": "chapter_summary", "payload": summary_payload(scene_count=4)},
+        {"type": "chapter_summary", **summary_payload(scene_count=4)},
         {"character_ids": [], "type": "outline_create", "node_type": "chapter", "title": chapter.title, "summary": "核对档案"},
         *[section(number) for number in range(1, 5)],
     ]):
@@ -50,7 +44,7 @@ def checkpoint(archive, *, legacy_extra=False):
             raw_payload=json.dumps(section(5, "签字发现线索")), sort_order=9,
         )
         db.add(extra)
-    run.status = "facts_saved"
+    run.status = "extracting"
     db.commit()
     return extra
 
@@ -110,7 +104,9 @@ def test_complete_scene_replacement_is_atomic_and_idempotent(archive, external):
             result = asyncio.run(save_external_cataloging_candidates(db, chapter.project_id, {
                 "job_id": job.id, "chapter_id": chapter.id, "candidates": [raw],
             }))
-            assert result["status"] == ("skipped" if repeated else "ok"), result
+            assert result["status"] == "ok", result
+            if repeated:
+                assert result["data"]["duplicates_skipped"] == 1
         else:
             result = create_candidate_from_raw(db, job, run, raw, 10)
             assert result.get("duplicate") if repeated else len(result["candidates"]) == 4
@@ -184,54 +180,8 @@ def test_only_renumbering_the_last_scene_cannot_overwrite_the_old_fourth(archive
     assert snapshot(db) == before
 
 
-def test_model_recovers_legacy_scene_drift_without_losing_source_events(archive, monkeypatch):
-    db, _, _, job, run = archive
-    extra = checkpoint(archive, legacy_extra=True)
-    original_ids = {row.id for row in db.query(CatalogingCandidate)}
-    calls = []
-
-    async def stream(messages, **kwargs):
-        calls.append(messages)
-        feedback = candidate_retry_reason(db, run, [], candidate_coverage_error(db, run))
-        assert feedback in messages[1]["content"]
-        assert "scene_outline_replace" in messages[1]["content"]
-        assert extra.id in messages[1]["content"]
-        yield json.dumps(replacement(db, run), ensure_ascii=False)
-
-    monkeypatch.setattr(orchestrator.LLMGateway, "stream_chat_completion", stream)
-
-    async def extract():
-        async for _ in orchestrator._extract_run(db, job, run):
-            pass
-
-    asyncio.run(extract())
-    assert run.status == "awaiting_confirmation", run.error
-    assert len(calls) == 1
-    assert extra.status == "rejected"
-    assert original_ids <= {row.id for row in db.query(CatalogingCandidate)}
-    summaries = {json.loads(row.raw_payload).get("summary") for row in db.query(CatalogingCandidate)
-                 if row.status != "rejected" and row.item_type == "outline_create"}
-    assert {"接电话并核验", "向科长请示", "副馆长批准", "签字发现线索"} <= summaries
 
 
-@pytest.mark.parametrize("stored", [False, True], ids=["pretty-response", "saved-raw-response"])
-def test_whole_response_recovery_uses_the_same_atomic_scene_replacement(archive, stored):
-    from app.services.cataloging.candidate_store import (
-        recover_candidates_from_raw_output,
-        recover_candidates_from_response_text,
-    )
-
-    db, _, _, job, run = archive
-    extra = checkpoint(archive, legacy_extra=True)
-    text = json.dumps(replacement(db, run), ensure_ascii=False, indent=2)
-    if stored:
-        run.raw_output = "=== CANDIDATE RESOLUTION ===\n" + text
-        result = recover_candidates_from_raw_output(db, job, run)
-    else:
-        result = recover_candidates_from_response_text(db, job, run, text)
-    assert result["coverage"].is_complete
-    assert len(result["results"]) == 4
-    assert extra.status == "rejected"
 
 
 def test_middle_section_failure_rolls_back_the_entire_plan(archive, monkeypatch):

@@ -86,6 +86,7 @@ _SAFE_REASON = re.compile(r"^[a-z0-9_]{1,100}$")
 _NUMERIC_FIELDS = {
     "assistant_json_bytes", "declared_result_json_bytes", "consecutive_rejections",
     "batch_call_count",
+    "native_tool_name_rejections",
     "iteration",
     "call_index",
     "call_count",
@@ -121,6 +122,10 @@ def public_context_failure(error: ConversationContextError) -> PublicAssistantFa
     if code is ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY:
         details["retryable"] = False  # The automatic recovery budget is exhausted.
     remediation = _REMEDIATION.get(code)
+    if code is ConversationContextErrorCode.PROTOCOL_INVALID and details.get("reason") == "native_tool_not_open":
+        message = native_tool_name_failure_message(details)
+        details["retryable"] = False
+        remediation = "请重新发起任务；调用记录中已保留具体工具名与整批拒绝原因。"
     if remediation:
         details["remediation"] = remediation
     return PublicAssistantFailure(
@@ -129,6 +134,14 @@ def public_context_failure(error: ConversationContextError) -> PublicAssistantFa
         details=details,
         failure_class="conversation_context",
     )
+
+
+def native_tool_name_failure_message(details: dict[str, Any]) -> str:
+    tool = str(details.get("tool") or "")
+    tool_label = f" {tool}" if _SAFE_TOKEN.fullmatch(tool) else ""
+    count = details.get("native_tool_name_rejections")
+    suffix = "已用完本轮两次自动修正机会。" if isinstance(count, int) and count >= 3 else ""
+    return f"模型调用了当前未开放的工具{tool_label}，本批次未执行。{suffix}"
 
 
 def public_model_failure(error: Exception) -> PublicAssistantFailure:

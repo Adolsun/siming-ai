@@ -828,16 +828,15 @@ def test_search_and_read_schemas_declare_real_page_or_range_boundaries() -> None
 
 
 @pytest.mark.parametrize(("name", "status", "receipt"), [
-    ("save_external_cataloging_facts", "skipped", {
-        "validation_errors": ["facts[0].payload must be an object"],
-        "validation_error_count": 1, "validation_errors_has_more": False,
-        "allowed_fact_types": ["chapter_overview"],
-        "next_tool": "save_external_cataloging_facts",
+    ("save_external_cataloging_candidates", "skipped", {
+        "candidate_errors": [{"message": "items_or_assets 必须是字符串"}],
+        "candidate_set_complete": False,
+        "next_tool": "save_external_cataloging_candidates",
     }),
     ("save_external_cataloging_candidates", "ok", {
         "candidate_set_complete": False,
         "missing_required_items": ["character_state_update for declared characters (0/1)"],
-        "candidates_saved": 2, "chapter_run_status": "facts_saved",
+        "candidates_saved": 2, "chapter_run_status": "extracting",
         "auto_applied": False, "next_tool": "save_external_cataloging_candidates",
     }),
     ("save_external_cataloging_candidates", "ok", {
@@ -859,13 +858,9 @@ def test_cataloging_projection_preserves_actionable_receipts_without_prose(name,
     assert projected.projected_json_bytes <= tool.model_result_contract.max_json_bytes
 
 
-def test_cataloging_fact_schema_uses_the_persistence_enum_and_nested_payload():
-    from app.modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
-    from app.services.workspace.tools.external_cataloging import CANONICAL_FACT_TYPES
-
-    tool = registry.get("save_external_cataloging_facts")
-    record = tool.input_schema["facts"]["items"]
-    assert set(record["properties"]["fact_type"]["enum"]) == CANONICAL_FACT_TYPES
-    assert set(CATALOGING_FACT_TYPES) == CANONICAL_FACT_TYPES
-    assert record["properties"]["payload"]["type"] == "object"
-    assert record["required"] == ["fact_type", "payload"]
+def test_cataloging_schema_has_one_native_plan_record_union():
+    tool = registry.get_spec("save_external_cataloging_candidates")
+    variants = tool.parameters_schema()["properties"]["candidates"]["items"]["anyOf"]
+    summary = next(v for v in variants if v["properties"]["type"]["enum"] == ["chapter_summary"])
+    assert {"character_bindings", "worldbuilding_bindings", "scenes"} <= set(summary["required"])
+    assert summary["additionalProperties"] is False
