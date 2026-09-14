@@ -1,6 +1,7 @@
 package com.siming.mobile.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.siming.mobile.data.SimingRepository
@@ -70,6 +71,7 @@ data class MobileUiState(
     val pendingOutlineDraft: MobilePendingOutlineDraft? = null,
     val pendingAssistantRequest: String? = null,
     val directApi: DirectApiSummary? = null,
+    val connectionSetupDeferred: Boolean = false,
     val discoveredModels: List<String> = emptyList(),
     val activeCreationId: String? = null,
     val creationRunning: Boolean = false,
@@ -286,6 +288,7 @@ private fun MobileAssistantCheckpointSourceRange.toJson(): JsonObject = buildJso
 @OptIn(ExperimentalSerializationApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SimingRepository(application)
+    private val startupPreferences = application.getSharedPreferences("startup_preferences", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private var assistantJob: Job? = null
     private var assistantHistoryRequest = 0L
@@ -325,7 +328,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     var uiState = androidx.compose.runtime.mutableStateOf(
-        MobileUiState(directApi = repository.directApiSummary()),
+        MobileUiState(
+            directApi = repository.directApiSummary(),
+            connectionSetupDeferred = startupPreferences.getBoolean("connection_setup_deferred", false),
+        ),
     )
         private set
 
@@ -478,6 +484,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelPairing() {
         uiState.value = uiState.value.copy(pairing = null, pairingStatus = null, error = null)
+    }
+
+    fun deferConnectionSetup() {
+        startupPreferences.edit().putBoolean("connection_setup_deferred", true).apply()
+        uiState.value = uiState.value.copy(connectionSetupDeferred = true)
     }
 
     fun discoverDirectModels(baseUrl: String, apiKey: String) {

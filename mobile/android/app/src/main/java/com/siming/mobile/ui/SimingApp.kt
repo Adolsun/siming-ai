@@ -185,14 +185,16 @@ fun SimingApp(
         return
     }
 
-    val pairingRequired = connection == null && projects.isEmpty() && creationDrafts.isEmpty() && ui.directApi == null
-    if (pairingRequired || ui.pairing != null) {
+    val setupRequired = !ui.connectionSetupDeferred && connection == null &&
+        projects.isEmpty() && creationDrafts.isEmpty() && ui.directApi == null
+    if (setupRequired || ui.pairing != null) {
         PairingScreen(
             viewModel = viewModel,
-            allowBack = !pairingRequired,
+            allowBack = !setupRequired,
             onBack = viewModel::cancelPairing,
             onScanQr = onScanQr,
             onConfigureApi = { showDirectApiSetup = true },
+            onDeferSetup = if (setupRequired) viewModel::deferConnectionSetup else null,
             snackbar = snackbar,
         )
         return
@@ -1532,6 +1534,7 @@ private fun PairingScreen(
     onBack: () -> Unit,
     onScanQr: () -> Unit,
     onConfigureApi: () -> Unit,
+    onDeferSetup: (() -> Unit)?,
     snackbar: SnackbarHostState,
 ) {
     val ui by viewModel.uiState
@@ -1584,6 +1587,19 @@ private fun PairingScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+                if (onDeferSetup != null) {
+                    OutlinedButton(
+                        onClick = onDeferSetup,
+                        enabled = !ui.busy,
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(50.dp),
+                    ) { Text("稍后配置") }
+                    Text(
+                        "先导入、查看和编辑本机资料，需要 AI 时再到设置中配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),

@@ -1,0 +1,427 @@
+{
+  "idempotency_key": "11111111-1111-1111-1111-111111111111",
+  "rows": {
+    "project": [
+      {
+        "id": "package-project",
+        "title": "Package regression",
+        "description": "Synthetic fixture",
+        "tags": "[\"fantasy\"]",
+        "narrative_perspective": null,
+        "writing_style": null,
+        "forbidden_sentence_patterns": null,
+        "rhetoric_guidelines": null,
+        "short_sentences": null,
+        "custom_style_prompt": null,
+        "daily_word_goal": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "creation_sessions": [],
+    "creation_entities": [],
+    "outline_nodes": [
+      {
+        "id": "volume",
+        "project_id": "package-project",
+        "parent_id": null,
+        "node_type": "volume",
+        "title": "Volume",
+        "summary": "Volume summary",
+        "status": "draft",
+        "source_chapter_id": null,
+        "actual_summary": null,
+        "planned_summary": null,
+        "metadata_json": {
+          "hook": "Volume hook"
+        },
+        "sort_order": 1000,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      },
+      {
+        "id": "outline",
+        "project_id": "package-project",
+        "parent_id": "volume",
+        "node_type": "chapter",
+        "title": "Chapter plan",
+        "summary": "Chapter summary",
+        "status": "draft",
+        "source_chapter_id": null,
+        "actual_summary": null,
+        "planned_summary": "Plan",
+        "metadata_json": {
+          "hook": "Chapter hook",
+          "character_ids": [
+            "hero"
+          ]
+        },
+        "sort_order": 1000,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "characters": [
+      {
+        "id": "hero",
+        "project_id": "package-project",
+        "name": "Hero",
+        "appearance": null,
+        "personality": null,
+        "background": null,
+        "abilities": "[\"tracking\"]",
+        "role_type": "protagonist",
+        "age": null,
+        "current_version": 2,
+        "is_evolution_tracked": null,
+        "life_status": null,
+        "current_location": null,
+        "realm_or_level": null,
+        "physical_state": null,
+        "mental_state": null,
+        "current_goal": null,
+        "active_conflict": null,
+        "abilities_state": null,
+        "items_or_assets": null,
+        "profile_json": {
+          "motivation": "Find the witness"
+        },
+        "last_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      },
+      {
+        "id": "witness",
+        "project_id": "package-project",
+        "name": "Witness",
+        "appearance": null,
+        "personality": null,
+        "background": null,
+        "abilities": null,
+        "role_type": "supporting",
+        "age": null,
+        "current_version": null,
+        "is_evolution_tracked": null,
+        "life_status": null,
+        "current_location": null,
+        "realm_or_level": null,
+        "physical_state": null,
+        "mental_state": null,
+        "current_goal": null,
+        "active_conflict": null,
+        "abilities_state": null,
+        "items_or_assets": null,
+        "profile_json": {},
+        "last_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "character_ai_configs": [
+      {
+        "id": "voice",
+        "character_id": "hero",
+        "tone_style": "neutral",
+        "catchphrases": "[\"wait\"]",
+        "verbosity": "moderate",
+        "emotion_tendency": "neutral",
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "character_aliases": [
+      {
+        "id": "alias",
+        "project_id": "package-project",
+        "character_id": "hero",
+        "alias": "Scout",
+        "alias_type": "alias",
+        "description": null,
+        "confidence": null,
+        "source_chapter_id": null,
+        "merged_character_id": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "character_relationships": [
+      {
+        "id": "relationship",
+        "project_id": "package-project",
+        "character_a_id": "hero",
+        "character_b_id": "witness",
+        "relationship_type": "ally",
+        "description": "Protect witness",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "worldbuilding_entries": [
+      {
+        "id": "world",
+        "project_id": "package-project",
+        "dimension": "geography",
+        "title": "Harbor",
+        "content": "An isolated harbor",
+        "first_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "status": "active",
+        "confidence": null,
+        "sort_order": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      },
+      {
+        "id": "guild",
+        "project_id": "package-project",
+        "dimension": "factions",
+        "title": "Guild",
+        "content": "Controls harbor",
+        "first_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "status": "active",
+        "confidence": null,
+        "sort_order": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "worldbuilding_relations": [
+      {
+        "id": "world-link",
+        "project_id": "package-project",
+        "source_entry_id": "guild",
+        "target_entry_id": "world",
+        "relation_type": "controls",
+        "description": null,
+        "metadata_json": {
+          "reason": "trade"
+        },
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "outline_characters": [
+      {
+        "id": "outline-link",
+        "outline_node_id": "outline",
+        "character_id": "hero",
+        "role_in_scene": "Investigates",
+        "created_at": "2026-09-01T00:00:00Z"
+      },
+      {
+        "id": "outline-link2",
+        "outline_node_id": "outline",
+        "character_id": "witness",
+        "role_in_scene": "Testifies",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "chapters": [
+      {
+        "id": "chapter",
+        "project_id": "package-project",
+        "outline_node_id": "outline",
+        "title": "Arrival",
+        "content": "The witness arrives.",
+        "word_count": null,
+        "current_version": 2,
+        "sort_order": 1000,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "chapter_snapshots": [
+      {
+        "id": "snapshot",
+        "chapter_id": "chapter",
+        "version_number": 1,
+        "content": "An earlier arrival.",
+        "word_count": 3,
+        "trigger_type": "manual",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "chapter_summaries": [
+      {
+        "id": "summary",
+        "chapter_id": "chapter",
+        "summary_text": "Witness arrives",
+        "key_events": "[\"arrival\"]",
+        "token_count": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "chapter_characters": [],
+    "chapter_worldbuilding": [],
+    "chapter_drafts": [],
+    "character_versions": [
+      {
+        "id": "character-version",
+        "character_id": "hero",
+        "version_number": 1,
+        "snapshot_data": "{\"name\":\"Hero\"}",
+        "change_summary": null,
+        "source_chapter_id": "chapter",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "character_timelines": [],
+    "character_change_logs": [],
+    "worldbuilding_versions": [
+      {
+        "id": "world-version",
+        "entry_id": "world",
+        "version_number": 1,
+        "snapshot_data": "{\"title\":\"Harbor\"}",
+        "change_summary": null,
+        "source_chapter_id": "chapter",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "worldbuilding_timelines": [],
+    "foreshadowings": [
+      {
+        "id": "hint",
+        "project_id": "package-project",
+        "title": "Missing seal",
+        "description": "The seal is missing",
+        "status": "open",
+        "importance": "high",
+        "source_chapter_id": "chapter",
+        "target_chapter_id": null,
+        "target_chapter_number": null,
+        "resolved_chapter_id": null,
+        "evidence": null,
+        "source_chapter_version": null,
+        "resolved_chapter_version": null,
+        "resolution_note": null,
+        "resolution_evidence": null,
+        "verification_note": null,
+        "verified_at": null,
+        "last_checked_at": null,
+        "stale_reason": null,
+        "closed_by": null,
+        "storyline": null,
+        "dedupe_key": "hint-test",
+        "source": "manual",
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "causal_edges": [
+      {
+        "id": "cause",
+        "project_id": "package-project",
+        "cause": "Missing seal",
+        "effect": "Gate remains closed",
+        "causal_type": "direct",
+        "strength": 1.0,
+        "status": "open",
+        "character_ids": [
+          "hero"
+        ],
+        "source_chapter_id": "chapter",
+        "resolved_chapter_id": null,
+        "evidence": null,
+        "source_chapter_version": null,
+        "resolved_chapter_version": null,
+        "resolution_note": null,
+        "resolution_evidence": null,
+        "verification_note": null,
+        "verified_at": null,
+        "last_checked_at": null,
+        "stale_reason": null,
+        "closed_by": null,
+        "dedupe_key": "cause-test",
+        "source": "manual",
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "narrative_debts": [
+      {
+        "id": "debt",
+        "project_id": "package-project",
+        "debt_type": "promise",
+        "title": "Find seal",
+        "description": "Recover the missing seal",
+        "status": "open",
+        "priority": "high",
+        "source_chapter_id": "chapter",
+        "target_chapter_id": null,
+        "target_chapter_number": null,
+        "resolved_chapter_id": null,
+        "linked_foreshadowing_id": "hint",
+        "linked_causal_edge_id": "cause",
+        "evidence": null,
+        "source_chapter_version": null,
+        "resolved_chapter_version": null,
+        "resolution_note": null,
+        "resolution_evidence": null,
+        "verification_note": null,
+        "verified_at": null,
+        "last_checked_at": null,
+        "stale_reason": null,
+        "closed_by": null,
+        "dedupe_key": "debt-test",
+        "source": "manual",
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "character_narrative_states": [
+      {
+        "id": "state",
+        "project_id": "package-project",
+        "character_id": "hero",
+        "chapter_id": "chapter",
+        "current_goal": "Find seal",
+        "public_stance": null,
+        "hidden_intent": null,
+        "emotional_residue": null,
+        "relationship_tension": null,
+        "behavior_boundaries": null,
+        "evidence": null,
+        "source": "manual",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "narrative_checkpoints": [
+      {
+        "id": "checkpoint",
+        "project_id": "package-project",
+        "chapter_id": "chapter",
+        "chapter_snapshot_id": "snapshot",
+        "sequence": 1,
+        "label": "Arrival checkpoint",
+        "trigger_type": "manual",
+        "state_json": {
+          "debt_id": "debt",
+          "character_id": "hero"
+        },
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "chapter_governance_reviews": [
+      {
+        "id": "review",
+        "project_id": "package-project",
+        "chapter_id": "chapter",
+        "chapter_version": 2,
+        "status": "completed",
+        "source": "manual",
+        "findings_count": 1,
+        "confidence": null,
+        "evidence": null,
+        "reviewed_at": null,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+      }
+    ],
+    "creation_artifact_versions": [],
+    "creation_materials": []
+  }
+}
