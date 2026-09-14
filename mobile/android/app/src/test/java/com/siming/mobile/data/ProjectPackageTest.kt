@@ -1,6 +1,9 @@
 package com.siming.mobile.data
 
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.orderReplicaEntities
+import com.siming.mobile.data.local.recordType
+import com.siming.mobile.data.agent.pcGovernanceContext
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -20,6 +23,125 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ProjectPackageTest {
+    @Test
+    fun importedAuthoringRecordsAreVisibleWithoutGatewayAndKeepExactRelationships() {
+        val file = buildAuthoringPackage()
+        try {
+            val validated = MobileProjectPackageValidator(file).validate()
+            val requestKey = UUID.fromString(interopFixture().string("idempotency_key"))
+            val (projectId, imported) = MobileProjectPackageMaterializer.materialize(validated, requestKey, null)
+            val snapshot = imported.map { replica(it.projectId, it.entityType, it.entityId, it.payload.toString()) }
+            val counts = mapOf("project" to 1, "outline" to 2, "character" to 2, "world" to 2,
+                "chapter" to 1, "foreshadowing" to 1, "governance" to 1)
+            counts.forEach { (type, count) ->
+                assertEquals(count, orderReplicaEntities(type, snapshot.filter { it.entityType == type }).size, type)
+            }
+            fun id(collection: String, source: String) = projectPackageUuid5(requestKey, collection, source).toString()
+            fun payload(collection: String, source: String) = imported.single { it.entityId == id(collection, source) }.payload
+            assertEquals(id("project", "package-project"), projectId)
+            val outline = payload("outline_nodes", "outline")
+            assertEquals(id("outline_nodes", "volume"), outline.string("parent_id"))
+            assertEquals("Chapter summary", outline.string("summary"))
+            assertEquals("Chapter hook", (outline["metadata"] as JsonObject).string("hook"))
+            assertEquals(listOf(id("characters", "hero"), id("characters", "witness")),
+                (outline["linked_characters"] as JsonArray).map { (it as JsonObject).string("id") })
+            assertEquals(id("outline_nodes", "outline"), payload("chapters", "chapter").string("outline_node_id"))
+            val hero = payload("characters", "hero")
+            assertEquals(JsonArray(listOf(JsonPrimitive("tracking"))), hero["abilities"])
+            assertEquals(JsonArray(listOf(JsonPrimitive("Scout"))), hero["aliases"])
+            assertEquals("Find the witness", (hero["profile"] as JsonObject).string("motivation"))
+            assertEquals(id("characters", "hero"), payload("character_relationships", "relationship").string("from"))
+            assertEquals(id("worldbuilding_entries", "world"), payload("worldbuilding_relations", "world-link").string("target_entry_id"))
+            val debt = payload("narrative_debts", "debt")
+            assertEquals(id("foreshadowings", "hint"), debt.string("linked_foreshadowing_id"))
+            assertEquals(id("causal_edges", "cause"), debt.string("linked_causal_edge_id"))
+            val checkpoint = payload("narrative_checkpoints", "checkpoint")
+            assertEquals(id("chapter_snapshots", "snapshot"), checkpoint.string("chapter_snapshot_id"))
+            assertEquals(id("narrative_debts", "debt"), (checkpoint["state_json"] as JsonObject).string("debt_id"))
+            assertTrue(pcGovernanceContext(imported.map { it.payload }).contains("Find seal"))
+            assertTrue(pcGovernanceContext(imported.map { it.payload }).contains("Missing seal"))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun importedStoredCharacterListsKeepValuesAcceptedByPc() {
+        val file = buildAuthoringPackage()
+        try {
+            val validated = MobileProjectPackageValidator(file).validate()
+            val rows = validated.coreRows.toMutableMap()
+            rows["characters"] = rows.getValue("characters").map { row ->
+                JsonObject(row.toMutableMap().apply { put("abilities", JsonPrimitive("tracking, scouting")) })
+            }
+            val (_, imported) = MobileProjectPackageMaterializer.materialize(
+                validated.copy(coreRows = rows), UUID.randomUUID(), null,
+            )
+            assertTrue(imported.filter { it.payload["_record_type"] == JsonPrimitive("character") }.all {
+                it.payload["abilities"] == JsonArray(listOf(JsonPrimitive("tracking"), JsonPrimitive("scouting")))
+            })
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun importedAuthoringRewriteKeepsCollectionsSeparateAndRetainsMobileEdits() {
+        val source = buildAuthoringPackage()
+        val destination = kotlin.io.path.createTempFile("mobile-authoring-rewrite-", PROJECT_PACKAGE_EXTENSION).toFile()
+        try {
+            val validated = MobileProjectPackageValidator(source).validate()
+            val requestKey = UUID.fromString(interopFixture().string("idempotency_key"))
+            val (projectId, imported) = MobileProjectPackageMaterializer.materialize(validated, requestKey, null)
+            val snapshot = imported.map { record ->
+                val fields = record.payload.toMutableMap()
+                when (fields["_record_type"]) {
+                    JsonPrimitive("world_entry") -> fields["content"] = JsonPrimitive("Edited setting")
+                    JsonPrimitive("narrative_debt") -> fields["description"] = JsonPrimitive("Edited debt")
+                    JsonPrimitive("foreshadowing") -> fields["description"] = JsonPrimitive("Edited hint")
+                    JsonPrimitive("character") -> fields["profile"] = JsonObject(mapOf("motivation" to JsonPrimitive("Edited goal")))
+                    else -> Unit
+                }
+                replica(record.projectId, record.entityType, record.entityId, JsonObject(fields).toString())
+            }
+            MobileProjectPackageWriter.rewriteImported(source, sha256File(source), requestKey, projectId,
+                snapshot, null, "full", destination)
+            val rewritten = MobileProjectPackageValidator(destination).validate()
+            val originalRows = authoringFixture()["rows"] as JsonObject
+            val actualRows = archiveRows(destination)
+            originalRows.forEach { (collection, rows) ->
+                assertEquals((rows as JsonArray).size, actualRows.getValue(collection).size, collection)
+            }
+            assertTrue(actualRows.getValue("worldbuilding_entries").all { it.string("content") == "Edited setting" })
+            assertEquals("Edited debt", actualRows.getValue("narrative_debts").single().string("description"))
+            assertEquals("Edited hint", actualRows.getValue("foreshadowings").single().string("description"))
+            assertTrue(actualRows.getValue("characters").all {
+                (it["profile_json"] as JsonObject).string("motivation") == "Edited goal"
+            })
+            assertEquals(JsonObject(mapOf("hook" to JsonPrimitive("Volume hook"))),
+                actualRows.getValue("outline_nodes").first { it.string("node_type") == "volume" }["metadata_json"])
+            val allIds = actualRows.values.flatten().map { it.string("id") }
+            assertEquals(allIds.size, allIds.toSet().size)
+            assertEquals(projectId, rewritten.sourceProjectId)
+
+            // A debt deletion must not delete or relabel other governance records.
+            val deleted = snapshot.map { record ->
+                if (record.recordType() == "narrative_debt") record.copy(operation = "delete", payloadJson = null)
+                else record
+            }
+            MobileProjectPackageWriter.rewriteImported(source, sha256File(source), requestKey, projectId,
+                deleted, null, "full", destination)
+            val afterDelete = archiveRows(destination)
+            assertTrue(afterDelete.getValue("narrative_debts").isEmpty())
+            assertEquals(1, afterDelete.getValue("causal_edges").size)
+            assertEquals(1, afterDelete.getValue("narrative_checkpoints").size)
+            assertEquals(1, afterDelete.getValue("chapter_governance_reviews").size)
+        } finally {
+            source.delete()
+            destination.delete()
+        }
+    }
+
     @Test
     fun validatesStructurePackageAndUsesBackendCompatibleUuidV5() {
         val fixture = interopFixture()
@@ -583,7 +705,9 @@ class ProjectPackageTest {
         entityId = entityId,
         revision = 0,
         operation = "upsert",
-        payloadJson = payload,
+        payloadJson = JsonObject((Json.parseToJsonElement(payload) as JsonObject).toMutableMap().apply {
+            putIfAbsent("_record_type", JsonPrimitive(entityType))
+        }).toString(),
         contentHash = "test",
         serverModifiedAt = "2026-08-28T00:00:00Z",
     )
@@ -596,6 +720,55 @@ class ProjectPackageTest {
                 archive.getInputStream(entry).bufferedReader().use { append(it.readText()) }
             }
         }
+    }
+
+    private fun authoringFixture(): JsonObject = requireNotNull(
+        javaClass.classLoader?.getResourceAsStream("project-package-v1-authoring.json"),
+    ).bufferedReader(Charsets.UTF_8).use { Json.parseToJsonElement(it.readText()) as JsonObject }
+
+    private fun archiveRows(file: File): Map<String, List<JsonObject>> = ZipFile(file).use { archive ->
+        archive.entries().asSequence().filter { it.name.endsWith(".jsonl") }.associate { entry ->
+            entry.name.removePrefix("data/").removeSuffix(".jsonl") to
+                archive.getInputStream(entry).bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.filter(String::isNotBlank).map { Json.parseToJsonElement(it) as JsonObject }.toList()
+                }
+        }
+    }
+
+    private fun buildAuthoringPackage(): File {
+        val fixture = authoringFixture()
+        val rows = fixture["rows"] as JsonObject
+        val data = rows.mapValues { (_, value) ->
+            (value as JsonArray).joinToString("") { "$it\n" }.toByteArray(Charsets.UTF_8)
+        }
+        val manifest = JsonObject(mapOf(
+            "format" to JsonPrimitive("siming-project-package"),
+            "format_version" to JsonPrimitive(1),
+            "package_id" to JsonPrimitive("22222222-2222-4222-8222-222222222222"),
+            "profile" to JsonPrimitive("full"),
+            "producer" to JsonObject(mapOf("name" to JsonPrimitive("siming"), "app_version" to JsonPrimitive("test"))),
+            "exported_at" to JsonPrimitive("2026-09-01T00:00:00Z"),
+            "source_project" to JsonObject(mapOf("id" to JsonPrimitive("package-project"), "title" to JsonPrimitive("Package regression"))),
+            "entries" to JsonArray(data.map { (collection, bytes) -> JsonObject(mapOf(
+                "path" to JsonPrimitive("data/$collection.jsonl"),
+                "media_type" to JsonPrimitive("application/x-ndjson"),
+                "size" to JsonPrimitive(bytes.size),
+                "sha256" to JsonPrimitive(sha256(bytes)),
+                "records" to JsonPrimitive((rows[collection] as JsonArray).size),
+            )) }),
+        ))
+        val file = kotlin.io.path.createTempFile("mobile-authoring-", PROJECT_PACKAGE_EXTENSION).toFile()
+        ZipOutputStream(file.outputStream()).use { archive ->
+            data.forEach { (collection, bytes) ->
+                archive.putNextEntry(ZipEntry("data/$collection.jsonl"))
+                archive.write(bytes)
+                archive.closeEntry()
+            }
+            archive.putNextEntry(ZipEntry("manifest.json"))
+            archive.write(manifest.toString().toByteArray(Charsets.UTF_8))
+            archive.closeEntry()
+        }
+        return file
     }
 
     private fun JsonObject.string(name: String): String =

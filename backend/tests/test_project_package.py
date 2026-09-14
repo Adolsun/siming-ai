@@ -422,6 +422,69 @@ def test_shared_android_protocol_fixture_matches_backend_contract() -> None:
     ]
 
 
+def test_android_authoring_fixture_imports_with_pc_record_types_and_relationships(seeded, tmp_path: Path):
+    from app.services.gateway_legacy_replication import SPEC_BY_MODEL, serialize_record
+
+    fixture = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "fixtures" /
+                          "project-package-v1-authoring.json").read_text(encoding="utf-8"))
+    data = {
+        f"data/{collection}.jsonl": "".join(json.dumps(row) + "\n" for row in rows).encode()
+        for collection, rows in fixture["rows"].items()
+    }
+    manifest = {
+        "format": PACKAGE_FORMAT, "format_version": 1,
+        "package_id": "22222222-2222-4222-8222-222222222222", "profile": "full",
+        "producer": {"name": "siming", "app_version": "test"},
+        "exported_at": "2026-09-01T00:00:00Z",
+        "source_project": {"id": "package-project", "title": "Package regression"},
+        "entries": [
+            {"path": path, "media_type": "application/x-ndjson", "size": len(raw),
+             "sha256": hashlib.sha256(raw).hexdigest(), "records": len(raw.splitlines())}
+            for path, raw in data.items()
+        ],
+    }
+    data["manifest.json"] = json.dumps(manifest).encode()
+    source = _write_package(tmp_path / f"android-authoring{PACKAGE_EXTENSION}", _repack(data))
+    validated = ProjectPackageValidator(source).validate()
+    db = seeded[0]
+    key = uuid.UUID(fixture["idempotency_key"])
+
+    def mapped_id(collection: str, source_id: str) -> str:
+        return str(uuid.uuid5(PACKAGE_ID_NAMESPACE, f"{key}:{collection}:{source_id}"))
+
+    try:
+        outcome = ProjectPackageImporter(db, validated, idempotency_key=key).restore()
+        db.commit()
+        project_id = outcome.result["project_id"]
+        assert project_id == mapped_id("project", "package-project")
+        records = {}
+        for spec in package_service.COLLECTION_SPECS:
+            for row in fixture["rows"][spec.key]:
+                restored = db.get(spec.model, mapped_id(spec.key, row["id"]))
+                assert restored is not None, (spec.key, row["id"])
+                if spec.model in SPEC_BY_MODEL:
+                    records[row["id"]] = serialize_record(restored)
+        assert records["outline"]["_record_type"] == "outline_node"
+        assert records["outline"]["parent_id"] == mapped_id("outline_nodes", "volume")
+        assert records["outline"]["metadata"]["hook"] == "Chapter hook"
+        assert [row["id"] for row in records["outline"]["linked_characters"]] == [
+            mapped_id("characters", "hero"), mapped_id("characters", "witness"),
+        ]
+        assert records["world"]["_record_type"] == "world_entry"
+        assert records["world"]["content"] == "An isolated harbor"
+        assert records["hint"]["_record_type"] == "foreshadowing"
+        assert records["debt"]["_record_type"] == "narrative_debt"
+        assert records["debt"]["linked_foreshadowing_id"] == mapped_id("foreshadowings", "hint")
+        assert records["debt"]["linked_causal_edge_id"] == mapped_id("causal_edges", "cause")
+        assert records["checkpoint"]["chapter_snapshot_id"] == mapped_id("chapter_snapshots", "snapshot")
+        assert records["checkpoint"]["state_json"]["debt_id"] == mapped_id("narrative_debts", "debt")
+        assert records["hero"]["abilities"] == ["tracking"]
+        assert records["hero"]["aliases"] == ["Scout"]
+        assert records["hero"]["profile"]["motivation"] == "Find the witness"
+    finally:
+        validated.cleanup()
+
+
 def test_full_and_structure_packages_have_strict_author_data_boundaries(seeded):
     db, _factory, _content = seeded
     full = _export_bytes(db, "source-project", "full")

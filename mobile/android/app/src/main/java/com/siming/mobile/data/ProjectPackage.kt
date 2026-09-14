@@ -4,6 +4,7 @@ package com.siming.mobile.data
 
 import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.recordType
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -83,8 +84,12 @@ private data class MobileCollectionSpec(
     val fields: Set<String>,
     val profiles: Set<String>,
     val localEntityType: String? = null,
+    val recordType: String? = localEntityType,
 ) {
     val path: String = "data/$key.jsonl"
+
+    fun matches(entity: ReplicaEntity): Boolean =
+        localEntityType != null && entity.entityType == localEntityType && entity.recordType() == recordType
 }
 
 private fun spec(
@@ -92,7 +97,8 @@ private fun spec(
     profiles: Set<String>,
     fields: String,
     localEntityType: String? = null,
-) = MobileCollectionSpec(key, fields.split(' ').filter(String::isNotBlank).toSet(), profiles, localEntityType)
+    recordType: String? = localEntityType,
+) = MobileCollectionSpec(key, fields.split(' ').filter(String::isNotBlank).toSet(), profiles, localEntityType, recordType)
 
 private val COMMON_PROFILES = setOf("full", "structure")
 private val FULL_PROFILE = setOf("full")
@@ -123,6 +129,7 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "id project_id parent_id node_type title summary status source_chapter_id actual_summary " +
             "planned_summary metadata_json sort_order created_at updated_at",
         "outline",
+        "outline_node",
     ),
     spec(
         "characters",
@@ -137,17 +144,21 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "character_ai_configs",
         COMMON_PROFILES,
         "id character_id tone_style catchphrases verbosity emotion_tendency created_at updated_at",
+        "character_ai_config",
     ),
     spec(
         "character_aliases",
         COMMON_PROFILES,
         "id project_id character_id alias alias_type description confidence source_chapter_id " +
             "merged_character_id created_at updated_at",
+        "character_alias",
     ),
     spec(
         "character_relationships",
         COMMON_PROFILES,
         "id project_id character_a_id character_b_id relationship_type description created_at",
+        "character_relation",
+        "character_relationship",
     ),
     spec(
         "worldbuilding_entries",
@@ -155,11 +166,14 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "id project_id dimension title content first_seen_chapter_id last_updated_chapter_id status " +
             "confidence sort_order created_at updated_at",
         "world",
+        "world_entry",
     ),
     spec(
         "worldbuilding_relations",
         COMMON_PROFILES,
         "id project_id source_entry_id target_entry_id relation_type description metadata_json created_at updated_at",
+        "world_relation",
+        "world_relationship",
     ),
     spec(
         "outline_characters",
@@ -176,11 +190,15 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "chapter_snapshots",
         FULL_PROFILE,
         "id chapter_id version_number content word_count trigger_type created_at",
+        "chapter_version",
+        "chapter_snapshot",
     ),
     spec(
         "chapter_summaries",
         FULL_PROFILE,
         "id chapter_id summary_text key_events token_count created_at updated_at",
+        "summary",
+        "chapter_summary",
     ),
     spec(
         "chapter_characters",
@@ -202,26 +220,36 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "character_versions",
         FULL_PROFILE,
         "id character_id version_number snapshot_data change_summary source_chapter_id created_at",
+        "character",
+        "character_version",
     ),
     spec(
         "character_timelines",
         FULL_PROFILE,
         "id character_id chapter_id event_description event_type emotional_state_change sort_order created_at",
+        "timeline",
+        "character_timeline",
     ),
     spec(
         "character_change_logs",
         FULL_PROFILE,
         "id character_id chapter_id chapter_version change_type field_name old_value new_value confirmed created_at",
+        "timeline",
+        "character_change",
     ),
     spec(
         "worldbuilding_versions",
         FULL_PROFILE,
         "id entry_id version_number snapshot_data change_summary source_chapter_id created_at",
+        "world",
+        "world_version",
     ),
     spec(
         "worldbuilding_timelines",
         FULL_PROFILE,
         "id entry_id chapter_id event_description event_type evidence sort_order created_at",
+        "timeline",
+        "world_timeline",
     ),
     spec(
         "foreshadowings",
@@ -230,6 +258,7 @@ private val MOBILE_COLLECTION_SPECS = listOf(
             "target_chapter_number resolved_chapter_id evidence source_chapter_version resolved_chapter_version " +
             "resolution_note resolution_evidence verification_note verified_at last_checked_at stale_reason closed_by " +
             "storyline dedupe_key source created_at updated_at",
+        "foreshadowing",
     ),
     spec(
         "causal_edges",
@@ -237,6 +266,8 @@ private val MOBILE_COLLECTION_SPECS = listOf(
         "id project_id cause effect causal_type strength status character_ids source_chapter_id resolved_chapter_id " +
             "evidence source_chapter_version resolved_chapter_version resolution_note resolution_evidence verification_note " +
             "verified_at last_checked_at stale_reason closed_by dedupe_key source created_at updated_at",
+        "governance",
+        "causal_edge",
     ),
     spec(
         "narrative_debts",
@@ -245,23 +276,31 @@ private val MOBILE_COLLECTION_SPECS = listOf(
             "target_chapter_number resolved_chapter_id linked_foreshadowing_id linked_causal_edge_id evidence " +
             "source_chapter_version resolved_chapter_version resolution_note resolution_evidence verification_note " +
             "verified_at last_checked_at stale_reason closed_by dedupe_key source created_at updated_at",
+        "governance",
+        "narrative_debt",
     ),
     spec(
         "character_narrative_states",
         FULL_PROFILE,
         "id project_id character_id chapter_id current_goal public_stance hidden_intent emotional_residue " +
             "relationship_tension behavior_boundaries evidence source created_at",
+        "governance",
+        "character_narrative_state",
     ),
     spec(
         "narrative_checkpoints",
         FULL_PROFILE,
         "id project_id chapter_id chapter_snapshot_id sequence label trigger_type state_json created_at",
+        "governance",
+        "narrative_checkpoint",
     ),
     spec(
         "chapter_governance_reviews",
         FULL_PROFILE,
         "id project_id chapter_id chapter_version status source findings_count confidence evidence reviewed_at " +
             "created_at updated_at",
+        "governance",
+        "chapter_governance_review",
     ),
     spec(
         "creation_artifact_versions",
@@ -279,9 +318,9 @@ private val MOBILE_COLLECTION_SPECS = listOf(
 
 private val SPECS_BY_PATH = MOBILE_COLLECTION_SPECS.associateBy(MobileCollectionSpec::path)
 private val SPECS_BY_KEY = MOBILE_COLLECTION_SPECS.associateBy(MobileCollectionSpec::key)
-private val SPECS_BY_LOCAL_ENTITY_TYPE = MOBILE_COLLECTION_SPECS
+private val SPECS_BY_RECORD_TYPE = MOBILE_COLLECTION_SPECS
     .filter { it.localEntityType != null }
-    .associateBy { requireNotNull(it.localEntityType) }
+    .associateBy { requireNotNull(it.recordType) }
 
 private val MANIFEST_FIELDS = setOf(
     "format", "format_version", "package_id", "profile", "producer", "exported_at",
@@ -477,7 +516,7 @@ internal class MobileProjectPackageValidator(
                                     "项目包 ID 在 $previous 与 ${spec.key} 中重复：$sourceId"
                                 }
                                 identifiersByCollection.getOrPut(spec.key, ::linkedSetOf).add(sourceId)
-                                if (spec.localEntityType != null) {
+                                if (spec.localEntityType != null || spec.key == "outline_characters") {
                                     coreRows.getOrPut(spec.key, ::mutableListOf).add(row)
                                 }
                                 if (spec.key == "creation_materials") materialRows += row
@@ -735,16 +774,52 @@ internal object MobileProjectPackageMaterializer {
         }
         val projectId = requireNotNull(identifierMap[validated.sourceProjectId])
         val replicas = mutableListOf<MobilePackageReplica>()
-        validated.coreRows.forEach { (collection, rows) ->
+        val mappedRows = validated.coreRows.mapValues { (_, rows) -> rows.map { mapRow(it, identifierMap) } }
+        val characters = mappedRows["characters"].orEmpty().associateBy { it.string("id") }
+        val outlineCharacters = mappedRows["outline_characters"].orEmpty().groupBy { it.string("outline_node_id") }
+        val aliases = mappedRows["character_aliases"].orEmpty().groupBy { it.string("character_id") }
+        mappedRows.forEach { (collection, rows) ->
             val spec = requireNotNull(SPECS_BY_KEY[collection])
-            val entityType = requireNotNull(spec.localEntityType)
+            val entityType = spec.localEntityType ?: return@forEach
             rows.forEach { source ->
-                val mapped = mapRow(source, identifierMap).toMutableMap()
-                val entityId = requireNotNull(identifierMap[source.string("id")])
+                val mapped = source.toMutableMap()
+                val entityId = source.string("id")
                 if (collection == "project" && !requestedTitle.isNullOrBlank()) {
                     mapped["title"] = JsonPrimitive(requestedTitle.trim().take(200))
                 }
-                mapped["_record_type"] = JsonPrimitive(entityType)
+                // Package rows are storage records; Room consumers use the same
+                // public record shapes as PC snapshots, including exact IDs.
+                when (collection) {
+                    "outline_nodes" -> {
+                        mapped["metadata"] = mapped.remove("metadata_json") ?: JsonNull
+                        mapped["linked_characters"] = JsonArray(
+                            outlineCharacters[entityId].orEmpty().sortedWith(
+                                compareBy<JsonObject> { it.string("created_at") }.thenBy { it.string("character_id") },
+                            ).map { link ->
+                                val character = characters.getValue(link.string("character_id"))
+                                JsonObject(mapOf(
+                                    "id" to character.getValue("id"),
+                                    "name" to character.getValue("name"),
+                                    "role_type" to (character["role_type"] ?: JsonNull),
+                                    "role_in_scene" to (link["role_in_scene"] ?: JsonNull),
+                                ))
+                            },
+                        )
+                    }
+                    "characters" -> {
+                        mapped["profile"] = mapped.remove("profile_json") ?: JsonNull
+                        mapped["abilities"] = packageStringArray(source["abilities"])
+                        mapped["aliases"] = JsonArray(aliases[entityId].orEmpty().mapNotNull { alias ->
+                            alias["alias"]?.takeUnless { it is JsonNull || (it as? JsonPrimitive)?.contentOrNull.isNullOrBlank() }
+                        })
+                    }
+                    "character_ai_configs" -> mapped["catchphrases"] = packageStringArray(source["catchphrases"])
+                    "character_relationships" -> {
+                        mapped["from"] = mapped.remove("character_a_id") ?: JsonNull
+                        mapped["to"] = mapped.remove("character_b_id") ?: JsonNull
+                    }
+                }
+                mapped["_record_type"] = JsonPrimitive(requireNotNull(spec.recordType))
                 replicas += MobilePackageReplica(
                     projectId = projectId,
                     entityType = entityType,
@@ -754,6 +829,20 @@ internal object MobileProjectPackageMaterializer {
             }
         }
         return projectId to replicas
+    }
+
+    private fun packageStringArray(value: JsonElement?): JsonArray {
+        if (value == null || value is JsonNull) return JsonArray(emptyList())
+        val raw = (value as? JsonPrimitive)?.contentOrNull.orEmpty()
+        if (raw.isEmpty()) return JsonArray(emptyList())
+        // Match PC loads_list for stored array text, including comma-separated
+        // archive values. This decodes data; it never selects an Agent target.
+        val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrElse {
+            return JsonArray(raw.split(',').map(String::trim).filter(String::isNotBlank).map(::JsonPrimitive))
+        }
+        return JsonArray((parsed as? JsonArray).orEmpty().map { item ->
+            JsonPrimitive((item as? JsonPrimitive)?.contentOrNull ?: item.toString())
+        })
     }
 
     internal fun mapRow(row: JsonObject, identifierMap: Map<String, String>): JsonObject = JsonObject(
@@ -997,7 +1086,9 @@ internal object MobileProjectPackageWriter {
         referencedAssets: MutableSet<String>,
     ): Int {
         val overrides = spec.localEntityType?.let { entityType ->
-            snapshot.filter { it.entityType == entityType }.associateBy(ReplicaEntity::entityId).toMutableMap()
+            snapshot.filter {
+                it.entityType == entityType && (it.operation == "delete" || spec.matches(it))
+            }.associateBy(ReplicaEntity::entityId).toMutableMap()
         } ?: mutableMapOf()
         val pendingRow = if (spec.key == "chapter_drafts" && pendingDraft != null) {
             localRows(spec, projectId, emptyList(), pendingDraft, profile, now).single()
@@ -1084,7 +1175,16 @@ internal object MobileProjectPackageWriter {
             identifiers.getOrPut(collection, ::linkedSetOf) += requireNotNull(identifierMap[sourceId])
         }
         snapshot.forEach { entity ->
-            val collection = SPECS_BY_LOCAL_ENTITY_TYPE[entity.entityType]?.key ?: return@forEach
+            if (entity.operation == "delete") {
+                // Tombstones have no payload/discriminator. The retained
+                // archive's globally unique IDs identify their collection.
+                identifiers.forEach { (collection, ids) ->
+                    if (SPECS_BY_KEY[collection]?.localEntityType == entity.entityType) ids.remove(entity.entityId)
+                }
+                return@forEach
+            }
+            val spec = SPECS_BY_RECORD_TYPE[entity.recordType()]?.takeIf { it.matches(entity) } ?: return@forEach
+            val collection = spec.key
             val active = entity.operation == "upsert" && (
                 collection != "chapter_drafts" || entity.payloadObject().isPendingDraft()
                 )
@@ -1225,7 +1325,7 @@ internal object MobileProjectPackageWriter {
             )
         }
         val entityType = spec.localEntityType ?: return emptyList()
-        val records = snapshot.filter { it.entityType == entityType && it.operation == "upsert" }
+        val records = snapshot.filter { spec.matches(it) && it.operation == "upsert" }
         return records.mapIndexed { index, entity ->
             val payload = entity.payloadObject().toMutableMap().apply {
                 put("id", JsonPrimitive(entity.entityId))
@@ -1242,12 +1342,22 @@ internal object MobileProjectPackageWriter {
         index: Int,
         profile: String,
         now: String,
-    ): JsonObject = JsonObject(
-        spec.fields.associateWith { field ->
-            val sanitized = if (profile == "structure" && field in STRUCTURE_CLEARED_FIELDS) JsonNull else payload[field]
+    ): JsonObject {
+        val storage = payload.toMutableMap().apply {
+            when (spec.key) {
+                "outline_nodes" -> payload["metadata"]?.let { put("metadata_json", it) }
+                "characters" -> payload["profile"]?.let { put("profile_json", it) }
+                "character_relationships" -> {
+                    put("character_a_id", payload["from"] ?: JsonNull)
+                    put("character_b_id", payload["to"] ?: JsonNull)
+                }
+            }
+        }
+        return JsonObject(spec.fields.associateWith { field ->
+            val sanitized = if (profile == "structure" && field in STRUCTURE_CLEARED_FIELDS) JsonNull else storage[field]
             normalizeValue(spec.key, field, sanitized, payload, projectId, index, now)
-        },
-    )
+        })
+    }
 
     private fun normalizeValue(
         collection: String,
