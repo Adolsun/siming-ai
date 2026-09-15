@@ -23,11 +23,15 @@ import com.siming.mobile.data.creation.MobileCreationConversationAgent
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
+import com.siming.mobile.data.local.ProjectDeletionResult
+import com.siming.mobile.data.local.ProjectSyncRecord
+import com.siming.mobile.data.local.ProjectSyncStatus
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.local.StoredProjectPackage
 import com.siming.mobile.data.local.SyncCursor
 import com.siming.mobile.data.local.orderReplicaEntities
+import com.siming.mobile.data.local.syncStatus
 import com.siming.mobile.data.network.GatewayApi
 import com.siming.mobile.data.network.GatewayHttpException
 import com.siming.mobile.data.network.DirectApiClient
@@ -93,9 +97,11 @@ internal fun mobileAssistantContextFailureEvent(
 }
 
 @OptIn(ExperimentalSerializationApi::class)
-class SimingRepository(context: Context) {
+class SimingRepository(
+    context: Context,
+    private val database: SimingDatabase = SimingDatabase.get(context.applicationContext),
+) {
     private val appContext = context.applicationContext
-    private val database = SimingDatabase.get(appContext)
     private val dao = database.dao()
     private val tokenStore = SecureTokenStore(appContext)
     private val directApiStore = SecureApiConfigStore(appContext)
@@ -132,7 +138,7 @@ class SimingRepository(context: Context) {
     }
 
     val connection: Flow<GatewayConnection?> = dao.observeConnection()
-    val projects: Flow<List<ReplicaEntity>> = dao.observeProjects()
+    val projects: Flow<List<ProjectSyncRecord>> = dao.observeProjects()
     val creationDrafts: Flow<List<ReplicaEntity>> = dao.observeCreationDrafts()
     val pendingCount: Flow<Int> = dao.observePendingCount()
     val cursor: Flow<SyncCursor?> = dao.observeCursor()
@@ -473,7 +479,7 @@ class SimingRepository(context: Context) {
         file: MobileProjectPackageFile,
         newTitle: String? = null,
         onProgress: suspend (String) -> Unit = {},
-    ): MobileProjectPackageImportResult {
+    ): MobileProjectPackageImportResult = syncMutex.withLock {
         require(file.filename.lowercase().endsWith(PROJECT_PACKAGE_EXTENSION)) {
             "这里只接受 .siming-project；TXT、Markdown 或 DOCX 请使用“导入外部小说”"
         }
@@ -540,7 +546,7 @@ class SimingRepository(context: Context) {
             onProgress("正在先上传完整项目包，再同步该作品的普通修改…")
             try {
                 val result = uploadStoredProjectPackage(connection, stored)
-                return MobileProjectPackageImportResult(
+                return@withLock MobileProjectPackageImportResult(
                     projectId = projectId,
                     projectTitle = result.string("project_title").ifBlank { projectTitle },
                     profile = validated.profile,
@@ -556,7 +562,7 @@ class SimingRepository(context: Context) {
             }
         }
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
-        return MobileProjectPackageImportResult(
+        MobileProjectPackageImportResult(
             projectId = projectId,
             projectTitle = projectTitle,
             profile = validated.profile,
@@ -741,41 +747,35 @@ class SimingRepository(context: Context) {
         )
     }
 
-    suspend fun deleteProject(projectId: String) = canonicalCommandMutex.withLock {
-        val key = ReplicaEntity.key(projectId, "project", projectId)
-        val current = dao.entity(key) ?: return@withLock
-        require(!current.conflicted) { "请先处理这部作品的版本分岔，再执行删除" }
+    suspend fun deleteProject(projectId: String, localOnly: Boolean): ProjectDeletionResult = canonicalCommandMutex.withLock {
+        // Import, upload, push and pull share this lock. Re-read after acquiring
+        // it so a completed upload cannot turn a local deletion into a lost receipt.
+        syncMutex.withLock delete@{
+            val current = dao.projectSyncRecord(projectId) ?: return@delete ProjectDeletionResult.ALREADY_ABSENT
+            require(!current.project.conflicted) { "请先处理这部作品的版本分岔，再执行删除" }
+            if (current.syncStatus == ProjectSyncStatus.LOCAL_ONLY) {
+                purgeLocalProject(projectId)
+                return@delete ProjectDeletionResult.LOCAL_ONLY
+            }
+            check(!localOnly) {
+                "这部作品的同步状态已改变；请重新确认删除范围"
+            }
 
-        val connection = dao.connection()
-        if (connection != null) {
-            val canonicalReady = prepareCanonicalWrite()
-            if (canonicalReady) {
-                try {
-                    api.deleteProject(connection, projectId)
-                    purgeLocalProject(projectId)
-                    return@withLock
-                } catch (error: GatewayHttpException) {
-                    throw error
-                } catch (_: IOException) {
-                    // A canonical project must not be converted into a local-only
-                    // delete when the PC is unreachable: it would be resurrected
-                    // on the next authoritative pull.
+            val connection = checkNotNull(dao.connection()) {
+                if (current.syncStatus == ProjectSyncStatus.UNCONFIRMED) {
+                    "这部作品的上传结果尚未确认；请连接 PC Gateway 核验后再删除"
+                } else {
+                    "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
                 }
             }
+            if (dao.pendingMutationCount() > 0) {
+                syncNowLocked()
+                check(dao.pendingMutationCount() == 0) { "仍有离线修订未通过 PC 端校验，请先在同步页处理" }
+            }
+            api.deleteProject(connection, projectId)
+            purgeLocalProject(projectId)
+            ProjectDeletionResult.CANONICAL
         }
-
-        check(isUnsyncedLocalProject(current)) {
-            "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
-        }
-        purgeLocalProject(projectId)
-    }
-
-    private suspend fun isUnsyncedLocalProject(project: ReplicaEntity): Boolean {
-        val pending = dao.pendingMutation(project.projectId, "project", project.projectId)
-        return project.dirty &&
-            project.revision == 0L &&
-            pending?.operation == "upsert" &&
-            pending.baseRevision == 0L
     }
 
     private suspend fun purgeLocalProject(projectId: String) {
@@ -1310,10 +1310,12 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
     }
 
-    suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
+    suspend fun syncNow(): SyncOutcome = syncMutex.withLock { syncNowLocked() }
+
+    private suspend fun syncNowLocked(): SyncOutcome {
         val connection = requireConnection()
         val localProjectIds = dao.localProjectIds()
-        try {
+        return try {
             uploadPendingProjectPackages(connection)
             pushPending(connection)
             refreshConflicts(connection)

@@ -4,6 +4,9 @@ import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.orderReplicaEntities
 import com.siming.mobile.data.local.recordType
 import com.siming.mobile.data.agent.pcGovernanceContext
+import com.siming.mobile.data.agent.mobileChapterWritingState
+import com.siming.mobile.data.agent.mobileCatalogingBlockReason
+import com.siming.mobile.data.agent.mobileChapterPayloadForSave
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -23,6 +26,58 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ProjectPackageTest {
+    @Test
+    fun importedCatalogedChapterCanReachWriterWithoutGatewayButEditingItRequiresCataloging() {
+        val file = buildAuthoringPackage()
+        val exported = kotlin.io.path.createTempFile("chapter-state-roundtrip-", PROJECT_PACKAGE_EXTENSION).toFile()
+        try {
+            val validated = MobileProjectPackageValidator(file).validate()
+            val chapter = validated.coreRows.getValue("chapters").single()
+            val rows = validated.coreRows.toMutableMap()
+            rows["chapter_snapshots"] = rows.getValue("chapter_snapshots").map { snapshot ->
+                JsonObject(snapshot + mapOf(
+                    "version_number" to chapter.getValue("current_version"),
+                    "content" to chapter.getValue("content"),
+                ))
+            }
+            val requestKey = UUID.randomUUID()
+            val (projectId, imported) = MobileProjectPackageMaterializer.materialize(
+                validated.copy(coreRows = rows), requestKey, null,
+            )
+            val snapshot = imported.map { replica(it.projectId, it.entityType, it.entityId, it.payload.toString()) }
+            val state = mobileChapterWritingState(projectId, snapshot, null)
+            assertEquals(JsonNull, state["cataloging_state_unknown_chapter"])
+            assertEquals(JsonNull, state["cataloging_required_chapter"])
+            assertEquals(null, mobileCatalogingBlockReason(state, ""))
+            fun roundtripState(records: List<ReplicaEntity>): JsonObject {
+                MobileProjectPackageWriter.rewriteImported(file, sha256File(file), requestKey, projectId,
+                    records, null, "full", exported)
+                // The derived flag stays outside the strict v1 archive schema.
+                assertFalse(archiveRows(exported).getValue("chapters").single().containsKey("cataloging_required"))
+                val (copyId, copies) = MobileProjectPackageMaterializer.materialize(
+                    MobileProjectPackageValidator(exported).validate(), UUID.randomUUID(), null,
+                )
+                return mobileChapterWritingState(copyId,
+                    copies.map { replica(it.projectId, it.entityType, it.entityId, it.payload.toString()) }, null)
+            }
+            assertEquals(null, mobileCatalogingBlockReason(roundtripState(snapshot), ""))
+
+            val edited = snapshot.map { record ->
+                if (record.entityType != "chapter") record else record.copy(
+                    payloadJson = mobileChapterPayloadForSave(
+                        Json.parseToJsonElement(record.payloadJson!!) as JsonObject,
+                        JsonObject(mapOf("content" to JsonPrimitive("The author changed the prose."))),
+                    ).toString(),
+                )
+            }
+            assertTrue(mobileCatalogingBlockReason(mobileChapterWritingState(projectId, edited, null), "") != null)
+            assertTrue(mobileCatalogingBlockReason(roundtripState(edited), "") != null)
+        } finally {
+            file.delete()
+            exported.delete()
+        }
+    }
+
     @Test
     fun importedAuthoringRecordsAreVisibleWithoutGatewayAndKeepExactRelationships() {
         val file = buildAuthoringPackage()

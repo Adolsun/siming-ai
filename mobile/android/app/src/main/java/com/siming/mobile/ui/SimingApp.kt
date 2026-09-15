@@ -108,6 +108,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.ProjectSyncRecord
+import com.siming.mobile.data.local.ProjectSyncStatus
+import com.siming.mobile.data.local.syncStatus
 import com.siming.mobile.data.AssistantModelRoute
 import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
@@ -154,7 +157,8 @@ fun SimingApp(
     onSaveExport: (MobileExportFile) -> Unit,
 ) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
-    val projects by viewModel.projects.collectAsStateWithLifecycle()
+    val libraryProjects by viewModel.projects.collectAsStateWithLifecycle()
+    val projects = libraryProjects.map { it.project }
     val creationDrafts by viewModel.creationDrafts.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
     val snackbar = remember { SnackbarHostState() }
@@ -253,7 +257,7 @@ fun SimingApp(
             )
             RootTab.Library -> LibraryScreen(
                 modifier = Modifier.padding(padding),
-                projects = projects,
+                projects = libraryProjects,
                 connection = connection,
                 directApi = ui.directApi,
                 viewModel = viewModel,
@@ -334,7 +338,7 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
 @Composable
 private fun LibraryScreen(
     modifier: Modifier,
-    projects: List<ReplicaEntity>,
+    projects: List<ProjectSyncRecord>,
     connection: GatewayConnection?,
     directApi: DirectApiSummary?,
     viewModel: MainViewModel,
@@ -345,7 +349,7 @@ private fun LibraryScreen(
     onStartAiCreation: () -> Unit,
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
-    var deleteTarget by remember { mutableStateOf<ReplicaEntity?>(null) }
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
     Column(modifier.fillMaxSize()) {
         if (connection == null) {
             StatusBanner(
@@ -401,12 +405,11 @@ private fun LibraryScreen(
                     )
                 }
             } else {
-                items(projects, key = { it.key }) { project ->
+                items(projects, key = { it.project.key }) { record ->
                     MobileProjectCard(
-                        project = project,
-                        localOnly = connection == null,
-                        onClick = { onOpenProject(project.projectId) },
-                        onDelete = { deleteTarget = project },
+                        record = record,
+                        onClick = { onOpenProject(record.project.projectId) },
+                        onDelete = { deleteTarget = record.project.projectId },
                     )
                 }
             }
@@ -421,17 +424,21 @@ private fun LibraryScreen(
             },
         )
     }
-    deleteTarget?.let { target ->
+    projects.firstOrNull { it.project.projectId == deleteTarget }?.let { record ->
+        val target = record.project
         val title = target.text("title").ifBlank { "未命名作品" }
-        val canAttemptDelete = connection != null || (target.dirty && target.revision == 0L)
+        val localOnly = record.syncStatus == ProjectSyncStatus.LOCAL_ONLY
+        val canAttemptDelete = !target.conflicted && (localOnly || connection != null)
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除《$title》？") },
             text = {
                 Text(
                     when {
+                        target.conflicted -> "请先处理这部作品的版本分岔，再执行删除。"
+                        localOnly -> "这部作品尚未上传到 PC，将从当前手机移除，并取消待同步记录。此操作不可撤销。"
                         connection != null -> "删除后会从 PC 权威作品库移除，并清理这台手机的离线副本。此操作不可撤销。"
-                        canAttemptDelete -> "这部作品尚未同步到 PC，将只从当前手机移除。此操作不可撤销。"
+                        record.syncStatus == ProjectSyncStatus.UNCONFIRMED -> "这部作品的上传结果尚未确认。请连接 PC Gateway 核验后再删除。"
                         else -> "这部作品已经与 PC 同步。为避免下次同步重新出现，请先连接 PC Gateway，再执行删除。"
                     },
                 )
@@ -440,80 +447,20 @@ private fun LibraryScreen(
                 TextButton(
                     enabled = canAttemptDelete,
                     onClick = {
-                        viewModel.deleteProject(target.projectId) { deleteTarget = null }
+                        viewModel.deleteProject(target.projectId, localOnly) { deleteTarget = null }
                     },
                 ) {
-                    Text(if (canAttemptDelete) "确认删除" else "删除需联网")
+                    Text(when {
+                        target.conflicted -> "请先处理分岔"
+                        canAttemptDelete -> "确认删除"
+                        else -> "删除需联网"
+                    })
                 }
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("取消") }
             },
         )
-    }
-}
-
-@Composable
-private fun ProjectCard(
-    project: ReplicaEntity,
-    localOnly: Boolean,
-    onClick: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val title = project.text("title").ifBlank { "未命名作品" }
-    val description = project.text("description")
-    OutlinedCard(
-        onClick = onClick,
-        border = BorderStroke(1.dp, if (project.conflicted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant),
-        colors = CardDefaults.outlinedCardColors(containerColor = Color.White),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(15.dp),
-        ) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.size(52.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        title.take(1),
-                        color = SimingCinnabar,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 21.sp,
-                    )
-                }
-            }
-            Spacer(Modifier.width(13.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (description.isNotBlank()) {
-                    Text(
-                        description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (project.dirty) MicroTag(if (localOnly) "仅本机" else "待同步", SimingBlue)
-                    if (project.conflicted) MicroTag("有分岔", MaterialTheme.colorScheme.error)
-                    if (!project.dirty && !project.conflicted) MicroTag("已落库", SimingGreen)
-                }
-            }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Outlined.DeleteOutline,
-                    "删除作品",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp))
-        }
     }
 }
 

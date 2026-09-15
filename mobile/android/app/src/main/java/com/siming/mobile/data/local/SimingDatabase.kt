@@ -27,12 +27,11 @@ interface SimingDao {
     @Query("DELETE FROM gateway_connection")
     suspend fun deleteConnection()
 
-    @Query(
-        "SELECT * FROM replica_entities " +
-            "WHERE entityType = 'project' AND operation = 'upsert' " +
-            "ORDER BY localModifiedAt DESC",
-    )
-    fun observeProjects(): Flow<List<ReplicaEntity>>
+    @Query(PROJECT_SYNC_RECORDS_QUERY + " ORDER BY project.localModifiedAt DESC")
+    fun observeProjects(): Flow<List<ProjectSyncRecord>>
+
+    @Query(PROJECT_SYNC_RECORDS_QUERY + " AND project.projectId = :projectId")
+    suspend fun projectSyncRecord(projectId: String): ProjectSyncRecord?
 
     @Query(
         "SELECT * FROM replica_entities " +
@@ -208,7 +207,7 @@ interface SimingDao {
         LocalConflict::class,
         StoredProjectPackage::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class SimingDatabase : RoomDatabase() {
@@ -223,9 +222,15 @@ abstract class SimingDatabase : RoomDatabase() {
                 SimingDatabase::class.java,
                 "siming-mobile.db",
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                restoreImportedChapterCatalogingState(db)
+            }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {

@@ -778,6 +778,9 @@ internal object MobileProjectPackageMaterializer {
         val characters = mappedRows["characters"].orEmpty().associateBy { it.string("id") }
         val outlineCharacters = mappedRows["outline_characters"].orEmpty().groupBy { it.string("outline_node_id") }
         val aliases = mappedRows["character_aliases"].orEmpty().groupBy { it.string("character_id") }
+        val chapterCatalogingState = ProjectPackageChapterCatalogingState(
+            mappedRows["chapter_snapshots"].orEmpty(), mappedRows["chapter_summaries"].orEmpty(),
+        )
         mappedRows.forEach { (collection, rows) ->
             val spec = requireNotNull(SPECS_BY_KEY[collection])
             val entityType = spec.localEntityType ?: return@forEach
@@ -790,6 +793,7 @@ internal object MobileProjectPackageMaterializer {
                 // Package rows are storage records; Room consumers use the same
                 // public record shapes as PC snapshots, including exact IDs.
                 when (collection) {
+                    "chapters" -> mapped["cataloging_required"] = JsonPrimitive(chapterCatalogingState.required(source))
                     "outline_nodes" -> {
                         mapped["metadata"] = mapped.remove("metadata_json") ?: JsonNull
                         mapped["linked_characters"] = JsonArray(

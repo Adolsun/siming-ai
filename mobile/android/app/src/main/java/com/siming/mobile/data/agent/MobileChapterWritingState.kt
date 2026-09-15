@@ -49,7 +49,7 @@ internal fun mobileChapterWritingState(
         } ?: JsonNull)
         put("blocking_cataloging_job", JsonNull)
         put("cataloging_required_chapter", required?.chapterState() ?: JsonNull)
-        // Old project packages may not contain this field. Absence is not proof of completion.
+        // Imported packages restore this state before use. Other missing state stays explicit.
         put("cataloging_state_unknown_chapter", unknown?.chapterState() ?: JsonNull)
     }
 }
@@ -98,7 +98,7 @@ internal fun mobileCatalogingBlockReason(state: JsonObject, sourceDraftId: Strin
     state["cataloging_required_chapter"] is JsonObject ->
         "正式章节当前版本尚未完成建档；完成建档后才能生成下一章。"
     state["cataloging_state_unknown_chapter"] is JsonObject ->
-        "手机副本缺少当前章节的建档状态，请同步最新资料后再写下一章。"
+        "当前章节缺少可核验的建档状态；请导入包含当前版本快照和建档摘要的完整项目包，或完成该章建档。"
     else -> null
 }
 

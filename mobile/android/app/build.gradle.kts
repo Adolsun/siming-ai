@@ -13,8 +13,8 @@ android {
         applicationId = "com.siming.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30401
-        versionName = "3.4.1"
+        versionCode = 30402
+        versionName = "3.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -55,6 +55,7 @@ android {
         )
     }
     sourceSets.getByName("test").resources.srcDir("../../../contracts/fixtures")
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 
