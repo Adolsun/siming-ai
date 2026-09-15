@@ -22,6 +22,7 @@ import com.siming.mobile.data.creation.CreationStartInput
 import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.ProjectDeletionResult
 import com.siming.mobile.security.VerifiedPairing
 import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
@@ -871,15 +872,15 @@ private fun updateCatalogingProgress(
         }
     }
 
-    fun deleteProject(projectId: String, onDeleted: () -> Unit) {
+    fun deleteProject(projectId: String, localOnly: Boolean, onDeleted: () -> Unit) {
         viewModelScope.launch {
             try {
-                repository.deleteProject(projectId)
+                val result = repository.deleteProject(projectId, localOnly)
                 uiState.value = uiState.value.copy(
-                    notice = if (connection.value != null) {
-                        "作品已从 PC 权威库删除，手机副本已清理"
-                    } else {
-                        "尚未同步的本地作品已从手机删除"
+                    notice = when (result) {
+                        ProjectDeletionResult.CANONICAL -> "作品已从 PC 权威库删除，手机副本已清理"
+                        ProjectDeletionResult.LOCAL_ONLY -> "本地作品已从手机删除，待同步记录已取消"
+                        ProjectDeletionResult.ALREADY_ABSENT -> "这部作品已删除"
                     },
                 )
                 onDeleted()

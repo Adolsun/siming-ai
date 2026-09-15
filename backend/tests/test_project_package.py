@@ -525,6 +525,31 @@ def test_full_and_structure_packages_have_strict_author_data_boundaries(seeded):
     assert "data/chapter_drafts.jsonl" not in structure_entries
 
 
+def test_imported_current_catalog_projection_releases_chapter_write_gate(seeded, tmp_path: Path):
+    from app.services.cataloging.launcher import find_cataloging_required_chapter
+
+    db = seeded[0]
+    chapter = db.get(Chapter, "chapter-1")
+    saved_at = datetime.utcnow()
+    db.add(ChapterSnapshot(
+        id="current-snapshot", chapter_id=chapter.id, version_number=chapter.current_version,
+        content=chapter.content, word_count=chapter.word_count, trigger_type="manual_save", created_at=saved_at,
+    ))
+    db.query(ChapterSummary).filter_by(chapter_id=chapter.id).one().updated_at = saved_at + timedelta(seconds=1)
+    db.commit()
+    path = _write_package(tmp_path / f"current{PACKAGE_EXTENSION}", _export_bytes(db, chapter.project_id, "full"))
+    validated = ProjectPackageValidator(path).validate()
+    try:
+        outcome = ProjectPackageImporter(db, validated, idempotency_key=uuid.uuid4()).restore()
+        imported_id = outcome.result["project_id"]
+        imported = db.query(Chapter).filter_by(project_id=imported_id).one()
+        assert imported.cataloging_required is False
+        assert find_cataloging_required_chapter(db, imported_id) is None
+        assert chapter.cataloging_required is True
+    finally:
+        validated.cleanup()
+
+
 def test_full_roundtrip_cross_database_restores_author_data_and_rebuilds_indexes(
     seeded,
     tmp_path: Path,
@@ -563,7 +588,9 @@ def test_full_roundtrip_cross_database_restores_author_data_and_rebuilds_indexes
         assert destination.get(Project, project_id) is not None
         chapter = destination.query(Chapter).filter_by(project_id=project_id).one()
         assert chapter.content == CHAPTER_SENTINEL
-        assert chapter.cataloging_required is False
+        # The package only has a v1 snapshot for a v2 chapter. An old summary
+        # must not release the current version's cataloging gate.
+        assert chapter.cataloging_required is True
         assert chapter.id == str(uuid.uuid5(PACKAGE_ID_NAMESPACE, f"{key}:chapters:chapter-1"))
         assert destination.query(ChapterSnapshot).one().content == SNAPSHOT_SENTINEL
         assert destination.query(ChapterSummary).one().summary_text == SUMMARY_SENTINEL

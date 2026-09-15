@@ -33,6 +33,8 @@ jobs:
           cache: gradle
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install SDK components
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"

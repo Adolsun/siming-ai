@@ -60,6 +60,7 @@ from ..version import APP_VERSION
 from .content_store import content_root
 from .novel_creation_imports import parse_creation_material, split_creation_material
 from .project_creation_context import resolve_project_creation_session
+from .project_package_chapter_state import ProjectPackageChapterCatalogingState
 from .project_package_contract import (
     COLLECTION_SPECS,
     ERROR_ASSET,
@@ -487,6 +488,9 @@ class ProjectPackageImporter:
         self.new_title = (new_title or "").strip()[:200] or None
         self.identifier_map: dict[str, str] = {}
         self.moved_asset_directories: list[Path] = []
+        self.chapter_cataloging_state = ProjectPackageChapterCatalogingState(
+            package.rows.get("chapter_snapshots", []), package.rows.get("chapter_summaries", []),
+        )
 
     def cleanup_after_failure(self) -> None:
         for path in reversed(self.moved_asset_directories):
@@ -770,6 +774,8 @@ class ProjectPackageImporter:
         spec = SPECS_BY_KEY[key]
         for row in rows:
             data = self._mapped_row(spec, row)
+            if key == "chapters":
+                data["cataloging_required"] = self.chapter_cataloging_state.required(row)
             if key == "chapter_drafts":
                 data["saved_chapter_id"] = None
                 data["status"] = "pending"

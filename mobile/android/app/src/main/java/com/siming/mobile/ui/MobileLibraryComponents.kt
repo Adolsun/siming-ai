@@ -38,7 +38,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.local.ProjectSyncRecord
+import com.siming.mobile.data.local.ProjectSyncStatus
+import com.siming.mobile.data.local.syncStatus
 
 @Composable
 internal fun LibraryActionPanel(
@@ -132,11 +134,11 @@ private fun LibrarySmallAction(
 
 @Composable
 internal fun MobileProjectCard(
-    project: ReplicaEntity,
-    localOnly: Boolean,
+    record: ProjectSyncRecord,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val project = record.project
     val title = project.formText("title").ifBlank { "未命名作品" }
     val description = project.formText("description")
     var menuExpanded by remember { mutableStateOf(false) }
@@ -191,8 +193,12 @@ internal fun MobileProjectCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     when {
                         project.conflicted -> MicroTag("待处理分岔", MaterialTheme.colorScheme.error)
-                        project.dirty -> MicroTag(if (localOnly) "仅本机" else "待同步", SimingBlue)
-                        else -> MicroTag("已同步", SimingGreen)
+                        else -> when (record.syncStatus) {
+                            ProjectSyncStatus.LOCAL_ONLY -> MicroTag("仅本机", SimingBlue)
+                            ProjectSyncStatus.SYNC_PENDING -> MicroTag("待同步", SimingBlue)
+                            ProjectSyncStatus.SYNCED -> MicroTag("已同步", SimingGreen)
+                            ProjectSyncStatus.UNCONFIRMED -> MicroTag("同步待确认", SimingBlue)
+                        }
                     }
                     if (project.revision > 0) MicroTag("r${project.revision}", SimingInkMuted)
                 }

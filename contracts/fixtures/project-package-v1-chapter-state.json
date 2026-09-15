@@ -1,0 +1,393 @@
+{
+  "contract": "project_package_v1_chapter_cataloging",
+  "cases": [
+    {
+      "name": "current_snapshot_and_later_summary",
+      "required": false,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "chapter_metadata_update_does_not_invalidate_prose",
+      "required": false,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-14T00:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "missing_summary",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": []
+    },
+    {
+      "name": "empty_summary",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": " \n",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "missing_snapshot",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "older_snapshot_version",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 1,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "same_version_but_edited_prose",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Changed after cataloging.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "summary_predates_current_snapshot",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:01:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "foreign_summary",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "other-chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "foreign_snapshot",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "other-chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "missing_current_version",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": null,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "missing_snapshot_timestamp",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": null
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T00:00:01Z"
+        }
+      ]
+    },
+    {
+      "name": "missing_summary_timestamps",
+      "required": true,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": null,
+          "updated_at": null
+        }
+      ]
+    },
+    {
+      "name": "summary_creation_timestamp_when_update_absent",
+      "required": false,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": null
+        }
+      ]
+    },
+    {
+      "name": "naive_utc_and_offset_timestamps",
+      "required": false,
+      "chapter": {
+        "id": "chapter",
+        "content": "Current prose.",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [
+        {
+          "chapter_id": "chapter",
+          "version_number": 2,
+          "content": "Current prose.",
+          "created_at": "2026-09-01T00:00:00.123456"
+        }
+      ],
+      "summaries": [
+        {
+          "chapter_id": "chapter",
+          "summary_text": "The current chapter is archived.",
+          "created_at": "2026-09-01T00:00:01Z",
+          "updated_at": "2026-09-01T08:00:00.123456+08:00"
+        }
+      ]
+    },
+    {
+      "name": "empty_chapter_needs_no_cataloging",
+      "required": false,
+      "chapter": {
+        "id": "chapter",
+        "content": " \n",
+        "current_version": 2,
+        "updated_at": "2026-09-01T01:00:00Z"
+      },
+      "snapshots": [],
+      "summaries": []
+    }
+  ]
+}
