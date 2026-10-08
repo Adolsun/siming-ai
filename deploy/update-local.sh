@@ -26,6 +26,15 @@ docker compose -f compose.gateway.local.yml build
 echo "[3/3] Restarting gateway..."
 docker compose -f compose.gateway.local.yml up -d
 
-echo "Update complete. Health check:"
-curl -s -m 10 "http://127.0.0.1:${SIMING_GATEWAY_PORT:-18000}/health"
-echo
+echo "Update complete. Waiting for gateway to become healthy..."
+for i in $(seq 1 20); do
+  HEALTH="$(curl -s -m 5 "http://127.0.0.1:${SIMING_GATEWAY_PORT:-18000}/health" || true)"
+  if echo "$HEALTH" | grep -q '"status":"healthy"\|"status":"recovery"'; then
+    echo "$HEALTH"
+    echo
+    exit 0
+  fi
+  sleep 5
+done
+echo "ERROR: gateway did not become healthy within 100s." >&2
+exit 1
